@@ -1,0 +1,40 @@
+module openconfig-lacp-deviation {
+
+  yang-version "1";
+
+  // namespace
+  namespace "http://openconfig.net/yang/lacp/deviation/extension";
+
+  prefix "oc-lacp-dev";
+
+  // import some basic types
+  import openconfig-extensions { prefix oc-ext; }
+  import openconfig-lacp { prefix oc-lacp; }
+
+  organization
+    "SONiC";
+
+  contact
+    "SONiC";
+
+  description
+    "This module describes a YANG model for openconfig-lacp deviations.";
+
+  oc-ext:openconfig-version "0.1.0";
+
+  revision "2024-08-23" {
+    description
+      "Remove top-level system-priority; only the per interface system-priority
+      is used (lacp/interfaces/interface/config|state/system-priority).";
+    reference "0.1.0";
+  }
+
+  deviation /oc-lacp:lacp/oc-lacp:config/oc-lacp:system-priority {
+    deviate not-supported;
+  }
+
+  deviation /oc-lacp:lacp/oc-lacp:state/oc-lacp:system-priority {
+    deviate not-supported;
+  }
+
+}
