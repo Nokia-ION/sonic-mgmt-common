@@ -308,23 +308,25 @@ func isSubtreeRequest(targetUriPath string, nodePath string) bool {
 	return false
 }
 
+func removeBracketedContentNoRegex(s string) string {
+	currentString := s
+	for {
+		start := strings.IndexByte(currentString, '[')
+		if start == -1 {
+			break
+		}
+		endOffset := strings.IndexByte(currentString[start+1:], ']')
+		if endOffset == -1 {
+			break
+		}
+		end := start + 1 + endOffset
+		currentString = currentString[:start] + currentString[end+1:]
+	}
+	return currentString
+}
+
 func getYangPathFromUri(uri string) (string, error) {
-	var path *gnmi.Path
-	var err error
-
-	path, err = ygot.StringToPath(uri, ygot.StructuredPath, ygot.StringSlicePath)
-	if err != nil {
-		log.Warningf("Error in URI to path conversion: %v", err)
-		return "", err
-	}
-
-	yangPath, yperr := ygot.PathToSchemaPath(path)
-	if yperr != nil {
-		log.Warningf("Error in Gnmi path to Yang path conversion: %v", yperr)
-		return "", yperr
-	}
-
-	return yangPath, err
+	return removeBracketedContentNoRegex(uri), nil
 }
 
 func yangKeyFromEntryGet(entry *yang.Entry) []string {

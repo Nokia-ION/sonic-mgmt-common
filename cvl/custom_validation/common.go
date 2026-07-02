@@ -131,7 +131,7 @@ func InvokeCustomValidation(cv *CustomValidation, name string, args ...interface
 	f := reflect.ValueOf(cv).MethodByName(name)
 	util.TRACE_LEVEL_LOG(util.TRACE_SEMANTIC,
 		"customFuncName: %s()", name)
-	if !f.IsNil() {
+	if f.IsValid() && !f.IsNil() {
 		v := f.Call(inputs)
 		util.TRACE_LEVEL_LOG(util.TRACE_SEMANTIC,
 			"InvokeCustomValidation: %s(), CVLErrorInfo: %v", name, v[0])
