@@ -20,6 +20,8 @@ openconfig-p4rt.yang
 openconfig-platform-annot.yang
 openconfig-platform.yang
 openconfig-platform-boot-loader.yang
+openconfig-lacp-annot.yang
+sonic-portchannel.yang
 gnsi-authz.yang
 gnsi-pathz.yang
 gnsi-certz.yang

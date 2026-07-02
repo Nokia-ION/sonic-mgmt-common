@@ -422,6 +422,7 @@ grouping aggregation-lacp-members-statistics {
 
     leaf fallback {
       type boolean;
+      default false;
       description
         "If the fallback is set to true, current LACP interface is
         able to establish a Link Aggregation (LAG) before it receives
