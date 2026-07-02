@@ -402,18 +402,26 @@ func fillSonicKeySpec(xpath string, tableName string, keyStr string, content Con
 func XlateToDb(path string, oper int, d *db.DB, yg *ygot.GoStruct, yt *interface{}, jsonPayload []byte, txCache interface{}, skipOrdTbl *bool) (map[Operation]RedisDbMap, map[string]map[string]db.Value, map[string]map[string]db.Value, error) {
 
 	requestUri := path
+	allModeljsonData := make(map[string]interface{})
 	jsonData := make(map[string]interface{})
 	opcode := Operation(oper)
 
 	device := (*yg).(*ocbinds.Device)
 	jsonBytes, err := ocbinds.EmitJSON(device, nil)
 	if err == nil {
-		err = json.Unmarshal(jsonBytes, &jsonData)
+		err = json.Unmarshal(jsonBytes, &allModeljsonData)
 	}
 	if err != nil {
 		errStr := "Error: failed to unmarshal json."
 		err = tlerr.InternalError{Format: errStr}
 		return nil, nil, nil, err
+	}
+
+	for modelName := range allModeljsonData {
+		if strings.Contains(path, modelName) {
+			jsonData[modelName] = allModeljsonData[modelName]
+			break
+		}
 	}
 
 	// Map contains table.key.fields
