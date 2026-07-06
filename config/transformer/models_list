@@ -22,6 +22,8 @@ openconfig-platform.yang
 openconfig-platform-boot-loader.yang
 openconfig-lacp-annot.yang
 sonic-portchannel.yang
+openconfig-lldp.yang
+openconfig-lldp-annot.yang
 gnsi-authz.yang
 gnsi-pathz.yang
 gnsi-certz.yang
