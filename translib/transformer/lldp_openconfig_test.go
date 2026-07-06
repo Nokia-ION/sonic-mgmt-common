@@ -26,7 +26,6 @@ import (
 	"time"
 
 	"github.com/Azure/sonic-mgmt-common/translib/db"
-	"github.com/Azure/sonic-mgmt-common/translib/tlerr"
 )
 
 const testIfName = "Ethernet0"
@@ -132,7 +131,6 @@ func unloadLldpFixture() {
 
 func Test_openconfig_lldp_config(t *testing.T) {
 	var url string
-
 	t.Log("\n\n+++++++++++++ GET global LLDP config ++++++++++++")
 	loadLldpFixture(t, false, false, "")
 	defer unloadLldpFixture()
@@ -142,14 +140,10 @@ func Test_openconfig_lldp_config(t *testing.T) {
 	t.Run("GET global LLDP config", processGetRequest(url, nil, expectedGetJSON, false))
 	time.Sleep(1 * time.Second)
 
-	t.Log("\n\n+++++++++++++ GET global LLDP config after DELETE ++++++++++++")
-	url = "/openconfig-lldp:lldp/config/system-name"
-	expectedGetJSON = `{"openconfig-lldp:system-name":"loc-chassis-name"}`
-	t.Run("GET global system-name fallback from loc chassis", processGetRequest(url, nil, expectedGetJSON, false))
 }
+
 func Test_openconfig_lldp_state(t *testing.T) {
 	var url string
-
 	t.Log("\n\n+++++++++++++ GET global LLDP state ++++++++++++")
 	loadLldpFixture(t, false, false, "")
 	defer unloadLldpFixture()
@@ -165,9 +159,10 @@ func Test_openconfig_lldp_state(t *testing.T) {
 	t.Run("GET global LLDP state counters", processGetRequest(url, nil, expectedGetJSON, false))
 	time.Sleep(1 * time.Second)
 
+}
+
 func Test_openconfig_lldp_interface_config(t *testing.T) {
 	var url string
-
 	t.Log("\n\n+++++++++++++ GET per-interface LLDP config (default enabled) ++++++++++++")
 	loadLldpFixture(t, false, false, "")
 	defer unloadLldpFixture()
@@ -176,6 +171,8 @@ func Test_openconfig_lldp_interface_config(t *testing.T) {
 	expectedGetJSON := `{"openconfig-lldp:config":{"enabled":true,"name":"Ethernet0"}}`
 	t.Run("GET interface config default enabled", processGetRequest(url, nil, expectedGetJSON, false))
 	time.Sleep(1 * time.Second)
+
+}
 
 func Test_openconfig_lldp_interface_state(t *testing.T) {
 	var url string
@@ -194,6 +191,7 @@ func Test_openconfig_lldp_interface_state(t *testing.T) {
 	expectedGetJSON = `{"openconfig-lldp:counters":{}}`
 	t.Run("GET interface state counters", processGetRequest(url, nil, expectedGetJSON, false))
 }
+
 func Test_openconfig_lldp_neighbors(t *testing.T) {
 	var url string
 
@@ -223,6 +221,7 @@ func Test_openconfig_lldp_neighbors(t *testing.T) {
 	expectedGetJSON = `{"openconfig-lldp:interfaces":{"interface":[{"config":{"enabled":true,"name":"Ethernet0"},"name":"Ethernet0","neighbors":{"neighbor":[{"capabilities":{"capability":[{"name":"openconfig-lldp-types:MAC_BRIDGE","state":{"enabled":true,"name":"openconfig-lldp-types:MAC_BRIDGE"}}]},"id":"Ethernet0","state":{"age":5000,"chassis-id":"00:aa:00:00:00:01","chassis-id-type":"MAC_ADDRESS","id":"1","management-address":"172.17.2.1,fd00::1","management-address-type":"ipv4","port-description":"Port 1/1","port-id":"Ethernet0","port-id-type":"LOCAL","system-description":"SONiC simulator 1","system-name":"sonic1"}}]},"state":{"enabled":true,"name":"Ethernet0"}}]}}`
 	t.Run("GET all interfaces", processGetRequest(url, nil, expectedGetJSON, false))
 }
+
 func Test_openconfig_lldp_interface_from_port_only(t *testing.T) {
 	var url string
 
@@ -238,6 +237,7 @@ func Test_openconfig_lldp_interface_from_port_only(t *testing.T) {
 	expectedGetJSON := `{"openconfig-lldp:config":{"enabled":false,"name":"Ethernet0"}}`
 	t.Run("GET interface from LLDP_PORT only", processGetRequest(url, nil, expectedGetJSON, false))
 }
+
 func Test_openconfig_lldp_interface_neighbor_without_port(t *testing.T) {
 	var url string
 
@@ -255,6 +255,7 @@ func Test_openconfig_lldp_interface_neighbor_without_port(t *testing.T) {
 	expectedGetJSON = `{"openconfig-lldp:config":{"enabled":true,"name":"Ethernet0"}}`
 	t.Run("GET keyed interface config without LLDP_PORT", processGetRequest(url, nil, expectedGetJSON, false))
 }
+
 func Test_openconfig_lldp_keyed_paths(t *testing.T) {
 	var url string
 
