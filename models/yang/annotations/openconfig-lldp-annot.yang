@@ -1,0 +1,48 @@
+module openconfig-lldp-annot {
+
+    yang-version "1";
+
+    namespace "http://openconfig.net/yang/annotation/oc-lldp-annot";
+    prefix "oc-lldp-annot";
+
+    import sonic-extensions { prefix sonic-ext; }
+    import openconfig-lldp { prefix oc-lldp; }
+
+    organization
+        "SONiC";
+
+    contact
+        "SONiC";
+
+    description
+        "OpenConfig LLDP YANG annotations for SONiC transformer framework.";
+
+    revision 2026-07-03 {
+        description
+            "Initial revision: map LLDP interfaces/neighbors to APPL_DB LLDP_ENTRY_TABLE.";
+    }
+
+    revision 2026-07-03-2 {
+        description
+            "Add global config/state and per-interface config mappings.";
+    }
+
+    deviation /oc-lldp:lldp/oc-lldp:config {
+        deviate add {
+            sonic-ext:db-name "CONFIG_DB";
+            sonic-ext:subtree-transformer "lldp_config_xfmr";
+        }
+    }
+
+    deviation /oc-lldp:lldp/oc-lldp:state {
+        deviate add {
+            sonic-ext:subtree-transformer "lldp_state_xfmr";
+        }
+    }
+
+    deviation /oc-lldp:lldp/oc-lldp:interfaces {
+        deviate add {
+            sonic-ext:subtree-transformer "lldp_interfaces_xfmr";
+        }
+    }
+}
