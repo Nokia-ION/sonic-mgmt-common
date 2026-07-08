@@ -1,0 +1,160 @@
+module sonic-wred-profile {
+    namespace "http://github.com/Azure/sonic-wred-profile";
+    prefix wrd;
+
+    import sonic-common {
+        prefix cmn;
+    }
+
+    import sonic-extension {
+        prefix sonic-ext;
+    }
+
+    organization
+        "SONiC";
+
+    contact
+        "SONiC";
+
+    description
+        "SONIC WRED_PROFILE";
+
+    revision 2019-05-15 {
+        description
+            "Initial revision.";
+    }
+
+    container sonic-wred-profile {
+
+        container WRED_PROFILE {
+
+            list WRED_PROFILE_LIST {
+                key "name";
+                sonic-ext:custom-validation ValidateAtLeastOneColorEnabled;
+
+                leaf name{
+                    type string {
+                        pattern '[a-zA-Z0-9]{1}([-a-zA-Z0-9_]{0,31})';
+                        length 1..32;
+                    }
+                }
+
+                leaf yellow_ecn_mark_min_threshold {
+                    type uint64;
+                }
+
+                leaf green_ecn_mark_min_threshold {
+                    type uint64;
+                }
+
+                leaf red_ecn_mark_min_threshold {
+                    type uint64;
+                }
+
+                leaf yellow_ecn_mark_max_threshold {
+                    type uint64;
+                        must "(/cmn:operation/cmn:operation = 'DELETE') or (current() >= current()/../yellow_ecn_mark_min_threshold)" {
+                                                error-message "Yellow ecn mark max threshold must be greater than or equal to min threshold";
+                        }
+                }
+
+                leaf green_ecn_mark_max_threshold {
+                    type uint64;
+                        must "(/cmn:operation/cmn:operation = 'DELETE') or (current() >= current()/../green_ecn_mark_min_threshold)" {
+                                                error-message "Green ecn mark max threshold must be greater than or equal to min threshold";
+                        }
+                }
+
+                leaf red_ecn_mark_max_threshold {
+                    type uint64;
+                        must "(/cmn:operation/cmn:operation = 'DELETE') or (current() >= current()/../red_ecn_mark_min_threshold)" {
+                                                error-message "Red ecn mark max threshold must be greater than or equal to min threshold";
+                        }
+                }
+
+                leaf yellow_ecn_mark_probability {
+                    type uint64;
+                }
+
+                leaf green_ecn_mark_probability {
+                    type uint64;
+                }
+
+                leaf red_ecn_mark_probability {
+                    type uint64;
+                }
+
+                leaf yellow_min_threshold {
+                    type uint64;
+                }
+
+                leaf green_min_threshold {
+                    type uint64;
+                }
+
+                leaf red_min_threshold {
+                    type uint64;
+                }
+
+                leaf yellow_max_threshold {
+                    type uint64;
+                    must "(/cmn:operation/cmn:operation = 'DELETE') or (current() >= current()/../yellow_min_threshold)" {
+                        error-message "Yellow max threshold must be greater than or equal to min threshold";
+                    }
+                }
+
+                leaf green_max_threshold {
+                    type uint64;
+                    must "(/cmn:operation/cmn:operation = 'DELETE') or (current() >= current()/../green_min_threshold)" {
+                        error-message "Green max threshold must be greater than or equal to min threshold";
+                    }
+                }
+
+                leaf red_max_threshold {
+                    type uint64;
+                    must "(/cmn:operation/cmn:operation = 'DELETE') or (current() >= current()/../red_min_threshold)" {
+                        error-message "Red max threshold must be greater than or equal to min threshold";
+                    }
+                }
+
+                leaf ecn {
+                    type enumeration {
+                        enum ecn_none;
+                        enum ecn_green;
+                        enum ecn_yellow;
+                        enum ecn_red;
+                        enum ecn_green_yellow;
+                        enum ecn_green_red;
+                        enum ecn_yellow_red; 
+                        enum ecn_all;
+                    }
+                }
+
+                leaf wred_green_enable {
+                    type boolean;
+                }
+
+                leaf wred_yellow_enable {
+                    type boolean;
+                }
+
+                leaf wred_red_enable {
+                    type boolean;
+                }
+
+                leaf yellow_drop_probability {
+                    type uint64;
+                }
+
+                leaf green_drop_probability {
+                    type uint64;
+                }
+
+                leaf red_drop_probability {
+                    type uint64;
+                }
+
+            }
+        }
+    }
+}

@@ -1,0 +1,50 @@
+module sonic-buffer-pool {
+    namespace "http://github.com/Azure/sonic-buffer-pool";
+    prefix bpf;
+
+    organization
+        "SONiC";
+
+    contact
+        "SONiC";
+
+    description
+        "SONIC BUFFER POOL";
+
+    revision 2025-01-22 {
+        description
+            "Initial revision.";
+    }
+
+
+    container sonic-buffer-pool {
+
+        container BUFFER_POOL {
+
+            list BUFFER_POOL_LIST {
+                key "name";
+
+                leaf name {
+                    type string;
+                }
+
+                leaf mode {
+                    type string;
+                }
+
+                leaf size {
+                    type uint64;
+                }
+
+                leaf type {
+                    type string;
+                }
+
+                leaf xoff {
+                    type uint64;
+                }
+
+            }
+        }
+    }
+}

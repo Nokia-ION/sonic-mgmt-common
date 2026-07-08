@@ -1,0 +1,250 @@
+module sonic-port-qos-map {
+    namespace "http://github.com/Azure/sonic-port-qos-map";
+    prefix pqm;
+    yang-version 1.1;
+
+    import sonic-extension {
+        prefix sonic-ext;
+    }
+
+    import sonic-port {
+        prefix prt;
+    }
+
+    import sonic-portchannel {
+        prefix prtc;
+    }
+
+    //import sonic-vlan {
+    //    prefix svlan;
+    //}
+
+    import sonic-tc-priority-group-map {
+        prefix tpg;
+    }
+
+    import sonic-tc-queue-map {
+        prefix tqm;
+    }
+
+    import sonic-tc-uc-mc-queue-map {
+        prefix tumqm;
+    }
+
+    import sonic-pfc-priority-queue-map {
+       prefix ppq;
+    }
+
+    import sonic-dscp-tc-map {
+        prefix dtm;
+    }
+
+    import sonic-dot1p-tc-map {
+        prefix dot1ptm;
+    }
+
+    import sonic-tc-dscp-map {
+        prefix tcdscpm;
+    }
+
+    import sonic-tc-dot1p-map {
+        prefix tcdot1pm;
+    }
+
+    import sonic-scheduler {
+        prefix sch;
+    }
+
+    import sonic-interface {
+        prefix sint;
+    }
+
+    organization
+        "SONiC";
+
+    contact
+        "SONiC";
+
+    description
+        "SONIC PORT_QOS_MAP";
+
+    revision 2019-05-15 {
+        description
+            "Initial revision.";
+    }
+
+    container sonic-port-qos-map {
+
+        container PORT_QOS_MAP {
+            list PORT_QOS_MAP_LIST {
+                key "ifname";
+                sonic-ext:key-pattern "PORT_QOS_MAP|{ifname}"; //special pattern used for extracting keys from redis-key and fill populate the yang instance
+                // Total list instance = number(key1) * number(key2) * number(key3)
+
+                leaf ifname {
+                    type union {
+                        type leafref {
+                            path "/prt:sonic-port/prt:PORT/prt:PORT_LIST/prt:ifname";
+                        }
+                        type leafref {
+                            path "/prtc:sonic-portchannel/prtc:PORTCHANNEL/prtc:PORTCHANNEL_LIST/prtc:name";
+                        }
+                        //type leafref {
+                        //    path "/svlan:sonic-vlan/svlan:VLAN/svlan:VLAN_LIST/svlan:name";
+                        //}
+                        //type leafref {
+                        //    path "/sint:sonic-interface/sint:VLAN_SUB_INTERFACE/sint:VLAN_SUB_INTERFACE_LIST/sint:id";
+                        //}
+                        type string {
+                           pattern "CPU";
+                        }
+                    }
+                }
+
+                leaf tc_to_pg_map {
+                    must "(starts-with(current()/../ifname, 'Eth')) or "+
+                         "(starts-with(current()/../ifname, 'CPU'))"
+                    {
+                        error-message "TC to Priority-Group Map is allowed on Ethernet interface only";
+                        error-app-tag invalid-tc-pg-map-ifname;
+                    }
+                    type leafref {
+                        path "/tpg:sonic-tc-priority-group-map/tpg:TC_TO_PRIORITY_GROUP_MAP/tpg:TC_TO_PRIORITY_GROUP_MAP_LIST/tpg:name";
+                    }
+                }
+
+                leaf tc_to_queue_map {
+                    must "(starts-with(current()/../ifname, 'Eth')) or "+
+                         "(starts-with(current()/../ifname, 'CPU'))"
+                    {
+                        error-message "TC to Queue Map is allowed on Ethernet interface only";
+                        error-app-tag invalid-tc-q-map-ifname;
+                    }
+                    type leafref {
+                        path "/tqm:sonic-tc-queue-map/tqm:TC_TO_QUEUE_MAP/tqm:TC_TO_QUEUE_MAP_LIST/tqm:name";
+                    }
+                }
+
+                leaf tc_to_uc_mc_queue_map {
+                    must "(starts-with(current()/../ifname, 'Eth')) or "+
+                         "(starts-with(current()/../ifname, 'CPU'))"
+                    {
+                        error-message "TC to Queue Map is allowed on Ethernet interface only";
+                        error-app-tag invalid-tc-q-map-ifname;
+                    }
+                    type leafref {
+                        path "/tumqm:sonic-tc-uc-mc-queue-map/tumqm:TC_TO_UC_MC_QUEUE_MAP/tumqm:TC_TO_UC_MC_QUEUE_MAP_LIST/tumqm:name";
+                    }
+                }
+
+                leaf-list pfc_enable {
+                    type string;
+                    description
+                        "A comma-separated leaf-list that represents the PFC Tx priorities to be enabled or disabled.
+                        For example, to enable PFC priorities 3 and 4, pfc_enable should be \"3,4\".
+                        To disable PFC Tx, pfc_enable should be set to whitespace \" \"";
+                }
+
+                leaf-list pfc_rx {
+                    type string;
+                    description
+                        "A comma-separated leaf-list that represents the PFC Rx priorities to be enabled or disabled.
+                        For example, to enable PFC priorities 3 and 4, pfc_rx should be \"3,4\".
+                        To disable PFC Rx, pfc_rx should be set to whitespace \" \"";
+                }
+
+                leaf-list pfcwd_sw_enable {
+                    type string;
+                    description
+                        "A comma-separated leaf-list that represents the priorities on which PFC SW watchdog should be enabled or disabled.
+                        For example, to enable PFC SW WD on priorities 3 and 4, pfcwd_sw_enable should be \"3,4\".
+                        To disable PFC SW WD, pfcwd_sw_enable should be set to whitespace \" \"";
+                }
+
+                leaf-list pfcwd_hw_enable {
+                    type string;
+                    description
+                        "A comma-separated leaf-list that represents the priorities on which PFC HW watchdog should be enabled or disabled.
+                        For example, to enable PFC HW WD on priorities 3 and 4, pfcwd_hw_enable should be \"3,4\".
+                        To disable PFC HW WD, pfcwd_hw_enable should be set to whitespace \" \"";
+                }
+
+                leaf pfc_to_queue_map {
+                    must "(starts-with(current()/../ifname, 'Eth')) or "+
+                         "(starts-with(current()/../ifname, 'CPU'))"
+                    {
+                        error-message "PFC to Queue Map is allowed on Ethernet interface only";
+                        error-app-tag invalid-pfc-q-map-ifname;
+                    }
+                    type leafref {
+                        path "/ppq:sonic-pfc-priority-queue-map/ppq:MAP_PFC_PRIORITY_TO_QUEUE/ppq:MAP_PFC_PRIORITY_TO_QUEUE_LIST/ppq:name";
+                    }
+                }
+
+                leaf dscp_to_tc_map {
+                    must "(starts-with(current()/../ifname, 'Eth')) or "+
+                         "(starts-with(current()/../ifname, 'Po')) or "+
+                         "(starts-with(current()/../ifname, 'Vlan')) or "+
+                         "(starts-with(current()/../ifname, 'CPU'))"
+                    {
+                        error-message "DSCP to TC Map is allowed on Ethernet/PortChannel/Vlan/CPU interface only";
+                        error-app-tag invalid-dscp-tc-map-ifname;
+                    }
+                    type leafref {
+                        path "/dtm:sonic-dscp-tc-map/dtm:DSCP_TO_TC_MAP/dtm:DSCP_TO_TC_MAP_LIST/dtm:name";
+                    }
+                }
+
+                leaf dot1p_to_tc_map {
+                    must "(starts-with(current()/../ifname, 'Eth')) or "+
+                         "(starts-with(current()/../ifname, 'Po'))"
+                    {
+                        error-message "DOT1P to TC Map is allowed on Ethernet/PortChannel interface only";
+                        error-app-tag invalid-dot1p-tc-map-ifname;
+                    }
+                    type leafref {
+                        path "/dot1ptm:sonic-dot1p-tc-map/dot1ptm:DOT1P_TO_TC_MAP/dot1ptm:DOT1P_TO_TC_MAP_LIST/dot1ptm:name";
+                    }
+                }
+
+                leaf tc_to_dscp_map {
+                    must "(starts-with(current()/../ifname, 'Eth')) or "+
+                         "(starts-with(current()/../ifname, 'Po')) or "+
+                         "(starts-with(current()/../ifname, 'Vlan'))"
+                    {
+                        error-message "TC to DSCP Map is allowed on Ethernet/PortChannel/Vlan interface only";
+                        error-app-tag invalid-tc-dscp-map-ifname;
+                    }
+                        type leafref {
+                            path
+                            "/tcdscpm:sonic-tc-dscp-map/tcdscpm:TC_TO_DSCP_MAP/tcdscpm:TC_TO_DSCP_MAP_LIST/tcdscpm:name";
+                    }
+                }
+
+                leaf tc_to_dot1p_map {
+                    must "(starts-with(current()/../ifname, 'Eth')) or "+
+                         "(starts-with(current()/../ifname, 'Po'))"
+                    {
+                        error-message "TC to Dot1p Map is allowed on Ethernet/PortChannel interface only";
+                        error-app-tag invalid-tc-dot1p-map-ifname;
+                    }
+                        type leafref {
+                            path "/tcdot1pm:sonic-tc-dot1p-map/tcdot1pm:TC_TO_DOT1P_MAP/tcdot1pm:TC_TO_DOT1P_MAP_LIST/tcdot1pm:name";
+                    }
+                }
+
+                leaf scheduler {
+                    must "(starts-with(current()/../ifname, 'Eth')) or "+
+                         "(starts-with(current()/../ifname, 'CPU'))"
+                    {
+                        error-message "Scheduler is allowed on Ethernet interface only";
+                        error-app-tag invalid-scheduler-ifname;
+                    }
+                    type leafref {
+                        path "/sch:sonic-scheduler/sch:SCHEDULER/sch:SCHEDULER_LIST/sch:name";
+                    }
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,39 @@
+module sonic-qos-umf-classifier {
+    namespace "http://github.com/Azure/sonic-qos-umf-classfier-group";
+    prefix dtm;
+
+    organization
+        "SONiC";
+
+    contact
+        "SONiC";
+
+    description
+        "SONIC QOS_UMF_CLASSIFIER";
+
+    revision 2021-04-21 {
+        description
+        "Initial revision.";
+    }
+
+    container sonic-qos-umf-classifier {
+        container QOS_UMF_CLASSIFIER {
+            list QOS_UMF_CLASSIFIER_LIST {
+                key "name";
+                description
+                  "List of classifiers";
+
+                leaf name {
+                    type string;
+                }
+
+                leaf type {
+                    type enumeration {
+                        enum ipv4;
+                        enum ipv6;
+                    }
+                }
+            }
+        }
+    }
+}

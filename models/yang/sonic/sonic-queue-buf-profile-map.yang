@@ -1,0 +1,49 @@
+module sonic-queue-buf-profile-map {
+    namespace "http://github.com/Azure/sonic-queue-buf-profile-map";
+    prefix qnim;
+
+    import sonic-extension {
+        prefix sonic-ext;
+    }
+
+    organization
+        "SONiC";
+
+    contact
+        "SONiC";
+
+    description
+        "UMF bookkeeping table that maps a buffer-allocation-profile's queues their assigned BUFFER_PROFILE";
+
+    revision 2023-10-06 {
+        description
+            "Initial revision.";
+    }
+
+    container sonic-queue-buf-profile-map {
+
+        container QUEUE_TO_BUF_PROFILE_MAP {
+
+            list QUEUE_TO_BUF_PROFILE_MAP_LIST {
+                key "name";
+                // every key:value pair is mapped to list keys, e.g. "NC1":"buf-aloc-prof1.0.s100" ==> qname=NC1, buffer-profile=buf-aloc-prof1.0.s100
+
+                leaf name {
+                    type string;
+                }
+
+                list QUEUE_TO_BUF_PROFILE_MAP { // this is list inside list for storing mapping between two fields
+                    key "qname";
+
+                    leaf qname {
+                        type string;
+                    }
+
+                    leaf buffer-profile {
+                        type string;
+                    }
+                }
+            }
+        }
+    }
+}
