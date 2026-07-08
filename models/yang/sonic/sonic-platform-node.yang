@@ -1,0 +1,111 @@
+module sonic-platform-node {
+    namespace "http://github.com/Azure/sonic-platform-node";
+    prefix pfm-node;
+
+    import sonic-extension {
+        prefix sonic-ext;
+    }
+
+    organization
+        "SONiC";
+
+    contact
+        "SONiC";
+
+    description
+        "SONIC PLATFORM NODE";
+
+    revision 2025-08-07 {
+        description
+            "Add HST/CSIG support.";
+    }
+
+    revision 2020-11-23 {
+        description
+            "Initial revision.";
+    }
+
+    container sonic-platform-node {
+
+        container NODE_CFG {
+
+            sonic-ext:db-name "CONFIG_DB";
+            list NODE_CFG_LIST {
+                key "nodename";
+
+                leaf nodename {
+                    type string;
+                }
+
+                leaf name {
+                    type string;
+                }
+
+                leaf node-id {
+                    type uint64;
+                }
+                leaf fully-qualified-name {
+                    type string;
+                }
+            }
+        }
+
+        container NODE_INFO {
+
+            sonic-ext:db-name "STATE_DB";
+            sonic-ext:key-delim "|";
+            config false;
+            list NODE_INFO_LIST {
+                key "nodename";
+
+                leaf nodename {
+                    type string;
+                }
+
+                leaf name {
+                    type leafref {
+                        path "/pfm-node:sonic-platform-node/pfm-node:NODE_CFG/pfm-node:NODE_CFG_LIST/pfm-node:name";
+                    }
+                }
+
+                leaf parent {
+                    type leafref {
+                        path "/pfm-node:sonic-platform-node/pfm-node:NODE_CFG/pfm-node:NODE_CFG_LIST/pfm-node:name";
+                    }
+                }
+
+                leaf node-id {
+                    type uint64;
+                }
+                leaf fully-qualified-name {
+                    type string;
+                }
+            }
+        }
+
+        container HST_CONFIG {
+            sonic-ext:db-name "CONFIG_DB";
+            list HST_CONFIG_LIST {
+                key name;
+
+                leaf name {
+                    type string {
+                        pattern "GLOBAL";
+                    }
+                }
+
+                leaf CSIG_SUPPORTED {
+                    type string {
+                        pattern "none|hw_assist|sw_assist";
+                    }
+                }
+
+                leaf CSIG_STAGE {
+                    type string {
+                        pattern "tor|mb_s2|mb_s3|fbr_s2|fbr_s3";
+                    }
+                }
+            }
+        }
+    }
+}

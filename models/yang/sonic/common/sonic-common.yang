@@ -39,6 +39,29 @@ module sonic-common {
 		}
 	}
 
+	typedef comp-oper-status {
+		type enumeration {
+			enum active;
+			enum inactive;
+			enum disabled;
+		}
+	}
+
+	typedef fec-mode {
+		type enumeration {
+			enum rs;
+			enum rs528;
+			enum rs544;
+			enum rs544-interleaved;
+			enum rs544-low-latency;
+			enum rs544-interleaved-cl172;
+			enum rs544-interleaved-etc;
+			enum fc;
+			enum none;
+			enum default;
+		}
+	}
+
 
 	container operation {
 		description "This definition is used internally by CVL and 

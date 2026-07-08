@@ -22,6 +22,7 @@ package custom_validation
 import (
 	"fmt"
 	"reflect"
+	"sync"
 
 	"github.com/Azure/sonic-mgmt-common/cvl/common"
 	"github.com/Azure/sonic-mgmt-common/cvl/internal/util"
@@ -160,4 +161,25 @@ func (vc *CustValidationCtxt) ContainsAnyFields(fields ...string) bool {
 		}
 	}
 	return false
+}
+
+var (
+	// refCountCheckFailed indicates the status of the latest ref count check.
+	refCountCheckFailed bool
+	// Mutex for setting refCountCheckFailed
+	refCountMutex sync.Mutex
+)
+
+// SetRefCountCheckStatus is used by the server and transformer to update the status of the ref count check.
+func SetRefCountCheckStatus(val bool) {
+	refCountMutex.Lock()
+	defer refCountMutex.Unlock()
+	refCountCheckFailed = val
+}
+
+// FetchRefCountCheckStatus is used by the server to get the status of the latest ref count check.
+func FetchRefCountCheckStatus() bool {
+	refCountMutex.Lock()
+	defer refCountMutex.Unlock()
+	return refCountCheckFailed
 }

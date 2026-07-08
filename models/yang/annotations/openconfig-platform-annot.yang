@@ -1,19 +1,32 @@
 module openconfig-platform-annot {
-  yang-version 1;
-  namespace "http://openconfig.net/yang/platform-annot";
-  prefix oc-platform-annot;
 
-  import openconfig-platform {
-    prefix oc-platform;
-  }
-  import sonic-extensions {
-    prefix sonic-ext;
-  }
+    yang-version "1";
+    namespace "http://openconfig.net/yang/platform-annot";
+    prefix "oc-platform-annot";
 
-  deviation "/oc-platform:components/oc-platform:component" {
-    deviate add {
-      sonic-ext:subtree-transformer "pfm_components_xfmr";
-      sonic-ext:path-transformer "pfm_components_path_xfmr";
+    import openconfig-platform { prefix oc-platform; }
+    import openconfig-platform-healthz { prefix oc-healthz; }
+    import openconfig-platform-healthz-fault { prefix oc-fault; }
+    import openconfig-platform-port { prefix oc-port; }
+    import sonic-extensions { prefix sonic-ext; }
+
+    deviation /oc-platform:components/oc-platform:component {
+      deviate add {
+        sonic-ext:subtree-transformer "pfm_components_xfmr";
+        sonic-ext:path-transformer "pfm_components_path_xfmr";
+      }
     }
-  }
+
+    deviation /oc-platform:components/oc-platform:component/oc-healthz:healthz/oc-fault:faults/oc-fault:fault{
+      deviate add {
+        sonic-ext:db-name "STATE_DB";
+        sonic-ext:subtree-transformer "healthz_fault_xfmr";
+      }
+    }
+
+    deviation /oc-platform:components/oc-platform:component/oc-platform:port/oc-port:breakout-mode {
+      deviate add {
+        sonic-ext:subtree-transformer "port_breakout_subtree_xfmr";
+      }
+    }
 }
