@@ -32,6 +32,10 @@ openconfig-lacp-annot.yang
 sonic-portchannel.yang
 openconfig-lldp.yang
 openconfig-lldp-annot.yang
+openconfig-qos.yang
+openconfig-qos-annot.yang
+sonic-qos-fwd-group.yang
+sonic-qos-umf-classifier.yang
 gnsi-authz.yang
 gnsi-pathz.yang
 gnsi-certz.yang

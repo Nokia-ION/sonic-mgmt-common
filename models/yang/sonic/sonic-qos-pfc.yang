@@ -1,0 +1,212 @@
+module sonic-qos-pfc {
+  namespace "http://github.com/Azure/sonic-qos-pfc";
+  prefix sonic-qos-pfc;
+
+  yang-version 1.1;
+
+  import sonic-extension {
+      prefix sonic-ext;
+  }
+
+  import sonic-port {
+      prefix prt;
+  }
+
+  organization
+      "SONiC";
+
+  contact
+      "SONiC";
+
+  description
+      "SONIC QoS Priority-based Flow Control";
+
+  revision 2020-07-16 {
+      description
+          "Initial revision.";
+  }
+
+/*
+ * RPCs
+*/
+    rpc rpc_clear_qos_pfc {
+        description "RPC for clearing interface PFC watchdog counters.";
+
+        input {
+            leaf interface-param {
+                type string;
+                    description
+                        "parameter for clearing counters - all or interface type(Ethernet/PortChannel) or interface name";
+                }
+        }
+        output {
+            leaf status {
+                type int32;
+                description
+                    "The status of the operation execution request.";
+            }
+            leaf status-detail {
+                type string;
+                description
+                    "The detailed status of the operation execution request.";
+            }
+        }
+    }
+
+  container sonic-qos-pfc {
+
+    container FLEX_COUNTER_TABLE {
+      description
+        "Flex Counter Table";
+      list FLEX_COUNTER_TABLE_LIST {
+        description
+          "Flex Counter Table List";
+        key "id";
+
+        leaf id {
+          description
+            "Key for Flex Counter Table";
+          type enumeration {
+            enum PFCWD;
+            enum PORT;
+            enum QUEUE;
+          }
+        }
+
+        leaf FLEX_COUNTER_STATUS {
+          type enumeration {
+            enum enable;
+            enum disable;
+          }
+          description
+            "Indication as to whether PFC Flex Counter is enabled or
+             disabled.";
+        }
+      }
+    }
+
+    container PFC_WD {
+      description "PFC software watchdog table";
+      sonic-ext:db-name "CONFIG_DB";
+      list PFC_WD_LIST {
+        key "ifname";
+
+        leaf ifname {
+          type union {
+            type leafref {
+                path "/prt:sonic-port/prt:PORT/prt:PORT_LIST/prt:ifname";
+            }
+            type string {
+                pattern "GLOBAL";
+            }
+          }
+        }
+
+        leaf action {
+          type enumeration {
+            enum drop;
+            enum forward;
+            enum alert;
+          }
+          description
+            "PFC watchdog action when entering storm state.";
+        }
+
+        leaf detection_time {
+          type uint32 {
+            range 10..5000;
+          }
+          description
+            "Detection interval for pause storm. (msec)";
+        }
+
+        leaf restoration_time {
+          type uint32 {
+            range 10..60000;
+          }
+          description
+            "Time delay before resuming normal PFC operation. (msec)";
+        }
+
+        leaf POLL_INTERVAL {
+          type uint32 {
+            range 10..3000;
+          }
+          description
+            "Priority-based Flow Control global watchdog polling
+             interval. (msec) This is a global value";
+        }
+
+        leaf type {
+          type enumeration {
+            enum software;
+          }
+          description
+            "PFC watchdog type.";
+        }
+      }
+    }
+
+    container PFC_HW_WD {
+      description "PFC hardware watchdog table";
+      sonic-ext:db-name "CONFIG_DB";
+      list PFC_HW_WD_LIST {
+        key "ifname";
+
+        leaf ifname {
+          type union {
+            type leafref {
+                path "/prt:sonic-port/prt:PORT/prt:PORT_LIST/prt:ifname";
+            }
+            type string {
+                pattern "GLOBAL";
+            }
+          }
+        }
+
+        leaf action {
+          type enumeration {
+            enum drop;
+            enum forward;
+            enum alert;
+          }
+          description
+            "PFC watchdog action when entering storm state. (msec)";
+        }
+
+        leaf detection_time {
+          type uint32 {
+            range 10..5000;
+          }
+          description
+            "Detection interval for pause storm. (msec)";
+        }
+
+        leaf restoration_time {
+          type uint32 {
+            range 10..60000;
+          }
+          description
+            "Time delay before resuming normal PFC operation. (msec)";
+        }
+
+        leaf POLL_INTERVAL {
+          type uint32 {
+            range 10..3000;
+          }
+          description
+            "Priority-based Flow Control global watchdog polling
+             interval. (msec) This is a global value";
+        }
+
+        leaf type {
+          type enumeration {
+            enum hardware;
+          }
+          description
+            "PFC watchdog type.";
+        }
+      }
+    }
+  }
+}
