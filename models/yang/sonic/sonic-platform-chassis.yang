@@ -1,0 +1,111 @@
+module sonic-platform-chassis {
+    namespace "http://github.com/Azure/sonic-platform-chassis";
+    prefix pfm-chassis;
+
+    import sonic-extension {
+        prefix sonic-ext;
+    }
+
+    import sonic-common {
+        prefix scommon;
+    }
+
+    organization
+        "SONiC";
+
+    contact
+        "SONiC";
+
+    description
+        "SONIC PLATFORM CHASSIS";
+
+    revision 2021-01-15 {
+        description
+            "Initial revision.";
+    }
+
+    container sonic-platform-chassis {
+
+        container CHASSIS_CFG {
+
+            sonic-ext:db-name "CONFIG_DB";
+            list CHASSIS_CFG_LIST {
+                key "cname";
+
+                leaf cname {
+                    type string;
+                }
+
+                leaf name {
+                    type string;
+                }
+                leaf fully-qualified-name {
+                    type string;
+                }
+                leaf enable_host_signaling {
+                    type boolean;
+                }
+            }
+        }
+
+        container CHASSIS_INFO {
+
+            sonic-ext:db-name "STATE_DB";
+            sonic-ext:key-delim "|";
+            config false;
+            list CHASSIS_INFO_LIST {
+                key "cname";
+
+                leaf cname {
+                    type string;
+                }
+
+                leaf name {
+                    type leafref {
+                        path "/pfm-chassis:sonic-platform-chassis/pfm-chassis:CHASSIS_CFG/pfm-chassis:CHASSIS_CFG_LIST/pfm-chassis:name";
+                    }
+                }
+
+                leaf firmware-version {
+                    type string;
+                }
+
+                leaf hardware-version {
+                    type string;
+                }
+
+                leaf mfg-date {
+                    type string;
+                }
+
+                leaf oper-status {
+                    type scommon:comp-oper-status;
+                }
+
+                leaf part-no {
+                    type string;
+                }
+
+                leaf serial-no {
+                    type string;
+                }
+                leaf fully-qualified-name {
+                    type string;
+                }
+                leaf platform {
+                    type enumeration {
+                        enum generic;
+                        enum switch1;
+                        enum torswitch1;
+                        enum alpinevs;
+                        enum switch4;
+                        enum switch2;
+                    }
+                }
+                leaf enable_host_signaling {
+                    type boolean;
+                }
+            }
+        }
+    }
+}
