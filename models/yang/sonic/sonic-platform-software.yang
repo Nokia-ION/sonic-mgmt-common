@@ -1,0 +1,55 @@
+module sonic-platform-software {
+    namespace "http://github.com/Azure/sonic-platform-software";
+    prefix pfm-software;
+
+    import sonic-extension {
+        prefix sonic-ext;
+    }
+
+    import sonic-common {
+        prefix scommon;
+    }
+
+    organization
+        "SONiC";
+
+    contact
+        "SONiC";
+
+    description
+        "SONIC PLATFORM SOFTWARE COMPONENTS";
+
+    revision 2021-01-27 {
+        description
+            "Initial revision.";
+    }
+
+    container sonic-platform-software {
+
+        container SW_COMP_INFO {
+
+            sonic-ext:db-name "STATE_DB";
+            sonic-ext:key-delim "|";
+            config false;
+            list SW_COMP_INFO_LIST {
+                key "cname";
+
+                leaf cname {
+                    type string;
+                }
+
+                leaf software-version {
+                    type string;
+                }
+
+                leaf parent {
+                    type string;
+                }
+
+                leaf oper-status {
+                    type scommon:comp-oper-status;
+                }
+            }
+        }
+    }
+}
