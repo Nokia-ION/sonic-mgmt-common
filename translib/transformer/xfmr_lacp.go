@@ -53,35 +53,6 @@ func init() {
 // removed from this file for the nokia-cpn port. The base openconfig-lacp model
 // does not include these fields.
 
-// string2Uint converts a string to uint64 pointer; returns dflt on parse failure.
-// Will be removed when xfmr_platform.go (which defines the exported String2Uint) is ported.
-func string2Uint(b string, dflt uint64) *uint64 {
-	v, err := strconv.ParseUint(b, 10, 64)
-	if err != nil {
-		if b != "" {
-			log.V(lvl.DEBUG).Infof("string conversion failure for %v; err = %v", b, err)
-		}
-		return &dflt
-	}
-	return &v
-}
-
-// updateSubOpDataMap merges sub-operation DB entries into the transformer params.
-// Will be removed when xfmr_port_breakout.go (which defines this function) is ported.
-func updateSubOpDataMap(subOpMap map[db.DBNum]map[string]map[string]db.Value, oper Operation, inParams XfmrParams) {
-	if len(subOpMap[db.ConfigDB]) == 0 {
-		return
-	}
-	if inParams.subOpDataMap[oper] == nil {
-		inParams.subOpDataMap[oper] = &subOpMap
-		return
-	}
-	if (*inParams.subOpDataMap[oper])[db.ConfigDB] == nil {
-		(*inParams.subOpDataMap[oper])[db.ConfigDB] = make(map[string]map[string]db.Value)
-	}
-	mapCopy((*inParams.subOpDataMap[oper])[db.ConfigDB], subOpMap[db.ConfigDB])
-}
-
 func getLacpRoot(s *ygot.GoStruct) *ocbinds.OpenconfigLacp_Lacp {
 	deviceObj := (*s).(*ocbinds.Device)
 	return deviceObj.Lacp
@@ -338,36 +309,36 @@ func _fillLacpMember(ifMemKey string, memberInfoMap map[string]db.Value,
 	system_id := memEntries.Field["system-id"]
 	lacpMemberObj.State.SystemId = &system_id
 
-	oper_key := *string2Uint(memEntries.Field["oper-key"], 0)
+	oper_key := *String2Uint(memEntries.Field["oper-key"], 0)
 	uoper_key := uint16(oper_key)
 	lacpMemberObj.State.OperKey = &uoper_key
 
 	partner_id := memEntries.Field["partner-id"]
 	lacpMemberObj.State.PartnerId = &partner_id
 
-	partner_key := *string2Uint(memEntries.Field["partner-key"], 0)
+	partner_key := *String2Uint(memEntries.Field["partner-key"], 0)
 	upartner_key := uint16(partner_key)
 	lacpMemberObj.State.PartnerKey = &upartner_key
 
 	pport_str, ok := memEntries.Field["partner-port"]
 	if ok {
-		partner_port := *string2Uint(pport_str, 0)
+		partner_port := *String2Uint(pport_str, 0)
 		upartner_port := uint16(partner_port)
 		lacpMemberObj.State.PartnerPortNum = &upartner_port
 	}
 
 	port_str, ok := memEntries.Field["port"]
 	if ok {
-		port := *string2Uint(port_str, 0)
+		port := *String2Uint(port_str, 0)
 		uport := uint16(port)
 		lacpMemberObj.State.PortNum = &uport
 	}
 
-	lacpMemberObj.State.Counters.LacpInPkts = string2Uint(memEntries.Field["lacp-in-pkts"], 0)
+	lacpMemberObj.State.Counters.LacpInPkts = String2Uint(memEntries.Field["lacp-in-pkts"], 0)
 
-	lacpMemberObj.State.Counters.LacpOutPkts = string2Uint(memEntries.Field["lacp-out-pkts"], 0)
+	lacpMemberObj.State.Counters.LacpOutPkts = String2Uint(memEntries.Field["lacp-out-pkts"], 0)
 
-	lacpMemberObj.State.Counters.LacpRxErrors = string2Uint(memEntries.Field["lacp-rx-errors"], 0)
+	lacpMemberObj.State.Counters.LacpRxErrors = String2Uint(memEntries.Field["lacp-rx-errors"], 0)
 
 	return nil
 }
