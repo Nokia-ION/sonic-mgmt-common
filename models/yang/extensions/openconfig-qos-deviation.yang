@@ -1,0 +1,51 @@
+module openconfig-qos-deviation {
+
+  yang-version "1";
+
+  // namespace
+  namespace "http://openconfig.net/yang/qos/deviation/extension";
+
+  prefix "oc-qos-dev";
+
+  // import some basic types
+  import openconfig-extensions { prefix oc-ext; }
+  import openconfig-qos { prefix oc-qos; }
+
+  organization
+    "SONiC";
+
+  contact
+    "SONiC";
+
+  description
+    "This module describes a YANG model for openconfig-qos deviations.";
+
+  oc-ext:openconfig-version "0.2.0";
+
+  revision "2025-09-23" {
+    description
+      "Updated interfaces level input subtrees; only the per interface input scheduler
+      policy is not supported.";
+    reference "0.2.0";
+  }
+
+  revision "2024-08-23" {
+    description
+      "Remove interfaces level input subtrees; only the per interface input classifier
+      is used (qos/interfaces/interface/input/classifiers).";
+    reference "0.1.0";
+  }
+
+  deviation /oc-qos:qos/oc-qos:interfaces/oc-qos:interface/oc-qos:input/oc-qos:scheduler-policy {
+    deviate not-supported;
+  }
+
+  deviation /oc-qos:qos/oc-qos:interfaces/oc-qos:interface/oc-qos:input/oc-qos:virtual-output-queues {
+    deviate not-supported;
+  }
+
+  deviation /oc-qos:qos/oc-qos:interfaces/oc-qos:interface/oc-qos:interface-ref {
+    deviate not-supported;
+  }
+
+}

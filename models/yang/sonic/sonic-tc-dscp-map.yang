@@ -1,0 +1,61 @@
+module sonic-tc-dscp-map {
+    namespace "http://github.com/Azure/sonic-tc-dscp-map";
+    prefix tcdscpm;
+    yang-version 1.1;
+
+    import sonic-extension {
+        prefix sonic-ext;
+    }
+
+    organization
+        "SONiC";
+
+    contact
+        "SONiC";
+
+    description
+        "SONIC TC_TO_DSCP_MAP";
+
+    revision 2019-05-15 {
+        description
+            "Initial revision.";
+    }
+
+    container sonic-tc-dscp-map {	
+
+        container TC_TO_DSCP_MAP {
+
+            list TC_TO_DSCP_MAP_LIST {
+                key "name";
+                //every key:value pair is mapped to list keys, e.g. "1":"7" ==> tc=1, dscp=7
+
+                leaf name {
+                    type string {
+                        pattern '[a-zA-Z0-9]{1}([-a-zA-Z0-9_]{0,31})';
+                        length 1..32;
+                    }
+                }
+
+                list TC_TO_DSCP_MAP { //this is list inside list for storing mapping between two fields
+                    key "tc";
+
+                    leaf tc {
+                        type string {
+                            pattern "[0-9]?";
+                        }
+                    }
+
+                    leaf dscp {
+                        type string {
+                            pattern "([0-9]|[1-5][0-9]|6[0-3])?" {
+                                error-message "Invalid DSCP priority";
+                                error-app-tag dscp-invalid;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+

@@ -1,0 +1,66 @@
+module sonic-qos-fwd-group {
+    namespace "http://github.com/Azure/sonic-qos-fwd-group";
+    prefix dtm;
+
+    // import sonic-extension {
+    //     prefix sonic-ext;
+    // }
+
+    organization
+        "SONiC";
+
+    contact
+        "SONiC";
+
+    description
+        "SONIC QOS_FWD_GROUP";
+
+    revision 2021-04-21 {
+        description
+        "Initial revision.";
+    }
+
+    container sonic-qos-fwd-group {
+
+        container QOS_FWD_GROUP {
+
+            list QOS_FWD_GROUP_LIST {
+                key "name";
+                description
+                  "List of forwarding groups.  Forwarding groups are
+                  logical groups of traffic that will receive common
+                  forwarding treatment.";
+
+                leaf name {
+                    type string;
+                }
+                leaf priority {
+                    type string {
+                        pattern "[0-9]?"{
+                            error-message "Invalid priority";
+                        }
+                    }
+                }
+                leaf pins_pfc_priority {
+                    type uint8;
+                    description
+                      "PFC priority enabled for each traffic class";
+                }
+                leaf pins_priority_group {
+                    type string;
+                    description
+                      "Priority group (or input queue) associated with each traffic class. Priority groups are defined in /qos/interfaces/interface/input/queues/ and UMF_INGRESS_QUEUE";
+                }
+                leaf queue {
+                    type string;
+                }
+                leaf ucast_queue {
+                    type string;
+                }
+                leaf mcast_queue {
+                    type string;
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,61 @@
+module sonic-tc-dot1p-map {
+    namespace "http://github.com/Azure/sonic-tc-dot1p-map";
+    prefix tcdot1pm;
+    yang-version 1.1;
+
+    import sonic-extension {
+        prefix sonic-ext;
+    }
+
+    organization
+        "SONiC";
+
+    contact
+        "SONiC";
+
+    description
+        "SONIC TC_TO_DOT1P_MAP";
+
+    revision 2019-05-15 {
+        description
+            "Initial revision.";
+    }
+
+    container sonic-tc-dot1p-map {	
+
+        container TC_TO_DOT1P_MAP {
+
+            list TC_TO_DOT1P_MAP_LIST {
+                key "name";
+                //every key:value pair is mapped to list keys, e.g. "1":"7" ==> tc=1, dot1p=7
+
+                leaf name {
+                    type string {
+                        pattern '[a-zA-Z0-9]{1}([-a-zA-Z0-9_]{0,31})';
+                        length 1..32;
+                    }
+                }
+
+                list TC_TO_DOT1P_MAP { //this is list inside list for storing mapping between two fields
+                    key "tc";
+
+                    leaf tc {
+                        type string {
+                            pattern "[0-9]?";
+                        }
+                    }
+
+                    leaf dot1p {
+                        type string {
+                            pattern "[0-7]?" {
+                                error-message "Invalid DOT1P priority";
+                                error-app-tag dot1p-invalid;
+                            }
+                        }
+                    }
+
+                }
+            }
+        }
+    }
+}
