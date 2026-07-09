@@ -6,9 +6,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/Azure/sonic-mgmt-common/translib/db"
+	lvl "github.com/Azure/sonic-mgmt-common/translib/log"
 	"github.com/Azure/sonic-mgmt-common/translib/ocbinds"
 	"github.com/Azure/sonic-mgmt-common/translib/tlerr"
 	log "github.com/golang/glog"
@@ -21,6 +23,12 @@ const (
 	READS_SUB = "subscribe"
 	WRITES    = "set"
 	GNXI_ID   = "gnxi"
+
+	MEMORY_TBL  = "MEMORY_STATS"
+	CPU_TBL     = "CPU_STATS"
+	PROC_TBL    = "PROCESS_STATS"
+	LOGGING_TBL = "SYSLOG_SERVER"
+	systemKey   = "system"
 
 	/** Credential Tables **/
 	CREDENTIALS_TBL = "CREDENTIALS"
@@ -71,6 +79,57 @@ const (
 	SSH_TBL                       = "CREDENTIALS|SSH_HOST"
 )
 
+type SysMem struct {
+	Total                  uint64
+	Used                   uint64
+	Free                   uint64
+	TotalEccErrors         uint64
+	CorrectableEccErrors   uint64
+	UncorrectableEccErrors uint64
+}
+
+type timeStat struct {
+	avg      uint8
+	interval uint64
+}
+
+type Cpu struct {
+	User   int64
+	System int64
+	Idle   int64
+	Total  timeStat
+}
+
+type CpuState struct {
+	user   uint8
+	system uint8
+	idle   uint8
+}
+
+type Proc struct {
+	Cmd      string
+	Start    uint64
+	User     float64
+	System   float64
+	Mem      uint64
+	Cputil   float64
+	Memutil  float64
+	MemLimit *uint64
+}
+
+type ProcessState struct {
+	Args              []string
+	CpuUsageSystem    uint64
+	CpuUsageUser      uint64
+	CpuUtilization    uint8
+	MemoryLimit       *uint64
+	MemoryUsage       uint64
+	MemoryUtilization uint8
+	Name              string
+	Pid               uint64
+	StartTime         uint64
+}
+
 type sshState struct {
 	caKeys   certData
 	hostCert certData
@@ -120,6 +179,15 @@ func init() {
 	XlateFuncBind("DbToYang_pathz_policies_key_xfmr", DbToYang_pathz_policies_key_xfmr)
 	XlateFuncBind("DbToYang_console_counters_xfmr", DbToYang_console_counters_xfmr)
 	XlateFuncBind("Subscribe_console_counters_xfmr", Subscribe_console_counters_xfmr)
+	XlateFuncBind("Subscribe_sys_memory_xfmr", Subscribe_sys_memory_xfmr)
+	XlateFuncBind("DbToYang_sys_memory_xfmr", DbToYang_sys_memory_xfmr)
+	XlateFuncBind("DbToYang_sys_cpus_xfmr", DbToYang_sys_cpus_xfmr)
+	XlateFuncBind("Subscribe_sys_cpus_xfmr", Subscribe_sys_cpus_xfmr)
+	XlateFuncBind("DbToYang_sys_procs_xfmr", DbToYang_sys_procs_xfmr)
+	XlateFuncBind("Subscribe_sys_procs_xfmr", Subscribe_sys_procs_xfmr)
+	XlateFuncBind("YangToDb_syslog_server_ip_fld_xfmr", YangToDb_syslog_server_ip_fld_xfmr)
+	XlateFuncBind("DbToYang_syslog_server_ip_fld_xfmr", DbToYang_syslog_server_ip_fld_xfmr)
+	XlateFuncBind("DbToYangPath_remote_server_path_xfmr", DbToYangPath_remote_server_path_xfmr)
 }
 
 type grpcState struct {
@@ -933,4 +1001,435 @@ var Subscribe_console_counters_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSub
 		onChange: OnchangeEnable,
 		nOpts:    &notificationOpts{mInterval: 0, pType: OnChange},
 	}, nil
+}
+
+var Subscribe_sys_memory_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSubscInParams) (XfmrSubscOutParams, error) {
+	result := XfmrSubscOutParams{
+		dbDataMap: RedisDbSubscribeMap{
+			db.StateDB: {"MEMORY_STATS": {"system": {}}}},
+		onChange: OnchangeDisable,
+	}
+	log.V(lvl.DEBUG).Infof("Subscribe_sys_memory_xfmr: %s", inParams.requestURI)
+
+	return result, nil
+}
+
+func getSysMemFromDb(d *db.DB) (*SysMem, error) {
+	var err error
+
+	memInfo := SysMem{}
+	memEntry, err := d.GetEntry(&db.TableSpec{Name: MEMORY_TBL}, db.Key{Comp: []string{systemKey}})
+	if err != nil {
+		log.V(lvl.DEBUG).Infof("Can't get entry with key: %v err: %v", systemKey, err)
+		return &memInfo, err
+	}
+	var errs []string
+	if memInfo.Total, err = strconv.ParseUint(memEntry.Get("total"), 10, 64); err != nil {
+		msg := fmt.Sprintf("total: %s", err.Error())
+		log.V(lvl.DEBUG).Info(msg)
+		errs = append(errs, msg)
+	}
+	if memInfo.Used, err = strconv.ParseUint(memEntry.Get("used"), 10, 64); err != nil {
+		msg := fmt.Sprintf("used: %s", err.Error())
+		log.V(lvl.DEBUG).Info(msg)
+		errs = append(errs, msg)
+	}
+	if memInfo.Free, err = strconv.ParseUint(memEntry.Get("free"), 10, 64); err != nil {
+		msg := fmt.Sprintf("free: %s", err.Error())
+		log.V(lvl.DEBUG).Info(msg)
+		errs = append(errs, msg)
+	}
+	if memInfo.TotalEccErrors, err = strconv.ParseUint(memEntry.Get("total-ecc-errors"), 10, 64); err != nil {
+		msg := fmt.Sprintf("total-ecc-errors: %s", err.Error())
+		log.V(lvl.DEBUG).Info(msg)
+		errs = append(errs, msg)
+	}
+	if memInfo.CorrectableEccErrors, err = strconv.ParseUint(memEntry.Get("correctable-ecc-errors"), 10, 64); err != nil {
+		msg := fmt.Sprintf("correctable-ecc-errors: %s", err.Error())
+		log.V(lvl.DEBUG).Info(msg)
+		errs = append(errs, msg)
+	}
+	if memInfo.UncorrectableEccErrors, err = strconv.ParseUint(memEntry.Get("uncorrectable-ecc-errors"), 10, 64); err != nil {
+		msg := fmt.Sprintf("uncorrectable-ecc-errors: %s", err.Error())
+		log.V(lvl.DEBUG).Info(msg)
+		errs = append(errs, msg)
+	}
+	err = nil
+	if len(errs) > 0 {
+		err = fmt.Errorf(strings.Join(errs, "; "))
+	}
+	return &memInfo, err
+}
+
+func getSystemMemory(meminfo *SysMem, sysmem *ocbinds.OpenconfigSystem_System_Memory_State) {
+	log.V(lvl.DEBUG).Infof("getSystemMemory Entry")
+	sysmem.Physical = &meminfo.Total
+	sysmem.Reserved = &meminfo.Used
+	sysmem.Used = &meminfo.Used
+	sysmem.Free = &meminfo.Free
+	sysmem.Counters.TotalEccErrors = &meminfo.TotalEccErrors
+	sysmem.Counters.CorrectableEccErrors = &meminfo.CorrectableEccErrors
+	sysmem.Counters.UncorrectableEccErrors = &meminfo.UncorrectableEccErrors
+}
+
+var DbToYang_sys_memory_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) error {
+	var err error
+	log.V(lvl.DEBUG).Infof("DbToYang_sys_memory_xfmr called")
+	sysObj := getAppRootObject(inParams)
+	meminfo, err := getSysMemFromDb(inParams.dbs[db.StateDB])
+	if err != nil {
+		log.V(lvl.DEBUG).Infof("getSysMemFromDb failed")
+		return err
+	}
+	ygot.BuildEmptyTree(sysObj)
+	if sysObj.Memory == nil {
+		ygot.BuildEmptyTree(sysObj.Memory)
+	}
+	sysObj.Memory.State = &ocbinds.OpenconfigSystem_System_Memory_State{}
+	sysObj.Memory.State.Counters = &ocbinds.OpenconfigSystem_System_Memory_State_Counters{}
+	getSystemMemory(meminfo, sysObj.Memory.State)
+	return err
+}
+
+func getSystemCpu(idx int, cpuCnt int, cpu Cpu, syscpu *ocbinds.OpenconfigSystem_System_Cpus_Cpu) {
+	log.V(lvl.DEBUG).Info("getSystemCpu Entry idx ", idx)
+
+	sysinfo := syscall.Sysinfo_t{}
+	sys_err := syscall.Sysinfo(&sysinfo)
+	if sys_err != nil {
+		log.V(lvl.DEBUG).Infof("syscall.Sysinfo failed.")
+	}
+	var cpucur CpuState
+	if idx == 0 && cpuCnt > 0 {
+		cpucur.user = uint8((cpu.User / int64(cpuCnt)) / sysinfo.Uptime)
+		cpucur.system = uint8((cpu.System / int64(cpuCnt)) / sysinfo.Uptime)
+		cpucur.idle = uint8((cpu.Idle / int64(cpuCnt)) / sysinfo.Uptime)
+	} else {
+		cpucur.user = uint8(cpu.User / sysinfo.Uptime)
+		cpucur.system = uint8(cpu.System / sysinfo.Uptime)
+		cpucur.idle = uint8(cpu.Idle / sysinfo.Uptime)
+	}
+
+	ygot.BuildEmptyTree(syscpu.State)
+	syscpu.State.User.Instant = &cpucur.user
+	syscpu.State.Kernel.Instant = &cpucur.system
+	syscpu.State.Idle.Instant = &cpucur.idle
+	syscpu.State.Total.Avg = &cpu.Total.avg
+	syscpu.State.Total.Interval = &cpu.Total.interval
+}
+
+func getSystemCpus(cpus map[int]*Cpu, syscpus *ocbinds.OpenconfigSystem_System_Cpus) {
+	log.V(lvl.DEBUG).Info("getSystemCpus Entry")
+
+	sysinfo := syscall.Sysinfo_t{}
+	sys_err := syscall.Sysinfo(&sysinfo)
+	cpuCnt := len(cpus) - 1
+	if sys_err != nil {
+		log.V(lvl.DEBUG).Info("syscall.Sysinfo failed.")
+	}
+
+	for idx, cpu := range cpus {
+		var index ocbinds.OpenconfigSystem_System_Cpus_Cpu_State_Index_Union_Uint32
+		index.Uint32 = uint32(idx)
+		syscpu, err := syscpus.NewCpu(&index)
+		if err != nil {
+			log.V(lvl.DEBUG).Info("syscpus.NewCpu failed")
+			return
+		}
+		ygot.BuildEmptyTree(syscpu)
+		syscpu.Index = &index
+		getSystemCpu(idx, cpuCnt, *cpu, syscpu)
+	}
+}
+
+func getCpusFromDb(d *db.DB) (map[int]*Cpu, error) {
+	var err error
+
+	cpuTbl, err := d.GetTable(&db.TableSpec{Name: CPU_TBL})
+	if err != nil {
+		log.V(lvl.DEBUG).Info("Can't get table: ", CPU_TBL)
+		return nil, err
+	}
+
+	keys, err := cpuTbl.GetKeys()
+	if err != nil {
+		log.V(lvl.DEBUG).Info("Can't get CPU keys from table")
+		return nil, err
+	}
+
+	cpus := make(map[int]*Cpu)
+	for _, key := range keys {
+		if len(key.Comp) == 0 {
+			continue
+		}
+		idx, err := strconv.Atoi(key.Comp[0])
+		if err != nil {
+			log.V(lvl.DEBUG).Infof("Invalid CPU stat key: %v", key)
+			continue
+		}
+		cpuEntry, err := cpuTbl.GetEntry(key)
+		if err != nil {
+			log.V(lvl.DEBUG).Infof("Can't get entry with key: %v", key)
+			return nil, err
+		}
+
+		cpu := &Cpu{}
+		interval, err := strconv.ParseFloat(cpuEntry.Get("total_interval"), 64)
+		if err != nil {
+			log.V(lvl.DEBUG).Infof("Invalid or empty Total.interval for cpu-%d: %v", idx, err)
+		}
+		cpu.Total.interval = uint64(interval)
+		avg, err := strconv.ParseFloat(cpuEntry.Get("total_avg"), 64)
+		if err != nil {
+			log.V(lvl.DEBUG).Infof("Invalid or empty Total.avg for cpu-%d: %v", idx, err)
+		}
+		cpu.Total.avg = uint8(avg)
+		cpus[idx] = cpu
+	}
+
+	return cpus, err
+}
+
+var DbToYang_sys_cpus_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) error {
+	var err error
+
+	sysObj := getAppRootObject(inParams)
+
+	cpus, err := getCpusFromDb(inParams.dbs[db.StateDB])
+	if err != nil {
+		log.V(lvl.DEBUG).Info("getCpusFromDb failed")
+		return err
+	}
+	if sysObj.Cpus == nil {
+		ygot.BuildEmptyTree(sysObj)
+	}
+
+	path := NewPathInfo(inParams.uri)
+	if val, ok := path.Vars["index"]; ok {
+		idx, err := strconv.Atoi(val)
+		if err != nil {
+			log.V(lvl.DEBUG).Info("Invalid cpu index ", val)
+			return err
+		}
+		totalCpu := len(cpus)
+		if cpu, ok := cpus[idx]; ok {
+			//Since key(a pointer) is unknown, there is no way to do a lookup. So looping through a map with only one entry
+			for _, value := range sysObj.Cpus.Cpu {
+				ygot.BuildEmptyTree(value)
+				getSystemCpu(idx, totalCpu-1, *cpu, value)
+			}
+		} else {
+			log.V(lvl.DEBUG).Info("Cpu id: ", cpu, "is invalid, max is ", totalCpu)
+		}
+	} else {
+		getSystemCpus(cpus, sysObj.Cpus)
+	}
+	return err
+}
+
+var Subscribe_sys_cpus_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSubscInParams) (XfmrSubscOutParams, error) {
+	key := NewPathInfo(inParams.uri).Var("index")
+	log.V(lvl.DEBUG).Infof("+++ Subscribe_sys_cpus_xfmr (%v) +++", inParams.uri)
+	if key == "" {
+		if inParams.subscProc != TRANSLATE_SUBSCRIBE {
+			/* no need to verify dB data if we are requesting ALL cpus */
+			return XfmrSubscOutParams{isVirtualTbl: true}, nil
+		}
+		key = "*"
+	}
+	return XfmrSubscOutParams{dbDataMap: RedisDbSubscribeMap{db.StateDB: {CPU_TBL: {key: {}}}}}, nil
+}
+
+func getSystemProcess(proc *Proc, sysproc *ocbinds.OpenconfigSystem_System_Processes_Process, pid uint64) {
+
+	var procstate ProcessState
+
+	ygot.BuildEmptyTree(sysproc)
+	procstate.CpuUsageUser = uint64(proc.User * 1000000000)     // ns
+	procstate.CpuUsageSystem = uint64(proc.System * 1000000000) // ns
+	procstate.MemoryLimit = proc.MemLimit                       // The memory available to the container the process is running in.
+	procstate.MemoryUsage = proc.Mem
+	procstate.MemoryUtilization = uint8(proc.Memutil)
+	procstate.CpuUtilization = uint8(proc.Cputil)
+	procstate.Name = proc.Cmd
+	procstate.Pid = pid
+	procstate.StartTime = proc.Start // ns
+
+	sysproc.Pid = &procstate.Pid
+	sysproc.State.CpuUsageSystem = &procstate.CpuUsageSystem
+	sysproc.State.CpuUsageUser = &procstate.CpuUsageUser
+	sysproc.State.CpuUtilization = &procstate.CpuUtilization
+	// NOTE: cpn's openconfig-procmon has no process/state/memory-limit leaf, so it is not mapped here.
+	sysproc.State.MemoryUsage = &procstate.MemoryUsage
+	sysproc.State.MemoryUtilization = &procstate.MemoryUtilization
+	sysproc.State.Name = &procstate.Name
+	sysproc.State.Pid = &procstate.Pid
+	sysproc.State.StartTime = &procstate.StartTime
+}
+
+func getSystemProcesses(procs *map[string]Proc, sysprocs *ocbinds.OpenconfigSystem_System_Processes, pid uint64) (err error) {
+	log.V(lvl.DEBUG).Infof("getSystemProcesses Entry")
+
+	if pid != 0 {
+		proc := (*procs)[strconv.Itoa(int(pid))]
+		sysproc, ok := sysprocs.Process[pid]
+		if !ok || sysproc == nil {
+			sysproc, err = sysprocs.NewProcess(pid)
+			if err != nil {
+				return errors.New("sysprocs.NewProcess failed: " + err.Error())
+			}
+		}
+
+		getSystemProcess(&proc, sysproc, pid)
+	} else {
+
+		for pidstr, proc := range *procs {
+			idx, _ := strconv.Atoi(pidstr)
+			sysproc, err := sysprocs.NewProcess(uint64(idx))
+			if err != nil {
+				return errors.New("sysprocs.NewProcess failed: " + err.Error())
+			}
+
+			getSystemProcess(&proc, sysproc, uint64(idx))
+		}
+	}
+	return nil
+}
+
+func getProcsFromDb(d *db.DB) (map[string]Proc, error) {
+	var err error
+	var procs map[string]Proc
+	var curProc Proc
+
+	procTbl, err := d.GetTable(&db.TableSpec{Name: PROC_TBL})
+	if err != nil {
+		log.V(lvl.INFO).Infof("Can't get %v table: %v", PROC_TBL, err)
+		return procs, err
+	}
+
+	keys, err := procTbl.GetKeys()
+	if err != nil {
+		log.V(lvl.DEBUG).Info("Can't get proc keys from table")
+		return procs, err
+	}
+
+	memEntry, err := d.GetEntry(&db.TableSpec{Name: MEMORY_TBL}, db.Key{Comp: []string{systemKey}})
+	if err != nil {
+		log.V(lvl.DEBUG).Info("Can't get entry with key: ", systemKey)
+		return nil, err
+	}
+	totalMem, _ := strconv.ParseUint(memEntry.Get("total"), 10, 64)
+
+	procs = make(map[string]Proc)
+	for _, key := range keys {
+		pidstr := key.Get(0)
+		procEntry, err := procTbl.GetEntry(key)
+		if err != nil {
+			log.V(lvl.DEBUG).Info("Can't get entry with key: ", pidstr)
+			return procs, err
+		}
+
+		curProc.Cmd = procEntry.Get("CMD")
+		if curProc.Cmd == "" {
+			log.V(lvl.DEBUG).Infof("CMD empty for pid=%s, ignoring entry", key)
+			continue
+		}
+		if t, err := time.ParseInLocation("Jan 2 2006 15:04:05 MST", procEntry.Get("STIME"), time.Local); err == nil {
+			// "The timeticks64 represents the time, modulo 2^64 in nanoseconds
+			//  between two epochs. The leaf using this type must define
+			//  the epochs that tests are relative to."
+			// It is converted to local time-zone to be consistent with 'boot-time'.
+			curProc.Start = uint64(t.Local().UnixNano())
+		} else {
+			log.V(lvl.DEBUG).Infof("Invalid or empty STIME for process - %s: %v", curProc.Cmd, err)
+		}
+		if curProc.User, err = strconv.ParseFloat(procEntry.Get("USER_TIME"), 64); err != nil {
+			log.V(lvl.DEBUG).Infof("Invalid or empty User for process - %v: %v", curProc.Cmd, err)
+		}
+		if curProc.System, err = strconv.ParseFloat(procEntry.Get("SYS_TIME"), 64); err != nil {
+			log.V(lvl.DEBUG).Infof("Invalid or empty System for process - %v: %v", curProc.Cmd, err)
+		}
+		/* For memory-usage, commenting out the lookup for attribute "VSZ" to align
+		 * with SONiC implementation. Instead, using the %MEM attribute along with
+		 * the total memory to calculate the memory-usage. */
+		// curProc.Mem, _ = strconv.ParseUint(procEntry.Get("VSZ"), 10, 64) * 1024
+		if curProc.Cputil, err = strconv.ParseFloat(procEntry.Get("%CPU"), 64); err != nil {
+			log.V(lvl.DEBUG).Infof("Invalid or empty Cputil for process - %v: %v", curProc.Cmd, err)
+		}
+		if curProc.Memutil, err = strconv.ParseFloat(procEntry.Get("%MEM"), 64); err != nil {
+			log.V(lvl.DEBUG).Infof("Invalid or empty Memutil for process - %v: %v", curProc.Cmd, err)
+		}
+		if memLimit, err := strconv.ParseUint(procEntry.Get("MEM_LIMIT"), 10, 64); err != nil {
+			log.V(lvl.DEBUG).Infof("Invalid or empty MemLimit for process - %v: %v", curProc.Cmd, err)
+			curProc.MemLimit = nil
+		} else {
+			curProc.MemLimit = &memLimit
+		}
+		log.V(lvl.DEBUG).Infof("curProc.MemLimit: %v", curProc.MemLimit)
+		curProc.Mem = uint64((curProc.Memutil / 100) * float64(totalMem))
+		procs[pidstr] = curProc
+	}
+
+	/* Delete the one non-pid key procdockerstatsd deamon uses to store the last
+	 * update time in the PROCCESSSTATS table */
+	delete(procs, "LastUpdateTime")
+
+	return procs, err
+}
+
+var DbToYang_sys_procs_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) error {
+	var err error
+
+	sysObj := getAppRootObject(inParams)
+
+	procs, err := getProcsFromDb(inParams.dbs[db.StateDB])
+	if err != nil {
+		log.V(lvl.DEBUG).Infof("getProcsFromDb failed")
+		return err
+	}
+
+	ygot.BuildEmptyTree(sysObj)
+	path := NewPathInfo(inParams.uri)
+	val := path.Vars["pid"]
+	pid := 0
+	if len(val) != 0 {
+		pid, _ = strconv.Atoi(val)
+	}
+	return getSystemProcesses(&procs, sysObj.Processes, uint64(pid))
+}
+
+var Subscribe_sys_procs_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSubscInParams) (XfmrSubscOutParams, error) {
+	if key := NewPathInfo(inParams.uri).Var("pid"); key != "" {
+		return XfmrSubscOutParams{dbDataMap: RedisDbSubscribeMap{db.StateDB: {PROC_TBL: {key: {}}}}}, nil
+	}
+	/* no need to verify dB data if we are requesting ALL processes */
+	return XfmrSubscOutParams{isVirtualTbl: true}, nil
+}
+
+func YangToDb_syslog_server_ip_fld_xfmr(inParams XfmrParams) (map[string]string, error) {
+	return make(map[string]string), nil
+}
+
+func DbToYang_syslog_server_ip_fld_xfmr(inParams XfmrParams) (map[string]interface{}, error) {
+	log.V(lvl.DEBUG).Infof("DbToYang_syslog_server_ip_fld_xfmr: key=\"%s\"", inParams.key)
+	result := make(map[string]interface{})
+	if len((*inParams.dbDataMap)[inParams.curDb]) > 0 {
+		result["host"] = inParams.key
+	}
+	return result, nil
+}
+
+var DbToYangPath_remote_server_path_xfmr PathXfmrDbToYangFunc = func(inParams XfmrDbToYgPathParams) error {
+	rootPath := "/openconfig-system:system/logging/remote-servers/remote-server/host"
+
+	log.V(lvl.DEBUG).Infof("DbToYangPath_remote_server_path_xfmr: inParams: %#v", inParams)
+	if len(inParams.tblKeyComp) != 1 {
+		return fmt.Errorf("Invalid tblKeyCom for DbToYangPath_remote_server_path_xmfr:%v", inParams.tblKeyComp)
+	}
+	if LOGGING_TBL != inParams.tblName {
+		return nil
+	}
+	inParams.ygPathKeys[rootPath] = inParams.tblKeyComp[0]
+	log.V(lvl.DEBUG).Info("DbToYangPath_remote_server_path_xfmr: returned params.ygPathKeys: ", inParams.ygPathKeys)
+	return nil
 }

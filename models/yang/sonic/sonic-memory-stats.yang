@@ -1,0 +1,49 @@
+module sonic-memory-stats {
+    namespace "http://github.com/Azure/sonic-memory-stats";
+    prefix sys;
+    yang-version 1.1;
+
+    import sonic-extension {
+        prefix sonic-ext;
+    }
+
+    organization
+        "SONiC";
+
+    contact
+        "SONiC";
+
+    description
+        "memory stats";
+
+    revision 2024-12-26 {
+        description
+            "Initial revision.";
+    }
+
+    container sonic-memory-stats {
+        container MEMORY_STATS {
+            container system {
+                config false;
+                leaf total {
+                    type uint64;
+                }
+                leaf free {
+                    type uint64;
+                }
+                leaf used {
+                    type uint64;
+                }
+                leaf correctable-ecc-errors {
+                    type uint64;
+                }
+                leaf uncorrectable-ecc-errors {
+                    type uint64;
+                }
+                leaf total-ecc-errors {
+                    type uint64;
+                }
+            }
+        }
+    }
+}

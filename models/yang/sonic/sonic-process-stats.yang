@@ -1,0 +1,71 @@
+module sonic-process-stats {
+    namespace "http://github.com/Azure/sonic-process-stats";
+    prefix sys;
+    yang-version 1.1;
+
+    import sonic-extension {
+        prefix sonic-ext;
+    }
+
+    organization
+        "SONiC";
+
+    contact
+        "SONiC";
+
+    description
+        "Process Stats";
+
+    revision 2024-12-26 {
+        description
+            "Initial revision.";
+    }
+
+    container sonic-process-stats {
+        container PROCESS_STATS {
+            list PROCESS_STATS_LIST {
+                config false;
+                key "pid";
+                leaf pid {
+                    type uint64;
+                }
+
+                leaf UID {
+                    type uint64;
+                }
+                leaf PPID {
+                    type uint64;
+                }
+                leaf PERCENT_CPU {
+                    //sonic-ext:field-name "%CPU";
+                    type string;
+                }
+                leaf PERCENT_MEM {
+                    //sonic-ext:field-name "%MEM";
+                    type string;
+                }
+                leaf MEM_LIMIT {
+                    type uint64;
+                }
+                leaf STIME {
+                    type string;
+                }
+                leaf TT {
+                    type string;
+                }
+                leaf TIME {
+                    type string;
+                }
+                leaf CMD {
+                    type string;
+                }
+                leaf USER_TIME {
+                    type string;
+                }
+                leaf SYS_TIME {
+                    type string;
+                }
+            }
+        }
+    }
+}

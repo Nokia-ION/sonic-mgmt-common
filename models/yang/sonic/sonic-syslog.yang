@@ -1,0 +1,66 @@
+module sonic-syslog {
+
+    yang-version 1.1;
+
+    namespace "http://github.com/sonic-net/sonic-system-syslog";
+    prefix syslog;
+
+    import ietf-inet-types {
+        prefix inet;
+    }
+
+    description "Syslog YANG Module for SONiC OS: remote syslog logging";
+
+    revision 2022-04-18 {
+        description "Initial revision.";
+    }
+
+    container sonic-syslog {
+
+        container SYSLOG_SERVER {
+
+            description "Syslog Server configuration table.";
+
+            list SYSLOG_SERVER_LIST {
+
+                key "server_address";
+                description "List of configured Syslog servers";
+
+                leaf server_address {
+                    description "Syslog server IP address";
+                    type inet:host;
+                }
+
+                leaf port {
+                    description "Syslog server UDP port";
+                    type inet:port-number;
+                }
+
+                leaf transport_security {
+                    description "Syslog transport layer security (TLS)";
+                    type boolean;
+                }
+
+                leaf tls_profile_id {
+                    description "TLS profile ID for syslog encryption";
+                    type string;
+                }
+
+                leaf applied_transport_security {
+                    type boolean;
+                }
+
+                leaf failure_reason {
+                    type enumeration {
+                      enum NONE;
+                      enum NO_CERTIFICATE;
+                      enum INVALID_CERTIFICATE;
+                    }
+                }
+            }
+            /* end of list SYSLOG_SERVER_LIST */
+        }
+        /* end of container SYSLOG_SERVER */
+    }
+    /* end of container sonic-syslog */
+}
