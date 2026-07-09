@@ -13,6 +13,7 @@ openconfig-p4rt.yang
 openconfig-platform-transceiver.yang
 openconfig-sampling-sflow-annot.yang
 openconfig-sampling-sflow.yang
+openconfig-system.yang
 openconfig-system-annot.yang
 openconfig-platform-annot.yang
 openconfig-platform.yang
