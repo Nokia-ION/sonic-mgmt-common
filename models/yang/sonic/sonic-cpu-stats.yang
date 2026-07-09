@@ -1,0 +1,42 @@
+module sonic-cpu-stats{
+    namespace "http://github.com/Azure/sonic-cpu-stats";
+    prefix sys;
+    yang-version 1.1;
+
+    import sonic-extension {
+        prefix sonic-ext;
+    }
+
+    organization
+        "SONiC";
+
+    contact
+        "SONiC";
+
+    description
+        "cpu stats";
+
+    revision 2024-12-26 {
+        description
+            "Initial revision.";
+    }
+
+    container sonic-cpu-stats {
+        container CPU_STATS {
+            list CPU_STATS_LIST {
+                config false;
+                key "index";
+                leaf index {
+                    type uint32;
+                }
+
+                leaf total_interval {
+                    type int32;
+                }
+                leaf total_avg {
+                    type string;
+                }
+            }
+        }
+    }
+}
