@@ -370,10 +370,47 @@ func pathNeedsCounters(path string) bool {
 	return strings.Contains(path, "/counters")
 }
 
+func shouldMapLldpGlobalConfigLeaf(targetUriPath, leaf string) bool {
+	if targetUriPath == LLDP_CONFIG || targetUriPath == "/openconfig-lldp:lldp" {
+		return true
+	}
+	return targetUriPath == LLDP_CONFIG+"/"+leaf
+}
+
+type lldpGlobalConfigSnapshot struct {
+	enabled         *bool
+	helloTimer      *uint64
+	systemName      *string
+	systemDesc      *string
+	suppressTlvs    []ocbinds.E_OpenconfigLldpTypes_LLDP_TLV
+	suppressTlvsSet bool
+}
+
+func snapshotLldpGlobalConfig(cfg *ocbinds.OpenconfigLldp_Lldp_Config) lldpGlobalConfigSnapshot {
+	if cfg == nil {
+		return lldpGlobalConfigSnapshot{}
+	}
+	snap := lldpGlobalConfigSnapshot{
+		enabled:    cfg.Enabled,
+		helloTimer: cfg.HelloTimer,
+		systemName: cfg.SystemName,
+		systemDesc: cfg.SystemDescription,
+	}
+	if cfg.SuppressTlvAdvertisement != nil {
+		snap.suppressTlvsSet = true
+		snap.suppressTlvs = append([]ocbinds.E_OpenconfigLldpTypes_LLDP_TLV(nil), cfg.SuppressTlvAdvertisement...)
+	}
+	return snap
+}
+
 // --- Global config transformer ---
 
 var YangToDb_lldp_config_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (map[string]map[string]db.Value, error) {
 	device := (*inParams.ygRoot).(*ocbinds.Device)
+	var cfgSnap lldpGlobalConfigSnapshot
+	if device.Lldp != nil && device.Lldp.Config != nil {
+		cfgSnap = snapshotLldpGlobalConfig(device.Lldp.Config)
+	}
 	if device.Lldp == nil {
 		ygot.BuildEmptyTree(device)
 	}
@@ -411,21 +448,22 @@ var YangToDb_lldp_config_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (m
 		return res, nil
 	}
 
-	cfg := lldpObj.Config
-	if cfg.Enabled != nil {
-		globalMap[LLDP_GLOBAL_KEY].Field[LLDP_CFG_ENABLED] = strconv.FormatBool(*cfg.Enabled)
+	if shouldMapLldpGlobalConfigLeaf(targetUriPath, "enabled") && cfgSnap.enabled != nil {
+		globalMap[LLDP_GLOBAL_KEY].Field[LLDP_CFG_ENABLED] = strconv.FormatBool(*cfgSnap.enabled)
 	}
-	if cfg.HelloTimer != nil {
-		globalMap[LLDP_GLOBAL_KEY].Field[LLDP_CFG_HELLO_TIME] = strconv.FormatUint(*cfg.HelloTimer, 10)
+	if shouldMapLldpGlobalConfigLeaf(targetUriPath, "hello-timer") && cfgSnap.helloTimer != nil {
+		globalMap[LLDP_GLOBAL_KEY].Field[LLDP_CFG_HELLO_TIME] = strconv.FormatUint(*cfgSnap.helloTimer, 10)
 	}
-	if cfg.SystemName != nil {
-		globalMap[LLDP_GLOBAL_KEY].Field[LLDP_CFG_SYSTEM_NAME] = *cfg.SystemName
+	if shouldMapLldpGlobalConfigLeaf(targetUriPath, "system-name") && cfgSnap.systemName != nil {
+		globalMap[LLDP_GLOBAL_KEY].Field[LLDP_CFG_SYSTEM_NAME] = *cfgSnap.systemName
 	}
-	if cfg.SystemDescription != nil {
-		globalMap[LLDP_GLOBAL_KEY].Field[LLDP_CFG_SYSTEM_DESC] = *cfg.SystemDescription
+	if shouldMapLldpGlobalConfigLeaf(targetUriPath, "system-description") && cfgSnap.systemDesc != nil {
+		globalMap[LLDP_GLOBAL_KEY].Field[LLDP_CFG_SYSTEM_DESC] = *cfgSnap.systemDesc
 	}
-	for k, v := range suppressTlvsToConfig(cfg.SuppressTlvAdvertisement) {
-		globalMap[LLDP_GLOBAL_KEY].Field[k] = v
+	if shouldMapLldpGlobalConfigLeaf(targetUriPath, "suppress-tlv-advertisement") && cfgSnap.suppressTlvsSet {
+		for k, v := range suppressTlvsToConfig(cfgSnap.suppressTlvs) {
+			globalMap[LLDP_GLOBAL_KEY].Field[k] = v
+		}
 	}
 	return res, nil
 }

@@ -12,3 +12,4 @@ SONICYANG_IMPORTS += sonic-vlan.yang
 SONICYANG_IMPORTS += sonic-mclag.yang
 SONICYANG_IMPORTS += sonic-types.yang
 SONICYANG_IMPORTS += sonic-vrf.yang
+SONICYANG_IMPORTS += sonic-lldp.yang

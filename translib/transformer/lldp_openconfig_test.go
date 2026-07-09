@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/Azure/sonic-mgmt-common/translib/db"
+	"github.com/Azure/sonic-mgmt-common/translib/tlerr"
 )
 
 const testIfName = "Ethernet0"
@@ -138,6 +139,12 @@ func Test_openconfig_lldp_config(t *testing.T) {
 	url = "/openconfig-lldp:lldp/config"
 	expectedGetJSON := `{"openconfig-lldp:config":{"chassis-id":"00:11:22:33:44:55","chassis-id-type":"MAC_ADDRESS","enabled":true,"hello-timer":30,"suppress-tlv-advertisement":["openconfig-lldp-types:MANAGEMENT_ADDRESS"],"system-description":"SONiC LLDP test","system-name":"sonic-switch"}}`
 	t.Run("GET global LLDP config", processGetRequest(url, nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	t.Log("\n\n+++++++++++++ GET top-level LLDP container ++++++++++++")
+	url = "/openconfig-lldp:lldp"
+	expectedGetJSON = `{"openconfig-lldp:lldp":{"config":{"chassis-id":"00:11:22:33:44:55","chassis-id-type":"MAC_ADDRESS","enabled":true,"hello-timer":30,"suppress-tlv-advertisement":["openconfig-lldp-types:MANAGEMENT_ADDRESS"],"system-description":"SONiC LLDP test","system-name":"sonic-switch"},"state":{"chassis-id":"00:11:22:33:44:55","chassis-id-type":"MAC_ADDRESS","counters":{},"enabled":true,"hello-timer":30,"suppress-tlv-advertisement":["openconfig-lldp-types:MANAGEMENT_ADDRESS"],"system-description":"SONiC LLDP test","system-name":"sonic-switch"}}}`
+	t.Run("GET top-level lldp container", processGetRequest(url, nil, expectedGetJSON, false))
 	time.Sleep(1 * time.Second)
 
 }
@@ -291,4 +298,317 @@ func Test_openconfig_lldp_keyed_paths(t *testing.T) {
 	url = "/openconfig-lldp:lldp/interfaces/interface[name=Ethernet0]/neighbors/neighbor[id=Ethernet0]/capabilities/capability[name=MAC_BRIDGE]/state"
 	expectedGetJSON = `{"openconfig-lldp:state":{"enabled":true,"name":"openconfig-lldp-types:MAC_BRIDGE"}}`
 	t.Run("GET keyed capability state", processGetRequest(url, nil, expectedGetJSON, false))
+}
+
+func Test_openconfig_lldp_config_without_global(t *testing.T) {
+	t.Log("\n\n+++++++++++++ GET global LLDP config without LLDP|GLOBAL ++++++++++++")
+	cleanup := lldpCleanupTables()
+	unloadDB(db.ConfigDB, cleanup)
+	unloadDB(db.ApplDB, cleanup)
+	loadDB(db.ApplDB, lldpLocChassisPrereq())
+	defer unloadLldpFixture()
+	time.Sleep(1 * time.Second)
+
+	url := "/openconfig-lldp:lldp/config"
+	expectedGetJSON := `{"openconfig-lldp:config":{"chassis-id":"00:11:22:33:44:55","chassis-id-type":"MAC_ADDRESS","system-description":"loc chassis desc","system-name":"loc-chassis-name"}}`
+	t.Run("GET global config without GLOBAL row", processGetRequest(url, nil, expectedGetJSON, false))
+}
+
+func Test_openconfig_lldp_config_leaf_gets(t *testing.T) {
+	loadLldpFixture(t, false, false, "")
+	defer unloadLldpFixture()
+
+	tests := []struct {
+		name     string
+		url      string
+		expected string
+	}{
+		{"GET config/enabled", "/openconfig-lldp:lldp/config/enabled", `{"openconfig-lldp:enabled":true}`},
+		{"GET config/hello-timer", "/openconfig-lldp:lldp/config/hello-timer", `{"openconfig-lldp:hello-timer":30}`},
+		{"GET config/system-name", "/openconfig-lldp:lldp/config/system-name", `{"openconfig-lldp:system-name":"sonic-switch"}`},
+		{"GET config/system-description", "/openconfig-lldp:lldp/config/system-description", `{"openconfig-lldp:system-description":"SONiC LLDP test"}`},
+		{"GET config/chassis-id", "/openconfig-lldp:lldp/config/chassis-id", `{"openconfig-lldp:chassis-id":"00:11:22:33:44:55"}`},
+		{"GET config/chassis-id-type", "/openconfig-lldp:lldp/config/chassis-id-type", `{"openconfig-lldp:chassis-id-type":"MAC_ADDRESS"}`},
+		{"GET config/suppress-tlv-advertisement", "/openconfig-lldp:lldp/config/suppress-tlv-advertisement", `{"openconfig-lldp:suppress-tlv-advertisement":["openconfig-lldp-types:MANAGEMENT_ADDRESS"]}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, processGetRequest(tc.url, nil, tc.expected, false))
+		time.Sleep(500 * time.Millisecond)
+	}
+}
+
+func Test_openconfig_lldp_state_leaf_gets(t *testing.T) {
+	loadLldpFixture(t, false, false, "")
+	defer unloadLldpFixture()
+
+	tests := []struct {
+		name     string
+		url      string
+		expected string
+	}{
+		{"GET state/enabled", "/openconfig-lldp:lldp/state/enabled", `{"openconfig-lldp:enabled":true}`},
+		{"GET state/hello-timer", "/openconfig-lldp:lldp/state/hello-timer", `{"openconfig-lldp:hello-timer":30}`},
+		{"GET state/system-name", "/openconfig-lldp:lldp/state/system-name", `{"openconfig-lldp:system-name":"sonic-switch"}`},
+		{"GET state/chassis-id", "/openconfig-lldp:lldp/state/chassis-id", `{"openconfig-lldp:chassis-id":"00:11:22:33:44:55"}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, processGetRequest(tc.url, nil, tc.expected, false))
+		time.Sleep(500 * time.Millisecond)
+	}
+}
+
+func Test_openconfig_lldp_neighbor_list_paths(t *testing.T) {
+	loadLldpFixture(t, true, true, "true")
+	defer unloadLldpFixture()
+
+	url := "/openconfig-lldp:lldp/interfaces/interface[name=Ethernet0]/neighbors"
+	expectedGetJSON := `{"openconfig-lldp:neighbors":{"neighbor":[{"capabilities":{"capability":[{"name":"openconfig-lldp-types:MAC_BRIDGE","state":{"enabled":true,"name":"openconfig-lldp-types:MAC_BRIDGE"}}]},"id":"Ethernet0","state":{"age":5000,"chassis-id":"00:aa:00:00:00:01","chassis-id-type":"MAC_ADDRESS","id":"1","management-address":"172.17.2.1,fd00::1","management-address-type":"ipv4","port-description":"Port 1/1","port-id":"Ethernet0","port-id-type":"LOCAL","system-description":"SONiC simulator 1","system-name":"sonic1"}}]}}`
+	t.Run("GET interface neighbors list", processGetRequest(url, nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	url = "/openconfig-lldp:lldp/interfaces/interface[name=Ethernet0]/neighbors/neighbor[id=Ethernet0]/capabilities"
+	expectedGetJSON = `{"openconfig-lldp:capabilities":{"capability":[{"name":"openconfig-lldp-types:MAC_BRIDGE","state":{"enabled":true,"name":"openconfig-lldp-types:MAC_BRIDGE"}}]}}`
+	t.Run("GET neighbor capabilities list", processGetRequest(url, nil, expectedGetJSON, false))
+}
+
+func Test_openconfig_lldp_set_global_config(t *testing.T) {
+	var url, body string
+	cleanup := lldpCleanupTables()
+	unloadDB(db.ConfigDB, cleanup)
+	unloadDB(db.ApplDB, cleanup)
+	loadDB(db.ApplDB, lldpLocChassisPrereq())
+	defer unloadLldpFixture()
+	time.Sleep(1 * time.Second)
+
+	t.Log("\n\n+++++++++++++ SET global LLDP enabled (create GLOBAL row) ++++++++++++")
+	url = "/openconfig-lldp:lldp/config/enabled"
+	body = `{"openconfig-lldp:enabled":false}`
+	expectedMap := map[string]interface{}{
+		"LLDP": map[string]interface{}{
+			"GLOBAL": map[string]interface{}{"enabled": "false"},
+		},
+	}
+	t.Run("PATCH global enabled leaf", processSetRequest(url, body, "PATCH", false))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify global enabled in CONFIG_DB", verifyDbResult(rclient, "LLDP|GLOBAL", expectedMap, false))
+
+	t.Log("\n\n+++++++++++++ SET global LLDP hello-timer ++++++++++++")
+	url = "/openconfig-lldp:lldp/config/hello-timer"
+	body = `{"openconfig-lldp:hello-timer":45}`
+	expectedMap = map[string]interface{}{
+		"LLDP": map[string]interface{}{
+			"GLOBAL": map[string]interface{}{"enabled": "false", "hello_time": "45"},
+		},
+	}
+	t.Run("PATCH global hello-timer leaf", processSetRequest(url, body, "PATCH", false))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify global hello-timer in CONFIG_DB", verifyDbResult(rclient, "LLDP|GLOBAL", expectedMap, false))
+
+	t.Log("\n\n+++++++++++++ SET global LLDP system-name and description ++++++++++++")
+	url = "/openconfig-lldp:lldp/config"
+	body = `{"openconfig-lldp:system-name":"new-name","openconfig-lldp:system-description":"new description"}`
+	expectedMap = map[string]interface{}{
+		"LLDP": map[string]interface{}{
+			"GLOBAL": map[string]interface{}{
+				"enabled":            "false",
+				"hello_time":         "45",
+				"system_name":        "new-name",
+				"system_description": "new description",
+			},
+		},
+	}
+	t.Run("PATCH global system info", processSetRequest(url, body, "PATCH", false))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify global system info in CONFIG_DB", verifyDbResult(rclient, "LLDP|GLOBAL", expectedMap, false))
+
+	t.Log("\n\n+++++++++++++ SET global suppress-tlv-advertisement ++++++++++++")
+	url = "/openconfig-lldp:lldp/config/suppress-tlv-advertisement"
+	body = `{"openconfig-lldp:suppress-tlv-advertisement":["openconfig-lldp-types:MANAGEMENT_ADDRESS","openconfig-lldp-types:SYSTEM_CAPABILITIES"]}`
+	expectedMap = map[string]interface{}{
+		"LLDP": map[string]interface{}{
+			"GLOBAL": map[string]interface{}{
+				"enabled":                      "false",
+				"hello_time":                   "45",
+				"system_name":                  "new-name",
+				"system_description":           "new description",
+				"supp_mgmt_address_tlv":        "true",
+				"supp_system_capabilities_tlv": "true",
+			},
+		},
+	}
+	t.Run("PUT global suppress-tlv-advertisement", processSetRequest(url, body, "PUT", false))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify global suppress TLVs in CONFIG_DB", verifyDbResult(rclient, "LLDP|GLOBAL", expectedMap, false))
+
+	t.Log("\n\n+++++++++++++ PATCH enabled only must not reset suppress TLVs ++++++++++++")
+	url = "/openconfig-lldp:lldp/config/enabled"
+	body = `{"openconfig-lldp:enabled":true}`
+	t.Run("PATCH global enabled true", processSetRequest(url, body, "PATCH", false))
+	time.Sleep(1 * time.Second)
+	expectedMap = map[string]interface{}{
+		"LLDP": map[string]interface{}{
+			"GLOBAL": map[string]interface{}{
+				"enabled":                      "true",
+				"hello_time":                   "45",
+				"system_name":                  "new-name",
+				"system_description":           "new description",
+				"supp_mgmt_address_tlv":        "true",
+				"supp_system_capabilities_tlv": "true",
+			},
+		},
+	}
+	t.Run("Verify suppress TLVs unchanged after enabled-only PATCH", verifyDbResult(rclient, "LLDP|GLOBAL", expectedMap, false))
+}
+
+func Test_openconfig_lldp_set_enabled_only_preserves_suppress_tlv(t *testing.T) {
+	cleanup := lldpCleanupTables()
+	unloadDB(db.ConfigDB, cleanup)
+	unloadDB(db.ApplDB, cleanup)
+	loadDB(db.ConfigDB, map[string]interface{}{
+		"LLDP": map[string]interface{}{
+			"GLOBAL": map[string]interface{}{
+				"enabled":                      "true",
+				"supp_mgmt_address_tlv":        "true",
+				"supp_system_capabilities_tlv": "false",
+			},
+		},
+	})
+	defer unloadLldpFixture()
+	time.Sleep(1 * time.Second)
+
+	url := "/openconfig-lldp:lldp/config/enabled"
+	body := `{"openconfig-lldp:enabled":false}`
+	t.Run("PATCH enabled leaf only", processSetRequest(url, body, "PATCH", false))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"LLDP": map[string]interface{}{
+			"GLOBAL": map[string]interface{}{
+				"enabled":                      "false",
+				"supp_mgmt_address_tlv":        "true",
+				"supp_system_capabilities_tlv": "false",
+			},
+		},
+	}
+	t.Run("Verify suppress TLV fields unchanged", verifyDbResult(rclient, "LLDP|GLOBAL", expectedMap, false))
+}
+
+func Test_openconfig_lldp_delete_global_config(t *testing.T) {
+	loadLldpFixture(t, false, false, "")
+	defer unloadLldpFixture()
+	time.Sleep(1 * time.Second)
+
+	t.Log("\n\n+++++++++++++ DELETE global LLDP config leaves ++++++++++++")
+	url := "/openconfig-lldp:lldp/config/enabled"
+	t.Run("DELETE global enabled", processDeleteRequest(url, false))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"LLDP": map[string]interface{}{
+			"GLOBAL": map[string]interface{}{
+				"hello_time":                   "30",
+				"system_name":                  "sonic-switch",
+				"system_description":           "SONiC LLDP test",
+				"supp_mgmt_address_tlv":        "true",
+				"supp_system_capabilities_tlv": "false",
+			},
+		},
+	}
+	t.Run("Verify enabled deleted from CONFIG_DB", verifyDbResult(rclient, "LLDP|GLOBAL", expectedMap, false))
+
+	url = "/openconfig-lldp:lldp/config/suppress-tlv-advertisement"
+	t.Run("DELETE global suppress-tlv-advertisement", processDeleteRequest(url, false))
+	time.Sleep(1 * time.Second)
+	expectedMap = map[string]interface{}{
+		"LLDP": map[string]interface{}{
+			"GLOBAL": map[string]interface{}{
+				"hello_time":         "30",
+				"system_name":        "sonic-switch",
+				"system_description": "SONiC LLDP test",
+			},
+		},
+	}
+	t.Run("Verify suppress TLV fields deleted from CONFIG_DB", verifyDbResult(rclient, "LLDP|GLOBAL", expectedMap, false))
+}
+
+func Test_openconfig_lldp_set_interface_config(t *testing.T) {
+	cleanup := lldpCleanupTables()
+	unloadDB(db.ConfigDB, cleanup)
+	unloadDB(db.ApplDB, cleanup)
+	defer unloadLldpFixture()
+	time.Sleep(1 * time.Second)
+
+	t.Log("\n\n+++++++++++++ SET per-interface LLDP enabled ++++++++++++")
+	url := "/openconfig-lldp:lldp/interfaces/interface[name=Ethernet0]/config"
+	body := `{"openconfig-lldp:config":{"enabled":false,"name":"Ethernet0"}}`
+	expectedMap := map[string]interface{}{
+		"LLDP_PORT": map[string]interface{}{
+			testIfName: map[string]interface{}{"enabled": "false"},
+		},
+	}
+	t.Run("PATCH interface config enabled false", processSetRequest(url, body, "PATCH", false))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify interface enabled in CONFIG_DB", verifyDbResult(rclient, "LLDP_PORT|Ethernet0", expectedMap, false))
+
+	t.Log("\n\n+++++++++++++ SET per-interface LLDP enabled via leaf ++++++++++++")
+	url = "/openconfig-lldp:lldp/interfaces/interface[name=Ethernet0]/config/enabled"
+	body = `{"openconfig-lldp:enabled":true}`
+	expectedMap = map[string]interface{}{
+		"LLDP_PORT": map[string]interface{}{
+			testIfName: map[string]interface{}{"enabled": "true"},
+		},
+	}
+	t.Run("PATCH interface config/enabled leaf", processSetRequest(url, body, "PATCH", false))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify interface enabled leaf update in CONFIG_DB", verifyDbResult(rclient, "LLDP_PORT|Ethernet0", expectedMap, false))
+}
+
+func Test_openconfig_lldp_delete_interface_config(t *testing.T) {
+	loadDB(db.ConfigDB, lldpPortPrereq("false"))
+	defer unloadLldpFixture()
+	time.Sleep(1 * time.Second)
+
+	t.Log("\n\n+++++++++++++ DELETE per-interface LLDP config leaves ++++++++++++")
+	url := "/openconfig-lldp:lldp/interfaces/interface[name=Ethernet0]/config/enabled"
+	t.Run("DELETE interface config/enabled", processDeleteRequest(url, false))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"LLDP_PORT": map[string]interface{}{
+			testIfName: map[string]interface{}{},
+		},
+	}
+	t.Run("Verify interface enabled deleted from CONFIG_DB", verifyDbResult(rclient, "LLDP_PORT|Ethernet0", expectedMap, false))
+
+	url = "/openconfig-lldp:lldp/interfaces/interface[name=Ethernet0]/config"
+	t.Run("DELETE interface config container", processDeleteRequest(url, false))
+	time.Sleep(1 * time.Second)
+	deleteExpected := make(map[string]interface{})
+	t.Run("Verify interface row deleted from CONFIG_DB", verifyDbResult(rclient, "LLDP_PORT|Ethernet0", deleteExpected, false))
+}
+
+func Test_openconfig_lldp_readonly_reject(t *testing.T) {
+	loadLldpFixture(t, true, true, "true")
+	defer unloadLldpFixture()
+	time.Sleep(1 * time.Second)
+
+	stateErr := tlerr.NotSupportedError{Format: "LLDP operational state is read-only"}
+	neighborErr := tlerr.NotSupportedError{Format: "LLDP neighbor data is read-only"}
+
+	t.Run("PATCH global state rejected", processSetRequest(
+		"/openconfig-lldp:lldp/state",
+		`{"openconfig-lldp:enabled":false}`,
+		"PATCH", true, stateErr))
+	t.Run("PATCH neighbor state rejected", processSetRequest(
+		"/openconfig-lldp:lldp/interfaces/interface[name=Ethernet0]/neighbors/neighbor[id=Ethernet0]/state",
+		`{"openconfig-lldp:system-name":"nope"}`,
+		"PATCH", true, neighborErr))
+	t.Run("DELETE neighbor rejected", processDeleteRequest(
+		"/openconfig-lldp:lldp/interfaces/interface[name=Ethernet0]/neighbors/neighbor[id=Ethernet0]",
+		true, neighborErr))
+
+	unsupportedDeleteErr := tlerr.NotSupportedError{Format: "DELETE not supported on /openconfig-lldp:lldp/config/chassis-id"}
+	t.Run("DELETE read-only chassis-id rejected", processDeleteRequest(
+		"/openconfig-lldp:lldp/config/chassis-id",
+		true, unsupportedDeleteErr))
 }
