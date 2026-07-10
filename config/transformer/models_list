@@ -15,6 +15,7 @@ openconfig-sampling-sflow-annot.yang
 openconfig-sampling-sflow.yang
 openconfig-system.yang
 openconfig-system-annot.yang
+sonic-ntp.yang
 openconfig-platform-annot.yang
 openconfig-platform.yang
 openconfig-platform-types.yang

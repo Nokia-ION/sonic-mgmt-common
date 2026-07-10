@@ -1,0 +1,44 @@
+module sonic-ntp {
+
+    namespace "http://github.com/sonic-net/sonic-system-ntp";
+    prefix ntp;
+
+    import ietf-inet-types {
+        prefix inet;
+    }
+
+    description
+        "NTP yang Module for SONiC OS";
+
+    revision 2021-04-07 {
+        description
+            "First revision";
+    }
+
+    container sonic-ntp {
+
+        container NTP_SERVER {
+
+            description "NTP Server configuration table.";
+
+            list NTP_SERVER_LIST {
+                max-elements 10;
+                description
+                    "Number of upstream NTP servers is discussed at
+                     https://support.ntp.org/bin/view/Support/SelectingOffsiteNTPServers
+                     (5.3.4. Excessive Number of Upstream Time Servers).";
+
+                key "server_address";
+
+                leaf server_address {
+                    type inet:host;
+                    description "IP address of the NTP server";
+                }
+
+            }
+
+        }
+
+    }
+
+}
