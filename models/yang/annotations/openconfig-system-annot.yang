@@ -98,6 +98,40 @@ module openconfig-system-annot {
         }
     }
 
+    deviation /oc-sys:system/oc-sys:ntp/oc-sys:config/oc-sys:enabled {
+        deviate add {
+            sonic-ext:field-name "ntp_enabled";
+        }
+    }
+
+    deviation /oc-sys:system/oc-sys:ntp/oc-sys:state/oc-sys:enabled {
+        deviate add {
+            sonic-ext:field-name "ntp_enabled";
+        }
+    }
+
+    deviation /oc-sys:system/oc-sys:ntp/oc-sys:state/oc-sys:auth-mismatch {
+        deviate not-supported;
+    }
+
+    deviation /oc-sys:system/oc-sys:ntp/oc-sys:config/oc-sys:enable-ntp-auth {
+        deviate add {
+            sonic-ext:field-name "auth_enabled";
+        }
+    }
+
+    deviation /oc-sys:system/oc-sys:ntp/oc-sys:state/oc-sys:enable-ntp-auth {
+        deviate add {
+            sonic-ext:field-name "auth_enabled";
+        }
+    }
+
+    deviation /oc-sys:system/oc-sys:ntp/oc-sys:servers {
+        deviate add {
+            sonic-ext:subtree-transformer "ntp_servers_list_xfmr";
+        }
+    }
+
     deviation /oc-sys:system/oc-log:logging/oc-log:remote-servers/oc-log:remote-server {
       deviate add {
         /* TODO(b/185940239): Remove State DB mapping after config/host path is supported by backend. */

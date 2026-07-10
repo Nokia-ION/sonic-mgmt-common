@@ -52,6 +52,15 @@ func (p *PathInfo) HasWildcard() bool {
 	return false
 }
 
+// keyFromInParamsOrUri returns the key from inParams if set,
+// otherwise extracts the named key variable from the URI path.
+func keyFromInParamsOrUri(inParams XfmrParams, kname string) string {
+	if inParams.key != "" {
+		return inParams.key
+	}
+	return NewPathInfo(inParams.uri).Var(kname)
+}
+
 // NewPathInfo parses given path string into a PathInfo structure.
 func NewPathInfo(path string) *PathInfo {
 	var info PathInfo
