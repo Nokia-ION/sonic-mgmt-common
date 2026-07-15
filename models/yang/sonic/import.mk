@@ -13,3 +13,10 @@ SONICYANG_IMPORTS += sonic-mclag.yang
 SONICYANG_IMPORTS += sonic-types.yang
 SONICYANG_IMPORTS += sonic-vrf.yang
 SONICYANG_IMPORTS += sonic-lldp.yang
+SONICYANG_IMPORTS += sonic-portchannel.yang
+
+##
+# Local sonic yangs that import modules from SONICYANG_IMPORTS must be copied
+# after those imports are synced into build/yang/sonic.
+#
+SONIC_YANG_DEFERRED_NAMES += sonic-port-qos-map.yang sonic-queue.yang

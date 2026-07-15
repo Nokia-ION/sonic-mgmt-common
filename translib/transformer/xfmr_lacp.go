@@ -392,77 +392,41 @@ func _fillLacpMemberAttr(path string, ifMemKey string, memberInfoMap map[string]
 		system_id := memEntries.Field["system-id"]
 		lacpMemberObj.State.SystemId = &system_id
 	case "/openconfig-lacp:lacp/interfaces/interface/members/member/state/oper-key":
-		oper_key, err := strconv.Atoi(memEntries.Field["oper-key"])
-		if err != nil {
-			return err
-		}
+		oper_key := *String2Uint(memEntries.Field["oper-key"], 0)
 		uoper_key := uint16(oper_key)
 		lacpMemberObj.State.OperKey = &uoper_key
 	case "/openconfig-lacp:lacp/interfaces/interface/members/member/state/partner-id":
 		partner_id := memEntries.Field["partner-id"]
 		lacpMemberObj.State.PartnerId = &partner_id
 	case "/openconfig-lacp:lacp/interfaces/interface/members/member/state/partner-key":
-		partner_key, err := strconv.Atoi(memEntries.Field["partner-key"])
-		if err != nil {
-			return err
-		}
+		partner_key := *String2Uint(memEntries.Field["partner-key"], 0)
 		upartner_key := uint16(partner_key)
 		lacpMemberObj.State.PartnerKey = &upartner_key
 	case "/openconfig-lacp:lacp/interfaces/interface/members/member/state/port-num":
-		port_num, err := strconv.Atoi(memEntries.Field["port"])
-		if err != nil {
-			return err
-		}
+		port_num := *String2Uint(memEntries.Field["port"], 0)
 		port_num_u16 := uint16(port_num)
 		lacpMemberObj.State.PortNum = &port_num_u16
 	case "/openconfig-lacp:lacp/interfaces/interface/members/member/state/partner-port-num":
-		partner_port_num, err := strconv.Atoi(memEntries.Field["partner-port"])
-		if err != nil {
-			return err
-		}
+		partner_port_num := *String2Uint(memEntries.Field["partner-port"], 0)
 		partner_port_num_u16 := uint16(partner_port_num)
 		lacpMemberObj.State.PartnerPortNum = &partner_port_num_u16
 	case "/openconfig-lacp:lacp/interfaces/interface/members/member/state/counters":
-		lacp_in_pkts, err := strconv.Atoi(memEntries.Field["lacp-in-pkts"])
-		if err != nil {
-			return err
-		}
-		ulacp_in_pkts := uint64(lacp_in_pkts)
+		ulacp_in_pkts := *String2Uint(memEntries.Field["lacp-in-pkts"], 0)
 		lacpMemberObj.State.Counters.LacpInPkts = &ulacp_in_pkts
 
-		lacp_out_pkts, err := strconv.Atoi(memEntries.Field["lacp-out-pkts"])
-		if err != nil {
-			return err
-		}
-		ulacp_out_pkts := uint64(lacp_out_pkts)
+		ulacp_out_pkts := *String2Uint(memEntries.Field["lacp-out-pkts"], 0)
 		lacpMemberObj.State.Counters.LacpOutPkts = &ulacp_out_pkts
 
-		lacp_rx_errors, err := strconv.Atoi(memEntries.Field["lacp-rx-errors"])
-		if err != nil {
-			return err
-		}
-		ulacp_rx_errors := uint64(lacp_rx_errors)
+		ulacp_rx_errors := *String2Uint(memEntries.Field["lacp-rx-errors"], 0)
 		lacpMemberObj.State.Counters.LacpRxErrors = &ulacp_rx_errors
 	case "/openconfig-lacp:lacp/interfaces/interface/members/member/state/counters/lacp-in-pkts":
-		lacp_in_pkts, err := strconv.Atoi(memEntries.Field["lacp-in-pkts"])
-		if err != nil {
-			return err
-		}
-		ulacp_in_pkts := uint64(lacp_in_pkts)
+		ulacp_in_pkts := *String2Uint(memEntries.Field["lacp-in-pkts"], 0)
 		lacpMemberObj.State.Counters.LacpInPkts = &ulacp_in_pkts
 	case "/openconfig-lacp:lacp/interfaces/interface/members/member/state/counters/lacp-out-pkts":
-		lacp_out_pkts, err := strconv.Atoi(memEntries.Field["lacp-out-pkts"])
-		if err != nil {
-			return err
-		}
-		ulacp_out_pkts := uint64(lacp_out_pkts)
+		ulacp_out_pkts := *String2Uint(memEntries.Field["lacp-out-pkts"], 0)
 		lacpMemberObj.State.Counters.LacpOutPkts = &ulacp_out_pkts
 	case "/openconfig-lacp:lacp/interfaces/interface/members/member/state/counters/lacp-rx-errors":
-		lacp_rx_errors, err := strconv.Atoi(memEntries.Field["lacp-rx-errors"])
-		if err != nil {
-			return err
-		}
-		ulacp_rx_errors := uint64(lacp_rx_errors)
+		ulacp_rx_errors := *String2Uint(memEntries.Field["lacp-rx-errors"], 0)
 		lacpMemberObj.State.Counters.LacpRxErrors = &ulacp_rx_errors
 	default:
 		log.V(lvl.DEBUG).Infof("Unsupported path filling member %s: %s", ifMemKey, path)
@@ -858,6 +822,14 @@ var Subscribe_lacp_intfs_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSubscInPa
 		fallthrough
 	case "/openconfig-lacp:lacp/interfaces/interface/members/member/state":
 		needMbr = true
+	default:
+		if strings.HasPrefix(targetUriPath, "/openconfig-lacp:lacp/interfaces/interface/config") {
+			needPcCfg = true
+		} else if strings.HasPrefix(targetUriPath, "/openconfig-lacp:lacp/interfaces/interface/state") {
+			needPcStt = true
+		} else if strings.HasPrefix(targetUriPath, "/openconfig-lacp:lacp/interfaces/interface/members") {
+			needMbr = true
+		}
 	}
 
 	/* Populate the data returned through dbDataMap. */

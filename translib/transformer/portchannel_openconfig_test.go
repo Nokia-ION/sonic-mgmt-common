@@ -22,9 +22,12 @@
 package transformer_test
 
 import (
-	"github.com/Azure/sonic-mgmt-common/translib/tlerr"
+	"context"
 	"testing"
 	"time"
+
+	"github.com/Azure/sonic-mgmt-common/translib/db"
+	"github.com/Azure/sonic-mgmt-common/translib/tlerr"
 )
 
 func Test_openconfig_portchannel(t *testing.T) {
@@ -107,5 +110,70 @@ func Test_openconfig_portchannel(t *testing.T) {
 	err_str := "Resource not found"
 	expected_err_invalid := tlerr.NotFoundError{Format: err_str}
 	t.Run("Test GET on deleted PortChannel", processGetRequest(url, nil, "", true, expected_err_invalid))
+	time.Sleep(1 * time.Second)
+}
+
+// Test_openconfig_portchannel_lag_speed covers the operational lag-speed (sum of
+// active member speeds from the teamd-populated STATE_DB LAG_MEMBER_TABLE).
+func Test_openconfig_portchannel_lag_speed(t *testing.T) {
+	var url, url_input_body_json string
+	var expected_get_json string
+
+	t.Log("\n\n+++++++++++++ PORTCHANNEL LAG-SPEED ++++++++++++")
+
+	t.Log("\n\n--- POST to Create PortChannel112 ---")
+	url = "/openconfig-interfaces:interfaces"
+	url_input_body_json = "{\"openconfig-interfaces:interface\": [{\"name\":\"PortChannel112\", \"config\": {\"name\": \"PortChannel112\", \"mtu\": 9100, \"enabled\": true}}]}"
+	t.Run("Test Create PortChannel112", processSetRequest(url, url_input_body_json, "POST", false, nil))
+	time.Sleep(1 * time.Second)
+
+	t.Log("\n\n--- Add a member (delete member IP first) ---")
+	url = "/openconfig-interfaces:interfaces/interface[name=Ethernet0]/subinterfaces/subinterface[index=0]/openconfig-if-ip:ipv4/addresses"
+	t.Run("DELETE on member interface IP Addr", processDeleteRequest(url, true))
+	time.Sleep(1 * time.Second)
+
+	url = "/openconfig-interfaces:interfaces/interface[name=Ethernet0]/openconfig-if-ethernet:ethernet/config/openconfig-if-aggregate:aggregate-id"
+	url_input_body_json = "{\"openconfig-if-aggregate:aggregate-id\":\"PortChannel112\"}"
+	t.Run("Test PATCH aggregate-id for member", processSetRequest(url, url_input_body_json, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	// lag-speed is derived from the teamd-populated STATE_DB
+	// LAG_MEMBER_TABLE|<PortChannel>|<member> entry. Mirror the real platform,
+	// which reports link.up / runner.selected but NOT link.speed, so the
+	// operational speed is taken from STATE_DB PORT_TABLE.
+	stateClient := getDbClient(int(db.StateDB))
+	if stateClient == nil {
+		t.Fatalf("Failed to get StateDB redis client")
+	}
+	defer db.CloseRedisClient(stateClient)
+
+	lagMemberKey := "LAG_MEMBER_TABLE|PortChannel112|Ethernet0"
+	if _, err := stateClient.HMSet(context.Background(), lagMemberKey, map[string]interface{}{
+		"link.up":         "true",
+		"runner.selected": "true",
+	}).Result(); err != nil {
+		t.Fatalf("Failed to seed %s in STATE_DB: %v", lagMemberKey, err)
+	}
+	statePortKey := "PORT_TABLE|Ethernet0"
+	if _, err := stateClient.HMSet(context.Background(), statePortKey, map[string]interface{}{"speed": "100000"}).Result(); err != nil {
+		t.Fatalf("Failed to seed %s in STATE_DB: %v", statePortKey, err)
+	}
+	time.Sleep(1 * time.Second)
+
+	t.Log("\n\n--- Verify GET state lag-speed ---")
+	url = "/openconfig-interfaces:interfaces/interface[name=PortChannel112]/openconfig-if-aggregate:aggregation/state/lag-speed"
+	expected_get_json = "{\"openconfig-if-aggregate:lag-speed\": 100000}"
+	t.Run("Test GET state lag-speed", processGetRequest(url, nil, expected_get_json, false))
+	time.Sleep(1 * time.Second)
+	stateClient.Del(context.Background(), lagMemberKey)
+	stateClient.HDel(context.Background(), statePortKey, "speed")
+
+	t.Log("\n\n--- Cleanup: remove member and PortChannel112 ---")
+	url = "/openconfig-interfaces:interfaces/interface[name=Ethernet0]/openconfig-if-ethernet:ethernet/config/openconfig-if-aggregate:aggregate-id"
+	t.Run("DELETE member aggregate-id", processDeleteRequest(url, true))
+	time.Sleep(1 * time.Second)
+
+	url = "/openconfig-interfaces:interfaces/interface[name=PortChannel112]"
+	t.Run("DELETE PortChannel112", processDeleteRequest(url, true))
 	time.Sleep(1 * time.Second)
 }

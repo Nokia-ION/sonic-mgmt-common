@@ -19,8 +19,8 @@ package transformer
 
 import (
 	"errors"
+	"fmt"
 	"strconv"
-	"strings"
 
 	"github.com/Azure/sonic-mgmt-common/translib/db"
 	"github.com/Azure/sonic-mgmt-common/translib/ocbinds"
@@ -35,23 +35,13 @@ func init() {
 	XlateFuncBind("DbToYang_intf_lag_state_xfmr", DbToYang_intf_lag_state_xfmr)
 	XlateFuncBind("Subscribe_intf_lag_state_xfmr", Subscribe_intf_lag_state_xfmr)
 	XlateFuncBind("DbToYangPath_intf_lag_state_path_xfmr", DbToYangPath_intf_lag_state_path_xfmr)
-	XlateFuncBind("YangToDb_lag_type_xfmr", YangToDb_lag_type_xfmr)
-	XlateFuncBind("DbToYang_lag_type_xfmr", DbToYang_lag_type_xfmr)
 }
 
 const (
 	PORTCHANNEL_TABLE             = "PORTCHANNEL"
 	DEFAULT_PORTCHANNEL_MIN_LINKS = "1"
 	DEFAULT_PORTCHANNEL_SPEED     = "0"
-	LAG_TYPE                      = "lag-type"
-	PORTCHANNEL_STATE_MEMBER_TN   = "LAG_MEMBER_TABLE"
-	PORTCHANNEL_STATE_PORT_TN     = "LAG_TABLE"
 )
-
-var LAG_TYPE_MAP = map[string]string{
-	strconv.FormatInt(int64(ocbinds.OpenconfigIfAggregate_AggregationType_LACP), 10):   "LACP",
-	strconv.FormatInt(int64(ocbinds.OpenconfigIfAggregate_AggregationType_STATIC), 10): "STATIC",
-}
 
 /* Validate whether LAG exists in DB */
 func validatePortChannel(d *db.DB, lagName string) error {
@@ -152,6 +142,112 @@ func deleteLagIntfAndMembers(inParams *XfmrParams, lagName *string) error {
 	return nil
 }
 
+func isLagMemberLinkUp(prtInst db.Value) bool {
+	if linkUp, ok := prtInst.Field["link.up"]; ok {
+		return linkUp != "false"
+	}
+	return true
+}
+
+func isLagMemberSelected(prtInst db.Value) bool {
+	if selected, ok := prtInst.Field["runner.selected"]; ok {
+		return selected != "false"
+	}
+	// Field absent (e.g. teamd has not yet reported it): treat as selected so a
+	// member is only excluded on an explicit negative signal.
+	return true
+}
+
+/* isLagMemberForwardingViable checks the APPL_DB PORT_TABLE forwarding-viable
+ * flag for the member port. */
+func isLagMemberForwardingViable(inParams XfmrParams, mem string) bool {
+	intTbl := IntfTypeTblMap[IntfTypeEthernet]
+	applDb := inParams.dbs[db.ApplDB]
+	if applDb == nil {
+		return true
+	}
+	tblName, err := getPortTableNameByDBId(intTbl, db.ApplDB)
+	if err != nil {
+		return true
+	}
+	portEntry, err := applDb.GetEntry(&db.TableSpec{Name: tblName}, db.Key{Comp: []string{mem}})
+	if err != nil {
+		return true
+	}
+	if fwdViable, ok := portEntry.Field["forwarding-viable"]; ok {
+		return fwdViable != "false"
+	}
+	return true
+}
+
+func isLagMemberLacpTrafficActive(prtInst db.Value) bool {
+	actorStateMaskStr, ok := prtInst.Field["runner.actor_lacpdu_info.state"]
+	if !ok || actorStateMaskStr == "" {
+		return false
+	}
+	actorStateMask, err := strconv.Atoi(actorStateMaskStr)
+	if err != nil {
+		return false
+	}
+	// bit 4 = collecting, bit 5 = distributing
+	return hasBit(actorStateMask, 4) && hasBit(actorStateMask, 5)
+}
+
+func isLagMemberActiveForSpeed(inParams XfmrParams, mem string, prtInst db.Value) bool {
+	if !isLagMemberLinkUp(prtInst) {
+		log.V(3).Infof("LAG member %s excluded from lag-speed: link not up", mem)
+		return false
+	}
+	if !isLagMemberSelected(prtInst) {
+		log.V(3).Infof("LAG member %s excluded from lag-speed: not selected", mem)
+		return false
+	}
+	if !isLagMemberForwardingViable(inParams, mem) {
+		log.V(3).Infof("LAG member %s excluded from lag-speed: not forwarding-viable", mem)
+		return false
+	}
+	if !isLagMemberLacpTrafficActive(prtInst) {
+		log.V(3).Infof("LAG member %s excluded from lag-speed: LACP not collecting/distributing", mem)
+		return false
+	}
+	return true
+}
+
+/* getLagMemberLinkSpeed returns the member's speed (Mbps). It prefers the teamd
+ * link.speed reported in STATE_DB LAG_MEMBER_TABLE, then the operational speed
+ * from STATE_DB PORT_TABLE, then APPL_DB PORT_TABLE, and finally the configured
+ * speed from CONFIG_DB PORT. Some platforms (e.g. this one) do not populate
+ * link.speed in LAG_MEMBER_TABLE, so the PORT_TABLE operational speed is used. */
+func getLagMemberLinkSpeed(inParams XfmrParams, mem string, prtInst db.Value) (int, error) {
+	if speedStr, ok := prtInst.Field["link.speed"]; ok && speedStr != "" && speedStr != "N/A" {
+		if sp, err := strconv.Atoi(speedStr); err == nil {
+			return sp, nil
+		}
+	}
+
+	intTbl := IntfTypeTblMap[IntfTypeEthernet]
+	for _, dbNum := range []db.DBNum{db.StateDB, db.ApplDB, db.ConfigDB} {
+		portDb := inParams.dbs[dbNum]
+		if portDb == nil {
+			continue
+		}
+		tblName, terr := getPortTableNameByDBId(intTbl, dbNum)
+		if terr != nil {
+			continue
+		}
+		entry, gerr := portDb.GetEntry(&db.TableSpec{Name: tblName}, db.Key{Comp: []string{mem}})
+		if gerr != nil {
+			continue
+		}
+		if speedStr, ok := entry.Field[PORT_SPEED]; ok && speedStr != "" && speedStr != "N/A" {
+			if sp, cerr := strconv.Atoi(speedStr); cerr == nil {
+				return sp, nil
+			}
+		}
+	}
+	return 0, fmt.Errorf("speed unavailable for LAG member %s from STATE/APPL/CONFIG DB", mem)
+}
+
 func getLagStateAttr(attr *string, ifName *string, lagInfoMap map[string]db.Value,
 	oc_val *ocbinds.OpenconfigInterfaces_Interfaces_Interface_Aggregation_State) error {
 	lagEntries, ok := lagInfoMap[*ifName]
@@ -164,24 +260,12 @@ func getLagStateAttr(attr *string, ifName *string, lagInfoMap map[string]db.Valu
 		links, _ := strconv.Atoi(lagEntries.Field["min-links"])
 		minlinks := uint16(links)
 		oc_val.MinLinks = &minlinks
-	case "lag-type":
-		oc_val.LagType = ocbinds.OpenconfigIfAggregate_AggregationType_LACP
-		lag_type, ok := lagEntries.Field["lag-type"]
-		if ok {
-			if lag_type == "STATIC" {
-				oc_val.LagType = ocbinds.OpenconfigIfAggregate_AggregationType_STATIC
-			}
-		}
-	case "member":
-		if memberStr, ok := lagEntries.Field["member@"]; ok && memberStr != "" {
-			lagMembers := strings.Split(memberStr, ",")
-			// Assign only if members are found
-			if len(lagMembers) > 0 {
-				oc_val.Member = lagMembers
-			}
-		}
 	case "lag-speed":
-		lagSpeed, err := strconv.Atoi(lagEntries.Field["lag-speed"])
+		speedStr := lagEntries.Field["lag-speed"]
+		if speedStr == "" {
+			return nil
+		}
+		lagSpeed, err := strconv.Atoi(speedStr)
 		if err != nil {
 			return err
 		}
@@ -194,57 +278,56 @@ func getLagStateAttr(attr *string, ifName *string, lagInfoMap map[string]db.Valu
 func getLagState(inParams XfmrParams, d *db.DB, ifName *string, lagInfoMap map[string]db.Value,
 	oc_val *ocbinds.OpenconfigInterfaces_Interfaces_Interface_Aggregation_State) error {
 	log.V(3).Info("getLagState() called")
-	for _, attr := range []string{"lag-type", "min-links", "member", "lag-speed"} {
-		err := getLagStateAttr(&attr, ifName, lagInfoMap, oc_val)
-		if err != nil {
+	for _, attr := range []string{"min-links", "lag-speed"} {
+		if err := getLagStateAttr(&attr, ifName, lagInfoMap, oc_val); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-/* Get PortChannel Info */
+/* Get PortChannel Info: gathers lag-speed and min-links from the
+ * teamd-populated STATE_DB LAG_MEMBER_TABLE (with CONFIG_DB fallbacks). */
 func fillLagInfoForIntf(inParams XfmrParams, d *db.DB, ifName *string, lagInfoMap map[string]db.Value, targetUri *string) error {
-	var err error
-	var lagMemKeys []db.Key
 	intTbl := IntfTypeTblMap[IntfTypePortChannel]
-	/* Get members list */
-	ts := db.TableSpec{Name: PORTCHANNEL_MEMBER_TN + d.Opts.KeySeparator + *ifName}
-	lagMemKeys, err = d.GetKeys(&ts)
-	if err != nil {
-		return err
-	}
-	log.Info("lag-member-table keys", lagMemKeys)
+	stateDb := inParams.dbs[db.StateDB]
 
-	var lagMembers []string
-	var memberPortsStr strings.Builder
-	for i := range lagMemKeys {
-		ethName := lagMemKeys[i].Get(1)
-		lagMembers = append(lagMembers, ethName)
-		memberPortsStr.WriteString(ethName + ",")
-	}
 	lagInfoMap[*ifName] = db.Value{Field: make(map[string]string)}
 
-	/* Get lag-speed for each active lagMember */
-	var lagSpeed int
-	var lagMember []string
-	for _, mem := range lagMembers {
-		prtInst, err := d.GetEntry(&ts, db.Key{Comp: []string{mem}})
-		if err != nil {
-			log.V(tlerr.ErrorSeverity(err)).Info("Error retrieving " + LAG_MEMBER_TABLE_TN + d.Opts.KeySeparator + *ifName + " entry for " + mem)
-			return err
-		}
-		if prtInst.Field["runner.selected"] == "false" {
-			continue
-		}
-		lagMember = append(lagMember, mem)
-		memberSpeed, err := strconv.Atoi(prtInst.Field["link.speed"])
+	/* Get member list from STATE_DB LAG_MEMBER_TABLE|<ifName> */
+	var lagMembers []string
+	var lagMemberTS db.TableSpec
+	if stateDb != nil {
+		lagMemberTS = db.TableSpec{Name: LAG_MEMBER_TABLE_TN + stateDb.Opts.KeySeparator + *ifName}
+		lagMemKeys, err := stateDb.GetKeys(&lagMemberTS)
 		if err != nil {
 			return err
 		}
-		lagSpeed += memberSpeed
+		log.Info("lag-member-table keys", lagMemKeys)
+		for i := range lagMemKeys {
+			lagMembers = append(lagMembers, lagMemKeys[i].Get(1))
+		}
 	}
-	lagInfoMap[*ifName].Field["member@"] = strings.Join(lagMember, ",")
+
+	/* Calculate lag-speed by summing the speed of each active lag member */
+	var lagSpeed int
+	if stateDb != nil {
+		for _, mem := range lagMembers {
+			prtInst, err := stateDb.GetEntry(&lagMemberTS, db.Key{Comp: []string{mem}})
+			if err != nil {
+				log.Info("Error retrieving "+LAG_MEMBER_TABLE_TN+" entry for ", mem)
+				return err
+			}
+			if !isLagMemberActiveForSpeed(inParams, mem, prtInst) {
+				continue
+			}
+			memberSpeed, err := getLagMemberLinkSpeed(inParams, mem, prtInst)
+			if err != nil {
+				return err
+			}
+			lagSpeed += memberSpeed
+		}
+	}
 	lagInfoMap[*ifName].Field["lag-speed"] = strconv.Itoa(lagSpeed)
 
 	/* Get MinLinks value */
@@ -272,17 +355,8 @@ func fillLagInfoForIntf(inParams XfmrParams, d *db.DB, ifName *string, lagInfoMa
 	}
 	lagInfoMap[*ifName].Field["min-links"] = strconv.Itoa(links)
 
-	/*Get lag-type from LAG_TABLE*/
-	if v, ok := curr.Field["lag_type"]; ok {
-		lagInfoMap[*ifName].Field["lag-type"] = v
-	} else {
-		log.V(3).Info("Mode set to LACP, default value")
-		lagInfoMap[*ifName].Field["lag-type"] = "LACP"
-	}
-
 	log.Infof("Updated the lag-info-map for Interface: %s", *ifName)
-
-	return err
+	return nil
 }
 
 // YangToDb_lag_min_links_xfmr is a Yang to DB translation overloaded method for handle min-links config
@@ -406,30 +480,17 @@ var DbToYang_intf_lag_state_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams)
 		if err != nil {
 			return err
 		}
+	case "/openconfig-interfaces:interfaces/interface/openconfig-if-aggregate:aggregation/state/lag-speed":
+		log.Info("Get is for lag-speed")
+		attr := "lag-speed"
+		err = getLagStateAttr(&attr, &ifName, lagInfoMap, ocAggregationStateVal)
+		if err != nil {
+			return err
+		}
 	case "/openconfig-interfaces:interfaces/interface/openconfig-if-aggregate:aggregation/state":
 		log.Info("Get is for State Container!")
 		err = getLagState(inParams, inParams.d, &ifName, lagInfoMap, ocAggregationStateVal)
 		if err != nil {
-			return err
-		}
-	case "/openconfig-interfaces:interfaces/interface/openconfig-if-aggregate:aggregation/state/lag-type":
-		log.Info("Get is for lag type")
-		attr := "lag-type"
-		err = getLagStateAttr(&attr, &ifName, lagInfoMap, ocAggregationStateVal)
-		if err != nil {
-			return err
-		}
-	case "/openconfig-interfaces:interfaces/interface/openconfig-if-aggregate:aggregation/state/member":
-		log.Info("Get is for member")
-		attr := "member"
-		err = getLagStateAttr(&attr, &ifName, lagInfoMap, ocAggregationStateVal)
-		if err != nil {
-			return err
-		}
-	case "/openconfig-interfaces:interfaces/interface/openconfig-if-aggregate:aggregation/state/lag-speed":
-		log.Info("Get is for lag-speed")
-		attr := "lag-speed"
-		if err = getLagStateAttr(&attr, &ifName, lagInfoMap, ocAggregationStateVal); err != nil {
 			return err
 		}
 	default:
@@ -487,7 +548,6 @@ var Subscribe_intf_lag_state_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSubsc
 		result.nOpts = new(notificationOpts)
 		result.nOpts.pType = OnChange
 		result.nOpts.mInterval = 15
-		result.onChange = OnchangeEnable
 		result.isVirtualTbl = false
 		result.needCache = true
 
@@ -503,26 +563,9 @@ var Subscribe_intf_lag_state_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSubsc
 			po_mem_key = ifName + "|" + "*"
 		}
 
-		switch targetUriPath {
-		case "/openconfig-interfaces:interfaces/interface/openconfig-if-aggregate:aggregation/state/member":
-			result.secDbDataMap = RedisDbYgNodeMap{db.StateDB: {PORTCHANNEL_STATE_MEMBER_TN: {ifName + "|*": "member"}}}
-
-		case "/openconfig-interfaces:interfaces/interface/openconfig-if-aggregate:aggregation/state/lag-speed":
-			result.secDbDataMap = RedisDbYgNodeMap{db.StateDB: {
-				PORTCHANNEL_STATE_MEMBER_TN: {ifName + "|*": map[string]string{"link.speed": "lag-speed"}}}}
-		default:
-			result.onChange = OnchangeDisable
-			result.nOpts.pType = Sample
-			result.dbDataMap = make(RedisDbSubscribeMap)
-			result.secDbDataMap = RedisDbYgNodeMap{
-				db.ConfigDB: {
-					"PORTCHANNEL_MEMBER": {po_mem_key: DBKeyYgNodeInfo{}},
-					"PORTCHANNEL":        {ifName: map[string]string{"min_links": "min-links", "lag_type": "lag-type"}}},
-				db.StateDB: {
-					PORTCHANNEL_STATE_MEMBER_TN: {ifName + "|*": map[string]string{"link.speed": "lag-speed", "runner.selected": "member"}}},
-			}
-		}
-
+		result.secDbDataMap = RedisDbYgNodeMap{db.ConfigDB: {
+			"PORTCHANNEL_MEMBER": {po_mem_key: DBKeyYgNodeInfo{}},
+			"PORTCHANNEL":        {ifName: map[string]string{"min_links": "min-links"}}}}
 		log.Info("Subscribe_intf_lag_state_xfmr: result ", result)
 	}
 
@@ -533,15 +576,14 @@ var DbToYangPath_intf_lag_state_path_xfmr PathXfmrDbToYangFunc = func(params Xfm
 	intfRoot := "/openconfig-interfaces:interfaces/interface"
 
 	if (params.tblName != "PORTCHANNEL") &&
-		(params.tblName != "PORTCHANNEL_MEMBER") &&
-		(params.tblName != PORTCHANNEL_STATE_MEMBER_TN) {
+		(params.tblName != "PORTCHANNEL_MEMBER") {
 		log.Info("DbToYangPath_intf_lag_state_path_xfmr: from wrong table ", params.tblName)
 		return nil
 	}
 
 	if (params.tblName == "PORTCHANNEL") && (len(params.tblKeyComp) > 0) {
 		params.ygPathKeys[intfRoot+"/name"] = params.tblKeyComp[0]
-	} else if (params.tblName == "PORTCHANNEL_MEMBER" || params.tblName == PORTCHANNEL_STATE_MEMBER_TN) && (len(params.tblKeyComp) > 1) {
+	} else if (params.tblName == "PORTCHANNEL_MEMBER") && (len(params.tblKeyComp) > 1) {
 		params.ygPathKeys[intfRoot+"/name"] = params.tblKeyComp[0]
 	} else {
 		log.Info("DbToYangPath_intf_lag_state_path_xfmr, wrong param: tbl ", params.tblName, " key ", params.tblKeyComp)
@@ -551,81 +593,4 @@ var DbToYangPath_intf_lag_state_path_xfmr PathXfmrDbToYangFunc = func(params Xfm
 	log.Info("DbToYangPath_intf_lag_state_path_xfmr: params.ygPathkeys: ", params.ygPathKeys)
 
 	return nil
-}
-
-func doGetLagType(d *db.DB, lagName *string, mode *string) (bool, error) {
-	intTbl := IntfTypeTblMap[IntfTypePortChannel]
-	curr, err := d.GetEntry(&db.TableSpec{Name: intTbl.cfgDb.portTN}, db.Key{Comp: []string{*lagName}})
-	found := false
-	if err != nil {
-		return found, errors.New("Failed to Get PortChannel details")
-	}
-	if val, ok := curr.Field["lag_type"]; ok {
-		*mode = val
-		found = true
-		log.V(3).Infof("Mode from DB: %s\n", *mode)
-	} else {
-		*mode = "LACP"
-		log.V(3).Infof("Default LACP Mode: %s\n", *mode)
-	}
-	return found, nil
-}
-
-var YangToDb_lag_type_xfmr FieldXfmrYangToDb = func(inParams XfmrParams) (map[string]string, error) {
-	result := make(map[string]string)
-	var err error
-
-	if inParams.param == nil {
-		return result, err
-	}
-
-	pathInfo := NewPathInfo(inParams.uri)
-	ifKey := pathInfo.Var("name")
-
-	log.Infof("Received Mode configuration for path: %s; template: %s vars: %v ifKey: %s", pathInfo.Path, pathInfo.Template, pathInfo.Vars, ifKey)
-
-	var mode string
-	found, err := doGetLagType(inParams.d, &ifKey, &mode)
-
-	if err != nil {
-		return result, err
-	}
-
-	t, _ := inParams.param.(ocbinds.E_OpenconfigIfAggregate_AggregationType)
-	user_mode := findInMap(LAG_TYPE_MAP, strconv.FormatInt(int64(t), 10))
-
-	if err == nil && found && mode != user_mode {
-		errStr := "Cannot configure Mode for an existing PortChannel: " + ifKey
-		err = tlerr.InvalidArgsError{Format: errStr}
-		return result, err
-	}
-
-	log.Info("YangToDb_lag_type_xfmr: ", inParams.ygRoot, " Xpath: ", inParams.uri, " type: ", t)
-	result["lag_type"] = user_mode
-	return result, nil
-}
-
-var DbToYang_lag_type_xfmr FieldXfmrDbtoYang = func(inParams XfmrParams) (map[string]interface{}, error) {
-	var err error
-	result := make(map[string]interface{})
-
-	err = validatePortChannel(inParams.d, inParams.key)
-	if err != nil {
-		log.Infof("DbToYang_lag_type_xfmr Error: %v ", err)
-		return result, err
-	}
-
-	data := (*inParams.dbDataMap)[inParams.curDb]
-	var agg_type ocbinds.E_OpenconfigIfAggregate_AggregationType
-	agg_type = ocbinds.OpenconfigIfAggregate_AggregationType_LACP
-
-	lag_type, ok := data[PORTCHANNEL_TABLE][inParams.key].Field["lag_type"]
-	if ok {
-		if lag_type == "STATIC" {
-			agg_type = ocbinds.OpenconfigIfAggregate_AggregationType_STATIC
-		}
-	}
-	result[LAG_TYPE] = ocbinds.E_OpenconfigIfAggregate_AggregationType.ΛMap(agg_type)["E_OpenconfigIfAggregate_AggregationType"][int64(agg_type)].Name
-	log.Infof("Lag Type returned from Field Xfmr: %v\n", result)
-	return result, err
 }
