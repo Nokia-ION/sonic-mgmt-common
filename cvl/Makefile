@@ -35,10 +35,16 @@ SONIC_YANG_DIR   = $(TOPDIR)/build/yang/sonic
 SONIC_YANG_FILES = $(shell find $(SONIC_YANG_DIR) -name '*.yang')
 YANG_SRC_DIR     = ../models/yang
 
-SONIC_YANG_COMMON := $(TOPDIR)/models/yang/sonic/common
+SONIC_YANG_COMMON_SRC   := $(TOPDIR)/models/yang/sonic/common
+SONICYANG_IMPORT_DIR ?= $(or \
+	$(wildcard $(TOPDIR)/../sonic-yang-models/cvlyang-models), \
+	$(wildcard /usr/local/cvlyang-models))
+CVL_TEST_EXT_DIR        := $(BUILD_DIR)/test-ext
+CVL_TEST_SONIC_EXTENSION := $(CVL_TEST_EXT_DIR)/sonic-extension.yang
 CVL_TEST_SCHEMA   := $(CVL_TEST_SCHEMA_DIR)/.done
 CVL_TEST_YANGS     = $(shell find testdata/schema -name '*.yang')
-CVL_TEST_YANGS    += $(wildcard $(SONIC_YANG_COMMON)/*.yang)
+CVL_TEST_YANGS    += $(wildcard $(SONIC_YANG_COMMON_SRC)/sonic-common.yang)
+CVL_TEST_YANGS    += $(CVL_TEST_SONIC_EXTENSION)
 
 DEFAULT_TARGETS = $(CVL_SCHEMA) $(FORMAT_CHECK)
 ifdef DEBUG
@@ -74,11 +80,15 @@ $(CVL_TEST_BIN): $(TEST_FILES) $(SRC_FILES) | $$(@D)/testdata/.
 .PHONY: test-schema
 test-schema: $(CVL_TEST_SCHEMA)
 
+$(CVL_TEST_SONIC_EXTENSION): $(SONICYANG_IMPORT_DIR)/sonic-extension.yang | $$(@D)/.
+	cp $< $@
+
 $(CVL_TEST_SCHEMA): $(CVL_TEST_YANGS) | $$(@D)/.
 	tools/generate_yin.py \
 		--path=testdata/schema \
 		--path=$(YANG_SRC_DIR)/common \
-		--path=$(YANG_SRC_DIR)/sonic/common \
+		--path=$(SONIC_YANG_COMMON_SRC) \
+		--path=$(CVL_TEST_EXT_DIR) \
 		--out-dir=$(@D)
 	touch $@
 
