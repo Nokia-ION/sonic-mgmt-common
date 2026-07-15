@@ -65,7 +65,7 @@ def getpath(repo_rel: str) -> str:
 
 def is_sonic_yangdir(path: str) -> bool:
     """Returns True if the path is a sonic yang directory (i.e, models/yang/sonic)"""
-    f = os.path.join(path, "common", "sonic-extension.yang")
+    f = os.path.join(path, "common", "sonic-common.yang")
     return os.path.isfile(f)
 
 
