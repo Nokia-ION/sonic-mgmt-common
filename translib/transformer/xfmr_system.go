@@ -1101,13 +1101,13 @@ func getSystemCpu(idx int, cpuCnt int, cpu Cpu, syscpu *ocbinds.OpenconfigSystem
 	}
 	var cpucur CpuState
 	if idx == 0 && cpuCnt > 0 {
-		cpucur.user = uint8((cpu.User / int64(cpuCnt)) / sysinfo.Uptime)
-		cpucur.system = uint8((cpu.System / int64(cpuCnt)) / sysinfo.Uptime)
-		cpucur.idle = uint8((cpu.Idle / int64(cpuCnt)) / sysinfo.Uptime)
+		cpucur.user = uint8((cpu.User / int64(cpuCnt)) / int64(sysinfo.Uptime))
+		cpucur.system = uint8((cpu.System / int64(cpuCnt)) / int64(sysinfo.Uptime))
+		cpucur.idle = uint8((cpu.Idle / int64(cpuCnt)) / int64(sysinfo.Uptime))
 	} else {
-		cpucur.user = uint8(cpu.User / sysinfo.Uptime)
-		cpucur.system = uint8(cpu.System / sysinfo.Uptime)
-		cpucur.idle = uint8(cpu.Idle / sysinfo.Uptime)
+		cpucur.user = uint8(cpu.User / int64(sysinfo.Uptime))
+		cpucur.system = uint8(cpu.System / int64(sysinfo.Uptime))
+		cpucur.idle = uint8(cpu.Idle / int64(sysinfo.Uptime))
 	}
 
 	ygot.BuildEmptyTree(syscpu.State)
