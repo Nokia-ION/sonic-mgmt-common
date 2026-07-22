@@ -38,37 +38,38 @@ import (
 )
 
 const (
-	PSU_TBL             = "PSU_INFO"
-	FAN_TBL             = "FAN_INFO"
-	FAN_TRAY_TBL        = "FAN_DRAWER_INFO"
-	TRANSCEIVER_TBL     = "TRANSCEIVER_INFO"
-	TRANSCEIVER_STATUS  = "TRANSCEIVER_STATUS"
-	TRANSCEIVER_CONTROL = "TRANSCEIVER_CONTROL"
-	TRANSCEIVER_DOM     = "TRANSCEIVER_DOM_SENSOR"
-	FPGA_TBL            = "FPGA_INFO"
-	PORT_TBL            = "PORT_TABLE"
-	BREAKOUT_TBL        = "BREAKOUT_CFG"
-	PORT_BREAKOUT       = "PORT_BREAKOUT"
-	STORAGE_INFO        = "STORAGE_INFO"
-	DISK_CARRIER_TBL    = "DISK_CARRIER_INFO"
-	SWITCH_EVENT        = "SWITCH_EVENT"
-	NODE_CFG_TBL        = "NODE_CFG"
-	SW_COMP_TBL         = "SW_COMP_INFO"
-	CHASSIS_CFG         = "CHASSIS_CFG"
-	CHASSIS_TBL         = "CHASSIS_INFO"
-	HSM_TBL             = "FW_SECURITY_INFO"
-	PCIE_TBL            = "PCIE_DEVICE"
-	POWER_INFO_TBL      = "POWER_INFO"
-	PHYS_ENTITY_TBL     = "PHYSICAL_ENTITY_INFO"
-	CONTROLLER_CARD_TBL = "CONTROLLER_CARD_INFO"
-	LINECARD_TBL        = "LINECARD_INFO"
-	HUMIDITY_SENSOR_TBL = "HUMIDITY_INFO"
-	TEMP_TBL            = "TEMPERATURE_INFO"
-	OCS_PORT_TBL        = "OCS_PORT_INFO"
-	CURRENT_INFO_TBL    = "CURRENT_INFO"
-	VOLTAGE_INFO_TBL    = "VOLTAGE_INFO"
-	FAULT_INFO_TBL      = "FAULT_INFO"
-	EEPROM_TBL          = "EEPROM_INFO"
+	PSU_TBL               = "PSU_INFO"
+	FAN_TBL               = "FAN_INFO"
+	FAN_TRAY_TBL          = "FAN_DRAWER_INFO"
+	TRANSCEIVER_TBL       = "TRANSCEIVER_INFO"
+	TRANSCEIVER_STATUS    = "TRANSCEIVER_STATUS"
+	TRANSCEIVER_STATUS_SW = "TRANSCEIVER_STATUS_SW"
+	TRANSCEIVER_CONTROL   = "TRANSCEIVER_CONTROL"
+	TRANSCEIVER_DOM       = "TRANSCEIVER_DOM_SENSOR"
+	FPGA_TBL              = "FPGA_INFO"
+	PORT_TBL              = "PORT_TABLE"
+	BREAKOUT_TBL          = "BREAKOUT_CFG"
+	PORT_BREAKOUT         = "PORT_BREAKOUT"
+	STORAGE_INFO          = "STORAGE_INFO"
+	DISK_CARRIER_TBL      = "DISK_CARRIER_INFO"
+	SWITCH_EVENT          = "SWITCH_EVENT"
+	NODE_CFG_TBL          = "NODE_CFG"
+	SW_COMP_TBL           = "SW_COMP_INFO"
+	CHASSIS_CFG           = "CHASSIS_CFG"
+	CHASSIS_TBL           = "CHASSIS_INFO"
+	HSM_TBL               = "FW_SECURITY_INFO"
+	PCIE_TBL              = "PCIE_DEVICE"
+	POWER_INFO_TBL        = "POWER_INFO"
+	PHYS_ENTITY_TBL       = "PHYSICAL_ENTITY_INFO"
+	CONTROLLER_CARD_TBL   = "CONTROLLER_CARD_INFO"
+	LINECARD_TBL          = "LINECARD_INFO"
+	HUMIDITY_SENSOR_TBL   = "HUMIDITY_INFO"
+	TEMP_TBL              = "TEMPERATURE_INFO"
+	OCS_PORT_TBL          = "OCS_PORT_INFO"
+	CURRENT_INFO_TBL      = "CURRENT_INFO"
+	VOLTAGE_INFO_TBL      = "VOLTAGE_INFO"
+	FAULT_INFO_TBL        = "FAULT_INFO"
+	EEPROM_TBL            = "EEPROM_INFO"
 
 	// SYS_EEPROM_NAME is the synthetic component name under which the system
 	// EEPROM contents (EEPROM_INFO table) are exposed. Previously served by the
@@ -157,6 +158,14 @@ const (
 	XCVR_ETH_PMD      = "/openconfig-platform:components/component/openconfig-platform-transceiver:transceiver/state/ethernet-pmd"
 	XCVR_BASE_PC      = "/openconfig-platform:components/component/openconfig-platform-transceiver:transceiver/physical-channels"
 	XCVR_BASE_CHANNEL = "/openconfig-platform:components/component/openconfig-platform-transceiver:transceiver/physical-channels/channel"
+
+	/* Aggregate (overall transceiver) optical power/bias state paths */
+	XCVR_INPUT_POWER          = XCVR_BASE_STATE + "/input-power"
+	XCVR_INPUT_POWER_INSTANT  = XCVR_BASE_STATE + "/input-power/instant"
+	XCVR_OUTPUT_POWER         = XCVR_BASE_STATE + "/output-power"
+	XCVR_OUTPUT_POWER_INSTANT = XCVR_BASE_STATE + "/output-power/instant"
+	XCVR_LASER_BIAS           = XCVR_BASE_STATE + "/laser-bias-current"
+	XCVR_LASER_BIAS_INSTANT   = XCVR_BASE_STATE + "/laser-bias-current/instant"
 
 	/** Support Temperature Sensor URIs **/
 	TEMP_COMP    = "/openconfig-platform:components/component/state/temperature"
@@ -864,6 +873,26 @@ func reformatMfgDate(date string) string {
 		return ""
 	}
 	return date[6:10] + "-" + date[0:2] + "-" + date[3:5]
+}
+
+// trimXcvrEepromString removes fixed-width EEPROM padding from transceiver
+// identity strings before they are exposed via OpenConfig.
+func trimXcvrEepromString(s string) string {
+	return strings.TrimSpace(s)
+}
+
+// trimXcvrMfgDate normalizes SFF vendor date codes for OpenConfig mfg-date.
+// xcvrd formats vendor_date as "YYYY-MM-DD" with an optional lot suffix.
+func trimXcvrMfgDate(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	fields := strings.Fields(s)
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
 }
 
 func test_if_available(s string) bool {
@@ -1582,6 +1611,26 @@ func getSysComponents(pf_cpts *ocbinds.OpenconfigPlatform_Components, targetUriP
 	d := dbs[db.StateDB]
 	cfgdb := dbs[db.ConfigDB]
 	log.V(lvl.DEBUG).Infof("getSysComponents: compName: %s targetUriPath: %s", compName, targetUriPath)
+
+	/* Wildcard GET on a component sub-container without a component name
+	 * (e.g. /components/component/fan). The /components/component path itself
+	 * is enumerated in the switch below; for a sub-path we enumerate only the
+	 * component type(s) that own that sub-path and populate it for every
+	 * matching component. */
+	if compName == "" && targetUriPath != COMP {
+		cTypes := compTypesForSubscriptionUri(targetUriPath)
+		if len(cTypes) > 0 {
+			for _, cType := range cTypes {
+				tbl, ok := compTblMap[cType]
+				if !ok || len(tbl) < 2 {
+					continue
+				}
+				createCompAndFuncCall(pf_cpts, targetUriPath, cType, inParams, tbl[0], tbl[1])
+			}
+			return nil
+		}
+	}
+
 	switch targetUriPath {
 	case COMP:
 		log.V(lvl.DEBUG).Infof("compName: %v", compName)
@@ -2585,24 +2634,58 @@ func validXcvrName(name *string) bool {
 	return true
 }
 
-func getXcvrStatusInfoFromDb(name string, d *db.DB) (XcvrInfo, error) {
-	xcvrStatusEntry, err := d.GetEntry(&db.TableSpec{Name: TRANSCEIVER_STATUS}, db.Key{Comp: []string{name}})
-	if err != nil {
-		return XcvrInfo{}, err
+/*
+resolveTransceiverPresence determines module presence from SW/HW status fields.
+xcvrd writes insert/remove status to TRANSCEIVER_STATUS_SW; TRANSCEIVER_STATUS
+holds hardware flags (e.g. tx disable) and may omit status on newer platforms.
+When both status fields are empty, infoPresent reflects TRANSCEIVER_INFO presence.
+*/
+func resolveTransceiverPresence(swStatus, hwStatus string, infoPresent bool) (bool, error) {
+	status := swStatus
+	if status == "" {
+		status = hwStatus
 	}
-
-	var xcvrStatus XcvrInfo
-	xcvrStatus.ForceLowPower = xcvrStatusEntry.Get(FORCE_LOW_POWER)
-
-	status := xcvrStatusEntry.Get("status")
 	switch status {
 	case SFP_STATUS_INSERTED:
-		xcvrStatus.Presence = true
-	case SFP_STATUS_REMOVED, "":
-		xcvrStatus.Presence = false
+		return true, nil
+	case SFP_STATUS_REMOVED:
+		return false, nil
+	case "":
+		return infoPresent, nil
 	default:
-		return XcvrInfo{}, fmt.Errorf("Unknown status for transceiver %s: %s", name, status)
+		return false, fmt.Errorf("unknown transceiver status: %s", status)
 	}
+}
+
+func getXcvrStatusInfoFromDb(name string, d *db.DB) (XcvrInfo, error) {
+	var xcvrStatus XcvrInfo
+	var swStatus, hwStatus string
+	hasStatusRow := false
+
+	if hwEntry, err := d.GetEntry(&db.TableSpec{Name: TRANSCEIVER_STATUS}, db.Key{Comp: []string{name}}); err == nil {
+		hasStatusRow = true
+		xcvrStatus.ForceLowPower = hwEntry.Get(FORCE_LOW_POWER)
+		hwStatus = hwEntry.Get("status")
+	}
+	if swEntry, err := d.GetEntry(&db.TableSpec{Name: TRANSCEIVER_STATUS_SW}, db.Key{Comp: []string{name}}); err == nil {
+		hasStatusRow = true
+		swStatus = swEntry.Get("status")
+	}
+
+	infoPresent := false
+	if _, err := d.GetEntry(&db.TableSpec{Name: TRANSCEIVER_TBL}, db.Key{Comp: []string{name}}); err == nil {
+		infoPresent = true
+	}
+
+	if !hasStatusRow && !infoPresent {
+		return XcvrInfo{}, fmt.Errorf("transceiver status not found for %s", name)
+	}
+
+	presence, err := resolveTransceiverPresence(swStatus, hwStatus, infoPresent)
+	if err != nil {
+		return XcvrInfo{}, fmt.Errorf("transceiver %s: %w", name, err)
+	}
+	xcvrStatus.Presence = presence
 	return xcvrStatus, nil
 }
 
@@ -2621,11 +2704,11 @@ func getXcvrInfoFromDb(name string, d *db.DB) (XcvrInfo, error) {
 	xcvrInfo.Presence = true
 	xcvrInfo.EthPmd = xcvrEntry.Get("ethernet-pmd")
 	xcvrInfo.Parent = xcvrEntry.Get("parent")
-	xcvrInfo.MfgName = xcvrEntry.Get("manufacturer")
-	xcvrInfo.MfgDate = xcvrEntry.Get("vendor_date")
-	xcvrInfo.PartNo = xcvrEntry.Get("model")
-	xcvrInfo.SerialNo = xcvrEntry.Get("serial")
-	xcvrInfo.HardwareRev = xcvrEntry.Get("hardware_rev")
+	xcvrInfo.MfgName = trimXcvrEepromString(xcvrEntry.Get("manufacturer"))
+	xcvrInfo.MfgDate = trimXcvrMfgDate(xcvrEntry.Get("vendor_date"))
+	xcvrInfo.PartNo = trimXcvrEepromString(xcvrEntry.Get("model"))
+	xcvrInfo.SerialNo = trimXcvrEepromString(xcvrEntry.Get("serial"))
+	xcvrInfo.HardwareRev = trimXcvrEepromString(xcvrEntry.Get("hardware_rev"))
 	xcvrInfo.Type = xcvrEntry.Get("type")
 	xcvrInfo.LatestFirmwareVer = xcvrEntry.Get("latest_fw_rev")
 
@@ -2685,6 +2768,75 @@ func convAndFillDBValues(rxpField, txpField, txbField, txdisableField string, ch
 		txLaserEnable = true
 	}
 	channel.State.TxLaser = &txLaserEnable
+}
+
+/*
+parseXcvrDomValue parses a per-lane DOM sensor field into a float. xcvrd
+populates unused/unsupported lanes with the sentinel "N/A" (and absent fields
+are empty), both of which are treated as "no reading".
+*/
+func parseXcvrDomValue(field string) (float64, bool) {
+	if field == "" || strings.EqualFold(field, "N/A") {
+		return 0, false
+	}
+	v, err := strconv.ParseFloat(field, 64)
+	if err != nil {
+		return 0, false
+	}
+	return v, true
+}
+
+/*
+fillXcvrAggregatePower populates the overall-transceiver (aggregate) optical
+power and laser-bias-current state from the per-lane DOM sensor values.
+
+Per the OpenConfig openconfig-platform-transceiver model, the input-power,
+output-power and laser-bias-current under transceiver/state represent "an
+aggregate of multiple physical channels (i.e., for the overall transceiver)"
+which is "a calculation performed on the device by summing up all of the
+related individual physical channels".
+
+Optical power (input-power/output-power) is expressed in dBm, so the aggregate
+is computed by summing the per-lane values in the linear (mW) domain and then
+converting the total back to dBm. Laser bias current is expressed in mA and is
+summed directly.
+*/
+func fillXcvrAggregatePower(xcvrState *ocbinds.OpenconfigPlatform_Components_Component_Transceiver_State, xcvrInfo XcvrInfo) {
+	var rxLinearSum, txLinearSum, biasSum float64
+	rxCount, txCount, biasCount := 0, 0, 0
+
+	for i := 0; i < XCVR_LANE_LIMIT; i++ {
+		lane := &xcvrInfo.Lanes[i]
+		// Unused lanes are reported by xcvrd as "N/A"; only sum lanes that
+		// carry a valid numeric reading.
+		if v, ok := parseXcvrDomValue(lane.RxPowerLane); ok {
+			rxLinearSum += math.Pow(10, v/10)
+			rxCount++
+		}
+		if v, ok := parseXcvrDomValue(lane.TxPowerLane); ok {
+			txLinearSum += math.Pow(10, v/10)
+			txCount++
+		}
+		if v, ok := parseXcvrDomValue(lane.TxBiasLane); ok {
+			biasSum += v
+			biasCount++
+		}
+	}
+
+	if rxCount > 0 && rxLinearSum > 0 {
+		ygot.BuildEmptyTree(xcvrState.InputPower)
+		rxDbm := 10 * math.Log10(rxLinearSum)
+		xcvrState.InputPower.Instant = &rxDbm
+	}
+	if txCount > 0 && txLinearSum > 0 {
+		ygot.BuildEmptyTree(xcvrState.OutputPower)
+		txDbm := 10 * math.Log10(txLinearSum)
+		xcvrState.OutputPower.Instant = &txDbm
+	}
+	if biasCount > 0 {
+		ygot.BuildEmptyTree(xcvrState.LaserBiasCurrent)
+		xcvrState.LaserBiasCurrent.Instant = &biasSum
+	}
 }
 
 func fetchAllPortsFromParentPortWithLanes(port string, appstdb *db.DB, maxLanes int) (map[uint16]string, error) {
@@ -2812,6 +2964,8 @@ func fillXcvrInfo(xcvrCom *ocbinds.OpenconfigPlatform_Components_Component,
 	nm := name
 	xcvrEEPROMState := xcvrCom.State
 	xcvrEEPROMState.Name = &nm
+	ygot.BuildEmptyTree(xcvrCom.Transceiver)
+	ygot.BuildEmptyTree(xcvrCom.Transceiver.State)
 	var xcvrInfo XcvrInfo
 	if !xcvrStatusState.Presence {
 		p := !xcvrStatusState.Presence
@@ -2886,6 +3040,7 @@ func fillXcvrInfo(xcvrCom *ocbinds.OpenconfigPlatform_Components_Component,
 
 		if xcvrInfo.Temperature != "" {
 			if float64val, err := strconv.ParseFloat(xcvrInfo.Temperature, 64); err == nil {
+				ygot.BuildEmptyTree(xcvrEEPROMState.Temperature)
 				xcvrEEPROMState.Temperature.Instant = &float64val
 			}
 		}
@@ -2900,6 +3055,9 @@ func fillXcvrInfo(xcvrCom *ocbinds.OpenconfigPlatform_Components_Component,
 				log.V(lvl.DEBUG).Info("Could not find the max number of lanes for transceiver.")
 			}
 		}
+
+		/* Aggregate (overall transceiver) optical power/bias state */
+		fillXcvrAggregatePower(xcvrState, xcvrInfo)
 
 		if xcvrInfo.Type != "" {
 			xcvrState.FormFactor = formFactorTypeFromString(xcvrInfo.Type)
@@ -2987,6 +3145,7 @@ func fillXcvrInfo(xcvrCom *ocbinds.OpenconfigPlatform_Components_Component,
 			if err != nil {
 				return err
 			}
+			ygot.BuildEmptyTree(xcvrEEPROMState.Temperature)
 			xcvrEEPROMState.Temperature.Instant = &float64val
 		}
 
@@ -3000,6 +3159,10 @@ func fillXcvrInfo(xcvrCom *ocbinds.OpenconfigPlatform_Components_Component,
 		}
 	case XCVR_ETH_PMD:
 		xcvrState.EthernetPmd = ethPmdTypeFromString(xcvrInfo.EthPmd)
+	case XCVR_INPUT_POWER, XCVR_INPUT_POWER_INSTANT,
+		XCVR_OUTPUT_POWER, XCVR_OUTPUT_POWER_INSTANT,
+		XCVR_LASER_BIAS, XCVR_LASER_BIAS_INSTANT:
+		fillXcvrAggregatePower(xcvrState, xcvrInfo)
 	}
 	return err
 }
@@ -3582,6 +3745,10 @@ func fillFirmwareInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 		if firmwareInfo.SerialNo != "" {
 			compState.SerialNo = &firmwareInfo.SerialNo
 		}
+		// State Software Version (from sonic_version.yml, aligned with show version)
+		if swVer := getFormattedSonicSoftwareVersion(); swVer != "" {
+			compState.SoftwareVersion = &swVer
+		}
 		// State Model Name
 		if firmwareInfo.ModelName != "" {
 			compState.ModelName = &firmwareInfo.ModelName
@@ -3653,6 +3820,12 @@ func fillFirmwareInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 			return errors.New("serial_no field not present in State DB")
 		}
 		compState.SerialNo = &firmwareInfo.SerialNo
+	case COMP_STATE_SW_VER:
+		swVer := getFormattedSonicSoftwareVersion()
+		if swVer == "" {
+			return errors.New("software_version field not present")
+		}
+		compState.SoftwareVersion = &swVer
 	case COMP_STATE_MODEL_NAME:
 		if firmwareInfo.ModelName == "" {
 			return errors.New("component state model-name field not present in State DB")
@@ -3737,8 +3910,8 @@ func fillSWCompInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 		compState.Name = &name
 		// State Software Version
 		compState.SoftwareVersion = &defaultVal
-		if swcInfo.SoftwareVersion != "" {
-			compState.SoftwareVersion = &swcInfo.SoftwareVersion
+		if swVersion := resolveSoftwareVersion(swcInfo, cType); swVersion != "" {
+			compState.SoftwareVersion = &swVersion
 		}
 		// State Parent
 		compState.Parent = &defaultParentVal
@@ -3779,10 +3952,11 @@ func fillSWCompInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 	case COMP_STATE_NAME:
 		compState.Name = &name
 	case COMP_STATE_SW_VER:
-		if swcInfo.SoftwareVersion == "" {
+		swVersion := resolveSoftwareVersion(swcInfo, cType)
+		if swVersion == "" {
 			return errors.New("software_version field not present in State DB")
 		}
-		compState.SoftwareVersion = &swcInfo.SoftwareVersion
+		compState.SoftwareVersion = &swVersion
 	case COMP_STATE_PARENT:
 		compState.Parent = &defaultParentVal
 		if swcInfo.Parent != "" {
