@@ -171,6 +171,65 @@ func fillRemediationInfo(faultObj *ocbinds.OpenconfigPlatform_Components_Compone
 	return nil
 }
 
+// isDbHealthFlagTrue reports whether a STATE_DB boolean flag ("true"/"True")
+// is set.
+func isDbHealthFlagTrue(v string) bool {
+	return v == "true" || v == "True"
+}
+
+// deriveHealthzStatusFromComponent infers a component's healthz status when the
+// FAULT_INFO table has no entries for it. Platforms in this build do not
+// populate FAULT_INFO, so without this fallback every component would always
+// report HEALTHY. For component types that expose a boolean "status" field in
+// their STATE_DB table (PSU, Fan), a component that is present but reports
+// status=false is treated as UNHEALTHY. All other cases default to HEALTHY,
+// preserving prior behavior.
+func deriveHealthzStatusFromComponent(name string, stdb *db.DB) ocbinds.E_OpenconfigPlatform_Components_Component_Healthz_State_Status {
+	healthy := ocbinds.OpenconfigPlatform_Components_Component_Healthz_State_Status_HEALTHY
+
+	if stdb == nil {
+		return healthy
+	}
+
+	cType, err := getCompTypeByName(name)
+	if err != nil {
+		return healthy
+	}
+
+	var tblName string
+	switch cType {
+	case CompTypePsu:
+		tblName = PSU_TBL
+	case CompTypeFan:
+		tblName = FAN_TBL
+	default:
+		// Component types without a boolean health signal keep the prior default.
+		return healthy
+	}
+
+	entry, err := stdb.GetEntry(&db.TableSpec{Name: tblName}, db.Key{Comp: []string{name}})
+	if err != nil {
+		return healthy
+	}
+
+	return healthzStatusFromFlags(entry.Get("presence"), entry.Get("status"))
+}
+
+// healthzStatusFromFlags maps a component's STATE_DB presence/status flags to a
+// healthz status. A component that is absent (or whose presence is unknown) is
+// not reported as faulty; only a present component reporting status=false is
+// considered UNHEALTHY.
+func healthzStatusFromFlags(presence, status string) ocbinds.E_OpenconfigPlatform_Components_Component_Healthz_State_Status {
+	healthy := ocbinds.OpenconfigPlatform_Components_Component_Healthz_State_Status_HEALTHY
+	if !isDbHealthFlagTrue(presence) {
+		return healthy
+	}
+	if isDbHealthFlagTrue(status) {
+		return healthy
+	}
+	return ocbinds.OpenconfigPlatform_Components_Component_Healthz_State_Status_UNHEALTHY
+}
+
 func fillHealthzInfo(name, symptom, targetUriPath string, stdb *db.DB, comp *ocbinds.OpenconfigPlatform_Components_Component) error {
 	ygot.BuildEmptyTree(comp.Healthz)
 	ygot.BuildEmptyTree(comp.Healthz.State)
@@ -192,7 +251,10 @@ func fillHealthzInfo(name, symptom, targetUriPath string, stdb *db.DB, comp *ocb
 	}
 
 	if len(faultSymptomKeys) == 0 {
-		comp.Healthz.State.Status = ocbinds.OpenconfigPlatform_Components_Component_Healthz_State_Status_HEALTHY
+		// Platforms in this build do not populate FAULT_INFO, so fall back to the
+		// component's own STATE_DB health signal (e.g. PSU_INFO/FAN_INFO status)
+		// instead of unconditionally reporting HEALTHY.
+		comp.Healthz.State.Status = deriveHealthzStatusFromComponent(name, stdb)
 		return nil
 	}
 
