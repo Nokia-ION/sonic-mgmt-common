@@ -534,3 +534,663 @@ func Test_openconfig_subintf_ipv6(t *testing.T) {
 
 	t.Log("\n\n+++++++++++++ DONE ENABLING AND DISABLING IPV6 LINK LOCAL ON SUBINTERFACES  ++++++++++++")
 }
+
+func Test_openconfig_routed_vlan_ipv4_vrrp_get(t *testing.T) {
+	t.Log("\n\n+++++++++++++ QUERY IPv4 VRRP OPENCONFIG LEAVES ++++++++++++")
+
+	preReqMap := map[string]interface{}{
+		"VLAN_INTERFACE": map[string]interface{}{
+			"Vlan100|50.0.0.1/24": map[string]interface{}{},
+		},
+		"VRRP": map[string]interface{}{
+			"Vlan100|25": map[string]interface{}{
+				"vid":          "25",
+				"vip@":         "50.0.0.254/24",
+				"pre_empt":     "true",
+				"priority":     "100",
+				"adv_interval": "1",
+			},
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+
+	url := "/openconfig-interfaces:interfaces/interface[name=Vlan100]/openconfig-vlan:routed-vlan/openconfig-if-ip:ipv4/addresses/address[ip=50.0.0.1]/vrrp/vrrp-group[virtual-router-id=25]/config"
+	expectedConfigJSON := "{\"openconfig-if-ip:config\":{\"virtual-router-id\":25,\"virtual-address\":[\"50.0.0.254\"],\"priority\":100,\"preempt\":true,\"advertisement-interval\":100}}"
+	t.Run("Test GET vrrp-group config leaves", processGetRequest(url, nil, expectedConfigJSON, false))
+	time.Sleep(1 * time.Second)
+
+	url = "/openconfig-interfaces:interfaces/interface[name=Vlan100]/openconfig-vlan:routed-vlan/openconfig-if-ip:ipv4/addresses/address[ip=50.0.0.1]/vrrp/vrrp-group[virtual-router-id=25]/state"
+	expectedStateJSON := "{\"openconfig-if-ip:state\":{\"virtual-router-id\":25,\"virtual-address\":[\"50.0.0.254\"],\"priority\":100,\"preempt\":true,\"advertisement-interval\":100,\"current-priority\":100}}"
+	t.Run("Test GET vrrp-group state leaves", processGetRequest(url, nil, expectedStateJSON, false))
+	time.Sleep(1 * time.Second)
+
+	cleanupTbl := map[string]interface{}{
+		"VLAN_INTERFACE": map[string]interface{}{
+			"Vlan100|50.0.0.1/24": "",
+		},
+		"VRRP": map[string]interface{}{
+			"Vlan100|25": "",
+		},
+	}
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_routed_vlan_ipv4_vrrp_tracking_get(t *testing.T) {
+	t.Log("\n\n+++++++++++++ QUERY IPv4 VRRP TRACKING OPENCONFIG LEAVES ++++++++++++")
+
+	preReqMap := map[string]interface{}{
+		"VLAN_INTERFACE": map[string]interface{}{
+			"Vlan100|50.0.0.1/24": map[string]interface{}{},
+		},
+		"VRRP": map[string]interface{}{
+			"Vlan100|25": map[string]interface{}{
+				"vid":          "25",
+				"vip@":         "50.0.0.254/24",
+				"pre_empt":     "true",
+				"priority":     "100",
+				"adv_interval": "1",
+			},
+		},
+		"VRRP_TRACK": map[string]interface{}{
+			"Vlan100|25|Ethernet16": map[string]interface{}{
+				"priority_increment": "20",
+			},
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+
+	url := "/openconfig-interfaces:interfaces/interface[name=Vlan100]/openconfig-vlan:routed-vlan/openconfig-if-ip:ipv4/addresses/address[ip=50.0.0.1]/vrrp/vrrp-group[virtual-router-id=25]/interface-tracking/config"
+	expectedConfigJSON := "{\"openconfig-if-ip:config\":{\"priority-decrement\":20,\"track-interface\":[\"Ethernet16\"]}}"
+	t.Run("Test GET vrrp-group interface-tracking config", processGetRequest(url, nil, expectedConfigJSON, false))
+	time.Sleep(1 * time.Second)
+
+	url = "/openconfig-interfaces:interfaces/interface[name=Vlan100]/openconfig-vlan:routed-vlan/openconfig-if-ip:ipv4/addresses/address[ip=50.0.0.1]/vrrp/vrrp-group[virtual-router-id=25]/interface-tracking/state"
+	expectedStateJSON := "{\"openconfig-if-ip:state\":{\"priority-decrement\":20,\"track-interface\":[\"Ethernet16\"]}}"
+	t.Run("Test GET vrrp-group interface-tracking state", processGetRequest(url, nil, expectedStateJSON, false))
+	time.Sleep(1 * time.Second)
+
+	cleanupTbl := map[string]interface{}{
+		"VLAN_INTERFACE": map[string]interface{}{
+			"Vlan100|50.0.0.1/24": "",
+		},
+		"VRRP": map[string]interface{}{
+			"Vlan100|25": "",
+		},
+		"VRRP_TRACK": map[string]interface{}{
+			"Vlan100|25|Ethernet16": "",
+		},
+	}
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_routed_vlan_ipv6_vrrp_get(t *testing.T) {
+	t.Log("\n\n+++++++++++++ QUERY IPv6 VRRP OPENCONFIG LEAVES ++++++++++++")
+
+	preReqMap := map[string]interface{}{
+		"VLAN_INTERFACE": map[string]interface{}{
+			"Vlan100|2001:db8::1/64": map[string]interface{}{},
+		},
+		"VRRP6": map[string]interface{}{
+			"Vlan100|25": map[string]interface{}{
+				"vid":                "25",
+				"vip@":               "2001:db8::ff/64",
+				"pre_empt":           "true",
+				"priority":           "120",
+				"adv_interval":       "2",
+				"virtual_link_local": "fe80::abcd",
+			},
+		},
+		"VRRP6_TRACK": map[string]interface{}{
+			"Vlan100|25|Ethernet20": map[string]interface{}{
+				"priority_increment": "15",
+			},
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+
+	url := "/openconfig-interfaces:interfaces/interface[name=Vlan100]/openconfig-vlan:routed-vlan/openconfig-if-ip:ipv6/addresses/address[ip=2001:db8::1]/vrrp/vrrp-group[virtual-router-id=25]/config"
+	expectedConfigJSON := "{\"openconfig-if-ip:config\":{\"virtual-router-id\":25,\"virtual-address\":[\"2001:db8::ff\"],\"priority\":120,\"preempt\":true,\"advertisement-interval\":200,\"virtual-link-local\":\"fe80::abcd\"}}"
+	t.Run("Test GET ipv6 vrrp-group config leaves", processGetRequest(url, nil, expectedConfigJSON, false))
+	time.Sleep(1 * time.Second)
+
+	url = "/openconfig-interfaces:interfaces/interface[name=Vlan100]/openconfig-vlan:routed-vlan/openconfig-if-ip:ipv6/addresses/address[ip=2001:db8::1]/vrrp/vrrp-group[virtual-router-id=25]/interface-tracking/state"
+	expectedTrackingStateJSON := "{\"openconfig-if-ip:state\":{\"priority-decrement\":15,\"track-interface\":[\"Ethernet20\"]}}"
+	t.Run("Test GET ipv6 vrrp-group interface-tracking state", processGetRequest(url, nil, expectedTrackingStateJSON, false))
+	time.Sleep(1 * time.Second)
+
+	cleanupTbl := map[string]interface{}{
+		"VLAN_INTERFACE": map[string]interface{}{
+			"Vlan100|2001:db8::1/64": "",
+		},
+		"VRRP6": map[string]interface{}{
+			"Vlan100|25": "",
+		},
+		"VRRP6_TRACK": map[string]interface{}{
+			"Vlan100|25|Ethernet20": "",
+		},
+	}
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_routed_vlan_ipv4_vrrp_patch(t *testing.T) {
+	t.Log("\n\n+++++++++++++ PATCH ROUTED VLAN IPv4 VRRP OPENCONFIG LEAVES ++++++++++++")
+
+	preReqMap := map[string]interface{}{
+		"VLAN_INTERFACE": map[string]interface{}{
+			"Vlan100|50.0.0.1/24": map[string]interface{}{},
+		},
+		"VRRP": map[string]interface{}{
+			"Vlan100|25": map[string]interface{}{
+				"vid":           "25",
+				"vip@":          "50.0.0.254/24",
+				"pre_empt":      "true",
+				"priority":      "100",
+				"adv_interval":  "1",
+				"preempt_delay": "0",
+				"accept_mode":   "false",
+			},
+		},
+		"VRRP_TRACK": map[string]interface{}{
+			"Vlan100|25|Ethernet16": map[string]interface{}{
+				"priority_increment": "20",
+			},
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+
+	baseURL := "/openconfig-interfaces:interfaces/interface[name=Vlan100]/openconfig-vlan:routed-vlan/openconfig-if-ip:ipv4/addresses/address[ip=50.0.0.1]/vrrp/vrrp-group[virtual-router-id=25]"
+	t.Run("Patch preempt", processSetRequest(baseURL+"/config/preempt", "{\"preempt\":false}", "PATCH", false, nil))
+	t.Run("Patch priority", processSetRequest(baseURL+"/config/priority", "{\"priority\":105}", "PATCH", false, nil))
+	t.Run("Patch advertisement-interval", processSetRequest(baseURL+"/config/advertisement-interval", "{\"advertisement-interval\":200}", "PATCH", false, nil))
+	t.Run("Patch preempt-delay", processSetRequest(baseURL+"/config/preempt-delay", "{\"preempt-delay\":5}", "PATCH", false, nil))
+	t.Run("Patch accept-mode", processSetRequest(baseURL+"/config/accept-mode", "{\"accept-mode\":true}", "PATCH", false, nil))
+	t.Run("Patch tracking priority-decrement", processSetRequest(baseURL+"/interface-tracking/config/priority-decrement", "{\"priority-decrement\":30}", "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedConfigJSON := "{\"openconfig-if-ip:config\":{\"virtual-router-id\":25,\"virtual-address\":[\"50.0.0.254\"],\"priority\":105,\"preempt\":false,\"preempt-delay\":5,\"accept-mode\":true,\"advertisement-interval\":200}}"
+	t.Run("Verify GET patched routed-vlan ipv4 vrrp-group config", processGetRequest(baseURL+"/config", nil, expectedConfigJSON, false))
+	time.Sleep(1 * time.Second)
+
+	expectedTrackingJSON := "{\"openconfig-if-ip:state\":{\"priority-decrement\":30,\"track-interface\":[\"Ethernet16\"]}}"
+	t.Run("Verify GET patched routed-vlan ipv4 tracking state", processGetRequest(baseURL+"/interface-tracking/state", nil, expectedTrackingJSON, false))
+	time.Sleep(1 * time.Second)
+
+	cleanupTbl := map[string]interface{}{
+		"VLAN_INTERFACE": map[string]interface{}{
+			"Vlan100|50.0.0.1/24": "",
+		},
+		"VRRP": map[string]interface{}{
+			"Vlan100|25": "",
+		},
+		"VRRP_TRACK": map[string]interface{}{
+			"Vlan100|25|Ethernet16": "",
+		},
+	}
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_routed_vlan_ipv6_vrrp_patch(t *testing.T) {
+	t.Log("\n\n+++++++++++++ PATCH ROUTED VLAN IPv6 VRRP OPENCONFIG LEAVES ++++++++++++")
+
+	preReqMap := map[string]interface{}{
+		"VLAN_INTERFACE": map[string]interface{}{
+			"Vlan100|2001:db8::1/64": map[string]interface{}{},
+		},
+		"VRRP6": map[string]interface{}{
+			"Vlan100|29": map[string]interface{}{
+				"vid":                "29",
+				"vip@":               "2001:db8::ff/64",
+				"pre_empt":           "true",
+				"priority":           "120",
+				"adv_interval":       "2",
+				"preempt_delay":      "0",
+				"accept_mode":        "false",
+				"virtual_link_local": "fe80::abcd",
+			},
+		},
+		"VRRP6_TRACK": map[string]interface{}{
+			"Vlan100|29|Ethernet20": map[string]interface{}{
+				"priority_increment": "15",
+			},
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+
+	baseURL := "/openconfig-interfaces:interfaces/interface[name=Vlan100]/openconfig-vlan:routed-vlan/openconfig-if-ip:ipv6/addresses/address[ip=2001:db8::1]/vrrp/vrrp-group[virtual-router-id=29]"
+	t.Run("Patch preempt", processSetRequest(baseURL+"/config/preempt", "{\"preempt\":false}", "PATCH", false, nil))
+	t.Run("Patch priority", processSetRequest(baseURL+"/config/priority", "{\"priority\":115}", "PATCH", false, nil))
+	t.Run("Patch advertisement-interval", processSetRequest(baseURL+"/config/advertisement-interval", "{\"advertisement-interval\":300}", "PATCH", false, nil))
+	t.Run("Patch preempt-delay", processSetRequest(baseURL+"/config/preempt-delay", "{\"preempt-delay\":7}", "PATCH", false, nil))
+	t.Run("Patch accept-mode", processSetRequest(baseURL+"/config/accept-mode", "{\"accept-mode\":true}", "PATCH", false, nil))
+	t.Run("Patch virtual-link-local", processSetRequest(baseURL+"/config/virtual-link-local", "{\"virtual-link-local\":\"fe80::beef\"}", "PATCH", false, nil))
+	t.Run("Patch tracking priority-decrement", processSetRequest(baseURL+"/interface-tracking/config/priority-decrement", "{\"priority-decrement\":25}", "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedConfigJSON := "{\"openconfig-if-ip:config\":{\"virtual-router-id\":29,\"virtual-address\":[\"2001:db8::ff\"],\"priority\":115,\"preempt\":false,\"preempt-delay\":7,\"accept-mode\":true,\"advertisement-interval\":300,\"virtual-link-local\":\"fe80::beef\"}}"
+	t.Run("Verify GET patched routed-vlan ipv6 vrrp-group config", processGetRequest(baseURL+"/config", nil, expectedConfigJSON, false))
+	time.Sleep(1 * time.Second)
+
+	expectedTrackingJSON := "{\"openconfig-if-ip:state\":{\"priority-decrement\":25,\"track-interface\":[\"Ethernet20\"]}}"
+	t.Run("Verify GET patched routed-vlan ipv6 tracking state", processGetRequest(baseURL+"/interface-tracking/state", nil, expectedTrackingJSON, false))
+	time.Sleep(1 * time.Second)
+
+	cleanupTbl := map[string]interface{}{
+		"VLAN_INTERFACE": map[string]interface{}{
+			"Vlan100|2001:db8::1/64": "",
+		},
+		"VRRP6": map[string]interface{}{
+			"Vlan100|29": "",
+		},
+		"VRRP6_TRACK": map[string]interface{}{
+			"Vlan100|29|Ethernet20": "",
+		},
+	}
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_subinterface_ipv4_vrrp_get(t *testing.T) {
+	t.Log("\n\n+++++++++++++ QUERY SUBINTERFACE IPv4 VRRP OPENCONFIG LEAVES ++++++++++++")
+
+	preReqMap := map[string]interface{}{
+		"VRRP": map[string]interface{}{
+			"Ethernet0|19": map[string]interface{}{
+				"vid":          "19",
+				"vip@":         "10.0.0.254/24",
+				"pre_empt":     "true",
+				"priority":     "110",
+				"adv_interval": "1",
+			},
+		},
+		"VRRP_TRACK": map[string]interface{}{
+			"Ethernet0|19|Ethernet16": map[string]interface{}{
+				"priority_increment": "20",
+			},
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+
+	url := "/openconfig-interfaces:interfaces/interface[name=Ethernet0]/subinterfaces/subinterface[index=0]/openconfig-if-ip:ipv4/addresses/address[ip=20.0.0.1]/vrrp/vrrp-group[virtual-router-id=19]/config"
+	expectedConfigJSON := "{\"openconfig-if-ip:config\":{\"virtual-router-id\":19,\"virtual-address\":[\"10.0.0.254\"],\"priority\":110,\"preempt\":true,\"advertisement-interval\":100}}"
+	t.Run("Test GET subinterface ipv4 vrrp-group config", processGetRequest(url, nil, expectedConfigJSON, false))
+	time.Sleep(1 * time.Second)
+
+	url = "/openconfig-interfaces:interfaces/interface[name=Ethernet0]/subinterfaces/subinterface[index=0]/openconfig-if-ip:ipv4/addresses/address[ip=20.0.0.1]/vrrp/vrrp-group[virtual-router-id=19]/interface-tracking/state"
+	expectedTrackingStateJSON := "{\"openconfig-if-ip:state\":{\"priority-decrement\":20,\"track-interface\":[\"Ethernet16\"]}}"
+	t.Run("Test GET subinterface ipv4 vrrp-group interface-tracking state", processGetRequest(url, nil, expectedTrackingStateJSON, false))
+	time.Sleep(1 * time.Second)
+
+	cleanupTbl := map[string]interface{}{
+		"VRRP": map[string]interface{}{
+			"Ethernet0|19": "",
+		},
+		"VRRP_TRACK": map[string]interface{}{
+			"Ethernet0|19|Ethernet16": "",
+		},
+	}
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_subinterface_ipv6_vrrp_get(t *testing.T) {
+	t.Log("\n\n+++++++++++++ QUERY SUBINTERFACE IPv6 VRRP OPENCONFIG LEAVES ++++++++++++")
+
+	preReqMap := map[string]interface{}{
+		"VRRP6": map[string]interface{}{
+			"Ethernet0|29": map[string]interface{}{
+				"vid":                "29",
+				"vip@":               "2001:db8::ff/64",
+				"pre_empt":           "true",
+				"priority":           "120",
+				"adv_interval":       "2",
+				"virtual_link_local": "fe80::abcd",
+			},
+		},
+		"VRRP6_TRACK": map[string]interface{}{
+			"Ethernet0|29|Ethernet20": map[string]interface{}{
+				"priority_increment": "15",
+			},
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+
+	url := "/openconfig-interfaces:interfaces/interface[name=Ethernet0]/subinterfaces/subinterface[index=0]/openconfig-if-ip:ipv6/addresses/address[ip=2001:db8::1]/vrrp/vrrp-group[virtual-router-id=29]/config"
+	expectedConfigJSON := "{\"openconfig-if-ip:config\":{\"virtual-router-id\":29,\"virtual-address\":[\"2001:db8::ff\"],\"priority\":120,\"preempt\":true,\"advertisement-interval\":200,\"virtual-link-local\":\"fe80::abcd\"}}"
+	t.Run("Test GET subinterface ipv6 vrrp-group config", processGetRequest(url, nil, expectedConfigJSON, false))
+	time.Sleep(1 * time.Second)
+
+	url = "/openconfig-interfaces:interfaces/interface[name=Ethernet0]/subinterfaces/subinterface[index=0]/openconfig-if-ip:ipv6/addresses/address[ip=2001:db8::1]/vrrp/vrrp-group[virtual-router-id=29]/interface-tracking/state"
+	expectedTrackingStateJSON := "{\"openconfig-if-ip:state\":{\"priority-decrement\":15,\"track-interface\":[\"Ethernet20\"]}}"
+	t.Run("Test GET subinterface ipv6 vrrp-group interface-tracking state", processGetRequest(url, nil, expectedTrackingStateJSON, false))
+	time.Sleep(1 * time.Second)
+
+	cleanupTbl := map[string]interface{}{
+		"VRRP6": map[string]interface{}{
+			"Ethernet0|29": "",
+		},
+		"VRRP6_TRACK": map[string]interface{}{
+			"Ethernet0|29|Ethernet20": "",
+		},
+	}
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_portchannel_subinterface_vrrp_get(t *testing.T) {
+	t.Log("\n\n+++++++++++++ QUERY PORTCHANNEL SUBINTERFACE VRRP OPENCONFIG LEAVES ++++++++++++")
+
+	preReqMap := map[string]interface{}{
+		"VRRP": map[string]interface{}{
+			"PortChannel001|19": map[string]interface{}{
+				"vid":          "19",
+				"vip@":         "10.0.0.254/24",
+				"pre_empt":     "true",
+				"priority":     "110",
+				"adv_interval": "1",
+			},
+		},
+		"VRRP_TRACK": map[string]interface{}{
+			"PortChannel001|19|Ethernet16": map[string]interface{}{
+				"priority_increment": "20",
+			},
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+
+	url := "/openconfig-interfaces:interfaces/interface[name=PortChannel001]/subinterfaces/subinterface[index=0]/openconfig-if-ip:ipv4/addresses/address[ip=20.0.0.1]/vrrp/vrrp-group[virtual-router-id=19]/config"
+	expectedConfigJSON := "{\"openconfig-if-ip:config\":{\"virtual-router-id\":19,\"virtual-address\":[\"10.0.0.254\"],\"priority\":110,\"preempt\":true,\"advertisement-interval\":100}}"
+	t.Run("Test GET PortChannel subinterface ipv4 vrrp-group config", processGetRequest(url, nil, expectedConfigJSON, false))
+	time.Sleep(1 * time.Second)
+
+	url = "/openconfig-interfaces:interfaces/interface[name=PortChannel001]/subinterfaces/subinterface[index=0]/openconfig-if-ip:ipv4/addresses/address[ip=20.0.0.1]/vrrp/vrrp-group[virtual-router-id=19]/interface-tracking/state"
+	expectedTrackingStateJSON := "{\"openconfig-if-ip:state\":{\"priority-decrement\":20,\"track-interface\":[\"Ethernet16\"]}}"
+	t.Run("Test GET PortChannel subinterface ipv4 vrrp-group interface-tracking state", processGetRequest(url, nil, expectedTrackingStateJSON, false))
+	time.Sleep(1 * time.Second)
+
+	preReqMap = map[string]interface{}{
+		"VRRP6": map[string]interface{}{
+			"PortChannel001|29": map[string]interface{}{
+				"vid":                "29",
+				"vip@":               "2001:db8::ff/64",
+				"pre_empt":           "true",
+				"priority":           "120",
+				"adv_interval":       "2",
+				"virtual_link_local": "fe80::abcd",
+			},
+		},
+		"VRRP6_TRACK": map[string]interface{}{
+			"PortChannel001|29|Ethernet20": map[string]interface{}{
+				"priority_increment": "15",
+			},
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+
+	url = "/openconfig-interfaces:interfaces/interface[name=PortChannel001]/subinterfaces/subinterface[index=0]/openconfig-if-ip:ipv6/addresses/address[ip=2001:db8::1]/vrrp/vrrp-group[virtual-router-id=29]/config"
+	expectedConfigJSON = "{\"openconfig-if-ip:config\":{\"virtual-router-id\":29,\"virtual-address\":[\"2001:db8::ff\"],\"priority\":120,\"preempt\":true,\"advertisement-interval\":200,\"virtual-link-local\":\"fe80::abcd\"}}"
+	t.Run("Test GET PortChannel subinterface ipv6 vrrp-group config", processGetRequest(url, nil, expectedConfigJSON, false))
+	time.Sleep(1 * time.Second)
+
+	url = "/openconfig-interfaces:interfaces/interface[name=PortChannel001]/subinterfaces/subinterface[index=0]/openconfig-if-ip:ipv6/addresses/address[ip=2001:db8::1]/vrrp/vrrp-group[virtual-router-id=29]/interface-tracking/state"
+	expectedTrackingStateJSON = "{\"openconfig-if-ip:state\":{\"priority-decrement\":15,\"track-interface\":[\"Ethernet20\"]}}"
+	t.Run("Test GET PortChannel subinterface ipv6 vrrp-group interface-tracking state", processGetRequest(url, nil, expectedTrackingStateJSON, false))
+	time.Sleep(1 * time.Second)
+
+	cleanupTbl := map[string]interface{}{
+		"VRRP": map[string]interface{}{
+			"PortChannel001|19": "",
+		},
+		"VRRP_TRACK": map[string]interface{}{
+			"PortChannel001|19|Ethernet16": "",
+		},
+		"VRRP6": map[string]interface{}{
+			"PortChannel001|29": "",
+		},
+		"VRRP6_TRACK": map[string]interface{}{
+			"PortChannel001|29|Ethernet20": "",
+		},
+	}
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_subinterface_ipv4_vrrp_patch(t *testing.T) {
+	t.Log("\n\n+++++++++++++ PATCH SUBINTERFACE IPv4 VRRP OPENCONFIG LEAVES ++++++++++++")
+
+	preReqMap := map[string]interface{}{
+		"VRRP": map[string]interface{}{
+			"Ethernet0|19": map[string]interface{}{
+				"vid":           "19",
+				"vip@":          "10.0.0.254/24",
+				"pre_empt":      "true",
+				"priority":      "110",
+				"adv_interval":  "1",
+				"preempt_delay": "0",
+				"accept_mode":   "false",
+			},
+		},
+		"VRRP_TRACK": map[string]interface{}{
+			"Ethernet0|19|Ethernet16": map[string]interface{}{
+				"priority_increment": "20",
+			},
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+
+	baseURL := "/openconfig-interfaces:interfaces/interface[name=Ethernet0]/subinterfaces/subinterface[index=0]/openconfig-if-ip:ipv4/addresses/address[ip=20.0.0.1]/vrrp/vrrp-group[virtual-router-id=19]"
+	t.Run("Patch preempt", processSetRequest(baseURL+"/config/preempt", "{\"preempt\":false}", "PATCH", false, nil))
+	t.Run("Patch priority", processSetRequest(baseURL+"/config/priority", "{\"priority\":105}", "PATCH", false, nil))
+	t.Run("Patch advertisement-interval", processSetRequest(baseURL+"/config/advertisement-interval", "{\"advertisement-interval\":200}", "PATCH", false, nil))
+	t.Run("Patch preempt-delay", processSetRequest(baseURL+"/config/preempt-delay", "{\"preempt-delay\":5}", "PATCH", false, nil))
+	t.Run("Patch accept-mode", processSetRequest(baseURL+"/config/accept-mode", "{\"accept-mode\":true}", "PATCH", false, nil))
+	t.Run("Patch tracking priority-decrement", processSetRequest(baseURL+"/interface-tracking/config/priority-decrement", "{\"priority-decrement\":30}", "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedConfigJSON := "{\"openconfig-if-ip:config\":{\"virtual-router-id\":19,\"virtual-address\":[\"10.0.0.254\"],\"priority\":105,\"preempt\":false,\"preempt-delay\":5,\"accept-mode\":true,\"advertisement-interval\":200}}"
+	t.Run("Verify GET patched ipv4 vrrp-group config", processGetRequest(baseURL+"/config", nil, expectedConfigJSON, false))
+	time.Sleep(1 * time.Second)
+
+	expectedTrackingJSON := "{\"openconfig-if-ip:state\":{\"priority-decrement\":30,\"track-interface\":[\"Ethernet16\"]}}"
+	t.Run("Verify GET patched ipv4 tracking state", processGetRequest(baseURL+"/interface-tracking/state", nil, expectedTrackingJSON, false))
+	time.Sleep(1 * time.Second)
+
+	cleanupTbl := map[string]interface{}{
+		"VRRP": map[string]interface{}{
+			"Ethernet0|19": "",
+		},
+		"VRRP_TRACK": map[string]interface{}{
+			"Ethernet0|19|Ethernet16": "",
+		},
+	}
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_subinterface_ipv6_vrrp_patch(t *testing.T) {
+	t.Log("\n\n+++++++++++++ PATCH SUBINTERFACE IPv6 VRRP OPENCONFIG LEAVES ++++++++++++")
+
+	preReqMap := map[string]interface{}{
+		"VRRP6": map[string]interface{}{
+			"Ethernet0|29": map[string]interface{}{
+				"vid":                "29",
+				"vip@":               "2001:db8::ff/64",
+				"pre_empt":           "true",
+				"priority":           "120",
+				"adv_interval":       "2",
+				"preempt_delay":      "0",
+				"accept_mode":        "false",
+				"virtual_link_local": "fe80::abcd",
+			},
+		},
+		"VRRP6_TRACK": map[string]interface{}{
+			"Ethernet0|29|Ethernet20": map[string]interface{}{
+				"priority_increment": "15",
+			},
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+
+	baseURL := "/openconfig-interfaces:interfaces/interface[name=Ethernet0]/subinterfaces/subinterface[index=0]/openconfig-if-ip:ipv6/addresses/address[ip=2001:db8::1]/vrrp/vrrp-group[virtual-router-id=29]"
+	t.Run("Patch preempt", processSetRequest(baseURL+"/config/preempt", "{\"preempt\":false}", "PATCH", false, nil))
+	t.Run("Patch priority", processSetRequest(baseURL+"/config/priority", "{\"priority\":115}", "PATCH", false, nil))
+	t.Run("Patch advertisement-interval", processSetRequest(baseURL+"/config/advertisement-interval", "{\"advertisement-interval\":300}", "PATCH", false, nil))
+	t.Run("Patch tracking priority-decrement", processSetRequest(baseURL+"/interface-tracking/config/priority-decrement", "{\"priority-decrement\":25}", "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedConfigJSON := "{\"openconfig-if-ip:config\":{\"virtual-router-id\":29,\"virtual-address\":[\"2001:db8::ff\"],\"priority\":115,\"preempt\":false,\"advertisement-interval\":300,\"virtual-link-local\":\"fe80::abcd\"}}"
+	t.Run("Verify GET patched ipv6 vrrp-group config", processGetRequest(baseURL+"/config", nil, expectedConfigJSON, false))
+	time.Sleep(1 * time.Second)
+
+	expectedTrackingJSON := "{\"openconfig-if-ip:state\":{\"priority-decrement\":25,\"track-interface\":[\"Ethernet20\"]}}"
+	t.Run("Verify GET patched ipv6 tracking state", processGetRequest(baseURL+"/interface-tracking/state", nil, expectedTrackingJSON, false))
+	time.Sleep(1 * time.Second)
+
+	cleanupTbl := map[string]interface{}{
+		"VRRP6": map[string]interface{}{
+			"Ethernet0|29": "",
+		},
+		"VRRP6_TRACK": map[string]interface{}{
+			"Ethernet0|29|Ethernet20": "",
+		},
+	}
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_subinterface_ipv4_vrrp_delete_leaf_defaults(t *testing.T) {
+	t.Log("\n\n+++++++++++++ DELETE SUBINTERFACE IPv4 VRRP LEAF DEFAULTS ++++++++++++")
+
+	preReqMap := map[string]interface{}{
+		"VRRP": map[string]interface{}{
+			"Ethernet0|19": map[string]interface{}{
+				"vid":           "19",
+				"vip@":          "10.0.0.254/24",
+				"pre_empt":      "false",
+				"priority":      "110",
+				"adv_interval":  "2",
+				"preempt_delay": "9",
+				"accept_mode":   "true",
+			},
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+
+	baseURL := "/openconfig-interfaces:interfaces/interface[name=Ethernet0]/subinterfaces/subinterface[index=0]/openconfig-if-ip:ipv4/addresses/address[ip=20.0.0.1]/vrrp/vrrp-group[virtual-router-id=19]"
+	t.Run("Delete priority leaf", processDeleteRequest(baseURL+"/config/priority", true))
+	time.Sleep(1 * time.Second)
+
+	expectedConfigJSON := "{\"openconfig-if-ip:config\":{\"virtual-router-id\":19,\"virtual-address\":[\"10.0.0.254\"],\"priority\":100,\"preempt\":false,\"preempt-delay\":9,\"accept-mode\":true,\"advertisement-interval\":200}}"
+	t.Run("Verify GET config after deleting priority leaf", processGetRequest(baseURL+"/config", nil, expectedConfigJSON, false))
+
+	cleanupTbl := map[string]interface{}{
+		"VRRP": map[string]interface{}{
+			"Ethernet0|19": "",
+		},
+	}
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_subinterface_ipv6_vrrp_delete_leaf_defaults(t *testing.T) {
+	t.Log("\n\n+++++++++++++ DELETE SUBINTERFACE IPv6 VRRP LEAF DEFAULTS ++++++++++++")
+
+	preReqMap := map[string]interface{}{
+		"VRRP6": map[string]interface{}{
+			"Ethernet0|29": map[string]interface{}{
+				"vid":                "29",
+				"vip@":               "2001:db8::ff/64",
+				"pre_empt":           "false",
+				"priority":           "120",
+				"adv_interval":       "3",
+				"preempt_delay":      "7",
+				"accept_mode":        "true",
+				"virtual_link_local": "fe80::beef",
+			},
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+
+	baseURL := "/openconfig-interfaces:interfaces/interface[name=Ethernet0]/subinterfaces/subinterface[index=0]/openconfig-if-ip:ipv6/addresses/address[ip=2001:db8::1]/vrrp/vrrp-group[virtual-router-id=29]"
+	t.Run("Delete virtual-link-local leaf", processDeleteRequest(baseURL+"/config/virtual-link-local", true))
+	time.Sleep(1 * time.Second)
+
+	expectedConfigJSON := "{\"openconfig-if-ip:config\":{\"virtual-router-id\":29,\"virtual-address\":[\"2001:db8::ff\"],\"priority\":120,\"preempt\":false,\"preempt-delay\":7,\"accept-mode\":true,\"advertisement-interval\":300}}"
+	t.Run("Verify GET config after deleting virtual-link-local leaf", processGetRequest(baseURL+"/config", nil, expectedConfigJSON, false))
+
+	cleanupTbl := map[string]interface{}{
+		"VRRP6": map[string]interface{}{
+			"Ethernet0|29": "",
+		},
+	}
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_subinterface_ipv4_vrrp_patch_config_container(t *testing.T) {
+	t.Log("\n\n+++++++++++++ PATCH SUBINTERFACE IPv4 VRRP CONFIG CONTAINER ++++++++++++")
+
+	preReqMap := map[string]interface{}{
+		"VRRP": map[string]interface{}{
+			"Ethernet0|19": map[string]interface{}{
+				"vid":           "19",
+				"vip@":          "10.0.0.254/24",
+				"pre_empt":      "true",
+				"priority":      "110",
+				"adv_interval":  "1",
+				"preempt_delay": "0",
+				"accept_mode":   "false",
+			},
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+
+	baseURL := "/openconfig-interfaces:interfaces/interface[name=Ethernet0]/subinterfaces/subinterface[index=0]/openconfig-if-ip:ipv4/addresses/address[ip=20.0.0.1]/vrrp/vrrp-group[virtual-router-id=19]"
+	payload := "{\"config\":{\"priority\":107,\"preempt\":false,\"preempt-delay\":4,\"accept-mode\":true,\"advertisement-interval\":300,\"virtual-address\":[\"10.0.0.250\"]}}"
+	t.Run("Patch config container", processSetRequest(baseURL+"/config", payload, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedConfigJSON := "{\"openconfig-if-ip:config\":{\"virtual-router-id\":19,\"virtual-address\":[\"10.0.0.250\"],\"priority\":107,\"preempt\":false,\"preempt-delay\":4,\"accept-mode\":true,\"advertisement-interval\":300}}"
+	t.Run("Verify GET config after config container patch", processGetRequest(baseURL+"/config", nil, expectedConfigJSON, false))
+
+	cleanupTbl := map[string]interface{}{
+		"VRRP": map[string]interface{}{
+			"Ethernet0|19": "",
+		},
+	}
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_subinterface_ipv6_vrrp_patch_tracking_config_container(t *testing.T) {
+	t.Log("\n\n+++++++++++++ PATCH SUBINTERFACE IPv6 VRRP TRACKING CONFIG CONTAINER ++++++++++++")
+
+	preReqMap := map[string]interface{}{
+		"VRRP6": map[string]interface{}{
+			"Ethernet0|29": map[string]interface{}{
+				"vid":                "29",
+				"vip@":               "2001:db8::ff/64",
+				"pre_empt":           "true",
+				"priority":           "120",
+				"adv_interval":       "2",
+				"preempt_delay":      "0",
+				"accept_mode":        "false",
+				"virtual_link_local": "fe80::abcd",
+			},
+		},
+		"VRRP6_TRACK": map[string]interface{}{
+			"Ethernet0|29|Ethernet20": map[string]interface{}{
+				"priority_increment": "10",
+			},
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+
+	baseURL := "/openconfig-interfaces:interfaces/interface[name=Ethernet0]/subinterfaces/subinterface[index=0]/openconfig-if-ip:ipv6/addresses/address[ip=2001:db8::1]/vrrp/vrrp-group[virtual-router-id=29]"
+	payload := "{\"config\":{\"priority-decrement\":25,\"track-interface\":[\"Ethernet20\"]}}"
+	t.Run("Patch tracking config container", processSetRequest(baseURL+"/interface-tracking/config", payload, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedTrackingJSON := "{\"openconfig-if-ip:state\":{\"priority-decrement\":25,\"track-interface\":[\"Ethernet20\"]}}"
+	t.Run("Verify GET tracking state after config container patch", processGetRequest(baseURL+"/interface-tracking/state", nil, expectedTrackingJSON, false))
+
+	cleanupTbl := map[string]interface{}{
+		"VRRP6": map[string]interface{}{
+			"Ethernet0|29": "",
+		},
+		"VRRP6_TRACK": map[string]interface{}{
+			"Ethernet0|29|Ethernet20": "",
+		},
+	}
+	unloadDB(db.ConfigDB, cleanupTbl)
+}

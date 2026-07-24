@@ -14,6 +14,7 @@ SONICYANG_IMPORTS += sonic-types.yang
 SONICYANG_IMPORTS += sonic-vrf.yang
 SONICYANG_IMPORTS += sonic-lldp.yang
 SONICYANG_IMPORTS += sonic-portchannel.yang
+SONICYANG_IMPORTS += sonic-vrrp.yang
 
 ##
 # Local sonic yangs that import modules from SONICYANG_IMPORTS must be copied
