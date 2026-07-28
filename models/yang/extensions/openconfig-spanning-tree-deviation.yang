@@ -1,0 +1,32 @@
+module openconfig-spanning-tree-deviation {
+
+    yang-version "1.1";
+
+    namespace "http://openconfig.net/yang/spanning-tree/deviation/extension";
+    prefix "oc-stp-dev";
+
+    import openconfig-extensions { prefix oc-ext; }
+    import openconfig-spanning-tree { prefix oc-stp; }
+
+    organization "Nokia";
+    contact "Nokia";
+    description
+        "Deviation module for OpenConfig spanning-tree on SONiC.
+         RSTP is supported via MSTP instance 0 (CIST).";
+
+    oc-ext:openconfig-version "0.1.0";
+
+    revision 2026-07-22 {
+        description
+            "Initial revision: RSTP-only support mapped to MSTI 0.";
+        reference "0.1.0";
+    }
+
+    deviation /oc-stp:stp/oc-stp:mstp {
+        deviate not-supported;
+    }
+
+    deviation /oc-stp:stp/oc-stp:rapid-pvst {
+        deviate not-supported;
+    }
+}
