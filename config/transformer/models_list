@@ -36,6 +36,9 @@ openconfig-lldp.yang
 openconfig-lldp-annot.yang
 openconfig-qos.yang
 openconfig-qos-annot.yang
+openconfig-spanning-tree.yang
+openconfig-spanning-tree-types.yang
+openconfig-spanning-tree-annot.yang
 sonic-qos-fwd-group.yang
 sonic-qos-umf-classifier.yang
 gnsi-authz.yang

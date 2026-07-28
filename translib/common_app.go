@@ -585,6 +585,11 @@ func (app *CommonApp) translateCRUDCommon(d *db.DB, opcode int) ([]db.WatchKeys,
 	app.cmnAppOpcode = opcode //NBI request opcode
 	if len(result) == 0 {
 		log.Info("XlatetoDB() returned empty map")
+		if strings.Contains(app.pathInfo.Path, "stp/global") {
+			err = tlerr.InternalError{Format: "RSTP/STP configuration produced no CONFIG_DB updates"}
+			log.Warning(err)
+			return keys, err
+		}
 		//Note: Get around for no redis ABNF Schema for set(temporary)
 		//`err = errors.New("transformer.XlatetoDB() returned empty map")
 		return keys, err
