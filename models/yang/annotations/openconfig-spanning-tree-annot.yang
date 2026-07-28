@@ -1,0 +1,175 @@
+module openconfig-spanning-tree-annot {
+
+    yang-version "1";
+
+    namespace "http://openconfig.net/yang/annotation/oc-spanning-tree-annot";
+    prefix "oc-stp-annot";
+
+    import sonic-extensions { prefix sonic-ext; }
+    import openconfig-spanning-tree { prefix oc-stp; }
+
+    organization "Nokia";
+    contact "Nokia";
+    description
+        "OpenConfig spanning-tree annotations for SONiC transformer framework.
+         RSTP OpenConfig paths map to MSTP instance 0 (CIST) in CONFIG_DB/APPL_DB.";
+
+    revision 2026-07-22 {
+        description
+            "Initial revision: RSTP mapped to MSTI 0.";
+        reference "0.1.0";
+    }
+
+    revision 2026-07-26 {
+        description
+            "Add field transformers and post-transformer for gNMI/RESTCONF SET paths.";
+        reference "0.2.0";
+    }
+
+    revision 2026-07-27 {
+        description
+            "Mark STP global as virtual-table for initial RSTP enable via gNMI.";
+        reference "0.2.1";
+    }
+
+    revision 2026-07-28 {
+        description
+            "Add GET mappings for RSTP state and per-interface APPL_DB keys.";
+        reference "0.2.2";
+    }
+
+    revision 2026-07-29 {
+        description
+            "Use virtual-table on RSTP interface state for APPL_DB GET.";
+        reference "0.2.3";
+    }
+
+    deviation /oc-stp:stp {
+        deviate add {
+            sonic-ext:post-transformer "stp_post_xfmr";
+        }
+    }
+
+    deviation /oc-stp:stp/oc-stp:global {
+        deviate add {
+            sonic-ext:db-name "CONFIG_DB";
+            sonic-ext:subtree-transformer "stp_global_xfmr";
+            sonic-ext:virtual-table "true";
+        }
+    }
+
+    deviation /oc-stp:stp/oc-stp:global/oc-stp:config {
+        deviate add {
+            sonic-ext:db-name "CONFIG_DB";
+            sonic-ext:table-name "STP";
+            sonic-ext:key-name "GLOBAL";
+            sonic-ext:subtree-transformer "stp_global_xfmr";
+        }
+    }
+
+    deviation /oc-stp:stp/oc-stp:global/oc-stp:config/oc-stp:enabled-protocol {
+        deviate add {
+            sonic-ext:field-transformer "stp_enabled_protocol_xfmr";
+        }
+    }
+
+    deviation /oc-stp:stp/oc-stp:global/oc-stp:state {
+        deviate add {
+            sonic-ext:subtree-transformer "stp_global_xfmr";
+        }
+    }
+
+    deviation /oc-stp:stp/oc-stp:rstp {
+        deviate add {
+            sonic-ext:subtree-transformer "stp_rstp_xfmr";
+        }
+    }
+
+    deviation /oc-stp:stp/oc-stp:rstp/oc-stp:config {
+        deviate add {
+            sonic-ext:db-name "CONFIG_DB";
+            sonic-ext:table-name "STP_MST_INST";
+            sonic-ext:key-name "0";
+            sonic-ext:subtree-transformer "stp_rstp_xfmr";
+        }
+    }
+
+    deviation /oc-stp:stp/oc-stp:rstp/oc-stp:config/oc-stp:bridge-priority {
+        deviate add {
+            sonic-ext:field-transformer "stp_bridge_priority_xfmr";
+            sonic-ext:field-name "bridge_priority";
+        }
+    }
+
+    deviation /oc-stp:stp/oc-stp:rstp/oc-stp:state {
+        deviate add {
+            sonic-ext:db-name "APPL_DB";
+            sonic-ext:table-name "STP_MST_INST_TABLE";
+            sonic-ext:key-name "0";
+            sonic-ext:subtree-transformer "stp_rstp_xfmr";
+        }
+    }
+
+    deviation /oc-stp:stp/oc-stp:rstp/oc-stp:interfaces {
+        deviate add {
+            sonic-ext:subtree-transformer "stp_rstp_intf_xfmr";
+            sonic-ext:path-transformer "stp_rstp_intf_path_xfmr";
+            sonic-ext:db-name "APPL_DB";
+        }
+    }
+
+    deviation /oc-stp:stp/oc-stp:rstp/oc-stp:interfaces/oc-stp:interface {
+        deviate add {
+            sonic-ext:db-name "APPL_DB";
+            sonic-ext:table-name "STP_MST_PORT_TABLE";
+            sonic-ext:key-transformer "stp_rstp_intf_key_xfmr";
+            sonic-ext:subtree-transformer "stp_rstp_intf_xfmr";
+            sonic-ext:virtual-table "true";
+        }
+    }
+
+    deviation /oc-stp:stp/oc-stp:rstp/oc-stp:interfaces/oc-stp:interface/oc-stp:state {
+        deviate add {
+            sonic-ext:db-name "APPL_DB";
+            sonic-ext:subtree-transformer "stp_rstp_intf_xfmr";
+            sonic-ext:virtual-table "true";
+        }
+    }
+
+    deviation /oc-stp:stp/oc-stp:interfaces/oc-stp:interface {
+        deviate add {
+            sonic-ext:db-name "CONFIG_DB";
+            sonic-ext:table-name "STP_PORT";
+        }
+    }
+
+    deviation /oc-stp:stp/oc-stp:interfaces {
+        deviate add {
+            sonic-ext:db-name "CONFIG_DB";
+            sonic-ext:subtree-transformer "stp_intf_common_xfmr";
+            sonic-ext:path-transformer "stp_intf_common_path_xfmr";
+        }
+    }
+
+    deviation /oc-stp:stp/oc-stp:interfaces/oc-stp:interface/oc-stp:config {
+        deviate add {
+            sonic-ext:db-name "CONFIG_DB";
+            sonic-ext:table-name "STP_PORT";
+            sonic-ext:subtree-transformer "stp_intf_common_xfmr";
+        }
+    }
+
+    deviation /oc-stp:stp/oc-stp:interfaces/oc-stp:interface/oc-stp:config/oc-stp:edge-port {
+        deviate add {
+            sonic-ext:field-transformer "stp_edge_port_xfmr";
+            sonic-ext:field-name "edge_port";
+        }
+    }
+
+    deviation /oc-stp:stp/oc-stp:interfaces/oc-stp:interface/oc-stp:config/oc-stp:link-type {
+        deviate add {
+            sonic-ext:field-transformer "stp_link_type_xfmr";
+            sonic-ext:field-name "link_type";
+        }
+    }
+}
