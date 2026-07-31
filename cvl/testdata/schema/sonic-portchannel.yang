@@ -55,6 +55,10 @@ module sonic-portchannel {
                 leaf fallback {
                     type boolean;
                 }
+
+                leaf active {
+                    type boolean;
+                }
             }
         }
 

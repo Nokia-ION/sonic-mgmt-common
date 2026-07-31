@@ -785,6 +785,19 @@ var Subscribe_lacp_intfs_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSubscInPa
 		 */
 	}
 
+	/* verifyParentTblSubtree() invokes this callback with only the ancestor uri
+	 * populated to check parent existence for GET/SET/DELETE, whereas a real
+	 * gNMI Subscribe always carries the requestURI.  The only true parent for
+	 * every path under /lacp/interfaces is the ConfigDB PORTCHANNEL entry;
+	 * LAG_TABLE and LAG_MEMBER_TABLE are populated by teamd only once the LAG is
+	 * up and has members, so demanding them here fails config requests on a
+	 * memberless PortChannel. */
+	if inParams.requestURI == "" {
+		cfgDbMap[PORTCHANNEL_TN] = map[string]map[string]string{ifName: {}}
+		result.dbDataMap[db.ConfigDB] = cfgDbMap
+		return result, nil
+	}
+
 	var needPcCfg, needPcStt, needMbr bool
 
 	/* Note that two leaves (interfaces/interface/state/system-priority and
