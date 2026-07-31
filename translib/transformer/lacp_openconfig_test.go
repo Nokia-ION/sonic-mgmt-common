@@ -142,6 +142,48 @@ func Test_openconfig_lacp_config_fallback(t *testing.T) {
 		"{\"openconfig-lacp:fallback\": false}", false))
 }
 
+// Test_openconfig_lacp_config_lacp_mode covers SET/GET of config/lacp-mode mapped to
+// PORTCHANNEL.active in CONFIG_DB (written by YangToDb_lacp_intfs_xfmr on SET).
+func Test_openconfig_lacp_config_lacp_mode(t *testing.T) {
+	const pcName = "PortChannel116"
+	lacpModeURL := "/openconfig-lacp:lacp/interfaces/interface[name=" + pcName + "]/config/lacp-mode"
+
+	t.Log("\n\n+++++++++++++ LACP CONFIG LACP-MODE ++++++++++++")
+	loadLacpPortChannel(pcName)
+	defer unloadLacpPortChannel(pcName)
+
+	t.Log("\n\n--- SET lacp-mode PASSIVE ---")
+	t.Run("SET lacp-mode PASSIVE", processSetRequest(lacpModeURL,
+		`{"openconfig-lacp:lacp-mode": "PASSIVE"}`, "PATCH", false, nil))
+
+	key := "PORTCHANNEL|" + pcName
+	active, err := rclient.HGet(context.Background(), key, "active").Result()
+	if err != nil {
+		t.Fatalf("Failed to read PORTCHANNEL.active for %s: %v", pcName, err)
+	}
+	if active != "false" {
+		t.Fatalf("Expected PORTCHANNEL.active=false after PASSIVE SET, got %q", active)
+	}
+
+	t.Run("GET lacp-mode PASSIVE", processGetRequest(lacpModeURL, nil,
+		`{"openconfig-lacp:lacp-mode": "PASSIVE"}`, false))
+
+	t.Log("\n\n--- SET lacp-mode ACTIVE ---")
+	t.Run("SET lacp-mode ACTIVE", processSetRequest(lacpModeURL,
+		`{"openconfig-lacp:lacp-mode": "ACTIVE"}`, "PATCH", false, nil))
+
+	active, err = rclient.HGet(context.Background(), key, "active").Result()
+	if err != nil {
+		t.Fatalf("Failed to read PORTCHANNEL.active for %s: %v", pcName, err)
+	}
+	if active != "true" {
+		t.Fatalf("Expected PORTCHANNEL.active=true after ACTIVE SET, got %q", active)
+	}
+
+	t.Run("GET lacp-mode ACTIVE", processGetRequest(lacpModeURL, nil,
+		`{"openconfig-lacp:lacp-mode": "ACTIVE"}`, false))
+}
+
 // Test_openconfig_lacp_member_state covers GET of member state leaves derived from
 // teamd-populated STATE_DB LAG_MEMBER_TABLE entries.
 func Test_openconfig_lacp_member_state(t *testing.T) {
