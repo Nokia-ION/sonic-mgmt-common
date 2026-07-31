@@ -310,8 +310,54 @@ func Test_openconfig_lldp_config_without_global(t *testing.T) {
 	time.Sleep(1 * time.Second)
 
 	url := "/openconfig-lldp:lldp/config"
-	expectedGetJSON := `{"openconfig-lldp:config":{"chassis-id":"00:11:22:33:44:55","chassis-id-type":"MAC_ADDRESS","system-description":"loc chassis desc","system-name":"loc-chassis-name"}}`
+	expectedGetJSON := `{"openconfig-lldp:config":{"chassis-id":"00:11:22:33:44:55","chassis-id-type":"MAC_ADDRESS","enabled":true,"hello-timer":30,"system-description":"loc chassis desc","system-name":"loc-chassis-name"}}`
 	t.Run("GET global config without GLOBAL row", processGetRequest(url, nil, expectedGetJSON, false))
+}
+
+func Test_openconfig_lldp_state_without_global(t *testing.T) {
+	t.Log("\n\n+++++++++++++ GET global LLDP state without LLDP|GLOBAL ++++++++++++")
+	cleanup := lldpCleanupTables()
+	unloadDB(db.ConfigDB, cleanup)
+	unloadDB(db.ApplDB, cleanup)
+	loadDB(db.ApplDB, lldpLocChassisPrereq())
+	defer unloadLldpFixture()
+	time.Sleep(1 * time.Second)
+
+	url := "/openconfig-lldp:lldp/state"
+	expectedGetJSON := `{"openconfig-lldp:state":{"chassis-id":"00:11:22:33:44:55","chassis-id-type":"MAC_ADDRESS","counters":{},"enabled":true,"hello-timer":30,"system-description":"loc chassis desc","system-name":"loc-chassis-name"}}`
+	t.Run("GET global state without GLOBAL row", processGetRequest(url, nil, expectedGetJSON, false))
+}
+
+func Test_openconfig_lldp_system_info_leaf_gets_without_global(t *testing.T) {
+	cleanup := lldpCleanupTables()
+	unloadDB(db.ConfigDB, cleanup)
+	unloadDB(db.ApplDB, cleanup)
+	loadDB(db.ApplDB, lldpLocChassisPrereq())
+	defer unloadLldpFixture()
+	time.Sleep(1 * time.Second)
+
+	tests := []struct {
+		name     string
+		url      string
+		expected string
+	}{
+		{"GET config/system-name without GLOBAL", "/openconfig-lldp:lldp/config/system-name", `{"openconfig-lldp:system-name":"loc-chassis-name"}`},
+		{"GET config/system-description without GLOBAL", "/openconfig-lldp:lldp/config/system-description", `{"openconfig-lldp:system-description":"loc chassis desc"}`},
+		{"GET config/chassis-id without GLOBAL", "/openconfig-lldp:lldp/config/chassis-id", `{"openconfig-lldp:chassis-id":"00:11:22:33:44:55"}`},
+		{"GET config/chassis-id-type without GLOBAL", "/openconfig-lldp:lldp/config/chassis-id-type", `{"openconfig-lldp:chassis-id-type":"MAC_ADDRESS"}`},
+		{"GET config/enabled without GLOBAL", "/openconfig-lldp:lldp/config/enabled", `{"openconfig-lldp:enabled":true}`},
+		{"GET config/hello-timer without GLOBAL", "/openconfig-lldp:lldp/config/hello-timer", `{"openconfig-lldp:hello-timer":30}`},
+		{"GET state/system-name without GLOBAL", "/openconfig-lldp:lldp/state/system-name", `{"openconfig-lldp:system-name":"loc-chassis-name"}`},
+		{"GET state/system-description without GLOBAL", "/openconfig-lldp:lldp/state/system-description", `{"openconfig-lldp:system-description":"loc chassis desc"}`},
+		{"GET state/chassis-id without GLOBAL", "/openconfig-lldp:lldp/state/chassis-id", `{"openconfig-lldp:chassis-id":"00:11:22:33:44:55"}`},
+		{"GET state/chassis-id-type without GLOBAL", "/openconfig-lldp:lldp/state/chassis-id-type", `{"openconfig-lldp:chassis-id-type":"MAC_ADDRESS"}`},
+		{"GET state/enabled without GLOBAL", "/openconfig-lldp:lldp/state/enabled", `{"openconfig-lldp:enabled":true}`},
+		{"GET state/hello-timer without GLOBAL", "/openconfig-lldp:lldp/state/hello-timer", `{"openconfig-lldp:hello-timer":30}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, processGetRequest(tc.url, nil, tc.expected, false))
+		time.Sleep(500 * time.Millisecond)
+	}
 }
 
 func Test_openconfig_lldp_config_leaf_gets(t *testing.T) {
