@@ -27,6 +27,12 @@ module openconfig-lldp-annot {
             "Add global config/state and per-interface config mappings.";
     }
 
+    revision 2026-07-30 {
+        description
+            "Add field transformers for global system-info leaves so leaf GET
+            applies the same LLDP_LOC_CHASSIS fallback as container GET.";
+    }
+
     deviation /oc-lldp:lldp/oc-lldp:config {
         deviate add {
             sonic-ext:db-name "CONFIG_DB";
@@ -43,6 +49,54 @@ module openconfig-lldp-annot {
     deviation /oc-lldp:lldp/oc-lldp:interfaces {
         deviate add {
             sonic-ext:subtree-transformer "lldp_interfaces_xfmr";
+        }
+    }
+
+    deviation /oc-lldp:lldp/oc-lldp:config/oc-lldp:system-name {
+        deviate add {
+            sonic-ext:field-transformer "lldp_system_name_fld_xfmr";
+        }
+    }
+
+    deviation /oc-lldp:lldp/oc-lldp:config/oc-lldp:system-description {
+        deviate add {
+            sonic-ext:field-transformer "lldp_system_description_fld_xfmr";
+        }
+    }
+
+    deviation /oc-lldp:lldp/oc-lldp:config/oc-lldp:chassis-id {
+        deviate add {
+            sonic-ext:field-transformer "lldp_chassis_id_fld_xfmr";
+        }
+    }
+
+    deviation /oc-lldp:lldp/oc-lldp:config/oc-lldp:chassis-id-type {
+        deviate add {
+            sonic-ext:field-transformer "lldp_chassis_id_type_fld_xfmr";
+        }
+    }
+
+    deviation /oc-lldp:lldp/oc-lldp:state/oc-lldp:system-name {
+        deviate add {
+            sonic-ext:field-transformer "lldp_system_name_fld_xfmr";
+        }
+    }
+
+    deviation /oc-lldp:lldp/oc-lldp:state/oc-lldp:system-description {
+        deviate add {
+            sonic-ext:field-transformer "lldp_system_description_fld_xfmr";
+        }
+    }
+
+    deviation /oc-lldp:lldp/oc-lldp:state/oc-lldp:chassis-id {
+        deviate add {
+            sonic-ext:field-transformer "lldp_chassis_id_fld_xfmr";
+        }
+    }
+
+    deviation /oc-lldp:lldp/oc-lldp:state/oc-lldp:chassis-id-type {
+        deviate add {
+            sonic-ext:field-transformer "lldp_chassis_id_type_fld_xfmr";
         }
     }
 }
