@@ -69,6 +69,9 @@ const (
 	LLDP_STATE      = "/openconfig-lldp:lldp/state"
 	LLDP_INTERFACES = "/openconfig-lldp:lldp/interfaces"
 	LLDP_INTERFACE  = "/openconfig-lldp:lldp/interfaces/interface"
+
+	lldpDefaultEnabled    = true
+	lldpDefaultHelloTimer = uint64(30)
 )
 
 type lldpCapInfo struct {
@@ -101,6 +104,11 @@ func init() {
 	XlateFuncBind("DbToYang_lldp_interfaces_xfmr", DbToYang_lldp_interfaces_xfmr)
 	XlateFuncBind("YangToDb_lldp_interfaces_xfmr", YangToDb_lldp_interfaces_xfmr)
 	XlateFuncBind("Subscribe_lldp_interfaces_xfmr", Subscribe_lldp_interfaces_xfmr)
+
+	XlateFuncBind("DbToYang_lldp_system_name_fld_xfmr", DbToYang_lldp_system_name_fld_xfmr)
+	XlateFuncBind("DbToYang_lldp_system_description_fld_xfmr", DbToYang_lldp_system_description_fld_xfmr)
+	XlateFuncBind("DbToYang_lldp_chassis_id_fld_xfmr", DbToYang_lldp_chassis_id_fld_xfmr)
+	XlateFuncBind("DbToYang_lldp_chassis_id_type_fld_xfmr", DbToYang_lldp_chassis_id_type_fld_xfmr)
 }
 
 func getLldpRoot(s *ygot.GoStruct) *ocbinds.OpenconfigLldp_Lldp {
@@ -252,13 +260,37 @@ func suppressTlvsToConfig(tlvs []ocbinds.E_OpenconfigLldpTypes_LLDP_TLV) map[str
 	return fields
 }
 
+func lldpStringPtrUnset(s *string) bool {
+	return s == nil || *s == ""
+}
+
+func fillLldpGlobalEnabled(enabled **bool, globalEntry db.Value) {
+	if globalEntry.IsPopulated() {
+		if val := globalEntry.Get(LLDP_CFG_ENABLED); val != "" {
+			*enabled = parseBoolString(val, lldpDefaultEnabled)
+			return
+		}
+	}
+	*enabled = boolPtr(lldpDefaultEnabled)
+}
+
+func fillLldpGlobalHelloTimer(helloTimer **uint64, globalEntry db.Value) {
+	if globalEntry.IsPopulated() {
+		if val := globalEntry.Get(LLDP_CFG_HELLO_TIME); val != "" {
+			*helloTimer = parseUint64String(val)
+			return
+		}
+	}
+	*helloTimer = uint64Ptr(lldpDefaultHelloTimer)
+}
+
 func fillGlobalConfigLeaves(cfg *ocbinds.OpenconfigLldp_Lldp_Config, globalEntry db.Value, locChassis db.Value) {
 	if cfg == nil {
 		return
 	}
+	fillLldpGlobalEnabled(&cfg.Enabled, globalEntry)
+	fillLldpGlobalHelloTimer(&cfg.HelloTimer, globalEntry)
 	if globalEntry.IsPopulated() {
-		cfg.Enabled = parseBoolString(globalEntry.Get(LLDP_CFG_ENABLED), true)
-		cfg.HelloTimer = parseUint64String(globalEntry.Get(LLDP_CFG_HELLO_TIME))
 		if val := globalEntry.Get(LLDP_CFG_SYSTEM_NAME); val != "" {
 			cfg.SystemName = &val
 		}
@@ -274,12 +306,12 @@ func fillGlobalConfigLeaves(cfg *ocbinds.OpenconfigLldp_Lldp_Config, globalEntry
 		if subtype := locChassis.Get(LLDP_LOC_CHASS_ID_SUBTYPE); subtype != "" {
 			cfg.ChassisIdType = parseChassisIdType(subtype)
 		}
-		if cfg.SystemName == nil {
+		if lldpStringPtrUnset(cfg.SystemName) {
 			if val := locChassis.Get(LLDP_LOC_SYS_NAME); val != "" {
 				cfg.SystemName = &val
 			}
 		}
-		if cfg.SystemDescription == nil {
+		if lldpStringPtrUnset(cfg.SystemDescription) {
 			if val := locChassis.Get(LLDP_LOC_SYS_DESC); val != "" {
 				cfg.SystemDescription = &val
 			}
@@ -291,9 +323,9 @@ func fillGlobalStateLeaves(state *ocbinds.OpenconfigLldp_Lldp_State, globalEntry
 	if state == nil {
 		return
 	}
+	fillLldpGlobalEnabled(&state.Enabled, globalEntry)
+	fillLldpGlobalHelloTimer(&state.HelloTimer, globalEntry)
 	if globalEntry.IsPopulated() {
-		state.Enabled = parseBoolString(globalEntry.Get(LLDP_CFG_ENABLED), true)
-		state.HelloTimer = parseUint64String(globalEntry.Get(LLDP_CFG_HELLO_TIME))
 		if val := globalEntry.Get(LLDP_CFG_SYSTEM_NAME); val != "" {
 			state.SystemName = &val
 		}
@@ -309,12 +341,12 @@ func fillGlobalStateLeaves(state *ocbinds.OpenconfigLldp_Lldp_State, globalEntry
 		if subtype := locChassis.Get(LLDP_LOC_CHASS_ID_SUBTYPE); subtype != "" {
 			state.ChassisIdType = parseChassisIdType(subtype)
 		}
-		if state.SystemName == nil {
+		if lldpStringPtrUnset(state.SystemName) {
 			if val := locChassis.Get(LLDP_LOC_SYS_NAME); val != "" {
 				state.SystemName = &val
 			}
 		}
-		if state.SystemDescription == nil {
+		if lldpStringPtrUnset(state.SystemDescription) {
 			if val := locChassis.Get(LLDP_LOC_SYS_DESC); val != "" {
 				state.SystemDescription = &val
 			}
@@ -323,6 +355,115 @@ func fillGlobalStateLeaves(state *ocbinds.OpenconfigLldp_Lldp_State, globalEntry
 	if includeCounters && state.Counters == nil {
 		state.Counters = &ocbinds.OpenconfigLldp_Lldp_State_Counters{}
 	}
+}
+
+func lldpGlobalDbEntries(inParams XfmrParams) (db.Value, db.Value, error) {
+	globalEntry, err := getLldpGlobalConfigEntry(inParams.dbs[db.ConfigDB])
+	if err != nil {
+		return db.Value{}, db.Value{}, err
+	}
+	locChassis, err := getLldpLocChassisEntry(inParams.dbs[db.ApplDB])
+	if err != nil {
+		return globalEntry, db.Value{}, err
+	}
+	return globalEntry, locChassis, nil
+}
+
+func lldpSystemNameFromDb(globalEntry, locChassis db.Value) (string, bool) {
+	if globalEntry.IsPopulated() {
+		if val := globalEntry.Get(LLDP_CFG_SYSTEM_NAME); val != "" {
+			return val, true
+		}
+	}
+	if locChassis.IsPopulated() {
+		if val := locChassis.Get(LLDP_LOC_SYS_NAME); val != "" {
+			return val, true
+		}
+	}
+	return "", false
+}
+
+func lldpSystemDescriptionFromDb(globalEntry, locChassis db.Value) (string, bool) {
+	if globalEntry.IsPopulated() {
+		if val := globalEntry.Get(LLDP_CFG_SYSTEM_DESC); val != "" {
+			return val, true
+		}
+	}
+	if locChassis.IsPopulated() {
+		if val := locChassis.Get(LLDP_LOC_SYS_DESC); val != "" {
+			return val, true
+		}
+	}
+	return "", false
+}
+
+func lldpChassisIdTypeFromDb(locChassis db.Value) (interface{}, bool) {
+	if !locChassis.IsPopulated() {
+		return nil, false
+	}
+	subtype := locChassis.Get(LLDP_LOC_CHASS_ID_SUBTYPE)
+	if subtype == "" {
+		return nil, false
+	}
+	enumVal := parseChassisIdType(subtype)
+	if enumVal == ocbinds.OpenconfigLldp_ChassisIdType_UNSET {
+		return nil, false
+	}
+	name, err := ygot.EnumName(enumVal)
+	if err != nil {
+		return nil, false
+	}
+	return name, true
+}
+
+var DbToYang_lldp_system_name_fld_xfmr FieldXfmrDbtoYang = func(inParams XfmrParams) (map[string]interface{}, error) {
+	result := make(map[string]interface{})
+	globalEntry, locChassis, err := lldpGlobalDbEntries(inParams)
+	if err != nil {
+		return result, err
+	}
+	if val, ok := lldpSystemNameFromDb(globalEntry, locChassis); ok {
+		result["system-name"] = val
+	}
+	return result, nil
+}
+
+var DbToYang_lldp_system_description_fld_xfmr FieldXfmrDbtoYang = func(inParams XfmrParams) (map[string]interface{}, error) {
+	result := make(map[string]interface{})
+	globalEntry, locChassis, err := lldpGlobalDbEntries(inParams)
+	if err != nil {
+		return result, err
+	}
+	if val, ok := lldpSystemDescriptionFromDb(globalEntry, locChassis); ok {
+		result["system-description"] = val
+	}
+	return result, nil
+}
+
+var DbToYang_lldp_chassis_id_fld_xfmr FieldXfmrDbtoYang = func(inParams XfmrParams) (map[string]interface{}, error) {
+	result := make(map[string]interface{})
+	_, locChassis, err := lldpGlobalDbEntries(inParams)
+	if err != nil {
+		return result, err
+	}
+	if locChassis.IsPopulated() {
+		if val := locChassis.Get(LLDP_LOC_CHASS_ID); val != "" {
+			result["chassis-id"] = val
+		}
+	}
+	return result, nil
+}
+
+var DbToYang_lldp_chassis_id_type_fld_xfmr FieldXfmrDbtoYang = func(inParams XfmrParams) (map[string]interface{}, error) {
+	result := make(map[string]interface{})
+	_, locChassis, err := lldpGlobalDbEntries(inParams)
+	if err != nil {
+		return result, err
+	}
+	if val, ok := lldpChassisIdTypeFromDb(locChassis); ok {
+		result["chassis-id-type"] = val
+	}
+	return result, nil
 }
 
 func fillInterfaceConfig(ifInfo *ocbinds.OpenconfigLldp_Lldp_Interfaces_Interface, portEntry db.Value) {
@@ -940,5 +1081,9 @@ func parseLldpCapBitmap(capb string, capStates map[ocbinds.E_OpenconfigLldpTypes
 }
 
 func boolPtr(v bool) *bool {
+	return &v
+}
+
+func uint64Ptr(v uint64) *uint64 {
 	return &v
 }
