@@ -109,6 +109,7 @@ module sonic-spanning-tree {
                     type enumeration {
                         enum pvst;
                         enum rpvst;
+                        enum mst;
                         enum mstp;
                         enum rstp;
                     }
@@ -121,6 +122,9 @@ module sonic-spanning-tree {
                         }
                     }
                     units seconds;
+                    must "../mode = 'pvst'" {
+                        error-message "Root guard timeout configuration is allowed only in PVST mode";
+                    }
                     default 30;
                 }
 
@@ -233,20 +237,108 @@ module sonic-spanning-tree {
 
                 uses interfaceAttr;
 
-                // For RPVST+
                 leaf edge_port {
-                    when "../../../STP/STP_LIST[keyleaf='GLOBAL']/mode = 'rpvst'";
                     type boolean;
                 }
 
                 leaf link_type {
-                    when "../../../STP/STP_LIST[keyleaf='GLOBAL']/mode = 'rpvst'";
                     type enumeration {
                         enum auto;
                         enum shared;
                         enum point-to-point;
                     }
                 }
+            }
+        }
+
+        container STP_MST {
+            list STP_MST_LIST {
+                key "keyleaf";
+                max-elements 1;
+                sonic-ext:dependent-on "STP_LIST";
+
+                leaf keyleaf {
+                    type enumeration {
+                        enum GLOBAL;
+                    }
+                }
+
+                leaf name {
+                    type string;
+                }
+
+                leaf revision {
+                    type uint32;
+                }
+
+                leaf max_hops {
+                    type uint8;
+                    default 20;
+                }
+
+                leaf max_age {
+                    type uint8;
+                    default 20;
+                }
+
+                leaf hello_time {
+                    type uint8;
+                    default 2;
+                }
+
+                leaf forward_delay {
+                    type uint8;
+                    default 15;
+                }
+
+                leaf hold_count {
+                    type uint8;
+                }
+            }
+        }
+
+        container STP_MST_INST {
+            list STP_MST_INST_LIST {
+                key "instance";
+                sonic-ext:dependent-on "STP_LIST";
+
+                leaf instance {
+                    type uint16;
+                }
+
+                leaf-list vlan {
+                    type string;
+                }
+
+                leaf bridge_priority {
+                    type uint16 {
+                        range "0..61440" {
+                            error-message "Invalid Bridge Priority value.";
+                        }
+                    }
+                    default 32768;
+                }
+            }
+        }
+
+        container STP_MST_PORT {
+            list STP_MST_PORT_LIST {
+                key "inst_id ifname";
+                sonic-ext:dependent-on "STP_MST_INST_LIST";
+
+                leaf inst_id {
+                    type leafref {
+                        path "../../../STP_MST_INST/STP_MST_INST_LIST/instance";
+                    }
+                }
+
+                leaf ifname {
+                    type leafref {
+                        path "../../../STP_PORT/STP_PORT_LIST/ifname";
+                    }
+                }
+
+                uses interfaceAttr;
             }
         }
     }

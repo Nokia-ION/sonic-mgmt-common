@@ -567,6 +567,52 @@ func (app *CommonApp) processSubscribe(param processSubRequest) (processSubRespo
 	return resp, nil
 }
 
+func configDbResultHasEntries(result map[transformer.Operation]transformer.RedisDbMap) bool {
+	for _, redisMap := range result {
+		if configDbTableMapHasEntries(redisMap) {
+			return true
+		}
+	}
+	return false
+}
+
+func configDbTableMapHasEntries(redisMap map[db.DBNum]map[string]map[string]db.Value) bool {
+	if redisMap == nil {
+		return false
+	}
+	tblMap, ok := redisMap[db.ConfigDB]
+	if !ok {
+		return false
+	}
+	for _, keys := range tblMap {
+		if len(keys) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func cmnAppConfigDbHasEntries(cmnAppTableMap map[int]map[db.DBNum]map[string]map[string]db.Value) bool {
+	for _, redisMap := range cmnAppTableMap {
+		if configDbTableMapHasEntries(redisMap) {
+			return true
+		}
+	}
+	return false
+}
+
+func configDbMapForOpcode(cmnAppTableMap map[int]map[db.DBNum]map[string]map[string]db.Value, opcode int) (map[string]map[string]db.Value, bool) {
+	opMap, ok := cmnAppTableMap[opcode]
+	if !ok || opMap == nil {
+		return nil, false
+	}
+	dbMap, ok := opMap[db.ConfigDB]
+	if !ok || dbMap == nil || len(dbMap) == 0 {
+		return nil, false
+	}
+	return dbMap, true
+}
+
 func (app *CommonApp) translateCRUDCommon(d *db.DB, opcode int) ([]db.WatchKeys, error) {
 	var err error
 	var keys []db.WatchKeys
@@ -583,13 +629,14 @@ func (app *CommonApp) translateCRUDCommon(d *db.DB, opcode int) ([]db.WatchKeys,
 		return keys, err
 	}
 	app.cmnAppOpcode = opcode //NBI request opcode
+	if strings.Contains(app.pathInfo.Path, "stp/global") && !configDbResultHasEntries(result) {
+		log.Info("XlatetoDB() returned no STP CONFIG_DB updates")
+		err = tlerr.InternalError{Format: "RSTP/STP configuration produced no CONFIG_DB updates"}
+		log.Warning(err)
+		return keys, err
+	}
 	if len(result) == 0 {
 		log.Info("XlatetoDB() returned empty map")
-		if strings.Contains(app.pathInfo.Path, "stp/global") {
-			err = tlerr.InternalError{Format: "RSTP/STP configuration produced no CONFIG_DB updates"}
-			log.Warning(err)
-			return keys, err
-		}
 		//Note: Get around for no redis ABNF Schema for set(temporary)
 		//`err = errors.New("transformer.XlatetoDB() returned empty map")
 		return keys, err
@@ -648,35 +695,40 @@ func (app *CommonApp) processCommon(d *db.DB, opcode int) error {
 	log.Info("Proceeding to perform DB operation")
 
 	// Handle delete first if any available
-	if _, ok := app.cmnAppTableMap[DELETE][db.ConfigDB]; ok {
-		err = app.cmnAppDelDbOpn(d, DELETE, app.cmnAppTableMap[DELETE][db.ConfigDB])
+	if dbMap, ok := configDbMapForOpcode(app.cmnAppTableMap, DELETE); ok {
+		err = app.cmnAppDelDbOpn(d, DELETE, dbMap)
 		if err != nil {
 			log.Info("Process delete fail. cmnAppDelDbOpn error:", err)
 			return err
 		}
 	}
 	// Handle create operation next
-	if _, ok := app.cmnAppTableMap[CREATE][db.ConfigDB]; ok {
-		err = app.cmnAppCRUCommonDbOpn(d, CREATE, app.cmnAppTableMap[CREATE][db.ConfigDB])
+	if dbMap, ok := configDbMapForOpcode(app.cmnAppTableMap, CREATE); ok {
+		err = app.cmnAppCRUCommonDbOpn(d, CREATE, dbMap)
 		if err != nil {
 			log.Info("Process create fail. cmnAppCRUCommonDbOpn error:", err)
 			return err
 		}
 	}
 	// Handle update and replace operation next
-	if _, ok := app.cmnAppTableMap[UPDATE][db.ConfigDB]; ok {
-		err = app.cmnAppCRUCommonDbOpn(d, UPDATE, app.cmnAppTableMap[UPDATE][db.ConfigDB])
+	if dbMap, ok := configDbMapForOpcode(app.cmnAppTableMap, UPDATE); ok {
+		err = app.cmnAppCRUCommonDbOpn(d, UPDATE, dbMap)
 		if err != nil {
 			log.Info("Process update fail. cmnAppCRUCommonDbOpn error:", err)
 			return err
 		}
 	}
-	if _, ok := app.cmnAppTableMap[REPLACE][db.ConfigDB]; ok {
-		err = app.cmnAppCRUCommonDbOpn(d, REPLACE, app.cmnAppTableMap[REPLACE][db.ConfigDB])
+	if dbMap, ok := configDbMapForOpcode(app.cmnAppTableMap, REPLACE); ok {
+		err = app.cmnAppCRUCommonDbOpn(d, REPLACE, dbMap)
 		if err != nil {
 			log.Info("Process replace fail. cmnAppCRUCommonDbOpn error:", err)
 			return err
 		}
+	}
+	if cmnAppConfigDbHasEntries(app.cmnAppTableMap) && !d.IsDirtified() {
+		err = tlerr.InternalError{Format: "Translated CONFIG_DB updates were not applied (no transaction commands queued)"}
+		log.Warning(err)
+		return err
 	}
 	log.Info("Returning from processCommon() - success")
 	return err
@@ -694,6 +746,10 @@ func (app *CommonApp) cmnAppCRUCommonDbOpn(d *db.DB, opcode int, dbMap map[strin
 	resultTblLst, err = utils.SortAsPerTblDeps(xfmrTblLst)
 	if err != nil {
 		return err
+	}
+	if len(resultTblLst) == 0 && len(xfmrTblLst) > 0 {
+		log.Warningf("SortAsPerTblDeps returned empty list for tables %v; using unsorted table order", xfmrTblLst)
+		resultTblLst = append(resultTblLst, xfmrTblLst...)
 	}
 
 	/* CVL sorted order is in child first, parent later order. CRU ops from parent first order */

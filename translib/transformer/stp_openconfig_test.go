@@ -56,7 +56,7 @@ func stpMstInstPrereq(priority string) map[string]interface{} {
 			},
 		},
 		"STP_MST_PORT": map[string]interface{}{
-			"MST_INSTANCE|0|" + stpTestIfName: map[string]interface{}{
+			"0|" + stpTestIfName: map[string]interface{}{
 				"path_cost": "1",
 				"priority":  "128",
 			},
@@ -88,10 +88,8 @@ func stpMstInstAppPrereq() map[string]interface{} {
 	}
 }
 
-func Test_set_rstp_enabled_protocol(t *testing.T) {
-	url := "/openconfig-spanning-tree:stp/global/config"
-	body := `{"openconfig-spanning-tree:config":{"enabled-protocol":["openconfig-spanning-tree-types:RSTP"]}}`
-	expected := map[string]interface{}{
+func stpEnableRstpExpected() map[string]interface{} {
+	return map[string]interface{}{
 		"STP": map[string]interface{}{
 			"GLOBAL": map[string]interface{}{"mode": "mst"},
 		},
@@ -101,8 +99,6 @@ func Test_set_rstp_enabled_protocol(t *testing.T) {
 		"STP_PORT": map[string]interface{}{
 			stpTestIfName: map[string]interface{}{
 				"enabled":               "true",
-				"edge_port":             "false",
-				"link_type":             "auto",
 				"bpdu_guard":            "false",
 				"bpdu_guard_do_disable": "false",
 				"root_guard":            "false",
@@ -111,18 +107,28 @@ func Test_set_rstp_enabled_protocol(t *testing.T) {
 			},
 		},
 		"STP_MST_PORT": map[string]interface{}{
-			"MST_INSTANCE|0|" + stpTestIfName: map[string]interface{}{
+			"0|" + stpTestIfName: map[string]interface{}{
 				"path_cost": "1",
 				"priority":  "128",
 			},
 		},
 	}
-	cleanup := map[string]interface{}{
+}
+
+func stpEnableRstpCleanup() map[string]interface{} {
+	return map[string]interface{}{
 		"STP":          map[string]interface{}{"GLOBAL": ""},
 		"STP_MST_INST": map[string]interface{}{"0": ""},
 		"STP_PORT":     map[string]interface{}{stpTestIfName: ""},
-		"STP_MST_PORT": map[string]interface{}{"MST_INSTANCE|0|" + stpTestIfName: ""},
+		"STP_MST_PORT": map[string]interface{}{"0|" + stpTestIfName: ""},
 	}
+}
+
+func Test_set_rstp_enabled_protocol(t *testing.T) {
+	url := "/openconfig-spanning-tree:stp/global/config"
+	body := `{"openconfig-spanning-tree:config":{"enabled-protocol":["openconfig-spanning-tree-types:RSTP"]}}`
+	expected := stpEnableRstpExpected()
+	cleanup := stpEnableRstpCleanup()
 
 	loadDB(db.ConfigDB, stpEnableRstpPrereq())
 	time.Sleep(1 * time.Second)
@@ -132,41 +138,26 @@ func Test_set_rstp_enabled_protocol(t *testing.T) {
 	unloadDB(db.ConfigDB, cleanup)
 }
 
+func Test_set_rstp_enabled_protocol_cold_start_update(t *testing.T) {
+	url := "/openconfig-spanning-tree:stp/global/config"
+	body := `{"openconfig-spanning-tree:config":{"enabled-protocol":["openconfig-spanning-tree-types:RSTP"]}}`
+	expected := stpEnableRstpExpected()
+	cleanup := stpEnableRstpCleanup()
+
+	// Cold start: VLAN_MEMBER only, no STP|GLOBAL. PATCH uses translib.Update (gNMI UPDATE).
+	loadDB(db.ConfigDB, stpEnableRstpPrereq())
+	time.Sleep(1 * time.Second)
+	t.Run("enable RSTP via UPDATE on cold start", processSetRequest(url, body, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("verify MST mode and MSTI 0 defaults after cold-start UPDATE", verifyDbResult(rclient, "STP|GLOBAL", expected, false))
+	unloadDB(db.ConfigDB, cleanup)
+}
+
 func Test_set_rstp_enabled_protocol_patch(t *testing.T) {
 	url := "/openconfig-spanning-tree:stp/global/config"
 	body := `{"openconfig-spanning-tree:config":{"enabled-protocol":["openconfig-spanning-tree-types:RSTP"]}}`
-	expected := map[string]interface{}{
-		"STP": map[string]interface{}{
-			"GLOBAL": map[string]interface{}{"mode": "mst"},
-		},
-		"STP_MST_INST": map[string]interface{}{
-			"0": map[string]interface{}{"bridge_priority": "32768"},
-		},
-		"STP_PORT": map[string]interface{}{
-			stpTestIfName: map[string]interface{}{
-				"enabled":               "true",
-				"edge_port":             "false",
-				"link_type":             "auto",
-				"bpdu_guard":            "false",
-				"bpdu_guard_do_disable": "false",
-				"root_guard":            "false",
-				"path_cost":             "1",
-				"priority":              "128",
-			},
-		},
-		"STP_MST_PORT": map[string]interface{}{
-			"MST_INSTANCE|0|" + stpTestIfName: map[string]interface{}{
-				"path_cost": "1",
-				"priority":  "128",
-			},
-		},
-	}
-	cleanup := map[string]interface{}{
-		"STP":          map[string]interface{}{"GLOBAL": ""},
-		"STP_MST_INST": map[string]interface{}{"0": ""},
-		"STP_PORT":     map[string]interface{}{stpTestIfName: ""},
-		"STP_MST_PORT": map[string]interface{}{"MST_INSTANCE|0|" + stpTestIfName: ""},
-	}
+	expected := stpEnableRstpExpected()
+	cleanup := stpEnableRstpCleanup()
 
 	loadDB(db.ConfigDB, stpEnableRstpPrereq())
 	time.Sleep(1 * time.Second)
@@ -179,12 +170,7 @@ func Test_set_rstp_enabled_protocol_patch(t *testing.T) {
 func Test_set_rstp_enabled_protocol_replace(t *testing.T) {
 	url := "/openconfig-spanning-tree:stp/global/config"
 	body := `{"openconfig-spanning-tree:config":{"enabled-protocol":["openconfig-spanning-tree-types:RSTP"]}}`
-	cleanup := map[string]interface{}{
-		"STP":          map[string]interface{}{"GLOBAL": ""},
-		"STP_MST_INST": map[string]interface{}{"0": ""},
-		"STP_PORT":     map[string]interface{}{stpTestIfName: ""},
-		"STP_MST_PORT": map[string]interface{}{"MST_INSTANCE|0|" + stpTestIfName: ""},
-	}
+	cleanup := stpEnableRstpCleanup()
 
 	loadDB(db.ConfigDB, stpEnableRstpPrereq())
 	time.Sleep(1 * time.Second)
@@ -201,12 +187,7 @@ func Test_set_rstp_enabled_protocol_replace(t *testing.T) {
 func Test_set_rstp_enabled_protocol_leaf_patch(t *testing.T) {
 	url := "/openconfig-spanning-tree:stp/global/config/enabled-protocol"
 	body := `{"openconfig-spanning-tree:enabled-protocol":["openconfig-spanning-tree-types:RSTP"]}`
-	cleanup := map[string]interface{}{
-		"STP":          map[string]interface{}{"GLOBAL": ""},
-		"STP_MST_INST": map[string]interface{}{"0": ""},
-		"STP_PORT":     map[string]interface{}{stpTestIfName: ""},
-		"STP_MST_PORT": map[string]interface{}{"MST_INSTANCE|0|" + stpTestIfName: ""},
-	}
+	cleanup := stpEnableRstpCleanup()
 
 	loadDB(db.ConfigDB, stpEnableRstpPrereq())
 	time.Sleep(1 * time.Second)

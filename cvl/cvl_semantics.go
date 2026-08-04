@@ -74,6 +74,39 @@ var depDataCountCb DepDataCountCallBack = func(ctxt interface{}, redisKeyFilter,
 	return count
 }
 
+// yangListLeafText returns the text value of a leaf under a YANG list node.
+func yangListLeafText(listNode *xmlquery.Node, leafName string) string {
+	if listNode == nil {
+		return ""
+	}
+
+	for child := listNode.FirstChild; child != nil; child = child.NextSibling {
+		if child.Data == leafName && child.FirstChild != nil {
+			return child.FirstChild.Data
+		}
+	}
+
+	return ""
+}
+
+// skipStpPvstOnlyDefault skips schema default injection for STP leaves that
+// apply only in PVST mode. This avoids CVL injecting rootguard_timeout when
+// STP is enabled in MST/RSTP mode.
+func skipStpPvstOnlyDefault(tableName, nodeName string, listNode *xmlquery.Node) bool {
+	if nodeName != "rootguard_timeout" {
+		return false
+	}
+
+	tInfo, ok := modelInfo.tableInfo[tableName]
+	if !ok || tInfo.redisTableName != "STP" {
+		return false
+	}
+
+	// Only inject rootguard_timeout default when mode is explicitly pvst.
+	mode := yangListLeafText(listNode, "mode")
+	return mode != "pvst"
+}
+
 // Generate leaf/leaf-list YANG data
 func (c *CVL) generateYangLeafData(tableName string, jsonNode *jsonquery.Node,
 	parent *xmlquery.Node) CVLRetCode {
@@ -139,6 +172,10 @@ func (c *CVL) generateYangLeafData(tableName string, jsonNode *jsonquery.Node,
 
 		if child != nil {
 			//node is already present, skip adding it
+			continue
+		}
+
+		if skipStpPvstOnlyDefault(tableName, nodeName, parent) {
 			continue
 		}
 

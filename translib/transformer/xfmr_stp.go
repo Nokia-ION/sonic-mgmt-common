@@ -19,6 +19,7 @@
 package transformer
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"reflect"
@@ -46,6 +47,8 @@ const (
 	// APPL_DB operational tables for MSTI 0.
 	STP_MST_INST_APP_TBL = "STP_MST_INST_TABLE"
 	STP_MST_PORT_APP_TBL = "STP_MST_PORT_TABLE"
+	// ProducerStateTable entries are stored in Redis with a leading "_".
+	applStateTablePrefix = "_"
 
 	RSTP_MSTI_ID = 0
 
@@ -145,7 +148,9 @@ func mstInstCfgKey() string {
 }
 
 func mstPortCfgKey(ifName string) string {
-	return fmt.Sprintf("MST_INSTANCE|%d|%s", RSTP_MSTI_ID, ifName)
+	// CONFIG_DB/CVL key follows YANG list keys (inst_id|ifname). CLI may use
+	// MST_INSTANCE|<id>|<ifname>; stpmgr accepts both formats.
+	return fmt.Sprintf("%d|%s", RSTP_MSTI_ID, ifName)
 }
 
 func mstPortAppKey(ifName string) string {
@@ -198,6 +203,21 @@ func defaultStpPortFields() map[string]string {
 	}
 }
 
+// defaultStpPortBootstrapFields omits edge_port and link_type. Those leaves have
+// YANG must expressions requiring STP|GLOBAL mode=mst, but CVL validates each
+// CONFIG_DB CREATE separately and drops already-validated entries from the batch.
+// STP|GLOBAL is not visible when STP_PORT is validated on cold start.
+func defaultStpPortBootstrapFields() map[string]string {
+	return map[string]string{
+		"enabled":               "true",
+		"bpdu_guard":            "false",
+		"bpdu_guard_do_disable": "false",
+		"root_guard":            "false",
+		"path_cost":             DEFAULT_PATH_COST,
+		"priority":              DEFAULT_PORT_PRIORITY,
+	}
+}
+
 func defaultMstPortFields() map[string]string {
 	return map[string]string{
 		"path_cost": DEFAULT_PATH_COST,
@@ -205,15 +225,18 @@ func defaultMstPortFields() map[string]string {
 	}
 }
 
-func enableRstpMsti0(res map[string]map[string]db.Value) {
+func enableRstpGlobal(res map[string]map[string]db.Value) {
 	globalMap := make(map[string]db.Value)
 	globalMap[STP_GLOBAL_KEY] = db.Value{Field: map[string]string{"mode": STP_MODE_MST}}
 	res[STP_GLOBAL_TBL] = globalMap
+}
 
+func enableRstpMsti0(res map[string]map[string]db.Value) {
+	enableRstpGlobal(res)
 	mstInstMap := make(map[string]db.Value)
-	mstInstMap[mstInstCfgKey()] = db.Value{Field: map[string]string{
-		"bridge_priority": DEFAULT_BRIDGE_PRIORITY,
-	}}
+	mstInstMap[mstInstCfgKey()] = db.Value{
+		Field: map[string]string{"bridge_priority": DEFAULT_BRIDGE_PRIORITY},
+	}
 	res[STP_MST_INST_TBL] = mstInstMap
 }
 
@@ -236,7 +259,7 @@ func populateMstPortEntries(cfgDb *db.DB, res map[string]map[string]db.Value) er
 		res[STP_MST_PORT_TBL] = mstPortMap
 	}
 	for _, ifName := range intfs {
-		portMap[ifName] = db.Value{Field: defaultStpPortFields()}
+		portMap[ifName] = db.Value{Field: defaultStpPortBootstrapFields()}
 		mstPortMap[mstPortCfgKey(ifName)] = db.Value{Field: defaultMstPortFields()}
 	}
 	return nil
@@ -320,15 +343,56 @@ func getMstInstCfgEntry(cfgDb *db.DB) (db.Value, error) {
 	return entry, nil
 }
 
-func getMstInstAppEntry(appDb *db.DB) (db.Value, error) {
-	if appDb == nil {
+func getApplProducerStateEntry(appDb *db.DB, table, keyComp string) (db.Value, error) {
+	if appDb != nil {
+		for _, tbl := range []string{applStateTablePrefix + table, table} {
+			entry, err := appDb.GetEntry(&db.TableSpec{Name: tbl}, db.Key{Comp: []string{keyComp}})
+			if err != nil && !tlerr.IsTranslibRedisClientEntryNotExist(err) {
+				return db.Value{}, err
+			}
+			if entry.IsPopulated() {
+				return entry, nil
+			}
+		}
+	}
+	// ProducerStateTable hashes are stored as _<TABLE>:<key> in APPL_DB.
+	// Use the same wildcard lookup as show spanning-tree.
+	client := db.RedisClient(db.ApplDB)
+	if client == nil {
 		return db.Value{}, nil
 	}
-	entry, err := appDb.GetEntry(&db.TableSpec{Name: STP_MST_INST_APP_TBL}, db.Key{Comp: []string{mstInstCfgKey()}})
-	if err != nil && !tlerr.IsTranslibRedisClientEntryNotExist(err) {
+	keys, err := client.Keys(context.Background(), fmt.Sprintf("*%s:%s", table, keyComp)).Result()
+	if err != nil {
 		return db.Value{}, err
 	}
-	return entry, nil
+	for _, redisKey := range keys {
+		fields, err := client.HGetAll(context.Background(), redisKey).Result()
+		if err != nil {
+			return db.Value{}, err
+		}
+		if len(fields) > 0 {
+			return db.Value{Field: fields}, nil
+		}
+	}
+	return db.Value{}, nil
+}
+
+func interfaceNameFromMstPortRedisKey(redisKey string) (string, bool) {
+	marker := STP_MST_PORT_APP_TBL + ":"
+	idx := strings.LastIndex(redisKey, marker)
+	if idx < 0 {
+		return "", false
+	}
+	rest := redisKey[idx+len(marker):]
+	parts := strings.SplitN(rest, ":", 2)
+	if len(parts) != 2 {
+		return "", false
+	}
+	return parts[1], true
+}
+
+func getMstInstAppEntry(appDb *db.DB) (db.Value, error) {
+	return getApplProducerStateEntry(appDb, STP_MST_INST_APP_TBL, mstInstCfgKey())
 }
 
 func parseUint8Default(val, def string) uint8 {
@@ -550,8 +614,8 @@ func fillRstpInterfaceState(intf *ocbinds.OpenconfigSpanningTree_Stp_Rstp_Interf
 	if appDb == nil {
 		return nil
 	}
-	appEntry, err := appDb.GetEntry(&db.TableSpec{Name: STP_MST_PORT_APP_TBL}, db.Key{Comp: []string{mstPortAppKey(ifName)}})
-	if err != nil && !tlerr.IsTranslibRedisClientEntryNotExist(err) {
+	appEntry, err := getApplProducerStateEntry(appDb, STP_MST_PORT_APP_TBL, mstPortAppKey(ifName))
+	if err != nil {
 		return err
 	}
 	if !appEntry.IsPopulated() {
@@ -725,12 +789,8 @@ func listStpPortInterfaces(cfgDb *db.DB) ([]string, error) {
 	return names, nil
 }
 
-func listMstPortInterfaces(appDb *db.DB) ([]string, error) {
-	if appDb == nil {
-		return nil, nil
-	}
-	prefix := fmt.Sprintf("%d:", RSTP_MSTI_ID)
-	keys, err := appDb.GetKeysByPattern(&db.TableSpec{Name: STP_MST_PORT_APP_TBL}, prefix+"*")
+func listMstPortInterfacesFromTable(appDb *db.DB, table, prefix string) ([]string, error) {
+	keys, err := appDb.GetKeysByPattern(&db.TableSpec{Name: table}, prefix+"*")
 	if err != nil {
 		return nil, err
 	}
@@ -742,6 +802,41 @@ func listMstPortInterfaces(appDb *db.DB) ([]string, error) {
 		parts := strings.SplitN(key.Comp[0], ":", 2)
 		if len(parts) == 2 {
 			names = append(names, parts[1])
+		}
+	}
+	return names, nil
+}
+
+func listMstPortInterfaces(appDb *db.DB) ([]string, error) {
+	prefix := fmt.Sprintf("%d:", RSTP_MSTI_ID)
+	if appDb != nil {
+		names, err := listMstPortInterfacesFromTable(appDb, applStateTablePrefix+STP_MST_PORT_APP_TBL, prefix)
+		if err != nil {
+			return nil, err
+		}
+		if len(names) > 0 {
+			return names, nil
+		}
+		names, err = listMstPortInterfacesFromTable(appDb, STP_MST_PORT_APP_TBL, prefix)
+		if err != nil {
+			return nil, err
+		}
+		if len(names) > 0 {
+			return names, nil
+		}
+	}
+	client := db.RedisClient(db.ApplDB)
+	if client == nil {
+		return nil, nil
+	}
+	keys, err := client.Keys(context.Background(), fmt.Sprintf("*%s:%s*", STP_MST_PORT_APP_TBL, prefix)).Result()
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(keys))
+	for _, redisKey := range keys {
+		if name, ok := interfaceNameFromMstPortRedisKey(redisKey); ok {
+			names = append(names, name)
 		}
 	}
 	return names, nil
@@ -799,12 +894,24 @@ func ensureStpGlobalConfigTree(stpRoot *ocbinds.OpenconfigSpanningTree_Stp) *ocb
 }
 
 func getEnabledProtocols(inParams XfmrParams) []ocbinds.E_OpenconfigSpanningTreeTypes_STP_PROTOCOL {
+	if inParams.ygRoot != nil {
+		deviceObj := (*inParams.ygRoot).(*ocbinds.Device)
+		ygot.BuildEmptyTree(deviceObj)
+		if deviceObj.Stp != nil && deviceObj.Stp.Global != nil &&
+			deviceObj.Stp.Global.Config != nil &&
+			deviceObj.Stp.Global.Config.EnabledProtocol != nil {
+			return deviceObj.Stp.Global.Config.EnabledProtocol
+		}
+	}
+	if protocols := enabledProtocolsFromParam(inParams.param); len(protocols) > 0 {
+		return protocols
+	}
 	stpRoot := getStpRoot(inParams.ygRoot)
 	cfg := ensureStpGlobalConfigTree(stpRoot)
 	if cfg != nil && cfg.EnabledProtocol != nil {
 		return cfg.EnabledProtocol
 	}
-	return enabledProtocolsFromParam(inParams.param)
+	return nil
 }
 
 func rstpEnableRequested(inParams XfmrParams) bool {
@@ -812,6 +919,9 @@ func rstpEnableRequested(inParams XfmrParams) bool {
 }
 
 func rstpEnableInPayload(inParams XfmrParams) bool {
+	if hasRstpProtocol(getEnabledProtocols(inParams)) {
+		return true
+	}
 	if inParams.ygRoot == nil {
 		return false
 	}
@@ -831,6 +941,47 @@ func rstpEnableInRequest(inParams XfmrParams) bool {
 		return true
 	}
 	return false
+}
+
+func rstpGlobalConfigSetRequested(inParams XfmrParams) bool {
+	if inParams.oper == DELETE {
+		return false
+	}
+	reqPath, _, _ := XfmrRemoveXPATHPredicates(inParams.requestUri)
+	return shouldMapStpGlobalConfigLeaf(reqPath, "enabled-protocol")
+}
+
+func rstpEnableBootstrapRequested(inParams XfmrParams) bool {
+	return rstpEnableInRequest(inParams) || rstpGlobalConfigSetRequested(inParams)
+}
+
+func shouldApplyStpGlobalEnable(inParams XfmrParams) bool {
+	reqPath, _, _ := XfmrRemoveXPATHPredicates(inParams.requestUri)
+	if !shouldMapStpGlobalConfigLeaf(reqPath, "enabled-protocol") {
+		return false
+	}
+	uriPath, _, _ := XfmrRemoveXPATHPredicates(inParams.uri)
+	// Skip the virtual /global parent hop when the request targets /global/config.
+	if uriPath == STP_GLOBAL && reqPath != STP_GLOBAL {
+		return false
+	}
+	// Leaf UPDATE targets /enabled-protocol; run bootstrap only from /config subtree.
+	if strings.HasSuffix(reqPath, "/enabled-protocol") && uriPath != STP_GLOBAL_CONFIG {
+		return false
+	}
+	return true
+}
+
+func markStpSubtreeOnceWhenPopulated(inParams XfmrParams, res map[string]map[string]db.Value) {
+	if inParams.invokeCRUSubtreeOnce == nil {
+		return
+	}
+	for _, keys := range res {
+		if len(keys) > 0 {
+			*inParams.invokeCRUSubtreeOnce = true
+			return
+		}
+	}
 }
 
 func mergeRstpEnableDbMap(dst map[string]map[string]db.Value, cfgDb *db.DB) error {
@@ -1029,7 +1180,7 @@ var stp_post_xfmr PostXfmrFunc = func(inParams XfmrParams) error {
 		(*inParams.dbDataMap)[db.ConfigDB] = retDbDataMap
 	}
 
-	needEnable := rstpEnableInRequest(inParams)
+	needEnable := rstpEnableBootstrapRequested(inParams)
 	if !needEnable {
 		if stpTbl, ok := retDbDataMap[STP_GLOBAL_TBL]; ok {
 			if entry, ok := stpTbl[STP_GLOBAL_KEY]; ok && entry.Get("mode") == STP_MODE_MST {
@@ -1043,7 +1194,7 @@ var stp_post_xfmr PostXfmrFunc = func(inParams XfmrParams) error {
 
 	tempRes := make(map[string]map[string]db.Value)
 	var err error
-	if rstpEnableInRequest(inParams) {
+	if rstpEnableBootstrapRequested(inParams) {
 		err = applyRstpEnableToDbMap(tempRes, inParams)
 	} else {
 		err = mergeRstpEnableDbMap(tempRes, stpCfgDb(inParams))
@@ -1100,7 +1251,7 @@ var DbToYang_stp_global_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) err
 func applyRstpEnableToDbMap(res map[string]map[string]db.Value, inParams XfmrParams) error {
 	protocols := getEnabledProtocols(inParams)
 	if len(protocols) == 0 {
-		if rstpEnableInPayload(inParams) {
+		if rstpEnableInPayload(inParams) || rstpGlobalConfigSetRequested(inParams) {
 			return mergeRstpEnableDbMap(res, stpCfgDb(inParams))
 		}
 		return errors.New("enabled-protocol is required to configure RSTP")
@@ -1123,12 +1274,16 @@ var YangToDb_stp_global_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (ma
 		return res, errors.New("DELETE not supported on attribute")
 	}
 
-	if !shouldMapStpGlobalConfigLeaf(targetUriPath, "enabled-protocol") {
+	if !shouldApplyStpGlobalEnable(inParams) {
+		return res, nil
+	}
+	if !rstpEnableBootstrapRequested(inParams) {
 		return res, nil
 	}
 	if err := applyRstpEnableToDbMap(res, inParams); err != nil {
 		return res, err
 	}
+	markStpSubtreeOnceWhenPopulated(inParams, res)
 	return res, nil
 }
 
