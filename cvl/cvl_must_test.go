@@ -657,6 +657,46 @@ func TestValidateEditConfig_MustExp_Add_NULL(t *testing.T) {
 	t.Run("after", testNullAdd(delUnnumber, addNull))
 }
 
+func TestValidateEditConfig_Delete_StpMstTeardown_WithLinkType_Positive(t *testing.T) {
+	setupTestData(t, map[string]interface{}{
+		"STP": map[string]interface{}{
+			"GLOBAL": map[string]interface{}{"mode": "mst"},
+		},
+		"STP_MST": map[string]interface{}{
+			"GLOBAL": map[string]interface{}{"hello_time": "2"},
+		},
+		"STP_MST_INST": map[string]interface{}{
+			"0": map[string]interface{}{"bridge_priority": "32768"},
+		},
+		"STP_PORT": map[string]interface{}{
+			"Ethernet0": map[string]interface{}{
+				"enabled":   "true",
+				"link_type": "shared",
+			},
+		},
+		"STP_MST_PORT": map[string]interface{}{
+			"0|Ethernet0": map[string]interface{}{"priority": "128"},
+		},
+	})
+
+	cfgData := []cmn.CVLEditConfigData{
+		{
+			VType: cmn.VALIDATE_ALL,
+			VOp:   cmn.OP_DELETE,
+			Key:   "STP|GLOBAL",
+			Data:  map[string]string{},
+		},
+		{
+			VType: cmn.VALIDATE_ALL,
+			VOp:   cmn.OP_DELETE,
+			Key:   "STP_PORT|Ethernet0",
+			Data:  map[string]string{},
+		},
+	}
+
+	verifyValidateEditConfig(t, cfgData, Success)
+}
+
 func testNullAdd(data ...cmn.CVLEditConfigData) func(*testing.T) {
 	return func(t *testing.T) {
 		session, _ := NewCvlSession()

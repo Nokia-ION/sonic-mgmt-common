@@ -89,6 +89,27 @@ func yangListLeafText(listNode *xmlquery.Node, leafName string) string {
 	return ""
 }
 
+// skipMustOnStpMstTeardownDelete skips must validation when an entire STP MST
+// row is deleted. Must expressions on fields such as link_type and edge_port
+// reference STP|GLOBAL mode=mst; when RSTP/MST is disabled in one request,
+// STP|GLOBAL may be deleted in the same CVL batch before port rows are removed,
+// producing a false positive even though the configuration is being torn down.
+func skipMustOnStpMstTeardownDelete(yangListName string, cfgData *cmn.CVLEditConfigData) bool {
+	if cfgData == nil || cfgData.VOp != cmn.OP_DELETE || len(cfgData.Data) > 0 {
+		return false
+	}
+	tInfo, ok := modelInfo.tableInfo[yangListName]
+	if !ok {
+		return false
+	}
+	switch tInfo.redisTableName {
+	case "STP_PORT", "STP_MST", "STP_MST_INST", "STP_MST_PORT":
+		return true
+	default:
+		return false
+	}
+}
+
 // skipStpPvstOnlyDefault skips schema default injection for STP leaves that
 // apply only in PVST mode. This avoids CVL injecting rootguard_timeout when
 // STP is enabled in MST/RSTP mode.
@@ -1736,8 +1757,10 @@ func (c *CVL) validateSemantics(node *xmlquery.Node,
 		}
 	}
 
-	if errObj := c.validateMustExp(node, yangListName, key, cfgData.VOp); errObj.ErrCode != CVL_SUCCESS {
-		return errObj
+	if !skipMustOnStpMstTeardownDelete(yangListName, cfgData) {
+		if errObj := c.validateMustExp(node, yangListName, key, cfgData.VOp); errObj.ErrCode != CVL_SUCCESS {
+			return errObj
+		}
 	}
 
 	if cfgData.VOp == cmn.OP_DELETE && len(cfgData.Data) == 0 {
