@@ -56,6 +56,12 @@ module sonic-portchannel {
                     type boolean;
                 }
 
+                leaf fallback_timeout {
+                    type uint16 {
+                        range 1..65535;
+                    }
+                }
+
                 leaf active {
                     type boolean;
                 }
