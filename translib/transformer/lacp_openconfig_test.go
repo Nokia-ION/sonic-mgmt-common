@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/Azure/sonic-mgmt-common/translib/db"
+	"github.com/Azure/sonic-mgmt-common/translib/tlerr"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -140,6 +141,141 @@ func Test_openconfig_lacp_config_fallback(t *testing.T) {
 	seedPortChannelField(pcName, "fallback", "false")
 	t.Run("GET fallback false", processGetRequest(fallbackURL, nil,
 		"{\"openconfig-lacp:fallback\": false}", false))
+}
+
+// portChannelField reads a PORTCHANNEL field from ConfigDB, returning "" when absent.
+func portChannelField(t *testing.T, pcName, field string) string {
+	t.Helper()
+	val, err := rclient.HGet(context.Background(), "PORTCHANNEL|"+pcName, field).Result()
+	if err == redis.Nil {
+		return ""
+	}
+	if err != nil {
+		t.Fatalf("Failed to read PORTCHANNEL.%s for %s: %v", field, pcName, err)
+	}
+	return val
+}
+
+// Test_openconfig_lacp_config_fallback_timeout covers SET/GET of config/fallback-timeout
+// mapped to PORTCHANNEL.fallback_timeout in CONFIG_DB.
+func Test_openconfig_lacp_config_fallback_timeout(t *testing.T) {
+	const pcName = "PortChannel117"
+	base := "/openconfig-lacp:lacp/interfaces/interface[name=" + pcName + "]/config"
+
+	t.Log("\n\n+++++++++++++ LACP CONFIG FALLBACK-TIMEOUT ++++++++++++")
+	loadLacpPortChannel(pcName)
+	defer unloadLacpPortChannel(pcName)
+
+	t.Log("\n\n--- SET fallback and fallback-timeout together ---")
+	t.Run("SET fallback + timeout", processSetRequest(base,
+		`{"openconfig-lacp:config": {"fallback": true, "fallback-timeout": 120}}`,
+		"PATCH", false, nil))
+
+	if got := portChannelField(t, pcName, "fallback_timeout"); got != "120" {
+		t.Fatalf("Expected PORTCHANNEL.fallback_timeout=120, got %q", got)
+	}
+
+	t.Run("GET fallback-timeout", processGetRequest(base+"/fallback-timeout", nil,
+		`{"openconfig-lacp:fallback-timeout": 120}`, false))
+}
+
+// Test_openconfig_lacp_config_fallback_timeout_default verifies that enabling fallback
+// without an explicit timeout adopts the 90 second default.
+func Test_openconfig_lacp_config_fallback_timeout_default(t *testing.T) {
+	const pcName = "PortChannel118"
+	base := "/openconfig-lacp:lacp/interfaces/interface[name=" + pcName + "]/config"
+
+	t.Log("\n\n+++++++++++++ LACP CONFIG FALLBACK-TIMEOUT DEFAULT ++++++++++++")
+	loadLacpPortChannel(pcName)
+	defer unloadLacpPortChannel(pcName)
+
+	t.Run("SET fallback only", processSetRequest(base+"/fallback",
+		`{"openconfig-lacp:fallback": true}`, "PATCH", false, nil))
+
+	if got := portChannelField(t, pcName, "fallback_timeout"); got != "90" {
+		t.Fatalf("Expected default PORTCHANNEL.fallback_timeout=90, got %q", got)
+	}
+
+	t.Run("GET fallback-timeout default", processGetRequest(base+"/fallback-timeout", nil,
+		`{"openconfig-lacp:fallback-timeout": 90}`, false))
+}
+
+// Test_openconfig_lacp_config_fallback_timeout_requires_fallback verifies that a
+// fallback-timeout SET is rejected unless fallback is enabled.
+func Test_openconfig_lacp_config_fallback_timeout_requires_fallback(t *testing.T) {
+	const pcName = "PortChannel119"
+	timeoutURL := "/openconfig-lacp:lacp/interfaces/interface[name=" + pcName +
+		"]/config/fallback-timeout"
+
+	t.Log("\n\n+++++++++++++ LACP FALLBACK-TIMEOUT WITHOUT FALLBACK ++++++++++++")
+	loadLacpPortChannel(pcName)
+	defer unloadLacpPortChannel(pcName)
+
+	expectedErr := tlerr.InvalidArgsError{
+		Format: "fallback-timeout requires fallback to be enabled on " + pcName}
+	t.Run("SET timeout without fallback", processSetRequest(timeoutURL,
+		`{"openconfig-lacp:fallback-timeout": 120}`, "PATCH", true, expectedErr))
+
+	if got := portChannelField(t, pcName, "fallback_timeout"); got != "" {
+		t.Fatalf("Expected PORTCHANNEL.fallback_timeout to stay unset, got %q", got)
+	}
+}
+
+// Test_openconfig_lacp_config_fallback_timeout_immutable verifies that the timeout
+// cannot be changed once the PortChannel carries one.
+func Test_openconfig_lacp_config_fallback_timeout_immutable(t *testing.T) {
+	const pcName = "PortChannel120"
+	base := "/openconfig-lacp:lacp/interfaces/interface[name=" + pcName + "]/config"
+
+	t.Log("\n\n+++++++++++++ LACP FALLBACK-TIMEOUT IMMUTABLE ++++++++++++")
+	loadLacpPortChannel(pcName)
+	defer unloadLacpPortChannel(pcName)
+
+	t.Run("SET fallback + timeout", processSetRequest(base,
+		`{"openconfig-lacp:config": {"fallback": true, "fallback-timeout": 120}}`,
+		"PATCH", false, nil))
+
+	expectedErr := tlerr.InvalidArgsError{
+		Format: "fallback-timeout cannot be changed after PortChannel creation on " + pcName}
+	t.Run("SET timeout again", processSetRequest(base+"/fallback-timeout",
+		`{"openconfig-lacp:fallback-timeout": 200}`, "PATCH", true, expectedErr))
+
+	if got := portChannelField(t, pcName, "fallback_timeout"); got != "120" {
+		t.Fatalf("Expected PORTCHANNEL.fallback_timeout to stay 120, got %q", got)
+	}
+}
+
+// Test_openconfig_lacp_state_fallback_timeout covers GET of state/fallback-timeout,
+// which teamd publishes into STATE_DB LAG_TABLE as runner.fallback_timeout.
+func Test_openconfig_lacp_state_fallback_timeout(t *testing.T) {
+	const pcName = "PortChannel121"
+	stateURL := "/openconfig-lacp:lacp/interfaces/interface[name=" + pcName +
+		"]/state/fallback-timeout"
+
+	t.Log("\n\n+++++++++++++ LACP STATE FALLBACK-TIMEOUT ++++++++++++")
+	loadLacpPortChannel(pcName)
+	defer unloadLacpPortChannel(pcName)
+
+	stateClient := getDbClient(int(db.StateDB))
+	if stateClient == nil {
+		t.Fatalf("Failed to get StateDB redis client")
+	}
+	defer func() {
+		stateClient.Del(context.Background(), "LAG_TABLE|"+pcName)
+		db.CloseRedisClient(stateClient)
+	}()
+
+	fields := map[string]interface{}{
+		"runner.fallback":         "true",
+		"runner.fallback_timeout": "120",
+	}
+	if _, err := stateClient.HMSet(context.Background(), "LAG_TABLE|"+pcName, fields).Result(); err != nil {
+		t.Fatalf("Failed to seed LAG_TABLE|%s: %v", pcName, err)
+	}
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET state fallback-timeout", processGetRequest(stateURL, nil,
+		`{"openconfig-lacp:fallback-timeout": 120}`, false))
 }
 
 // Test_openconfig_lacp_config_lacp_mode covers SET/GET of config/lacp-mode mapped to

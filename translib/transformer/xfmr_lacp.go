@@ -35,8 +35,12 @@ import (
 
 var (
 	/* The set of fields in the PORTCHANNEL table controlled by openconfig-lacp */
-	PortChanFlds = [...]string{"system_id", "system_priority", "active", "id", "fast_rate", "fallback"}
+	PortChanFlds = [...]string{"system_id", "system_priority", "active", "id", "fast_rate", "fallback", "fallback_timeout"}
 )
+
+/* Number of seconds a PortChannel waits for LACP PDUs before falling back to a
+ * single active member, when fallback is enabled without an explicit timeout. */
+const defaultFallbackTimeout uint16 = 90
 
 func init() {
 	XlateFuncBind("YangToDb_lacp_config_xfmr", YangToDb_lacp_config_xfmr)
@@ -69,11 +73,12 @@ func getLacpInterfaceConfigInfo(inParams XfmrParams, ifKey string) (map[string]d
 	prtInst := (*inParams.dbDataMap)[db.ConfigDB][PORTCHANNEL_TN][ifKey]
 	infoMap[ifKey] = db.Value{
 		Field: map[string]string{
-			"interval":        prtInst.Field["fast_rate"],
-			"lacp-mode":       prtInst.Field["active"],
-			"system-id-mac":   prtInst.Field["system_id"],
-			"system-priority": prtInst.Field["system_priority"],
-			"fallback":        prtInst.Field["fallback"],
+			"interval":         prtInst.Field["fast_rate"],
+			"lacp-mode":        prtInst.Field["active"],
+			"system-id-mac":    prtInst.Field["system_id"],
+			"system-priority":  prtInst.Field["system_priority"],
+			"fallback":         prtInst.Field["fallback"],
+			"fallback-timeout": prtInst.Field["fallback_timeout"],
 		},
 	}
 	return infoMap, nil
@@ -86,11 +91,12 @@ func getLacpInterfaceStateInfo(inParams XfmrParams, ifKey string) (map[string]db
 
 	infoMap[ifKey] = db.Value{
 		Field: map[string]string{
-			"interval":        prtInst.Field["runner.fast_rate"],
-			"lacp-mode":       prtInst.Field["runner.active"],
-			"system-id-mac":   prtInst.Field["team_device.ifinfo.dev_addr"],
-			"system-priority": prtInst.Field["runner.sys_prio"],
-			"fallback":        prtInst.Field["runner.fallback"],
+			"interval":         prtInst.Field["runner.fast_rate"],
+			"lacp-mode":        prtInst.Field["runner.active"],
+			"system-id-mac":    prtInst.Field["team_device.ifinfo.dev_addr"],
+			"system-priority":  prtInst.Field["runner.sys_prio"],
+			"fallback":         prtInst.Field["runner.fallback"],
+			"fallback-timeout": prtInst.Field["runner.fallback_timeout"],
 		},
 	}
 	return infoMap, nil
@@ -109,6 +115,23 @@ func prepareFallbackVal(infoMap map[string]db.Value, ifKey string) *bool {
 		log.V(lvl.DEBUG).Infof("Return default fallback mode value false for %v. ", ifKey)
 		return &defaultFbVal
 	}
+}
+
+/* prepareFallbackTimeoutVal returns the fallback timeout to report for ifKey, or
+ * nil when the interface carries no timeout so that the leaf stays absent. */
+func prepareFallbackTimeoutVal(infoMap map[string]db.Value, ifKey string) *uint16 {
+	fbt, ok := infoMap[ifKey].Field["fallback-timeout"]
+	if !ok || fbt == "" {
+		log.V(lvl.DEBUG).Infof("No fallback timeout configured for %v.", ifKey)
+		return nil
+	}
+	fbtVal, err := strconv.ParseUint(fbt, 10, 16)
+	if err != nil {
+		log.V(lvl.DEBUG).Infof("Error parsing fallback timeout for %v. Err: %v", ifKey, err)
+		return nil
+	}
+	uFbtVal := uint16(fbtVal)
+	return &uFbtVal
 }
 
 func getLacpMemberInfo(inParams XfmrParams, ifKey string, ifMemKey string) (map[string]db.Value, error) {
@@ -198,6 +221,7 @@ func _fillLacpInterfaceConfig(ifKey string, infoMap map[string]db.Value,
 	}
 
 	configObj.Fallback = prepareFallbackVal(infoMap, ifKey)
+	configObj.FallbackTimeout = prepareFallbackTimeoutVal(infoMap, ifKey)
 
 	return nil
 }
@@ -231,6 +255,7 @@ func _fillLacpInterfaceState(ifKey string, infoMap map[string]db.Value, targetUr
 			stateObj.SystemPriority = &usp
 		}
 		stateObj.Fallback = prepareFallbackVal(infoMap, ifKey)
+		stateObj.FallbackTimeout = prepareFallbackTimeoutVal(infoMap, ifKey)
 	case "/openconfig-lacp:lacp/interfaces/interface/state/name":
 		stateObj.Name = &ifKey
 	case "/openconfig-lacp:lacp/interfaces/interface/state/interval":
@@ -255,6 +280,8 @@ func _fillLacpInterfaceState(ifKey string, infoMap map[string]db.Value, targetUr
 		stateObj.SystemPriority = &usp
 	case "/openconfig-lacp:lacp/interfaces/interface/state/fallback":
 		stateObj.Fallback = prepareFallbackVal(infoMap, ifKey)
+	case "/openconfig-lacp:lacp/interfaces/interface/state/fallback-timeout":
+		stateObj.FallbackTimeout = prepareFallbackTimeoutVal(infoMap, ifKey)
 	default:
 		log.V(lvl.DEBUG).Infof("Unsupported path; name=%s path=%s", ifKey, targetUriPath)
 		return tlerr.InvalidArgsError{Format: "unsupported path"}
@@ -868,6 +895,61 @@ var Subscribe_lacp_intfs_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSubscInPa
 	return result, nil
 }
 
+/* resolveFallbackTimeout validates a fallback / fallback-timeout request against the
+ * PortChannel configuration already committed to ConfigDB.  It returns the value to
+ * write to the fallback_timeout field, or remove=true when the field must be cleared
+ * because fallback is being disabled.  An empty value with remove=false means the
+ * request carries nothing to write for this field. */
+func resolveFallbackTimeout(inParams XfmrParams, ifName string, fallback *bool,
+	fallbackTimeout *uint16) (value string, remove bool, err error) {
+
+	if fallback == nil && fallbackTimeout == nil {
+		return "", false, nil
+	}
+
+	var curFallback, curTimeout string
+	if cfgDb := inParams.dbs[db.ConfigDB]; cfgDb != nil {
+		pcEntry, gErr := cfgDb.GetEntry(&db.TableSpec{Name: PORTCHANNEL_TN}, db.Key{Comp: []string{ifName}})
+		if gErr != nil && !tlerr.IsTranslibRedisClientEntryNotExist(gErr) {
+			log.V(lvl.ERROR).Infof("resolveFallbackTimeout: Error %v reading %s|%s", gErr, PORTCHANNEL_TN, ifName)
+			return "", false, gErr
+		}
+		curFallback = pcEntry.Field["fallback"]
+		curTimeout = pcEntry.Field["fallback_timeout"]
+	}
+
+	/* fallback is either being set by this request or was committed earlier. */
+	fallbackOn := curFallback == "true"
+	if fallback != nil {
+		fallbackOn = *fallback
+	}
+
+	if fallbackTimeout == nil {
+		/* Disabling fallback drops the timeout so that re-enabling it later does not
+		 * silently inherit a stale value. */
+		if !fallbackOn {
+			return "", curTimeout != "", nil
+		}
+		/* Enabling fallback without an explicit timeout adopts the default. */
+		if curTimeout != "" {
+			return "", false, nil
+		}
+		return strconv.FormatUint(uint64(defaultFallbackTimeout), 10), false, nil
+	}
+
+	if !fallbackOn {
+		return "", false, tlerr.InvalidArgsError{
+			Format: "fallback-timeout requires fallback to be enabled on " + ifName}
+	}
+
+	newTimeout := strconv.FormatUint(uint64(*fallbackTimeout), 10)
+	if curTimeout != "" && curTimeout != newTimeout {
+		return "", false, tlerr.InvalidArgsError{
+			Format: "fallback-timeout cannot be changed after PortChannel creation on " + ifName}
+	}
+	return newTimeout, false, nil
+}
+
 var YangToDb_lacp_intfs_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (map[string]map[string]db.Value, error) {
 	log.V(lvl.DEBUG).Infof("YangToDb_lacp_intfs_xfmr: inParams=%#v", inParams)
 	lacpObj := getLacpRoot(inParams.ygRoot)
@@ -936,6 +1018,7 @@ var YangToDb_lacp_intfs_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (ma
 		var systemIdMac *string
 		var systemPriority *uint16
 		var fallback *bool
+		var fallbackTimeout *uint16
 
 		if lacpIntfObj.Config != nil {
 			log.V(lvl.DEBUG).Infof("SET data: %#v", lacpIntfObj.Config)
@@ -944,7 +1027,10 @@ var YangToDb_lacp_intfs_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (ma
 			systemIdMac = lacpIntfObj.Config.SystemIdMac
 			systemPriority = lacpIntfObj.Config.SystemPriority
 			fallback = lacpIntfObj.Config.Fallback
+			fallbackTimeout = lacpIntfObj.Config.FallbackTimeout
 		}
+
+		delFlds := db.Value{Field: map[string]string{}}
 
 		switch {
 		case strings.HasSuffix(inParams.requestUri, "interval"):
@@ -973,9 +1059,28 @@ var YangToDb_lacp_intfs_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (ma
 			}
 			resMap["system_priority"] = strconv.FormatUint(uint64(*systemPriority), 10)
 
+		case strings.HasSuffix(inParams.requestUri, "fallback-timeout"):
+			if fallbackTimeout == nil {
+				return nil, tlerr.InvalidArgsError{Format: "Config FallbackTimeout doesn't exist"}
+			}
+			fbTimeout, _, err := resolveFallbackTimeout(inParams, ifName, fallback, fallbackTimeout)
+			if err != nil {
+				return nil, err
+			}
+			resMap["fallback_timeout"] = fbTimeout
+
 		case strings.HasSuffix(inParams.requestUri, "fallback"):
-			if lacpIntfObj.Config.Fallback != nil {
+			if fallback != nil {
 				resMap["fallback"] = strconv.FormatBool(*fallback)
+				fbTimeout, rmTimeout, err := resolveFallbackTimeout(inParams, ifName, fallback, fallbackTimeout)
+				if err != nil {
+					return nil, err
+				}
+				if rmTimeout {
+					delFlds.Field["fallback_timeout"] = ""
+				} else if fbTimeout != "" {
+					resMap["fallback_timeout"] = fbTimeout
+				}
 			}
 		default:
 			use_fast_rate := true
@@ -1017,6 +1122,23 @@ var YangToDb_lacp_intfs_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (ma
 			if fallback != nil {
 				resMap["fallback"] = strconv.FormatBool(*fallback)
 			}
+			fbTimeout, rmTimeout, err := resolveFallbackTimeout(inParams, ifName, fallback, fallbackTimeout)
+			if err != nil {
+				return nil, err
+			}
+			if rmTimeout {
+				delFlds.Field["fallback_timeout"] = ""
+			} else if fbTimeout != "" {
+				resMap["fallback_timeout"] = fbTimeout
+			}
+		}
+
+		if len(delFlds.Field) != 0 {
+			updateSubOpDataMap(map[db.DBNum]map[string]map[string]db.Value{
+				db.ConfigDB: {
+					PORTCHANNEL_TN: map[string]db.Value{ifName: delFlds},
+				},
+			}, DELETE, inParams)
 		}
 
 		intTbl, ok := IntfTypeTblMap[intfType]

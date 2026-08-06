@@ -26,14 +26,13 @@ module openconfig-lacp {
     managing aggregate interfaces.   It works in conjunction with
     the OpenConfig interfaces and aggregate interfaces models.";
 
-oc-ext:openconfig-version "2.2.0";
+  oc-ext:openconfig-version "2.2.0";
 
-revision "2026-04-09" {
-description
-"Add LACP fallback timeout leaf.";
-reference "2.2.0";
-}
-
+  revision "2025-01-30" {
+    description
+      "Add LACP fallback-timeout leaf under both config and state.";
+    reference "2.2.0";
+  }
 
   revision "2024-09-24" {
     description
@@ -434,7 +433,9 @@ grouping aggregation-lacp-members-statistics {
       type uint16;
       units "seconds";
       description
-        "The timeout in seconds to wait for LACP PDUs before falling back to a single port.";
+        "The period of time to wait for LACP PDUs from the peer before
+        the LACP interface falls back to a single port active. This leaf
+        is only applicable when fallback is set to true.";
     }
 
     uses aggregation-lacp-global-config;
