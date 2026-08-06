@@ -22,11 +22,25 @@ module openconfig-spanning-tree-deviation {
         reference "0.1.0";
     }
 
+    revision 2026-08-06 {
+        description
+            "Allow bridge-priority 0 on RSTP config to match SONiC/IEEE range.";
+        reference "0.2.0";
+    }
+
     deviation /oc-stp:stp/oc-stp:mstp {
         deviate not-supported;
     }
 
     deviation /oc-stp:stp/oc-stp:rapid-pvst {
         deviate not-supported;
+    }
+
+    deviation /oc-stp:stp/oc-stp:rstp/oc-stp:config/oc-stp:bridge-priority {
+        deviate replace {
+            type uint32 {
+                range "0..61440";
+            }
+        }
     }
 }

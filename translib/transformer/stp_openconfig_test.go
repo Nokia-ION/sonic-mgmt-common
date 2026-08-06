@@ -22,6 +22,7 @@
 package transformer_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -102,14 +103,12 @@ func stpEnableRstpExpected() map[string]interface{} {
 				"bpdu_guard":            "false",
 				"bpdu_guard_do_disable": "false",
 				"root_guard":            "false",
-				"path_cost":             "1",
 				"priority":              "128",
 			},
 		},
 		"STP_MST_PORT": map[string]interface{}{
 			"0|" + stpTestIfName: map[string]interface{}{
-				"path_cost": "1",
-				"priority":  "128",
+				"priority": "128",
 			},
 		},
 	}
@@ -221,6 +220,26 @@ func Test_set_rstp_bridge_priority(t *testing.T) {
 	unloadDB(db.ConfigDB, cleanup)
 }
 
+func Test_set_rstp_bridge_priority_zero(t *testing.T) {
+	url := "/openconfig-spanning-tree:stp/rstp/config/bridge-priority"
+	body := `{"openconfig-spanning-tree:bridge-priority":0}`
+	expected := map[string]interface{}{
+		"STP_MST_INST": map[string]interface{}{
+			"0": map[string]interface{}{"bridge_priority": "0"},
+		},
+	}
+	cleanup := map[string]interface{}{
+		"STP_MST_INST": map[string]interface{}{"0": ""},
+	}
+
+	loadDB(db.ConfigDB, stpMstInstPrereq("32768"))
+	time.Sleep(1 * time.Second)
+	t.Run("set RSTP bridge priority 0 on MSTI 0", processSetRequest(url, body, "POST", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("verify MSTI 0 bridge priority is 0", verifyDbResult(rclient, "STP_MST_INST|0", expected, false))
+	unloadDB(db.ConfigDB, cleanup)
+}
+
 func Test_set_rstp_edge_port(t *testing.T) {
 	url := "/openconfig-spanning-tree:stp/interfaces/interface[name=" + stpTestIfName + "]/config/edge-port"
 	body := `{"openconfig-spanning-tree:edge-port":"openconfig-spanning-tree-types:EDGE_ENABLE"}`
@@ -293,6 +312,71 @@ func Test_get_stp_interface_config(t *testing.T) {
 
 	url = "/openconfig-spanning-tree:stp/interfaces/interface[name=" + stpTestIfName + "]/config/link-type"
 	t.Run("get STP link-type", processGetRequest(url, nil, "", false))
+}
+
+func stpRstpDisablePrereq() map[string]interface{} {
+	prereq := stpMstInstPrereq("32768")
+	prereq["VLAN_MEMBER"] = stpEnableRstpPrereq()["VLAN_MEMBER"]
+	return prereq
+}
+
+func verifyStpMstDisabled(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{
+		"STP|GLOBAL",
+		"STP_MST|GLOBAL",
+		"STP_MST_INST|0",
+		"STP_PORT|" + stpTestIfName,
+		"STP_MST_PORT|0|" + stpTestIfName,
+	} {
+		key := key
+		t.Run("verify "+key+" removed", func(t *testing.T) {
+			exists, err := rclient.Exists(context.Background(), key).Result()
+			if err != nil {
+				t.Fatalf("redis EXISTS failed for %s: %v", key, err)
+			}
+			if exists != 0 {
+				t.Fatalf("expected %s to be deleted", key)
+			}
+		})
+	}
+}
+
+func Test_delete_rstp_global_config(t *testing.T) {
+	url := "/openconfig-spanning-tree:stp/global/config"
+
+	loadDB(db.ConfigDB, stpRstpDisablePrereq())
+	time.Sleep(1 * time.Second)
+	t.Run("disable RSTP via DELETE on global config", processDeleteRequest(url, false))
+	time.Sleep(1 * time.Second)
+	verifyStpMstDisabled(t)
+}
+
+func Test_delete_rstp_enabled_protocol_leaf(t *testing.T) {
+	url := "/openconfig-spanning-tree:stp/global/config/enabled-protocol"
+
+	loadDB(db.ConfigDB, stpRstpDisablePrereq())
+	time.Sleep(1 * time.Second)
+	t.Run("disable RSTP via DELETE on enabled-protocol leaf", processDeleteRequest(url, false))
+	time.Sleep(1 * time.Second)
+	verifyStpMstDisabled(t)
+}
+
+func Test_delete_rstp_with_link_type_configured(t *testing.T) {
+	url := "/openconfig-spanning-tree:stp/global/config/enabled-protocol"
+	prereq := stpRstpDisablePrereq()
+	prereq["STP_PORT"].(map[string]interface{})[stpTestIfName] = map[string]interface{}{
+		"enabled":   "true",
+		"edge_port": "false",
+		"link_type": "shared",
+		"priority":  "128",
+	}
+
+	loadDB(db.ConfigDB, prereq)
+	time.Sleep(1 * time.Second)
+	t.Run("disable RSTP with link_type configured", processDeleteRequest(url, false))
+	time.Sleep(1 * time.Second)
+	verifyStpMstDisabled(t)
 }
 
 func Test_get_stp_full_tree(t *testing.T) {
