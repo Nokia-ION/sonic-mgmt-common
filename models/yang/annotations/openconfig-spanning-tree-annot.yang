@@ -44,6 +44,12 @@ module openconfig-spanning-tree-annot {
         reference "0.2.3";
     }
 
+    revision 2026-08-06 {
+        description
+            "Allow bridge-priority 0 on RSTP config to match SONiC/IEEE range.";
+        reference "0.2.4";
+    }
+
     deviation /oc-stp:stp {
         deviate add {
             sonic-ext:post-transformer "stp_post_xfmr";
@@ -97,6 +103,14 @@ module openconfig-spanning-tree-annot {
         deviate add {
             sonic-ext:field-transformer "stp_bridge_priority_xfmr";
             sonic-ext:field-name "bridge_priority";
+        }
+    }
+
+    deviation /oc-stp:stp/oc-stp:rstp/oc-stp:config/oc-stp:bridge-priority {
+        deviate replace {
+            type uint32 {
+                range "0..61440";
+            }
         }
     }
 

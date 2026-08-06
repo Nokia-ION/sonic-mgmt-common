@@ -207,21 +207,21 @@ func defaultStpPortFields() map[string]string {
 // YANG must expressions requiring STP|GLOBAL mode=mst, but CVL validates each
 // CONFIG_DB CREATE separately and drops already-validated entries from the batch.
 // STP|GLOBAL is not visible when STP_PORT is validated on cold start.
+// path_cost is also omitted so stpmgr passes 0 to stpd and the daemon derives cost
+// from interface speed (same behavior as adding a VLAN member after MST is enabled).
 func defaultStpPortBootstrapFields() map[string]string {
 	return map[string]string{
 		"enabled":               "true",
 		"bpdu_guard":            "false",
 		"bpdu_guard_do_disable": "false",
 		"root_guard":            "false",
-		"path_cost":             DEFAULT_PATH_COST,
 		"priority":              DEFAULT_PORT_PRIORITY,
 	}
 }
 
 func defaultMstPortFields() map[string]string {
 	return map[string]string{
-		"path_cost": DEFAULT_PATH_COST,
-		"priority":  DEFAULT_PORT_PRIORITY,
+		"priority": DEFAULT_PORT_PRIORITY,
 	}
 }
 
@@ -229,6 +229,19 @@ func enableRstpGlobal(res map[string]map[string]db.Value) {
 	globalMap := make(map[string]db.Value)
 	globalMap[STP_GLOBAL_KEY] = db.Value{Field: map[string]string{"mode": STP_MODE_MST}}
 	res[STP_GLOBAL_TBL] = globalMap
+}
+
+// stripStpGlobalYangDefaultsForMst blocks translib from merging YANG schema defaults
+// (e.g. rootguard_timeout) into STP|GLOBAL on MST/RSTP enable. CLI writes only
+// mode=mst; persisting PVST-only defaults breaks config save/reload validation.
+func stripStpGlobalYangDefaultsForMst(yangDefValMap map[string]map[string]db.Value) {
+	if yangDefValMap == nil {
+		return
+	}
+	delete(yangDefValMap[STP_GLOBAL_TBL], STP_GLOBAL_KEY)
+	if len(yangDefValMap[STP_GLOBAL_TBL]) == 0 {
+		delete(yangDefValMap, STP_GLOBAL_TBL)
+	}
 }
 
 func enableRstpMsti0(res map[string]map[string]db.Value) {
@@ -266,11 +279,14 @@ func populateMstPortEntries(cfgDb *db.DB, res map[string]map[string]db.Value) er
 }
 
 func disableRstpMsti0(res map[string]map[string]db.Value) {
-	res[STP_GLOBAL_TBL] = map[string]db.Value{STP_GLOBAL_KEY: {}}
-	res[STP_MST_TBL] = map[string]db.Value{STP_MST_GLOBAL_KEY: {}}
+	// Match CLI disable_global_mst(): delete_table for port tables. An empty inner
+	// map signals translib to DeleteTable, avoiding per-row CVL must failures on
+	// link_type/edge_port when STP|GLOBAL is removed before row deletes.
+	res[STP_MST_PORT_TBL] = map[string]db.Value{}
+	res[STP_PORT_TBL] = map[string]db.Value{}
 	res[STP_MST_INST_TBL] = map[string]db.Value{mstInstCfgKey(): {}}
-	res[STP_MST_PORT_TBL] = map[string]db.Value{"*": {}}
-	res[STP_PORT_TBL] = map[string]db.Value{"*": {}}
+	res[STP_MST_TBL] = map[string]db.Value{STP_MST_GLOBAL_KEY: {}}
+	res[STP_GLOBAL_TBL] = map[string]db.Value{STP_GLOBAL_KEY: {}}
 }
 
 func hasRstpProtocol(protoList []ocbinds.E_OpenconfigSpanningTreeTypes_STP_PROTOCOL) bool {
@@ -972,6 +988,12 @@ func shouldApplyStpGlobalEnable(inParams XfmrParams) bool {
 	return true
 }
 
+func markStpSubtreeInvoked(inParams XfmrParams) {
+	if inParams.invokeCRUSubtreeOnce != nil {
+		*inParams.invokeCRUSubtreeOnce = true
+	}
+}
+
 func markStpSubtreeOnceWhenPopulated(inParams XfmrParams, res map[string]map[string]db.Value) {
 	if inParams.invokeCRUSubtreeOnce == nil {
 		return
@@ -1219,6 +1241,7 @@ var stp_post_xfmr PostXfmrFunc = func(inParams XfmrParams) error {
 			retDbDataMap[tbl][key] = val
 		}
 	}
+	stripStpGlobalYangDefaultsForMst(inParams.yangDefValMap)
 	return nil
 }
 
@@ -1269,6 +1292,7 @@ var YangToDb_stp_global_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (ma
 	if inParams.oper == DELETE {
 		if targetUriPath == STP_GLOBAL_CONFIG || strings.HasSuffix(targetUriPath, "/enabled-protocol") {
 			disableRstpMsti0(res)
+			markStpSubtreeInvoked(inParams)
 			return res, nil
 		}
 		return res, errors.New("DELETE not supported on attribute")
