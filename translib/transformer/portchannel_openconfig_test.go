@@ -73,7 +73,7 @@ func Test_openconfig_portchannel(t *testing.T) {
 
 	t.Log("\n\n--- Verify PATCH PortChannel config ---")
 	url = "/openconfig-interfaces:interfaces/interface[name=PortChannel111]/openconfig-if-aggregate:aggregation/config"
-	expected_get_json = "{\"openconfig-if-aggregate:config\": {\"min-links\": 3, \"lag-type\": \"LACP\"}}"
+	expected_get_json = "{\"openconfig-if-aggregate:config\": {\"lag-type\": \"LACP\", \"min-links\": 3}}"
 	t.Run("Test GET on portchannel config", processGetRequest(url, nil, expected_get_json, false))
 	time.Sleep(1 * time.Second)
 
@@ -84,7 +84,7 @@ func Test_openconfig_portchannel(t *testing.T) {
 
 	t.Log("\n\n--- Verify DELETE PortChannel min-links ---")
 	url = "/openconfig-interfaces:interfaces/interface[name=PortChannel111]/openconfig-if-aggregate:aggregation/config"
-	expected_get_json = "{\"openconfig-if-aggregate:config\": {\"min-links\": 3, \"lag-type\": \"LACP\"}}"
+	expected_get_json = "{\"openconfig-if-aggregate:config\": {\"lag-type\": \"LACP\", \"min-links\": 3}}"
 	t.Run("Test GET on portchannel min-links after DELETE", processGetRequest(url, nil, expected_get_json, false))
 	time.Sleep(1 * time.Second)
 
@@ -175,5 +175,47 @@ func Test_openconfig_portchannel_lag_speed(t *testing.T) {
 
 	url = "/openconfig-interfaces:interfaces/interface[name=PortChannel112]"
 	t.Run("DELETE PortChannel112", processDeleteRequest(url, true))
+	time.Sleep(1 * time.Second)
+}
+
+func Test_openconfig_portchannel_lag_type(t *testing.T) {
+	var url, url_input_body_json string
+	var expected_get_json string
+
+	t.Log("\n\n+++++++++++++ PORTCHANNEL LAG-TYPE ++++++++++++")
+
+	t.Log("\n\n--- POST to Create PortChannel113 ---")
+	url = "/openconfig-interfaces:interfaces"
+	url_input_body_json = "{\"openconfig-interfaces:interface\": [{\"name\":\"PortChannel113\", \"config\": {\"name\": \"PortChannel113\", \"mtu\": 9100, \"enabled\": true}}]}"
+	t.Run("Test Create PortChannel113", processSetRequest(url, url_input_body_json, "POST", false, nil))
+	time.Sleep(1 * time.Second)
+
+	t.Log("\n\n--- Verify GET config lag-type ---")
+	url = "/openconfig-interfaces:interfaces/interface[name=PortChannel113]/openconfig-if-aggregate:aggregation/config/lag-type"
+	expected_get_json = "{\"openconfig-if-aggregate:lag-type\": \"LACP\"}"
+	t.Run("Test GET config lag-type", processGetRequest(url, nil, expected_get_json, false))
+	time.Sleep(1 * time.Second)
+
+	t.Log("\n\n--- Verify GET state lag-type ---")
+	url = "/openconfig-interfaces:interfaces/interface[name=PortChannel113]/openconfig-if-aggregate:aggregation/state/lag-type"
+	expected_get_json = "{\"openconfig-if-aggregate:lag-type\": \"LACP\"}"
+	t.Run("Test GET state lag-type", processGetRequest(url, nil, expected_get_json, false))
+	time.Sleep(1 * time.Second)
+
+	t.Log("\n\n--- PATCH lag-type STATIC should be rejected ---")
+	url = "/openconfig-interfaces:interfaces/interface[name=PortChannel113]/openconfig-if-aggregate:aggregation/config/lag-type"
+	url_input_body_json = "{\"openconfig-if-aggregate:lag-type\": \"STATIC\"}"
+	expected_err := tlerr.NotSupportedError{Format: "lag-type configuration is not supported; SONiC only supports LACP"}
+	t.Run("Test PATCH lag-type STATIC rejected", processSetRequest(url, url_input_body_json, "PATCH", true, expected_err))
+	time.Sleep(1 * time.Second)
+
+	t.Log("\n\n--- PATCH lag-type LACP should be allowed ---")
+	url_input_body_json = "{\"openconfig-if-aggregate:lag-type\": \"LACP\"}"
+	t.Run("Test PATCH lag-type LACP allowed", processSetRequest(url, url_input_body_json, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	t.Log("\n\n--- Cleanup: delete PortChannel113 ---")
+	url = "/openconfig-interfaces:interfaces/interface[name=PortChannel113]"
+	t.Run("DELETE PortChannel113", processDeleteRequest(url, true))
 	time.Sleep(1 * time.Second)
 }
