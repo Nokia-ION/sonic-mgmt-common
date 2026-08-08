@@ -2829,7 +2829,9 @@ var YangToDb_intf_ip_addr_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (
 				}
 
 				intf_key := intf_intf_tbl_key_gen(ifName, *addr.Config.Ip, int(*addr.Config.PrefixLength), "|")
-				m["family"] = "IPv4"
+				if intfType != IntfTypePortChannel {
+					m["family"] = "IPv4"
+				}
 
 				value := db.Value{Field: m}
 				if _, ok := subIntfmap[tblName]; !ok {
@@ -2868,7 +2870,9 @@ var YangToDb_intf_ip_addr_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (
 
 				intf_key := intf_intf_tbl_key_gen(ifName, *addr.Config.Ip, int(*addr.Config.PrefixLength), "|")
 
-				m["family"] = "IPv6"
+				if intfType != IntfTypePortChannel {
+					m["family"] = "IPv6"
+				}
 
 				value := db.Value{Field: m}
 				if _, ok := subIntfmap[tblName]; !ok {
