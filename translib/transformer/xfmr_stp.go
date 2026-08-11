@@ -522,6 +522,83 @@ func mapPortStateToOc(state string) ocbinds.E_OpenconfigSpanningTreeTypes_STP_PO
 	}
 }
 
+func resolveRstpRootPort(appDb *db.DB, rootPortName string) (uint16, bool) {
+	rootPortName = strings.TrimSpace(rootPortName)
+	if rootPortName == "" {
+		return 0, false
+	}
+	if strings.EqualFold(rootPortName, "Root") {
+		return 0, true
+	}
+	appEntry, err := getApplProducerStateEntry(appDb, STP_MST_PORT_APP_TBL, mstPortAppKey(rootPortName))
+	if err != nil || !appEntry.IsPopulated() {
+		return 0, false
+	}
+	if val := appEntry.Get("port_number"); val != "" {
+		return parseUint16Default(val, "0"), true
+	}
+	return 0, false
+}
+
+func normalizeStpBridgeId(bridgeId string) string {
+	return strings.ToLower(strings.ReplaceAll(strings.TrimSpace(bridgeId), ":", ""))
+}
+
+func isRstpRootBridge(appEntry db.Value) bool {
+	rootPortName := strings.TrimSpace(appEntry.Get("root_port"))
+	if strings.EqualFold(rootPortName, "Root") {
+		return true
+	}
+	bridgeAddr := normalizeStpBridgeId(appEntry.Get("bridge_address"))
+	rootAddr := normalizeStpBridgeId(appEntry.Get("root_address"))
+	return bridgeAddr != "" && bridgeAddr == rootAddr
+}
+
+func computeRstpRootCostFromPort(portEntry db.Value) (uint32, bool) {
+	if !portEntry.IsPopulated() {
+		return 0, false
+	}
+	pathCost := parseUint32Default(portEntry.Get("path_cost"), "0")
+	extCost := parseUint32Default(portEntry.Get("external_cost"), "0")
+	if extCost > 0 || pathCost > 0 {
+		return extCost + pathCost, true
+	}
+	desigCost := parseUint32Default(portEntry.Get("desig_cost"), "0")
+	if desigCost > 0 || pathCost > 0 {
+		return desigCost + pathCost, true
+	}
+	return 0, false
+}
+
+func resolveRstpRootCost(appDb *db.DB, appEntry db.Value) (uint32, bool) {
+	if isRstpRootBridge(appEntry) {
+		return 0, true
+	}
+
+	rootPathCostVal := appEntry.Get("root_path_cost")
+	if rootPathCostVal != "" {
+		cost := parseUint32Default(rootPathCostVal, "0")
+		if cost > 0 {
+			return cost, true
+		}
+	}
+
+	rootPortName := strings.TrimSpace(appEntry.Get("root_port"))
+	if rootPortName != "" && !strings.EqualFold(rootPortName, "Root") {
+		portEntry, err := getApplProducerStateEntry(appDb, STP_MST_PORT_APP_TBL, mstPortAppKey(rootPortName))
+		if err == nil {
+			if cost, ok := computeRstpRootCostFromPort(portEntry); ok && cost > 0 {
+				return cost, true
+			}
+		}
+	}
+
+	if rootPathCostVal != "" {
+		return parseUint32Default(rootPathCostVal, "0"), true
+	}
+	return 0, false
+}
+
 func mapPortRoleToOc(role string) ocbinds.E_OpenconfigSpanningTreeTypes_STP_PORT_ROLE {
 	switch strings.ToLower(strings.TrimSpace(role)) {
 	case "root":
@@ -569,9 +646,13 @@ func fillRstpStateFromDb(state *ocbinds.OpenconfigSpanningTree_Stp_Rstp_State, c
 			state.DesignatedRootPriority = &priority
 		}
 	}
-	if val := appEntry.Get("root_path_cost"); val != "" {
-		cost := parseUint32Default(val, "0")
+	if cost, ok := resolveRstpRootCost(appDb, appEntry); ok {
 		state.RootCost = &cost
+	}
+	if rootPortName := appEntry.Get("root_port"); rootPortName != "" {
+		if portNum, ok := resolveRstpRootPort(appDb, rootPortName); ok {
+			state.RootPort = &portNum
+		}
 	}
 	if val := appEntry.Get("hold_time"); val != "" {
 		hold := parseUint8Default(val, "0")
@@ -1415,7 +1496,8 @@ var Subscribe_stp_rstp_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSubscInPara
 		STP_MST_INST_TBL: {mstInstCfgKey(): {"bridge_priority": ""}},
 	}
 	result.dbDataMap[db.ApplDB] = map[string]map[string]map[string]string{
-		STP_MST_INST_APP_TBL: {mstInstCfgKey(): {"bridge_address": "", "root_address": "", "root_path_cost": "", "hold_time": "", "topology_change_count": ""}},
+		STP_MST_INST_APP_TBL: {mstInstCfgKey(): {"bridge_address": "", "root_address": "", "root_path_cost": "", "root_port": "", "hold_time": "", "topology_change_count": ""}},
+		STP_MST_PORT_APP_TBL: {mstPortAppKey("*"): {"path_cost": "", "desig_cost": "", "external_cost": "", "role": ""}},
 	}
 	return result, nil
 }
