@@ -123,6 +123,12 @@ module openconfig-spanning-tree-annot {
         }
     }
 
+    deviation /oc-stp:stp/oc-stp:rstp/oc-stp:state/oc-stp:root-cost {
+        deviate add {
+            sonic-ext:field-name "root_path_cost";
+        }
+    }
+
     deviation /oc-stp:stp/oc-stp:rstp/oc-stp:interfaces {
         deviate add {
             sonic-ext:subtree-transformer "stp_rstp_intf_xfmr";
