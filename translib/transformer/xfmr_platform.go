@@ -124,6 +124,7 @@ const (
 	COMP_STATE_REMOVABLE         = "/openconfig-platform:components/component/state/removable"
 	COMP_STATE_MODEL_NAME        = "/openconfig-platform:components/component/state/model-name"
 	COMP_STATE_SERIAL_NO         = "/openconfig-platform:components/component/state/serial-no"
+	COMP_STATE_BASE_MAC          = "/openconfig-platform:components/component/state/base-mac-address"
 	COMP_STATE_SW_VER            = "/openconfig-platform:components/component/state/software-version"
 	COMP_STATE_TYPE              = "/openconfig-platform:components/component/state/type"
 	COMP_STATE_PARENT            = "/openconfig-platform:components/component/state/parent"
@@ -3558,6 +3559,7 @@ type EepromDb struct {
 	Product_Name     string
 	Part_Number      string
 	Serial_Number    string
+	Base_MAC_Address string
 	Manufacture_Date string
 	Label_Revision   string
 	Platform_Name    string
@@ -3590,6 +3592,8 @@ func getSysEepromDbObj(d *db.DB) EepromDb {
 			eepromDb.Part_Number = e.Get("Value")
 		case "Serial Number":
 			eepromDb.Serial_Number = e.Get("Value")
+		case "Base MAC Address":
+			eepromDb.Base_MAC_Address = e.Get("Value")
 		case "Manufacture Date":
 			eepromDb.Manufacture_Date = e.Get("Value")
 		case "Label Revision":
@@ -3650,6 +3654,9 @@ func fillSysEepromInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 		} else if eepromDb.Service_Tag != "" {
 			compState.SerialNo = &eepromDb.Service_Tag
 		}
+	}
+	if shouldExportLeaf(pType, targetUriPath, StateLeaf, COMP_STATE_BASE_MAC) && eepromDb.Base_MAC_Address != "" {
+		compState.BaseMacAddress = &eepromDb.Base_MAC_Address
 	}
 	if shouldExportLeaf(pType, targetUriPath, StateLeaf, COMP_STATE_MFG_DATE) && eepromDb.Manufacture_Date != "" {
 		compState.MfgDate = &eepromDb.Manufacture_Date
