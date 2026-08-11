@@ -345,6 +345,7 @@ func (app *PlatformApp) getSysEepromFromDb(eeprom *ocbinds.OpenconfigPlatform_Co
 			eeprom.SerialNo = &eepromDb.Serial_Number
 		}
 		if eepromDb.Base_MAC_Address != "" {
+			eeprom.BaseMacAddress = &eepromDb.Base_MAC_Address
 		}
 		if eepromDb.Manufacture_Date != "" {
 			eeprom.MfgDate = &eepromDb.Manufacture_Date
@@ -411,6 +412,10 @@ func (app *PlatformApp) getSysEepromFromDb(eeprom *ocbinds.OpenconfigPlatform_Co
 				if eeprom.SerialNo == nil {
 					eeprom.SerialNo = &eepromDb.Service_Tag
 				}
+			}
+		case "/openconfig-platform:components/component/state/base-mac-address":
+			if eepromDb.Base_MAC_Address != "" {
+				eeprom.BaseMacAddress = &eepromDb.Base_MAC_Address
 			}
 		case "/openconfig-platform:components/component/state/mfg-date":
 			if eepromDb.Manufacture_Date != "" {
