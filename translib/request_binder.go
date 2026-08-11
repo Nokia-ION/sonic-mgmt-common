@@ -20,6 +20,7 @@
 package translib
 
 import (
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
@@ -73,6 +74,46 @@ func getRequestBinder(uri *string, payload *[]byte, opcode int, appRootNodeType 
 	return &requestBinder{uri, payload, opcode, appRootNodeType, nil, nil, nil, false, false}
 }
 
+// wrapScalarLeafPayload converts Feature Profile style leaf UPDATE payloads
+// (bare scalar JSON) into the key:value form SONiC/ygot expects when unmarshaling
+// into the parent container.
+func (binder *requestBinder) wrapScalarLeafPayload() error {
+	if binder.payload == nil || binder.targetNodeSchema == nil {
+		return nil
+	}
+	if !binder.targetNodeSchema.IsLeaf() {
+		return nil
+	}
+	if binder.targetNodePath == nil || len(binder.targetNodePath.Elem) == 0 {
+		return nil
+	}
+	if len(*binder.payload) == 0 {
+		return nil
+	}
+
+	var v interface{}
+	if err := json.Unmarshal(*binder.payload, &v); err != nil {
+		return err
+	}
+
+	// Already key:value object (e.g. {"mtu":9000}) — leave as-is.
+	if _, ok := v.(map[string]interface{}); ok {
+		return nil
+	}
+
+	leafName := binder.targetNodePath.Elem[0].Name
+	if idx := strings.LastIndex(leafName, ":"); idx >= 0 {
+		leafName = leafName[idx+1:]
+	}
+
+	wrapped, err := json.Marshal(map[string]interface{}{leafName: v})
+	if err != nil {
+		return err
+	}
+	*binder.payload = wrapped
+	return nil
+}
+
 func (binder *requestBinder) unMarshallPayload(workObj *interface{}) error {
 	targetObj, ok := (*workObj).(ygot.GoStruct)
 	if !ok {
@@ -86,6 +127,11 @@ func (binder *requestBinder) unMarshallPayload(workObj *interface{}) error {
 		log.Error(err)
 		return tlerr.TranslibSyntaxValidationError{StatusCode: 400, ErrorStr: err}
 	}
+	if err := binder.wrapScalarLeafPayload(); err != nil {
+		log.Error(err)
+		return tlerr.TranslibSyntaxValidationError{StatusCode: 400, ErrorStr: err}
+	}
+
 	if log.V(5) {
 		log.Info("Ygot target object:")
 		pretty.Print(targetObj)
@@ -205,7 +251,16 @@ func (binder *requestBinder) unMarshall() (*ygot.GoStruct, *interface{}, error) 
 		var tmpTargetNode *interface{}
 		var ygEntry *yang.Entry
 		if binder.pathParent != nil && !binder.targetNodeListInst {
-			treeNodeList, err2 := ytypes.GetNode(ygSchema.RootSchema(), &deviceObj, binder.pathParent)
+			var unmarshalPath *gnmi.Path
+			if binder.targetNodeSchema != nil && binder.targetNodeSchema.IsLeaf() {
+				unmarshalPath = binder.pathParent
+			} else {
+				unmarshalPath = &gnmi.Path{}
+				unmarshalPath.Elem = append(unmarshalPath.Elem, binder.pathParent.Elem...)
+				unmarshalPath.Elem = append(unmarshalPath.Elem, binder.targetNodePath.Elem...)
+			}
+
+			treeNodeList, err2 := ytypes.GetNode(ygSchema.RootSchema(), &deviceObj, unmarshalPath)
 			if err2 != nil {
 				return nil, nil, tlerr.TranslibSyntaxValidationError{StatusCode: 400, ErrorStr: err2}
 			}
@@ -236,7 +291,12 @@ func (binder *requestBinder) unMarshall() (*ygot.GoStruct, *interface{}, error) 
 						break
 					}
 				}
-			} else if ygEntry.IsList() || binder.targetNodeListInst {
+				if workObjIntf == nil && binder.targetNodeSchema != nil && binder.targetNodeSchema.IsContainer() {
+					workObjIntf = *tmpTargetNode
+				}
+			} else if binder.targetNodeListInst {
+				workObjIntf = *tmpTargetNode
+			} else if ygEntry.IsList() {
 				if treeNodeList, err2 := ytypes.GetNode(ygEntry, *tmpTargetNode, binder.targetNodePath); err2 != nil {
 					return nil, nil, tlerr.TranslibSyntaxValidationError{StatusCode: 400, ErrorStr: err2}
 				} else if len(treeNodeList) == 0 {
@@ -344,10 +404,6 @@ func (binder *requestBinder) unMarshallUri(deviceObj *ocbinds.Device) (*interfac
 		log.Info("requestBinder: modified path is: ", gpath)
 
 		binder.pathParent = gpath
-
-		if binder.targetNodeListInst {
-			targetPath = binder.pathParent
-		}
 	}
 
 	ygNode, ygEntry, errYg := ytypes.GetOrCreateNode(ygSchema.RootSchema(), deviceObj, targetPath)
