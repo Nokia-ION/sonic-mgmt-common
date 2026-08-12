@@ -895,11 +895,29 @@ var Subscribe_lacp_intfs_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSubscInPa
 	return result, nil
 }
 
+/* lagRunnerFallbackTimeout reads the operational fallback timeout teamd published
+ * into STATE_DB LAG_TABLE. */
+func lagRunnerFallbackTimeout(inParams XfmrParams, ifName string) (string, bool) {
+	stateDb := inParams.dbs[db.StateDB]
+	if stateDb == nil {
+		return "", false
+	}
+	entry, err := stateDb.GetEntry(&db.TableSpec{Name: LAG_TABLE_TN}, db.Key{Comp: []string{ifName}})
+	if err != nil {
+		return "", false
+	}
+	val, ok := entry.Field["runner.fallback_timeout"]
+	if !ok || val == "" {
+		return "", false
+	}
+	return val, true
+}
+
 /* resolveFallbackTimeout validates a fallback / fallback-timeout request against the
  * PortChannel configuration already committed to ConfigDB.  It returns the value to
- * write to the fallback_timeout field, or remove=true when the field must be cleared
- * because fallback is being disabled.  An empty value with remove=false means the
- * request carries nothing to write for this field. */
+ * write to the fallback_timeout field, or remove=true when the field must be cleared.
+ * An empty value with remove=false means the request carries nothing to write for this
+ * field. */
 func resolveFallbackTimeout(inParams XfmrParams, ifName string, fallback *bool,
 	fallbackTimeout *uint16) (value string, remove bool, err error) {
 
@@ -925,14 +943,18 @@ func resolveFallbackTimeout(inParams XfmrParams, ifName string, fallback *bool,
 	}
 
 	if fallbackTimeout == nil {
-		/* Disabling fallback drops the timeout so that re-enabling it later does not
-		 * silently inherit a stale value. */
+		/* Keep fallback_timeout in CONFIG when disabling fallback so toggling fallback
+		 * later does not reset the intended timeout to the default. */
 		if !fallbackOn {
-			return "", curTimeout != "", nil
+			return "", false, nil
 		}
-		/* Enabling fallback without an explicit timeout adopts the default. */
+		/* Enabling fallback without an explicit timeout keeps an existing CONFIG value. */
 		if curTimeout != "" {
 			return "", false, nil
+		}
+		/* No CONFIG value yet: prefer operational timeout from teamd, else default. */
+		if opTimeout, ok := lagRunnerFallbackTimeout(inParams, ifName); ok {
+			return opTimeout, false, nil
 		}
 		return strconv.FormatUint(uint64(defaultFallbackTimeout), 10), false, nil
 	}
@@ -943,10 +965,6 @@ func resolveFallbackTimeout(inParams XfmrParams, ifName string, fallback *bool,
 	}
 
 	newTimeout := strconv.FormatUint(uint64(*fallbackTimeout), 10)
-	if curTimeout != "" && curTimeout != newTimeout {
-		return "", false, tlerr.InvalidArgsError{
-			Format: "fallback-timeout cannot be changed after PortChannel creation on " + ifName}
-	}
 	return newTimeout, false, nil
 }
 

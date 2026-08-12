@@ -221,13 +221,13 @@ func Test_openconfig_lacp_config_fallback_timeout_requires_fallback(t *testing.T
 	}
 }
 
-// Test_openconfig_lacp_config_fallback_timeout_immutable verifies that the timeout
-// cannot be changed once the PortChannel carries one.
-func Test_openconfig_lacp_config_fallback_timeout_immutable(t *testing.T) {
+// Test_openconfig_lacp_config_fallback_timeout_runtime verifies that the timeout
+// can be changed after the PortChannel already carries one.
+func Test_openconfig_lacp_config_fallback_timeout_runtime(t *testing.T) {
 	const pcName = "PortChannel120"
 	base := "/openconfig-lacp:lacp/interfaces/interface[name=" + pcName + "]/config"
 
-	t.Log("\n\n+++++++++++++ LACP FALLBACK-TIMEOUT IMMUTABLE ++++++++++++")
+	t.Log("\n\n+++++++++++++ LACP FALLBACK-TIMEOUT RUNTIME CHANGE ++++++++++++")
 	loadLacpPortChannel(pcName)
 	defer unloadLacpPortChannel(pcName)
 
@@ -235,14 +235,52 @@ func Test_openconfig_lacp_config_fallback_timeout_immutable(t *testing.T) {
 		`{"openconfig-lacp:config": {"fallback": true, "fallback-timeout": 120}}`,
 		"PATCH", false, nil))
 
-	expectedErr := tlerr.InvalidArgsError{
-		Format: "fallback-timeout cannot be changed after PortChannel creation on " + pcName}
 	t.Run("SET timeout again", processSetRequest(base+"/fallback-timeout",
-		`{"openconfig-lacp:fallback-timeout": 200}`, "PATCH", true, expectedErr))
+		`{"openconfig-lacp:fallback-timeout": 200}`, "PATCH", false, nil))
 
-	if got := portChannelField(t, pcName, "fallback_timeout"); got != "120" {
-		t.Fatalf("Expected PORTCHANNEL.fallback_timeout to stay 120, got %q", got)
+	if got := portChannelField(t, pcName, "fallback_timeout"); got != "200" {
+		t.Fatalf("Expected PORTCHANNEL.fallback_timeout=200, got %q", got)
 	}
+
+	t.Run("GET updated fallback-timeout", processGetRequest(base+"/fallback-timeout", nil,
+		`{"openconfig-lacp:fallback-timeout": 200}`, false))
+}
+
+// Test_openconfig_lacp_config_fallback_timeout_toggle_preserves verifies that
+// disabling fallback keeps fallback_timeout in CONFIG_DB and re-enabling without
+// an explicit timeout does not reset it to the default.
+func Test_openconfig_lacp_config_fallback_timeout_toggle_preserves(t *testing.T) {
+	const pcName = "PortChannel122"
+	base := "/openconfig-lacp:lacp/interfaces/interface[name=" + pcName + "]/config"
+
+	t.Log("\n\n+++++++++++++ LACP FALLBACK-TIMEOUT TOGGLE PRESERVE ++++++++++++")
+	loadLacpPortChannel(pcName)
+	defer unloadLacpPortChannel(pcName)
+
+	t.Run("SET fallback + timeout", processSetRequest(base,
+		`{"openconfig-lacp:config": {"fallback": true, "fallback-timeout": 30}}`,
+		"PATCH", false, nil))
+
+	if got := portChannelField(t, pcName, "fallback_timeout"); got != "30" {
+		t.Fatalf("Expected PORTCHANNEL.fallback_timeout=30, got %q", got)
+	}
+
+	t.Run("SET fallback false", processSetRequest(base+"/fallback",
+		`{"openconfig-lacp:fallback": false}`, "PATCH", false, nil))
+
+	if got := portChannelField(t, pcName, "fallback_timeout"); got != "30" {
+		t.Fatalf("Expected PORTCHANNEL.fallback_timeout=30 after disable, got %q", got)
+	}
+
+	t.Run("SET fallback true", processSetRequest(base+"/fallback",
+		`{"openconfig-lacp:fallback": true}`, "PATCH", false, nil))
+
+	if got := portChannelField(t, pcName, "fallback_timeout"); got != "30" {
+		t.Fatalf("Expected PORTCHANNEL.fallback_timeout=30 after re-enable, got %q", got)
+	}
+
+	t.Run("GET fallback-timeout", processGetRequest(base+"/fallback-timeout", nil,
+		`{"openconfig-lacp:fallback-timeout": 30}`, false))
 }
 
 // Test_openconfig_lacp_state_fallback_timeout covers GET of state/fallback-timeout,
