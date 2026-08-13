@@ -168,6 +168,7 @@ var pathzMap = &pathzCounters{
 
 func init() {
 	XlateFuncBind("DbToYang_grpc_server_xfmr", DbToYang_grpc_server_xfmr)
+	XlateFuncBind("YangToDb_grpc_server_xfmr", YangToDb_grpc_server_xfmr)
 	XlateFuncBind("Subscribe_grpc_server_xfmr", Subscribe_grpc_server_xfmr)
 	XlateFuncBind("DbToYang_grpc_server_key_xfmr", DbToYang_grpc_server_key_xfmr)
 	XlateFuncBind("DbToYang_ssh_server_state_xfmr", DbToYang_ssh_server_state_xfmr)
@@ -592,6 +593,96 @@ var DbToYang_grpc_server_key_xfmr KeyXfmrDbToYang = func(inParams XfmrParams) (m
 	return map[string]interface{}{"name": NewPathInfo(inParams.uri).Var("name")}, nil
 }
 
+// GNMI_CFG_TBL is the CONFIG_DB table that holds the gNMI server runtime
+// settings. The "gnmi" key carries port/dscp/...; certificate material lives
+// under the separate "certs" key and is managed independently (not by this
+// transformer).
+const (
+	GNMI_CFG_TBL = "GNMI"
+	GNMI_CFG_KEY = "gnmi"
+)
+
+// YangToDb_grpc_server_xfmr maps the writable leaves of the OpenConfig
+// grpc-server config container onto the SONiC "GNMI" CONFIG_DB table so that a
+// controller can program the gNMI server through a single, vendor-neutral
+// OpenConfig gNMI Set. Today it handles:
+//
+//	.../config/port -> GNMI|gnmi:port
+//	.../config/dscp -> GNMI|gnmi:dscp  (openconfig-system-grpc-ext augment)
+//
+// The DSCP leaf is the model-driven equivalent of the vendor "qos dscp" knob;
+// telemetry.sh reads GNMI|gnmi:dscp at start-up and the gNMI server marks its
+// served (observer) traffic with it. Changes take effect on the next gNMI
+// service restart, mirroring how "port" is applied.
+//
+// Certificates are intentionally out of scope here: the server cert/key/CA
+// material is managed separately (GNMI|certs, provisioned directly, and gNSI
+// Certz), so this transformer does not touch certificate configuration.
+var YangToDb_grpc_server_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (map[string]map[string]db.Value, error) {
+	res := make(map[string]map[string]db.Value)
+	pathInfo := NewPathInfo(inParams.uri)
+	targetUriPath, err := getYangPathFromUri(pathInfo.Path)
+	if err != nil {
+		return nil, err
+	}
+	log.V(3).Infof("YangToDb_grpc_server_xfmr: op=%v uri=%s target=%s", inParams.oper, inParams.uri, targetUriPath)
+
+	// DELETE of an individual leaf clears just that field in GNMI|gnmi.
+	// The last path token may carry a module prefix for augmented leaves
+	// (e.g. .../config/openconfig-system-grpc-ext:dscp), so normalize it to the
+	// bare leaf name before matching. A DELETE targeting the whole config
+	// container clears both writable fields.
+	if inParams.oper == DELETE {
+		leaf := targetUriPath
+		if i := strings.LastIndex(leaf, "/"); i >= 0 {
+			leaf = leaf[i+1:]
+		}
+		if j := strings.LastIndex(leaf, ":"); j >= 0 {
+			leaf = leaf[j+1:]
+		}
+		delFields := make(map[string]string)
+		switch leaf {
+		case "dscp":
+			delFields["dscp"] = ""
+		case "port":
+			delFields["port"] = ""
+		case "config", "grpc-server":
+			delFields["dscp"] = ""
+			delFields["port"] = ""
+		default:
+			return res, nil
+		}
+		res[GNMI_CFG_TBL] = map[string]db.Value{GNMI_CFG_KEY: {Field: delFields}}
+		return res, nil
+	}
+
+	sysObj := getAppRootObject(inParams)
+	if sysObj == nil || sysObj.GrpcServers == nil {
+		return res, nil
+	}
+
+	fields := make(map[string]string)
+	for serverName, serverObj := range sysObj.GrpcServers.GrpcServer {
+		if serverObj == nil || serverObj.Config == nil {
+			continue
+		}
+		cfg := serverObj.Config
+		if cfg.Port != nil {
+			fields["port"] = strconv.FormatUint(uint64(*cfg.Port), 10)
+		}
+		if cfg.Dscp != nil {
+			fields["dscp"] = strconv.FormatUint(uint64(*cfg.Dscp), 10)
+		}
+		log.V(3).Infof("YangToDb_grpc_server_xfmr: server %s -> %v", serverName, fields)
+	}
+
+	if len(fields) == 0 {
+		return res, nil
+	}
+	res[GNMI_CFG_TBL] = map[string]db.Value{GNMI_CFG_KEY: {Field: fields}}
+	return res, nil
+}
+
 var DbToYang_grpc_server_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) error {
 	pathInfo := NewPathInfo(inParams.uri)
 	serverNames := []string{pathInfo.Var("name")}
@@ -623,6 +714,17 @@ var DbToYang_grpc_server_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) er
 		var state grpcState
 		state.name = serverName
 
+		// Read the writable gNMI server config (GNMI|gnmi) once: it carries
+		// port and dscp. Certificate state is reported for the default gnxi
+		// profile (certificates are managed separately, not by this feature).
+		var gnmiCfg db.Value
+		gnmiCfgOk := false
+		if cfgDb := inParams.dbs[db.ConfigDB]; cfgDb != nil {
+			if entry, cerr := cfgDb.GetEntry(&db.TableSpec{Name: GNMI_CFG_TBL}, db.Key{Comp: []string{GNMI_CFG_KEY}}); cerr == nil {
+				gnmiCfg = entry
+				gnmiCfgOk = true
+			}
+		}
 		certzID := GNXI_ID
 		certTable, err := stateDb.GetEntry(&db.TableSpec{Name: CERT_TBL}, db.Key{Comp: []string{certzID}})
 		if err != nil {
@@ -683,6 +785,26 @@ var DbToYang_grpc_server_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) er
 		serverObj.State.AuthenticationPolicyCreatedOn = &state.authPolCreated
 		serverObj.State.GnmiPathzPolicyCreatedOn = &state.pathzCreated
 		serverObj.State.GnmiPathzPolicyVersion = &state.pathzVersion
+
+		// Populate the writable config leaves (port, dscp) from CONFIG_DB
+		// GNMI|gnmi so a GET of the grpc-server config subtree reflects what
+		// YangToDb_grpc_server_xfmr programmed.
+		if gnmiCfgOk {
+			if portStr := gnmiCfg.Get("port"); portStr != "" {
+				if p, perr := strconv.ParseUint(portStr, 10, 16); perr == nil {
+					port := uint16(p)
+					serverObj.Config.Port = &port
+				}
+			}
+			if dscpStr := gnmiCfg.Get("dscp"); dscpStr != "" {
+				if d, derr := strconv.ParseUint(dscpStr, 10, 8); derr == nil {
+					cfgDscp := uint8(d)
+					stDscp := cfgDscp
+					serverObj.Config.Dscp = &cfgDscp
+					serverObj.State.Dscp = &stDscp
+				}
+			}
+		}
 
 		// Authz counter
 		authzTables, err := stateDb.GetTable(&db.TableSpec{Name: AUTHZ_TBL})

@@ -16,6 +16,11 @@ SONICYANG_IMPORTS += sonic-lldp.yang
 SONICYANG_IMPORTS += sonic-portchannel.yang
 SONICYANG_IMPORTS += sonic-vrrp.yang
 SONICYANG_IMPORTS += sonic-spanning-tree.yang
+# sonic-gnmi provides the GNMI table (port/dscp/...). It is required so CVL can
+# validate translib writes to GNMI|gnmi driven by the OpenConfig grpc-server
+# config path; without it CVL rejects the write ("Invalid table or key for
+# GNMI|gnmi"). Its sonic-mgmt_vrf import is pulled in transitively.
+SONICYANG_IMPORTS += sonic-gnmi.yang
 
 ##
 # Local sonic yangs that import modules from SONICYANG_IMPORTS must be copied
