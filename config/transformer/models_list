@@ -14,6 +14,7 @@ openconfig-platform-transceiver.yang
 openconfig-sampling-sflow-annot.yang
 openconfig-sampling-sflow.yang
 openconfig-system.yang
+openconfig-system-grpc-ext.yang
 openconfig-system-annot.yang
 sonic-ntp.yang
 openconfig-platform-annot.yang

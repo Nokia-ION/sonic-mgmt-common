@@ -1,0 +1,81 @@
+module openconfig-system-grpc-ext {
+
+  yang-version "1";
+
+  // namespace
+  namespace "http://openconfig.net/yang/system-grpc-ext";
+
+  prefix "oc-sys-grpc-ext";
+
+  import openconfig-system { prefix oc-sys; }
+  import openconfig-system-grpc { prefix oc-sys-grpc; }
+  import openconfig-extensions { prefix oc-ext; }
+
+
+  // meta
+  organization "OpenConfig working group";
+
+  contact
+    "OpenConfig working group
+    www.openconfig.net";
+
+  description
+    "This module adds extensions to the base gRPC server configuration
+    and operational state model (openconfig-system-grpc) to support
+    marking the DSCP (differentiated services code point) value used
+    for gRPC (gNMI/gNOI/gNSI) management traffic. This is the
+    model-driven equivalent of the vendor 'qos dscp' knob.";
+
+  oc-ext:openconfig-version "0.1.0";
+
+  revision "2026-08-11" {
+    description
+      "Add configurable DSCP marking for gRPC servers.";
+    reference "0.1.0";
+  }
+
+  // OpenConfig specific extensions for module metadata.
+  oc-ext:catalog-organization "openconfig";
+  oc-ext:origin "openconfig";
+
+  // grouping statements
+
+  grouping grpc-server-dscp-config {
+    description
+      "Configuration for the DSCP value applied to the gRPC management
+      traffic served by a gRPC server.";
+
+    leaf dscp {
+      type uint8 {
+        range "0..63";
+      }
+      default 32;
+      description
+        "DSCP (differentiated services code point) value applied to the
+        gRPC (gNMI/gNOI/gNSI) traffic served by this server, equivalent
+        to the vendor 'qos dscp' configuration. The value is the 6-bit
+        DSCP (0..63); the device derives the IP ToS / IPv6 Traffic-Class
+        byte from it. The default value 32 corresponds to AF41.";
+    }
+  }
+
+  // augment statements
+
+  augment "/oc-sys:system/oc-sys-grpc:grpc-servers/" +
+    "oc-sys-grpc:grpc-server/oc-sys-grpc:config" {
+      description
+        "Adds configurable DSCP marking to the base gRPC server model.";
+
+      uses grpc-server-dscp-config;
+  }
+
+  augment "/oc-sys:system/oc-sys-grpc:grpc-servers/" +
+    "oc-sys-grpc:grpc-server/oc-sys-grpc:state" {
+      description
+        "Adds the DSCP marking operational state to the base gRPC server
+        model.";
+
+      uses grpc-server-dscp-config;
+  }
+
+}
