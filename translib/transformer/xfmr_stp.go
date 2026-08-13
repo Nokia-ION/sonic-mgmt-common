@@ -481,6 +481,24 @@ func fillRstpConfigFromDb(cfg *ocbinds.OpenconfigSpanningTree_Stp_Rstp_Config, c
 
 func bridgeIdToMacPriority(bridgeId string) (uint32, string) {
 	bridgeId = strings.TrimSpace(bridgeId)
+	if bridgeId == "" {
+		return 0, ""
+	}
+
+	// MSTP stores bridge IDs in dotted format, e.g. "8000.781f.7cfc.b617".
+	if strings.Contains(bridgeId, ".") {
+		parts := strings.Split(bridgeId, ".")
+		if len(parts) < 2 {
+			return 0, ""
+		}
+		priorityVal, err := strconv.ParseUint(parts[0], 16, 32)
+		mac := formatMacFromHex(strings.Join(parts[1:], ""))
+		if err != nil {
+			return 0, mac
+		}
+		return bridgePriorityFromField(uint32(priorityVal)), mac
+	}
+
 	if len(bridgeId) < 4 {
 		return 0, ""
 	}
@@ -488,9 +506,38 @@ func bridgeIdToMacPriority(bridgeId string) (uint32, string) {
 	macHex := bridgeId[4:]
 	priorityVal, err := strconv.ParseUint(priorityHex, 16, 32)
 	if err != nil {
-		return 0, macHex
+		return 0, formatMacFromHex(macHex)
 	}
-	return uint32(priorityVal), formatMacFromHex(macHex)
+	return bridgePriorityFromField(uint32(priorityVal)), formatMacFromHex(macHex)
+}
+
+func bridgePriorityFromField(priorityField uint32) uint32 {
+	return priorityField & 0xF000
+}
+
+// bridgeIdMacToOcFormat converts the MAC portion of a bridge ID to oc-yang:mac-address format.
+func bridgeIdMacToOcFormat(bridgeId string) string {
+	bridgeId = strings.TrimSpace(bridgeId)
+	if bridgeId == "" {
+		return ""
+	}
+	if strings.Contains(bridgeId, ".") {
+		parts := strings.Split(bridgeId, ".")
+		// Full bridge ID: 8000.781f.7cfc.b617 (priority + 3 MAC groups).
+		if len(parts) == 4 && len(parts[0]) == 4 {
+			return formatMacFromHex(strings.Join(parts[1:], ""))
+		}
+		// MAC-only dotted: 781f.7cfc.b617.
+		if len(parts) == 3 {
+			return formatMacFromHex(strings.Join(parts, ""))
+		}
+		return ""
+	}
+	hexStr := strings.ReplaceAll(bridgeId, ":", "")
+	if len(hexStr) == 16 {
+		return formatMacFromHex(hexStr[4:])
+	}
+	return formatMacFromHex(hexStr)
 }
 
 func formatMacFromHex(hexStr string) string {
@@ -626,15 +673,23 @@ func fillRstpStateFromDb(state *ocbinds.OpenconfigSpanningTree_Stp_Rstp_State, c
 	state.MaxAge = tmpCfg.MaxAge
 	state.ForwardingDelay = tmpCfg.ForwardingDelay
 	state.HoldCount = tmpCfg.HoldCount
-	state.BridgePriority = tmpCfg.BridgePriority
 	appEntry, err := getMstInstAppEntry(appDb)
 	if err != nil || !appEntry.IsPopulated() {
 		return err
 	}
 
+	// Operational bridge priority is published by stpd in APPL/STATE DB.
+	if val := appEntry.Get("bridge_priority"); val != "" {
+		priority := parseUint32Default(val, "0")
+		state.BridgePriority = &priority
+	} else {
+		state.BridgePriority = tmpCfg.BridgePriority
+	}
+
 	if mac := appEntry.Get("bridge_address"); mac != "" {
-		formatted := formatMacFromHex(mac)
-		state.BridgeAddress = &formatted
+		if formatted := bridgeIdMacToOcFormat(mac); formatted != "" {
+			state.BridgeAddress = &formatted
+		}
 	}
 	rootAddr := appEntry.Get("root_address")
 	if rootAddr != "" {
@@ -642,9 +697,14 @@ func fillRstpStateFromDb(state *ocbinds.OpenconfigSpanningTree_Stp_Rstp_State, c
 		if mac != "" {
 			state.DesignatedRootAddress = &mac
 		}
-		if priority != 0 {
-			state.DesignatedRootPriority = &priority
-		}
+		state.DesignatedRootPriority = &priority
+	}
+	// When this bridge is the root, bridge and root IDs share the same MAC.
+	// Use the operational bridge_priority from APPL DB for both.
+	if state.BridgeAddress != nil && state.DesignatedRootAddress != nil &&
+		strings.EqualFold(*state.BridgeAddress, *state.DesignatedRootAddress) &&
+		state.BridgePriority != nil {
+		state.DesignatedRootPriority = state.BridgePriority
 	}
 	if cost, ok := resolveRstpRootCost(appDb, appEntry); ok {
 		state.RootCost = &cost
@@ -1496,7 +1556,7 @@ var Subscribe_stp_rstp_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSubscInPara
 		STP_MST_INST_TBL: {mstInstCfgKey(): {"bridge_priority": ""}},
 	}
 	result.dbDataMap[db.ApplDB] = map[string]map[string]map[string]string{
-		STP_MST_INST_APP_TBL: {mstInstCfgKey(): {"bridge_address": "", "root_address": "", "root_path_cost": "", "root_port": "", "hold_time": "", "topology_change_count": ""}},
+		STP_MST_INST_APP_TBL: {mstInstCfgKey(): {"bridge_address": "", "bridge_priority": "", "root_address": "", "root_path_cost": "", "root_port": "", "hold_time": "", "topology_change_count": ""}},
 		STP_MST_PORT_APP_TBL: {mstPortAppKey("*"): {"path_cost": "", "desig_cost": "", "external_cost": "", "role": ""}},
 	}
 	return result, nil
