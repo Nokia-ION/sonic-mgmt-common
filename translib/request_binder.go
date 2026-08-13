@@ -252,7 +252,7 @@ func (binder *requestBinder) unMarshall() (*ygot.GoStruct, *interface{}, error) 
 		var ygEntry *yang.Entry
 		if binder.pathParent != nil && !binder.targetNodeListInst {
 			var unmarshalPath *gnmi.Path
-			if binder.targetNodeSchema != nil && binder.targetNodeSchema.IsLeaf() {
+			if binder.targetNodeSchema != nil && (binder.targetNodeSchema.IsLeaf() || binder.targetNodeSchema.IsLeafList()) {
 				unmarshalPath = binder.pathParent
 			} else {
 				unmarshalPath = &gnmi.Path{}
