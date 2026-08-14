@@ -132,6 +132,18 @@ module openconfig-system-annot {
         }
     }
 
+    deviation /oc-sys:system/oc-sys:aaa/oc-sys:server-groups {
+        deviate add {
+            sonic-ext:subtree-transformer "tacacs_server_groups_xfmr";
+        }
+    }
+
+    deviation /oc-sys:system/oc-sys:aaa/oc-sys:authentication {
+        deviate add {
+            sonic-ext:subtree-transformer "aaa_authentication_xfmr";
+        }
+    }
+
     deviation /oc-sys:system/oc-log:logging/oc-log:remote-servers/oc-log:remote-server {
       deviate add {
         /* TODO(b/185940239): Remove State DB mapping after config/host path is supported by backend. */
