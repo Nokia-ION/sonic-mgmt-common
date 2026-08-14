@@ -1,0 +1,77 @@
+module openconfig-acl-ext {
+
+  yang-version "1";
+
+  namespace "http://openconfig.net/yang/acl-ext";
+
+  prefix "oc-acl-ext";
+
+  import openconfig-acl { prefix oc-acl; }
+  import openconfig-extensions { prefix oc-ext; }
+
+  organization "OpenConfig working group";
+
+  contact
+    "OpenConfig working group
+    www.openconfig.net";
+
+  description
+    "This module adds extensions to the base OpenConfig ACL model
+    (openconfig-acl) to support control-plane / management ACLs, i.e. the
+    'restrict-access' security filter that limits which sources may open a
+    management connection (SSH, SNMP, NTP, ...) to the device. The base
+    openconfig-acl model (v1.0.2) has no /acl/control-plane container, so this
+    marks an existing acl-set as a control-plane list and enumerates the
+    management services it protects. It maps to the SONiC CONFIG_DB ACL_TABLE
+    of type CTRLPLANE with a 'services' binding, enforced by caclmgrd.";
+
+  oc-ext:openconfig-version "0.1.0";
+
+  revision "2026-08-14" {
+    description
+      "Add control-plane / management ACL (restrict-access) marking.";
+    reference "0.1.0";
+  }
+
+  oc-ext:catalog-organization "openconfig";
+  oc-ext:origin "openconfig";
+
+  grouping acl-set-control-plane-config {
+    description
+      "Configuration marking an acl-set as a control-plane (management) ACL
+      and the management services it is applied to.";
+
+    leaf control-plane {
+      type boolean;
+      default false;
+      description
+        "When true, this acl-set is a control-plane / management-plane ACL
+        (SONiC ACL_TABLE type CTRLPLANE) that restricts which sources may
+        initiate a management connection to the device, rather than a
+        data-plane ACL bound to interfaces.";
+    }
+
+    leaf-list services {
+      type string;
+      description
+        "Management services this control-plane ACL is applied to. Valid
+        values are the SONiC control-plane services recognized by caclmgrd:
+        'SSH', 'SNMP', 'NTP', and 'EXTERNAL_CLIENT'. Only meaningful when
+        'control-plane' is true.";
+    }
+  }
+
+  augment "/oc-acl:acl/oc-acl:acl-sets/oc-acl:acl-set/oc-acl:config" {
+    description
+      "Adds control-plane / management ACL marking to the base acl-set model.";
+    uses acl-set-control-plane-config;
+  }
+
+  augment "/oc-acl:acl/oc-acl:acl-sets/oc-acl:acl-set/oc-acl:state" {
+    description
+      "Adds control-plane / management ACL operational state to the base
+      acl-set model.";
+    uses acl-set-control-plane-config;
+  }
+
+}
