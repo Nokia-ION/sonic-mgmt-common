@@ -1,0 +1,43 @@
+module sonic-dns {
+
+    namespace "http://github.com/sonic-net/sonic-dns";
+    prefix dns;
+
+    import ietf-inet-types {
+        prefix inet;
+    }
+
+    description
+        "DNS resolver YANG module for SONiC OS.
+         Minimal model used by CVL to validate translib writes to the
+         DNS_NAMESERVER table driven by the OpenConfig /system/dns/servers path.";
+
+    revision 2023-02-14 {
+        description
+            "First revision";
+    }
+
+    container sonic-dns {
+
+        container DNS_NAMESERVER {
+
+            description "DNS nameserver addresses for name resolution.";
+
+            list DNS_NAMESERVER_LIST {
+                max-elements 3;
+                description "Ordered list of DNS nameserver IP addresses.";
+
+                key "ip";
+
+                leaf ip {
+                    type inet:host;
+                    description "IPv4 or IPv6 address of a DNS nameserver.";
+                }
+
+            }
+
+        }
+
+    }
+
+}
