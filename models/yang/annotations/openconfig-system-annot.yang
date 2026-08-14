@@ -132,6 +132,12 @@ module openconfig-system-annot {
         }
     }
 
+    deviation /oc-sys:system/oc-sys:dns/oc-sys:servers {
+        deviate add {
+            sonic-ext:subtree-transformer "dns_servers_list_xfmr";
+        }
+    }
+
     deviation /oc-sys:system/oc-sys:aaa/oc-sys:server-groups {
         deviate add {
             sonic-ext:subtree-transformer "tacacs_server_groups_xfmr";
