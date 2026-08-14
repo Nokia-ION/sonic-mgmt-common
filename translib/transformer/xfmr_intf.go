@@ -46,6 +46,8 @@ func init() {
 	XlateFuncBind("DbToYang_intf_name_xfmr", DbToYang_intf_name_xfmr)
 	XlateFuncBind("YangToDb_intf_mtu_xfmr", YangToDb_intf_mtu_xfmr)
 	XlateFuncBind("DbToYang_intf_mtu_xfmr", DbToYang_intf_mtu_xfmr)
+	XlateFuncBind("YangToDb_intf_type_xfmr", YangToDb_intf_type_xfmr)
+	XlateFuncBind("DbToYang_intf_type_xfmr", DbToYang_intf_type_xfmr)
 	XlateFuncBind("DbToYang_intf_admin_status_xfmr", DbToYang_intf_admin_status_xfmr)
 	XlateFuncBind("YangToDb_intf_enabled_xfmr", YangToDb_intf_enabled_xfmr)
 	XlateFuncBind("DbToYang_intf_enabled_xfmr", DbToYang_intf_enabled_xfmr)
@@ -243,6 +245,75 @@ func getIntfTypeByName(name string) (E_InterfaceType, E_InterfaceSubType, error)
 		err = errors.New("Interface name prefix not matched with supported types")
 		return IntfTypeUnset, IntfSubTypeUnset, err
 	}
+}
+
+const (
+	ocIanaTypeEthernet = "iana-if-type:ethernetCsmacd"
+	ocIanaTypeLag      = "iana-if-type:ieee8023adLag"
+	ocIanaTypeVlan     = "iana-if-type:l3ipvlan"
+)
+
+func ocIanaTypeFromIntfType(t E_InterfaceType) (string, error) {
+	switch t {
+	case IntfTypeEthernet:
+		return ocIanaTypeEthernet, nil
+	case IntfTypePortChannel:
+		return ocIanaTypeLag, nil
+	case IntfTypeVlan:
+		return ocIanaTypeVlan, nil
+	default:
+		return "", errors.New("unsupported interface type")
+	}
+}
+
+func normalizeOcIntfType(v string) string {
+	v = strings.TrimSpace(v)
+	if idx := strings.LastIndex(v, ":"); idx >= 0 {
+		v = v[idx+1:]
+	}
+	return v
+}
+
+func validateOcIntfTypeForName(ifName, ocType string) error {
+	intfType, _, err := getIntfTypeByName(ifName)
+	if err != nil {
+		return tlerr.InvalidArgsError{Format: err.Error()}
+	}
+	expected, err := ocIanaTypeFromIntfType(intfType)
+	if err != nil {
+		return tlerr.InvalidArgsError{Format: err.Error()}
+	}
+	if normalizeOcIntfType(ocType) != normalizeOcIntfType(expected) {
+		return tlerr.InvalidArgsError{
+			Format: fmt.Sprintf("type %q does not match interface name %q", ocType, ifName),
+		}
+	}
+	return nil
+}
+
+func ocIntfTypeFromParam(param interface{}) (string, error) {
+	switch v := param.(type) {
+	case string:
+		return v, nil
+	case ocbinds.E_IETFInterfaces_InterfaceType:
+		if v == ocbinds.IETFInterfaces_InterfaceType_UNSET {
+			return "", errors.New("interface type not set")
+		}
+		def := ocbinds.E_IETFInterfaces_InterfaceType.ΛMap(v)["E_IETFInterfaces_InterfaceType"][int64(v)]
+		return def.DefiningModule + ":" + def.Name, nil
+	case fmt.Stringer:
+		return v.String(), nil
+	default:
+		return fmt.Sprint(v), nil
+	}
+}
+
+func intfNameFromXfmrParams(inParams XfmrParams) string {
+	if inParams.key != "" {
+		return inParams.key
+	}
+	pathInfo := NewPathInfo(inParams.uri)
+	return pathInfo.Var("name")
 }
 
 func getIntfsRoot(s *ygot.GoStruct) *ocbinds.OpenconfigInterfaces_Interfaces {
@@ -913,6 +984,46 @@ var DbToYang_intf_mtu_xfmr FieldXfmrDbtoYang = func(inParams XfmrParams) (map[st
 		result["mtu"] = mtuVal
 	}
 	return result, err
+}
+
+var YangToDb_intf_type_xfmr FieldXfmrYangToDb = func(inParams XfmrParams) (map[string]string, error) {
+	resMap := make(map[string]string)
+
+	ifName := intfNameFromXfmrParams(inParams)
+	if ifName == "" {
+		return nil, tlerr.InvalidArgsError{Format: "interface name missing"}
+	}
+
+	if inParams.oper == DELETE {
+		return resMap, nil
+	}
+
+	ocType, err := ocIntfTypeFromParam(inParams.param)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateOcIntfTypeForName(ifName, ocType); err != nil {
+		return nil, err
+	}
+	return resMap, nil
+}
+
+var DbToYang_intf_type_xfmr FieldXfmrDbtoYang = func(inParams XfmrParams) (map[string]interface{}, error) {
+	result := make(map[string]interface{})
+
+	ifName := intfNameFromXfmrParams(inParams)
+	intfType, _, ierr := getIntfTypeByName(ifName)
+	if intfType == IntfTypeUnset || ierr != nil {
+		log.Info("DbToYang_intf_type_xfmr - Invalid interface type IntfTypeUnset")
+		return result, errors.New("Invalid interface type IntfTypeUnset")
+	}
+
+	ocType, err := ocIanaTypeFromIntfType(intfType)
+	if err != nil {
+		return result, err
+	}
+	result["type"] = ocType
+	return result, nil
 }
 
 // YangToDb_intf_eth_port_config_xfmr handles port-speed, auto-neg, and aggregate-id config.
