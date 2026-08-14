@@ -72,7 +72,18 @@ module openconfig-interfaces-annot {
             sonic-ext:field-transformer "intf_mtu_xfmr";
         }
     }
+	
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:config/oc-intf:type {
+        deviate add {
+            sonic-ext:field-transformer "intf_type_xfmr";
+        }
+    }
 
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:state/oc-intf:type {
+        deviate add {
+            sonic-ext:field-transformer "intf_type_xfmr";
+        }
+    }
 
     deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:state/oc-intf:admin-status {
         deviate add {
@@ -126,8 +137,8 @@ module openconfig-interfaces-annot {
         deviate add {
             sonic-ext:field-transformer "intf_name_xfmr";
         }
-    }
-
+    }	
+    
     deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:state/oc-intf:enabled {
         deviate add {
             sonic-ext:field-transformer "intf_enabled_xfmr";
