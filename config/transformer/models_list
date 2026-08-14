@@ -17,6 +17,8 @@ openconfig-system.yang
 openconfig-system-grpc-ext.yang
 openconfig-system-annot.yang
 sonic-ntp.yang
+sonic-system-tacacs.yang
+sonic-system-aaa.yang
 openconfig-platform-annot.yang
 openconfig-platform.yang
 openconfig-platform-types.yang

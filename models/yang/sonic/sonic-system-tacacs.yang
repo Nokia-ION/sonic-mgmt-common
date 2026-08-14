@@ -1,0 +1,134 @@
+module sonic-system-tacacs {
+
+    namespace "http://github.com/sonic-net/sonic-system-tacacs";
+    prefix ssys;
+
+    import ietf-inet-types {
+        prefix inet;
+    }
+
+    description
+        "TACACS+ YANG module for SONiC OS.
+         Minimal model used by CVL to validate translib writes to the
+         TACPLUS_SERVER and TACPLUS tables driven by the OpenConfig
+         /system/aaa/server-groups path. Interface-based src_intf leafrefs
+         from the upstream model are intentionally omitted to keep the CVL
+         model self-contained.";
+
+    revision 2021-04-15 {
+        description
+            "First revision";
+    }
+
+    typedef auth_type_enumeration {
+        type enumeration {
+            enum pap;
+            enum chap;
+            enum mschap;
+            enum login;
+        }
+    }
+
+    container sonic-system-tacacs {
+
+        container TACPLUS_SERVER {
+
+            description "Per-server TACACS+ configuration entries.";
+
+            list TACPLUS_SERVER_LIST {
+                max-elements 8;
+                key "ipaddress";
+
+                leaf ipaddress {
+                    type inet:host;
+                    description "TACACS+ server domain name or IP address (IPv4 or IPv6).";
+                }
+
+                leaf priority {
+                    type uint8 {
+                        range "1..64" {
+                            error-message "TACACS server priority must be 1..64";
+                        }
+                    }
+                    default 1;
+                    description "Server selection priority; higher values are tried first.";
+                }
+
+                leaf tcp_port {
+                    type inet:port-number;
+                    default 49;
+                    description "TCP port used to communicate with this TACACS+ server.";
+                }
+
+                leaf timeout {
+                    type uint16 {
+                        range "1..60" {
+                            error-message "TACACS server timeout must be 1..60";
+                        }
+                    }
+                    default 5;
+                    description "Per-server response timeout in seconds.";
+                }
+
+                leaf auth_type {
+                    type auth_type_enumeration;
+                    default pap;
+                    description "Per-server authentication protocol.";
+                }
+
+                leaf passkey {
+                    type string {
+                        length "1..256";
+                    }
+                    description "Per-server shared secret overriding the global passkey.";
+                }
+
+                leaf vrf {
+                    type string {
+                        pattern "mgmt|default" {
+                            error-message "Error: Invalid VRF name";
+                        }
+                    }
+                    description "VRF used to reach this TACACS+ server (mgmt or default).";
+                }
+            }
+        }
+
+        container TACPLUS {
+
+            description "Global TACACS+ client configuration.";
+
+            container global {
+                description "Global TACACS+ settings applied to all servers.";
+
+                leaf auth_type {
+                    type auth_type_enumeration;
+                    default pap;
+                    description "Default authentication protocol for TACACS+ communication.";
+                }
+
+                leaf timeout {
+                    type uint16 {
+                        range "1..60" {
+                            error-message "TACACS timeout must be 1..60";
+                        }
+                    }
+                    default 5;
+                    description "Default timeout in seconds for TACACS+ server responses.";
+                }
+
+                leaf passkey {
+                    type string {
+                        length "1..256";
+                    }
+                    description "Default shared secret for TACACS+ server communication.";
+                }
+
+                leaf src_ip {
+                    type inet:ip-address;
+                    description "Source IP address used for outgoing TACACS+ packets.";
+                }
+            }
+        }
+    }
+}

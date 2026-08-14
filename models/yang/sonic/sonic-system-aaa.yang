@@ -1,0 +1,70 @@
+module sonic-system-aaa {
+
+    namespace "http://github.com/sonic-net/sonic-system-aaa";
+    prefix ssysaaa;
+
+    description
+        "AAA (Authentication, Authorization, Accounting) YANG module for SONiC OS.
+         Minimal model used by CVL to validate translib writes to the AAA table
+         driven by the OpenConfig /system/aaa/authentication path. The upstream
+         'must' constraint requiring a global TACACS passkey is intentionally
+         omitted: per-server passkeys (TACPLUS_SERVER) are sufficient to render
+         a working PAM configuration.";
+
+    revision 2021-10-12 {
+        description
+            "First revision";
+    }
+
+    container sonic-system-aaa {
+
+        container AAA {
+
+            description "AAA method configuration for authentication/authorization/accounting.";
+
+            list AAA_LIST {
+
+                key "type";
+
+                leaf type {
+                    type enumeration {
+                        enum authentication;
+                        enum authorization;
+                        enum accounting;
+                    }
+                    description "AAA function type.";
+                }
+
+                leaf login {
+                    type string {
+                        pattern '((ldap|tacacs\+|local|radius|default),)*(ldap|tacacs\+|local|radius|default)' {
+                            error-message "Invalid login method choice";
+                        }
+                    }
+                    default "local";
+                    description "Ordered list of methods to attempt (radius, tacacs+, ldap, local, or default).";
+                }
+
+                leaf failthrough {
+                    type string;
+                    description "Continue to the next method on failure when true.";
+                }
+
+                leaf fallback {
+                    type string;
+                    description "Fall back to local authentication when all remote methods fail.";
+                }
+
+                leaf debug {
+                    type string;
+                    description "Enable verbose AAA debug logging.";
+                }
+
+                leaf trace {
+                    type string;
+                    description "Enable AAA protocol packet tracing.";
+                }
+            }
+        }
+    }
+}
