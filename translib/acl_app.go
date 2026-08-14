@@ -43,9 +43,11 @@ const (
 	RULE_TABLE               = "ACL_RULE"
 	ACL_TYPE                 = "type"
 	ACL_DESCRIPTION          = "policy_desc"
+	ACL_SERVICES             = "services"
 	SONIC_ACL_TYPE_L2        = "L2"
 	SONIC_ACL_TYPE_IPV4      = "L3"
 	SONIC_ACL_TYPE_IPV6      = "L3V6"
+	SONIC_ACL_TYPE_CTRLPLANE = "CTRLPLANE"
 	OPENCONFIG_ACL_TYPE_IPV4 = "ACL_IPV4"
 	OPENCONFIG_ACL_TYPE_IPV6 = "ACL_IPV6"
 	OPENCONFIG_ACL_TYPE_L2   = "ACL_L2"
@@ -528,6 +530,18 @@ func (app *AclApp) convertInternalToOCAcl(aclName string, aclSets *ocbinds.Openc
 				}
 			}
 
+			// openconfig-acl-ext: reflect control-plane / management ACL marking
+			// (SONiC CTRLPLANE table + services) back into the OC acl-set.
+			if aclData.Get(ACL_TYPE) == SONIC_ACL_TYPE_CTRLPLANE {
+				cp := true
+				aclSet.Config.ControlPlane = &cp
+				aclSet.State.ControlPlane = &cp
+				if services := aclData.GetList(ACL_SERVICES); len(services) > 0 {
+					aclSet.Config.Services = append([]string{}, services...)
+					aclSet.State.Services = append([]string{}, services...)
+				}
+			}
+
 			app.convertInternalToOCAclRule(aclName, aclSet.Type, -1, aclSet, nil)
 		}
 	} else {
@@ -544,6 +558,11 @@ func (app *AclApp) convertInternalToOCAcl(aclName string, aclSets *ocbinds.Openc
 			} else if acldata.Get(ACL_TYPE) == SONIC_ACL_TYPE_L2 {
 				aclNameStr = strings.Replace(acln, "_"+OPENCONFIG_ACL_TYPE_L2, "", 1)
 				aclType = ocbinds.OpenconfigAcl_ACL_TYPE_ACL_L2
+			} else if acldata.Get(ACL_TYPE) == SONIC_ACL_TYPE_CTRLPLANE {
+				// A control-plane (CTRLPLANE) table does not carry the OC type in
+				// its ACL_TYPE field; recover it from the table-name suffix that
+				// was preserved when the acl-set was created.
+				aclNameStr, aclType = ctrlPlaneOCNameType(acln)
 			}
 			aclSetPtr, aclErr := aclSets.NewAclSet(aclNameStr, aclType)
 			if aclErr != nil {
@@ -608,7 +627,10 @@ func (app *AclApp) convertInternalToOCAclRuleProperties(ruleData db.Value, aclTy
 			entrySet.Transport.Config.TcpFlags = getTransportConfigTcpFlags(tcpFlags)
 			entrySet.Transport.State.TcpFlags = getTransportConfigTcpFlags(tcpFlags)
 		} else if "PACKET_ACTION" == ruleKey {
-			if "FORWARD" == ruleData.Get(ruleKey) {
+			// "FORWARD" is the data-plane (SAI) accept value; "ACCEPT" is the
+			// control-plane (caclmgrd/iptables) accept value. Both map to the
+			// OpenConfig ACCEPT forwarding-action.
+			if "FORWARD" == ruleData.Get(ruleKey) || "ACCEPT" == ruleData.Get(ruleKey) {
 				entrySet.Actions.Config.ForwardingAction = ocbinds.OpenconfigAcl_FORWARDING_ACTION_ACCEPT
 				entrySet.Actions.State.ForwardingAction = ocbinds.OpenconfigAcl_FORWARDING_ACTION_ACCEPT
 			} else {
@@ -1050,6 +1072,21 @@ func (app *AclApp) convertOCAclsToInternal() {
 						app.aclTableMap[aclKey].Field[ACL_TYPE] = SONIC_ACL_TYPE_L2
 					}
 
+					// openconfig-acl-ext: a control-plane / management ACL
+					// (restrict-access) becomes a SONiC CTRLPLANE table bound to
+					// management services. The acl-set key still carries the
+					// ACL_IPV4/ACL_IPV6 OC type (used to interpret rule fields and
+					// to reconstruct the OC type on read-back from the table name
+					// suffix); only the persisted ACL_TABLE:type is overridden.
+					if aclSet.Config.ControlPlane != nil && *aclSet.Config.ControlPlane {
+						app.aclTableMap[aclKey].Field[ACL_TYPE] = SONIC_ACL_TYPE_CTRLPLANE
+						if len(aclSet.Config.Services) > 0 {
+							val := app.aclTableMap[aclKey]
+							(&val).SetList(ACL_SERVICES, aclSet.Config.Services)
+							app.aclTableMap[aclKey] = val
+						}
+					}
+
 					if aclSet.Config.Description != nil && len(*aclSet.Config.Description) > 0 {
 						app.aclTableMap[aclKey].Field[ACL_DESCRIPTION] = *aclSet.Config.Description
 					}
@@ -1069,17 +1106,28 @@ func (app *AclApp) convertOCAclRulesToInternal(d *db.DB) {
 				aclKey := getAclKeyStrFromOCKey(aclSetKey.Name, aclSetKey.Type)
 				app.ruleTableMap[aclKey] = make(map[string]db.Value)
 
+				// Control-plane (CTRLPLANE) ACLs are enforced by caclmgrd, which
+				// applies its own default behavior per management service; do not
+				// inject the data-plane default-deny rule for them.
+				isControlPlane := aclSet.Config != nil && aclSet.Config.ControlPlane != nil && *aclSet.Config.ControlPlane
+
 				if aclSet.AclEntries != nil {
 					for seqId, _ := range aclSet.AclEntries.AclEntry {
 						entrySet := aclSet.AclEntries.AclEntry[seqId]
 						ruleName := "RULE_" + strconv.Itoa(int(seqId))
 						app.ruleTableMap[aclKey][ruleName] = db.Value{Field: map[string]string{}}
 						convertOCAclRuleToInternalAclRule(app.ruleTableMap[aclKey][ruleName], seqId, aclKey, aclSet.Type, entrySet)
+						// caclmgrd uses PACKET_ACTION directly as the iptables
+						// jump target (-j ACCEPT/DROP), so a control-plane "accept"
+						// must be ACCEPT rather than the data-plane SAI "FORWARD".
+						if isControlPlane && app.ruleTableMap[aclKey][ruleName].Field["PACKET_ACTION"] == "FORWARD" {
+							app.ruleTableMap[aclKey][ruleName].Field["PACKET_ACTION"] = "ACCEPT"
+						}
 					}
 				}
 
 				yangPathStr, _ := getYangPathFromUri(app.pathInfo.Path)
-				if yangPathStr != "/openconfig-acl:acl/acl-sets/acl-set/acl-entries" && yangPathStr != "/openconfig-acl:acl/acl-sets/acl-set/acl-entries/acl-entry" {
+				if !isControlPlane && yangPathStr != "/openconfig-acl:acl/acl-sets/acl-set/acl-entries" && yangPathStr != "/openconfig-acl:acl/acl-sets/acl-set/acl-entries/acl-entry" {
 					app.createDefaultDenyAclRule(d, aclKey, app.ruleTableMap[aclKey])
 				}
 			}
@@ -1589,6 +1637,21 @@ func getL2EtherType(etherType uint64) interface{} {
 		}
 	}
 	return uint16(etherType)
+}
+
+// ctrlPlaneOCNameType reconstructs the OpenConfig acl-set name and type for a
+// control-plane (CTRLPLANE) table whose ACL_TABLE:type no longer encodes the OC
+// type. The OC type is preserved in the composite table-name suffix
+// (e.g. "MGMT_SSH_ACL_IPV4"); default to ACL_IPV4 if no known suffix is found.
+func ctrlPlaneOCNameType(aclKey string) (string, ocbinds.E_OpenconfigAcl_ACL_TYPE) {
+	switch {
+	case strings.HasSuffix(aclKey, "_"+OPENCONFIG_ACL_TYPE_IPV6):
+		return strings.Replace(aclKey, "_"+OPENCONFIG_ACL_TYPE_IPV6, "", 1), ocbinds.OpenconfigAcl_ACL_TYPE_ACL_IPV6
+	case strings.HasSuffix(aclKey, "_"+OPENCONFIG_ACL_TYPE_L2):
+		return strings.Replace(aclKey, "_"+OPENCONFIG_ACL_TYPE_L2, "", 1), ocbinds.OpenconfigAcl_ACL_TYPE_ACL_L2
+	default:
+		return strings.Replace(aclKey, "_"+OPENCONFIG_ACL_TYPE_IPV4, "", 1), ocbinds.OpenconfigAcl_ACL_TYPE_ACL_IPV4
+	}
 }
 
 func getAclKeysFromStrKey(aclKey string, aclType string) (string, ocbinds.E_OpenconfigAcl_ACL_TYPE) {

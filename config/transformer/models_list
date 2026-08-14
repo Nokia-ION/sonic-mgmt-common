@@ -1,6 +1,7 @@
 #List yang models transformer need to load
 openconfig-acl-annot.yang
 openconfig-acl.yang
+openconfig-acl-ext.yang
 openconfig-if-aggregate.yang
 openconfig-if-ethernet.yang
 openconfig-if-ip.yang
