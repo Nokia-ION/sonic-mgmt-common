@@ -61,7 +61,13 @@ module sonic-acl {
 						enum MIRRORV6;
 						enum L3;
 						enum L3V6;
+						enum CTRLPLANE;
 					}
+				}
+
+				leaf-list services {
+					description "Management services a control-plane (CTRLPLANE) ACL is applied to, e.g. SSH, SNMP, NTP, EXTERNAL_CLIENT.";
+					type string;
 				}
 
 				leaf-list ports {
@@ -112,8 +118,11 @@ module sonic-acl {
 					mandatory true;
 					type enumeration {
 						enum FORWARD;
+						enum ACCEPT;
 						enum DROP;
 						enum REDIRECT;
+						enum DO_NOT_NAT;
+						enum DISABLE_TRIM;
 					}
 				}
 
@@ -149,22 +158,18 @@ module sonic-acl {
 					case ipv4_src_dst {
 						when "boolean(IP_TYPE[.='ANY' or .='IP' or .='IPV4' or .='IPV4ANY'])";
 						leaf SRC_IP {
-							mandatory true;
 							type inet:ipv4-prefix;
 						}
 						leaf DST_IP {
-							mandatory true;
 							type inet:ipv4-prefix;
 						}
 					}
 					case ipv6_src_dst {
 						when "boolean(IP_TYPE[.='ANY' or .='IP' or .='IPV6' or .='IPV6ANY'])";
 						leaf SRC_IPV6 {
-							mandatory true;
 							type inet:ipv6-prefix;    
 						}
 						leaf DST_IPV6 {
-							mandatory true;
 							type inet:ipv6-prefix;    
 						}
 					}
