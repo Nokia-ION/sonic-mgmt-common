@@ -70,6 +70,49 @@ var IP_PROTOCOL_MAP = map[ocbinds.E_OpenconfigPacketMatchTypes_IP_PROTOCOL]uint8
 	ocbinds.OpenconfigPacketMatchTypes_IP_PROTOCOL_IP_L2TP: 115,
 }
 
+// ICMPV6_TYPE_MAP maps the standard openconfig-icmpv6-types TYPE identities to
+// their numeric ICMPv6 message type (SONiC ACL_RULE ICMPV6_TYPE). ICMPv6 code
+// (subcode) mapping is handled separately as a follow-up.
+var ICMPV6_TYPE_MAP = map[ocbinds.E_OpenconfigIcmpv6Types_TYPE]uint8{
+	ocbinds.OpenconfigIcmpv6Types_TYPE_DESTINATION_UNREACHABLE:              1,
+	ocbinds.OpenconfigIcmpv6Types_TYPE_PACKET_TOO_BIG:                       2,
+	ocbinds.OpenconfigIcmpv6Types_TYPE_TIME_EXCEEDED:                        3,
+	ocbinds.OpenconfigIcmpv6Types_TYPE_PARAMETER_PROBLEM:                    4,
+	ocbinds.OpenconfigIcmpv6Types_TYPE_ECHO_REQUEST:                         128,
+	ocbinds.OpenconfigIcmpv6Types_TYPE_ECHO_REPLY:                           129,
+	ocbinds.OpenconfigIcmpv6Types_TYPE_MULTICAST_LISTENER_QUERY:             130,
+	ocbinds.OpenconfigIcmpv6Types_TYPE_MULTICAST_LISTENER_REPORT:            131,
+	ocbinds.OpenconfigIcmpv6Types_TYPE_MULTICAST_LISTENER_DONE:              132,
+	ocbinds.OpenconfigIcmpv6Types_TYPE_ROUTER_SOLICITATION:                  133,
+	ocbinds.OpenconfigIcmpv6Types_TYPE_ROUTER_ADVERTISEMENT:                 134,
+	ocbinds.OpenconfigIcmpv6Types_TYPE_NEIGHBOR_SOLICITATION:                135,
+	ocbinds.OpenconfigIcmpv6Types_TYPE_NEIGHBOR_ADVERTISEMENT:               136,
+	ocbinds.OpenconfigIcmpv6Types_TYPE_REDIRECT:                             137,
+	ocbinds.OpenconfigIcmpv6Types_TYPE_RENUNBERING:                          138,
+	ocbinds.OpenconfigIcmpv6Types_TYPE_NODE_INFORMATION_QUERY:               139,
+	ocbinds.OpenconfigIcmpv6Types_TYPE_NODE_INFORMATION_RESPONSE:            140,
+	ocbinds.OpenconfigIcmpv6Types_TYPE_INVERSE_NEIGHBOR_SOLICITATION:        141,
+	ocbinds.OpenconfigIcmpv6Types_TYPE_INVERSE_NEIGHBOR_ADVERTISEMENT:       142,
+	ocbinds.OpenconfigIcmpv6Types_TYPE_VERSION2_MULTICAST_LISTENER:          143,
+	ocbinds.OpenconfigIcmpv6Types_TYPE_HOME_AGENT_ADDRESS_DISCOVERY_REQUEST: 144,
+	ocbinds.OpenconfigIcmpv6Types_TYPE_HOME_AGENT_ADDRESS_DISCOVERY_REPLY:   145,
+	ocbinds.OpenconfigIcmpv6Types_TYPE_MOBILE_PREFIX_SOLICITATION:           146,
+	ocbinds.OpenconfigIcmpv6Types_TYPE_MOBILE_PREFIX_ADVERTISEMENT:          147,
+	ocbinds.OpenconfigIcmpv6Types_TYPE_CERTIFICATION_PATH_SOLICITATION:      148,
+	ocbinds.OpenconfigIcmpv6Types_TYPE_CERTIFICATION_PATH_ADVERTISEMENT:     149,
+	ocbinds.OpenconfigIcmpv6Types_TYPE_MULTICAST_ROUTER_ADVERTISEMENT:       151,
+	ocbinds.OpenconfigIcmpv6Types_TYPE_MULTICAST_ROUTER_SOLICITATION:        152,
+	ocbinds.OpenconfigIcmpv6Types_TYPE_MULTICAST_ROUTER_TERMINATION:         153,
+	ocbinds.OpenconfigIcmpv6Types_TYPE_FMIPV6:                               154,
+	ocbinds.OpenconfigIcmpv6Types_TYPE_RPL_CONTROL:                          155,
+	ocbinds.OpenconfigIcmpv6Types_TYPE_ILNPV6_LOCATOR_UPDATE:                156,
+	ocbinds.OpenconfigIcmpv6Types_TYPE_DUPLICATE_ADDRESS_REQUEST:            157,
+	ocbinds.OpenconfigIcmpv6Types_TYPE_DUPLICATE_ADDRESS_CONFIRMATION:       158,
+	ocbinds.OpenconfigIcmpv6Types_TYPE_MPL_CONTROL:                          159,
+	ocbinds.OpenconfigIcmpv6Types_TYPE_EXT_ECHO_REQUEST:                     160,
+	ocbinds.OpenconfigIcmpv6Types_TYPE_EXT_ECHO_REPLY:                       161,
+}
+
 var ETHERTYPE_MAP = map[ocbinds.E_OpenconfigPacketMatchTypes_ETHERTYPE]uint32{
 	ocbinds.OpenconfigPacketMatchTypes_ETHERTYPE_ETHERTYPE_LLDP: 0x88CC,
 	ocbinds.OpenconfigPacketMatchTypes_ETHERTYPE_ETHERTYPE_VLAN: 0x8100,
@@ -686,6 +729,14 @@ func (app *AclApp) convertInternalToOCAclRuleProperties(ruleData db.Value, aclTy
 				addr := ruleData.Get(ruleKey)
 				entrySet.Ipv6.Config.DestinationAddress = &addr
 				entrySet.Ipv6.State.DestinationAddress = &addr
+			} else if "ICMPV6_TYPE" == ruleKey {
+				// Reverse-map the numeric ICMPv6 type back to the standard
+				// openconfig-icmpv6-types identity.
+				num, _ := strconv.ParseUint(ruleData.Get(ruleKey), 10, 8)
+				if id := getIcmpv6TypeId(uint8(num)); id != ocbinds.OpenconfigIcmpv6Types_TYPE_UNSET {
+					entrySet.Ipv6.Icmpv6.Config.Type = id
+					entrySet.Ipv6.Icmpv6.State.Type = id
+				}
 			}
 		}
 	} else if aclType == ocbinds.OpenconfigAcl_ACL_TYPE_ACL_L2 {
@@ -1296,6 +1347,16 @@ func convertOCToInternalIPv6(ruleData db.Value, aclName string, ruleIndex uint32
 	if rule.Ipv6.Config.DestinationFlowLabel != nil {
 		ruleData.Field["DST_FLOWLABEL"] = strconv.FormatInt(int64(*rule.Ipv6.Config.DestinationFlowLabel), 10)
 	}
+	// openconfig-packet-match: ICMPv6 type match (SONiC ICMPV6_TYPE). The
+	// standard model uses an identityref (openconfig-icmpv6-types); map it to
+	// the numeric ICMPv6 type. ICMPv6 code mapping is a follow-up.
+	if rule.Ipv6.Icmpv6 != nil && rule.Ipv6.Icmpv6.Config != nil {
+		if rule.Ipv6.Icmpv6.Config.Type != ocbinds.OpenconfigIcmpv6Types_TYPE_UNSET {
+			if num, ok := ICMPV6_TYPE_MAP[rule.Ipv6.Icmpv6.Config.Type]; ok {
+				ruleData.Field["ICMPV6_TYPE"] = strconv.FormatInt(int64(num), 10)
+			}
+		}
+	}
 	ruleData.Field["IP_TYPE"] = "IPV6ANY"
 }
 
@@ -1573,6 +1634,17 @@ func getIpProtocol(proto int64) interface{} {
 		}
 	}
 	return uint8(proto)
+}
+
+// getIcmpv6TypeId reverse-maps a numeric ICMPv6 type to its standard
+// openconfig-icmpv6-types identity, or UNSET if unknown.
+func getIcmpv6TypeId(num uint8) ocbinds.E_OpenconfigIcmpv6Types_TYPE {
+	for k, v := range ICMPV6_TYPE_MAP {
+		if num == v {
+			return k
+		}
+	}
+	return ocbinds.OpenconfigIcmpv6Types_TYPE_UNSET
 }
 
 func getTransportSrcDestPorts(portVal string, portType string) interface{} {

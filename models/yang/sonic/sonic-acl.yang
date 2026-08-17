@@ -141,7 +141,7 @@ module sonic-acl {
 
 				leaf IP_PROTOCOL {
 					type uint8 {
-						range "1|2|6|17|46|47|51|103|115";
+						range "1|2|6|17|46|47|51|58|103|115";
 					}
 				}
 
@@ -151,6 +151,34 @@ module sonic-acl {
 							error-message "Invalid ACL Rule Ether Type";
 							error-app-tag ether-type-invalid;
 						}
+					}
+				}
+
+				leaf ICMP_TYPE {
+					description "ICMPv4 type value to match";
+					type uint8 {
+						range "0..255";
+					}
+				}
+
+				leaf ICMP_CODE {
+					description "ICMPv4 code value to match";
+					type uint8 {
+						range "0..255";
+					}
+				}
+
+				leaf ICMPV6_TYPE {
+					description "ICMPv6 type value to match";
+					type uint8 {
+						range "0..255";
+					}
+				}
+
+				leaf ICMPV6_CODE {
+					description "ICMPv6 code value to match";
+					type uint8 {
+						range "0..255";
 					}
 				}
 

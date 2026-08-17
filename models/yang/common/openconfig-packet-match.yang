@@ -11,6 +11,7 @@ module openconfig-packet-match {
   import openconfig-inet-types { prefix oc-inet; }
   import openconfig-yang-types { prefix oc-yang; }
   import openconfig-packet-match-types { prefix oc-pkt-match-types; }
+  import openconfig-icmpv6-types { prefix oc-icmpv6-types; }
   import openconfig-extensions { prefix oc-ext; }
 
   // meta
@@ -309,6 +310,61 @@ module openconfig-packet-match {
 
         uses ipv6-protocol-fields-config;
         uses ipv6-protocol-fields-state;
+      }
+
+      uses ip-icmpv6-header-fields-top;
+    }
+  }
+
+  grouping ip-icmpv6-header-fields-config {
+    description
+      "Collection of ICMPv6 header fields that can be used to set up a
+      match filter.";
+
+    leaf type {
+      type identityref {
+        base oc-icmpv6-types:TYPE;
+      }
+      description
+        "ICMPv6 type to be matched.";
+      reference
+        "RFC 4443: Internet Control Message Protocol (ICMPv6)
+                   for Internet Protocol Version 6 (IPv6) Specification.";
+    }
+
+    leaf code {
+      type identityref {
+        base oc-icmpv6-types:CODE;
+      }
+      description
+        "ICMPv6 code to be matched.";
+      reference
+        "RFC 4443: Internet Control Message Protocol (ICMPv6)
+                   for Internet Protocol Version 6 (IPv6) Specification.";
+    }
+  }
+
+  grouping ip-icmpv6-header-fields-top {
+    description
+      "Top grouping for ICMPv6 filtering";
+
+    container icmpv6 {
+      description
+        "Top container for ICMPv6 filtering";
+
+      container config {
+        description
+          "Configuration attributes for ICMPv6 filtering";
+
+        uses ip-icmpv6-header-fields-config;
+      }
+
+      container state {
+        description
+          "State attributes for ICMPv6 filtering";
+        config false;
+
+        uses ip-icmpv6-header-fields-config;
       }
     }
   }
