@@ -189,6 +189,13 @@ func init() {
 	XlateFuncBind("YangToDb_syslog_server_ip_fld_xfmr", YangToDb_syslog_server_ip_fld_xfmr)
 	XlateFuncBind("DbToYang_syslog_server_ip_fld_xfmr", DbToYang_syslog_server_ip_fld_xfmr)
 	XlateFuncBind("DbToYangPath_remote_server_path_xfmr", DbToYangPath_remote_server_path_xfmr)
+	XlateFuncBind("YangToDb_sys_config_key_xfmr", YangToDb_sys_config_key_xfmr)
+	XlateFuncBind("DbToYang_sys_config_key_xfmr", DbToYang_sys_config_key_xfmr)
+	XlateFuncBind("YangToDb_sys_config_xfmr", YangToDb_sys_config_xfmr)
+	XlateFuncBind("DbToYang_sys_config_xfmr", DbToYang_sys_config_xfmr)
+	XlateFuncBind("Subscribe_sys_config_xfmr", Subscribe_sys_config_xfmr)
+	XlateFuncBind("DbToYang_sys_state_xfmr", DbToYang_sys_state_xfmr)
+	XlateFuncBind("Subscribe_sys_state_xfmr", Subscribe_sys_state_xfmr)
 }
 
 type grpcState struct {
@@ -226,6 +233,162 @@ var dbToYangPathzInstanceMap = map[string]ocbinds.E_OpenconfigSystem_System_Gnmi
 func getAppRootObject(inParams XfmrParams) *ocbinds.OpenconfigSystem_System {
 	deviceObj := (*inParams.ygRoot).(*ocbinds.Device)
 	return deviceObj.System
+}
+
+var YangToDb_sys_config_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (map[string]map[string]db.Value, error) {
+	if inParams.oper == DELETE {
+		switch {
+		case strings.Contains(inParams.requestUri, "hostname"):
+			return map[string]map[string]db.Value{
+				"DEVICE_METADATA": {
+					"localhost": db.Value{
+						Field: map[string]string{"hostname": ""},
+					},
+				},
+			}, nil
+		case strings.Contains(inParams.requestUri, "domain-name"):
+			return map[string]map[string]db.Value{
+				"DEVICE_METADATA": {
+					"localhost": db.Value{
+						Field: map[string]string{"domain_name": ""},
+					},
+				},
+			}, nil
+		default:
+			return nil, tlerr.InvalidArgs("SET Delete not supported at the subtree level for %v", inParams.requestUri)
+		}
+	}
+	sysObj := getAppRootObject(inParams)
+	if sysObj == nil {
+		log.V(lvl.DEBUG).Info("YangToDb_sys_config_xfmr: Empty component.")
+		return nil, tlerr.NotSupported("YangToDb_sys_config_xfmr: Empty component.")
+	}
+	if sysObj.Config == nil {
+		return nil, nil
+	}
+	resMap := make(map[string]string)
+	if sysObj.Config.Hostname != nil {
+		resMap["hostname"] = *sysObj.Config.Hostname
+	}
+	if sysObj.Config.DomainName != nil {
+		resMap["domain_name"] = *sysObj.Config.DomainName
+	}
+	if len(resMap) == 0 {
+		return nil, nil
+	}
+	memMap := map[string]map[string]db.Value{
+		"DEVICE_METADATA": {
+			"localhost": db.Value{
+				Field: resMap,
+			},
+		},
+	}
+
+	// In case of a Set Replace for the /system/config subtree, do an Update instead to
+	// preserve system-written fields in DEVICE_METADATA|localhost table.
+	if inParams.oper == REPLACE {
+		updateSubOpDataMap(map[db.DBNum]map[string]map[string]db.Value{
+			db.ConfigDB: memMap,
+		}, UPDATE, inParams)
+		return nil, nil
+	}
+
+	return memMap, nil
+}
+
+var DbToYang_sys_config_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) error {
+	sysObj := getAppRootObject(inParams)
+	var err error
+	cfgDb := inParams.dbs[db.ConfigDB]
+	if cfgDb == nil {
+		cfgDb, err = db.NewDB(getDBOptions(db.ConfigDB))
+		if err != nil {
+			return tlerr.InvalidArgsError{Format: err.Error()}
+		}
+		defer cfgDb.DeleteDB()
+	}
+
+	entry, err := cfgDb.GetEntry(&db.TableSpec{Name: "DEVICE_METADATA"}, db.Key{Comp: []string{"localhost"}})
+	if err != nil {
+		return err
+	}
+	hostname := entry.Get("hostname")
+	domainName := entry.Get("domain_name")
+
+	ygot.BuildEmptyTree(sysObj)
+	sysObj.Config.Hostname = &hostname
+	sysObj.Config.DomainName = &domainName
+
+	return nil
+}
+
+var YangToDb_sys_config_key_xfmr KeyXfmrYangToDb = func(inParams XfmrParams) (string, error) {
+	log.V(lvl.DEBUG).Info("YangToDb_sys_config_key_xfmr: ", inParams.uri)
+	return "localhost", nil
+}
+
+var DbToYang_sys_config_key_xfmr KeyXfmrDbToYang = func(inParams XfmrParams) (map[string]interface{}, error) {
+	rmap := make(map[string]interface{})
+	log.V(lvl.DEBUG).Info("DbToYang_sys_config_key_xfmr root, uri: ", inParams.ygRoot, inParams.uri)
+	return rmap, nil
+}
+
+var Subscribe_sys_config_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSubscInParams) (XfmrSubscOutParams, error) {
+	result := XfmrSubscOutParams{
+		dbDataMap: RedisDbSubscribeMap{
+			db.ConfigDB: {"DEVICE_METADATA": {"localhost": {
+				"hostname":    "Hostname",
+				"domain_name": "DomainName",
+			}}}},
+		onChange: OnchangeDisable,
+	}
+	log.V(lvl.DEBUG).Infof("Subscribe_sys_config_xfmr:%s", inParams.requestURI)
+
+	return result, nil
+}
+
+// getSystemBootAndUpTime returns OpenConfig system/state boot-time and up-time
+// in nanoseconds. boot-time is cached so it stays stable across GETs.
+func getSystemBootAndUpTime() (bootTime uint64, upTime uint64, err error) {
+	sysinfo := syscall.Sysinfo_t{}
+	if sys_err := syscall.Sysinfo(&sysinfo); sys_err != nil {
+		log.V(lvl.WARNING).Infof("getSystemBootAndUpTime syscall error: %s", sys_err.Error())
+		return 0, 0, sys_err
+	}
+	upTime = uint64(sysinfo.Uptime * 1_000_000_000)
+
+	bt, ok := XfmrCache.Load("boot-time")
+	if !ok {
+		bt = uint64(time.Now().UnixNano() - int64(sysinfo.Uptime)*1_000_000_000)
+		XfmrCache.Store("boot-time", bt)
+	}
+	bootTime = bt.(uint64)
+	return bootTime, upTime, nil
+}
+
+var DbToYang_sys_state_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) error {
+	sysObj := getAppRootObject(inParams)
+	if sysObj == nil {
+		return tlerr.NotSupported("DbToYang_sys_state_xfmr: Empty component.")
+	}
+
+	bootTime, upTime, err := getSystemBootAndUpTime()
+	if err != nil {
+		return err
+	}
+
+	ygot.BuildEmptyTree(sysObj)
+	sysObj.State.BootTime = &bootTime
+	sysObj.State.UpTime = &upTime
+	return nil
+}
+
+var Subscribe_sys_state_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSubscInParams) (XfmrSubscOutParams, error) {
+	result := XfmrSubscOutParams{
+		onChange: OnchangeDisable,
+	}
+	log.V(lvl.DEBUG).Infof("Subscribe_sys_state_xfmr:%s", inParams.requestURI)
+	return result, nil
 }
 
 func getAllKeys(sdb *db.DB, tblName string) ([]string, error) {
