@@ -26,6 +26,20 @@ module openconfig-system-annot {
         }
     }
 
+    deviation /oc-sys:system/oc-sys:config {
+        deviate add {
+            sonic-ext:key-transformer "sys_config_key_xfmr";
+            sonic-ext:table-name "DEVICE_METADATA";
+            sonic-ext:subtree-transformer "sys_config_xfmr";
+        }
+    }
+
+    deviation /oc-sys:system/oc-sys:state {
+        deviate add {
+            sonic-ext:subtree-transformer "sys_state_xfmr";
+        }
+    }
+
     deviation /oc-sys:system/oc-sys:aaa/oc-sys:authorization/oc-sys:state {
       deviate add {
         sonic-ext:db-name "STATE_DB";
