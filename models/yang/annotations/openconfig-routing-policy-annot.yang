@@ -1,0 +1,30 @@
+module openconfig-routing-policy-annot {
+
+    yang-version "1";
+
+    namespace "http://openconfig.net/yang/annotation/openconfig-routing-policy-annot";
+    prefix "oc-rpol-annot";
+
+    import sonic-extensions { prefix sonic-ext; }
+    import openconfig-routing-policy { prefix oc-rpol; }
+
+    deviation /oc-rpol:routing-policy/oc-rpol:policy-definitions/oc-rpol:policy-definition {
+      deviate add {
+          sonic-ext:virtual-table "true";
+      }
+    }
+
+    deviation /oc-rpol:routing-policy/oc-rpol:policy-definitions/oc-rpol:policy-definition/oc-rpol:config {
+      deviate add {
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "routing_policy_xfmr";
+      }
+    }
+
+    deviation /oc-rpol:routing-policy/oc-rpol:policy-definitions/oc-rpol:policy-definition/oc-rpol:config/oc-rpol:name {
+      deviate add {
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "routing_policy_xfmr";
+      }
+    }
+}
