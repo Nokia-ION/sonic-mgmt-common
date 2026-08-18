@@ -994,6 +994,97 @@ func Test_openconfig_network_instance_bgp_neighbor_as_path_options_allow_own_as(
 	unloadDB(db.ConfigDB, cleanupTbl)
 }
 
+func Test_openconfig_network_instance_bgp_neighbor_afi_safi_apply_policy_import_policy(t *testing.T) {
+	var url, urlInputBodyJSON string
+
+	preReqMap := map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": map[string]interface{}{
+				"local_asn": "65100",
+			},
+		},
+		"BGP_NEIGHBOR": map[string]interface{}{
+			"default|20.0.0.1": map[string]interface{}{
+				"asn": "65200",
+			},
+		},
+		"BGP_NEIGHBOR_AF": map[string]interface{}{
+			"default|20.0.0.1|ipv4_unicast": map[string]interface{}{
+				"route_map_in@": "RM-IN-V4-OLD",
+			},
+			"default|20.0.0.1|ipv6_unicast": map[string]interface{}{
+				"route_map_in@": "RM-IN-V6-KEEP",
+			},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"BGP_NEIGHBOR_AF": map[string]interface{}{
+			"default|20.0.0.1|ipv4_unicast": "",
+			"default|20.0.0.1|ipv6_unicast": "",
+		},
+		"BGP_NEIGHBOR": map[string]interface{}{
+			"default|20.0.0.1": "",
+		},
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": "",
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	url = "/openconfig-network-instance:network-instances/network-instance[name=default]/protocols/protocol[identifier=BGP][name=bgp]/bgp/neighbors/neighbor[neighbor-address=20.0.0.1]/afi-safis/afi-safi[afi-safi-name=IPV4_UNICAST]/apply-policy/config/import-policy"
+	urlInputBodyJSON = "{\"openconfig-network-instance:import-policy\":[\"RM-IN-V4-NEW\"]}"
+	t.Run("PATCH network-instance BGP neighbor AFI-SAFI apply-policy import-policy", processSetRequest(url, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"BGP_NEIGHBOR_AF": map[string]interface{}{
+			"default|20.0.0.1|ipv4_unicast": map[string]interface{}{
+				"route_map_in@": "RM-IN-V4-NEW",
+			},
+		},
+	}
+	t.Run("Verify BGP_NEIGHBOR_AF ipv4 route_map_in mapping", verifyDbResult(rclient, "BGP_NEIGHBOR_AF|default|20.0.0.1|ipv4_unicast", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"BGP_NEIGHBOR_AF": map[string]interface{}{
+			"default|20.0.0.1|ipv6_unicast": map[string]interface{}{
+				"route_map_in@": "RM-IN-V6-KEEP",
+			},
+		},
+	}
+	t.Run("Verify BGP_NEIGHBOR_AF ipv6 route_map_in unchanged", verifyDbResult(rclient, "BGP_NEIGHBOR_AF|default|20.0.0.1|ipv6_unicast", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	expectedGetJSON := "{\"openconfig-network-instance:import-policy\":[\"RM-IN-V4-NEW\"]}"
+	t.Run("GET network-instance BGP neighbor AFI-SAFI apply-policy import-policy", processGetRequest(url, nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("DELETE network-instance BGP neighbor AFI-SAFI apply-policy import-policy", processDeleteRequest(url, false))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"BGP_NEIGHBOR_AF": map[string]interface{}{
+			"default|20.0.0.1|ipv4_unicast": map[string]interface{}{},
+		},
+	}
+	t.Run("Verify BGP_NEIGHBOR_AF ipv4 route_map_in cleared", verifyDbResult(rclient, "BGP_NEIGHBOR_AF|default|20.0.0.1|ipv4_unicast", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"BGP_NEIGHBOR_AF": map[string]interface{}{
+			"default|20.0.0.1|ipv6_unicast": map[string]interface{}{
+				"route_map_in@": "RM-IN-V6-KEEP",
+			},
+		},
+	}
+	t.Run("Verify BGP_NEIGHBOR_AF ipv6 route_map_in still unchanged after delete", verifyDbResult(rclient, "BGP_NEIGHBOR_AF|default|20.0.0.1|ipv6_unicast", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
 func Test_openconfig_network_instance_bgp_global_afi_safi_ipv6_unicast_config(t *testing.T) {
 	var url, urlInputBodyJSON string
 
