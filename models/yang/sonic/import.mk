@@ -27,6 +27,12 @@ SONICYANG_IMPORTS += sonic-gnmi.yang
 # PORT_STORM_CONTROL|<ifname>|<storm_type>"). Imports sonic-port, already listed.
 SONICYANG_IMPORTS += sonic-storm-control.yang
 
+# BGP global OC mapping uses CONFIG_DB:BGP_GLOBALS|<vrf>.
+# Import BGP SONiC YANGs so CVL schema contains table/key metadata.
+SONICYANG_IMPORTS += sonic-bgp-global.yang
+SONICYANG_IMPORTS += sonic-bgp-device-global.yang
+SONICYANG_IMPORTS += sonic-loopback-interface.yang
+
 ##
 # Local sonic yangs that import modules from SONICYANG_IMPORTS must be copied
 # after those imports are synced into build/yang/sonic.
