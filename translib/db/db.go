@@ -608,12 +608,16 @@ func (d *DB) key2redis(ts *TableSpec, key Key) string {
 func (d *DB) redis2key(ts *TableSpec, redisKey string) Key {
 
 	splitTable := strings.SplitN(redisKey, d.Opts.TableNameSeparator, 2)
+	// Singleton hashes are stored as the table name with no key component
+	// (e.g. APPL_DB LLDP_LOC_CHASSIS). Do not index past a missing separator.
+	if len(splitTable) < 2 {
+		return Key{}
+	}
 
 	if ts.CompCt > 0 {
 		return Key{strings.SplitN(splitTable[1], d.Opts.KeySeparator, ts.CompCt)}
-	} else {
-		return Key{strings.Split(splitTable[1], d.Opts.KeySeparator)}
 	}
+	return Key{strings.Split(splitTable[1], d.Opts.KeySeparator)}
 
 }
 
@@ -622,6 +626,9 @@ func (d *DB) redis2key(ts *TableSpec, redisKey string) Key {
 func (d *DB) redis2ts_key(redisKey string) (TableSpec, Key) {
 
 	splitTable := strings.SplitN(redisKey, d.Opts.TableNameSeparator, 2)
+	if len(splitTable) < 2 {
+		return TableSpec{Name: redisKey}, Key{}
+	}
 
 	return TableSpec{Name: splitTable[0]},
 		Key{strings.Split(splitTable[1], d.Opts.KeySeparator)}
