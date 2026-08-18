@@ -7,6 +7,7 @@ module openconfig-routing-policy-annot {
 
     import sonic-extensions { prefix sonic-ext; }
     import openconfig-routing-policy { prefix oc-rpol; }
+    import openconfig-bgp-policy { prefix oc-bgp-pol; }
 
     deviation /oc-rpol:routing-policy/oc-rpol:policy-definitions/oc-rpol:policy-definition {
       deviate add {
@@ -56,6 +57,27 @@ module openconfig-routing-policy-annot {
     }
 
     deviation /oc-rpol:routing-policy/oc-rpol:policy-definitions/oc-rpol:policy-definition/oc-rpol:statements/oc-rpol:statement/oc-rpol:conditions/oc-rpol:match-prefix-set/oc-rpol:config/oc-rpol:prefix-set {
+      deviate add {
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "routing_policy_xfmr";
+      }
+    }
+
+    deviation /oc-rpol:routing-policy/oc-rpol:policy-definitions/oc-rpol:policy-definition/oc-rpol:statements/oc-rpol:statement/oc-rpol:actions/oc-bgp-pol:bgp-actions/oc-bgp-pol:set-as-path-prepend/oc-bgp-pol:config {
+      deviate add {
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "routing_policy_xfmr";
+      }
+    }
+
+    deviation /oc-rpol:routing-policy/oc-rpol:policy-definitions/oc-rpol:policy-definition/oc-rpol:statements/oc-rpol:statement/oc-rpol:actions/oc-bgp-pol:bgp-actions/oc-bgp-pol:set-as-path-prepend/oc-bgp-pol:config/oc-bgp-pol:asn {
+      deviate add {
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "routing_policy_xfmr";
+      }
+    }
+
+    deviation /oc-rpol:routing-policy/oc-rpol:policy-definitions/oc-rpol:policy-definition/oc-rpol:statements/oc-rpol:statement/oc-rpol:actions/oc-bgp-pol:bgp-actions/oc-bgp-pol:set-as-path-prepend/oc-bgp-pol:config/oc-bgp-pol:repeat-n {
       deviate add {
           sonic-ext:db-name "CONFIG_DB";
           sonic-ext:subtree-transformer "routing_policy_xfmr";
