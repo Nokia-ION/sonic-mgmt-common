@@ -481,3 +481,63 @@ func Test_openconfig_routing_policy_policy_definition_statement_actions_bgp_acti
 
 	unloadDB(db.ConfigDB, cleanupTbl)
 }
+
+func Test_openconfig_routing_policy_policy_definition_statement_actions_bgp_actions_config(t *testing.T) {
+	var url, urlInputBodyJSON string
+
+	preReqMap := map[string]interface{}{
+		"ROUTE_MAP_SET": map[string]interface{}{
+			"POL1": map[string]interface{}{},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": "",
+		},
+		"ROUTE_MAP_SET": map[string]interface{}{
+			"POL1": "",
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	url = "/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition[name=POL1]/statements/statement[name=10]/actions/bgp-actions/config"
+	urlInputBodyJSON = "{\"openconfig-bgp-policy:config\":{\"set-next-hop\":\"10.10.10.1\",\"set-route-origin\":\"IGP\",\"set-local-pref\":200,\"set-med\":100}}"
+	t.Run("PATCH routing-policy statement actions bgp-actions config", processSetRequest(url, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": map[string]interface{}{
+				"set_next_hop":   "10.10.10.1",
+				"set_origin":     "igp",
+				"set_local_pref": "200",
+				"set_med":        "100",
+			},
+		},
+	}
+	t.Run("Verify ROUTE_MAP bgp-actions config fields mapping", verifyDbResult(rclient, "ROUTE_MAP|POL1|10", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET routing-policy statement bgp-actions set-next-hop", processGetRequest(url+"/set-next-hop", nil, "{\"openconfig-bgp-policy:set-next-hop\":\"10.10.10.1\"}", false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET routing-policy statement bgp-actions set-route-origin", processGetRequest(url+"/set-route-origin", nil, "{\"openconfig-bgp-policy:set-route-origin\":\"IGP\"}", false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET routing-policy statement bgp-actions set-local-pref", processGetRequest(url+"/set-local-pref", nil, "{\"openconfig-bgp-policy:set-local-pref\":200}", false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET routing-policy statement bgp-actions set-med", processGetRequest(url+"/set-med", nil, "{\"openconfig-bgp-policy:set-med\":100}", false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("DELETE routing-policy statement actions bgp-actions config", processDeleteRequest(url, false))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": map[string]interface{}{},
+		},
+	}
+	t.Run("Verify ROUTE_MAP bgp-actions config fields cleared", verifyDbResult(rclient, "ROUTE_MAP|POL1|10", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}

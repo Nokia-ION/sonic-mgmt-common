@@ -125,4 +125,39 @@ module openconfig-routing-policy-annot {
       }
     }
 
+    deviation /oc-rpol:routing-policy/oc-rpol:policy-definitions/oc-rpol:policy-definition/oc-rpol:statements/oc-rpol:statement/oc-rpol:actions/oc-bgp-pol:bgp-actions/oc-bgp-pol:config {
+      deviate add {
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "routing_policy_xfmr";
+      }
+    }
+
+    deviation /oc-rpol:routing-policy/oc-rpol:policy-definitions/oc-rpol:policy-definition/oc-rpol:statements/oc-rpol:statement/oc-rpol:actions/oc-bgp-pol:bgp-actions/oc-bgp-pol:config/oc-bgp-pol:set-next-hop {
+      deviate add {
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "routing_policy_xfmr";
+      }
+    }
+
+    deviation /oc-rpol:routing-policy/oc-rpol:policy-definitions/oc-rpol:policy-definition/oc-rpol:statements/oc-rpol:statement/oc-rpol:actions/oc-bgp-pol:bgp-actions/oc-bgp-pol:config/oc-bgp-pol:set-route-origin {
+      deviate add {
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "routing_policy_xfmr";
+      }
+    }
+
+    deviation /oc-rpol:routing-policy/oc-rpol:policy-definitions/oc-rpol:policy-definition/oc-rpol:statements/oc-rpol:statement/oc-rpol:actions/oc-bgp-pol:bgp-actions/oc-bgp-pol:config/oc-bgp-pol:set-local-pref {
+      deviate add {
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "routing_policy_xfmr";
+      }
+    }
+
+    deviation /oc-rpol:routing-policy/oc-rpol:policy-definitions/oc-rpol:policy-definition/oc-rpol:statements/oc-rpol:statement/oc-rpol:actions/oc-bgp-pol:bgp-actions/oc-bgp-pol:config/oc-bgp-pol:set-med {
+      deviate add {
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "routing_policy_xfmr";
+      }
+    }
+
 }
