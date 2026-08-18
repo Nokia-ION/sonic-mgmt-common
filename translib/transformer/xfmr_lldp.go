@@ -629,12 +629,7 @@ var Subscribe_lldp_config_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSubscInP
 	if inParams.subscProc == TRANSLATE_EXISTS {
 		result.isVirtualTbl = false
 	} else {
-		result.dbDataMap[db.ConfigDB] = map[string]map[string]map[string]string{
-			LLDP_CFG_TABLE: {LLDP_GLOBAL_KEY: {}},
-		}
-		result.onChange = OnchangeEnable
-		result.nOpts = &notificationOpts{pType: OnChange}
-		result.isVirtualTbl = false
+		fillLldpGlobalSubscribe(&result)
 	}
 	return result, nil
 }
@@ -671,17 +666,26 @@ var Subscribe_lldp_state_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSubscInPa
 	if inParams.subscProc == TRANSLATE_EXISTS {
 		result.isVirtualTbl = false
 	} else {
-		result.dbDataMap[db.ConfigDB] = map[string]map[string]map[string]string{
-			LLDP_CFG_TABLE: {LLDP_GLOBAL_KEY: {}},
-		}
-		result.dbDataMap[db.ApplDB] = map[string]map[string]map[string]string{
-			LLDP_LOC_CHASSIS_TABLE: {"": {}},
-		}
-		result.onChange = OnchangeEnable
-		result.nOpts = &notificationOpts{pType: OnChange}
-		result.isVirtualTbl = false
+		fillLldpGlobalSubscribe(&result)
 	}
 	return result, nil
+}
+
+// fillLldpGlobalSubscribe maps both CONFIG_DB LLDP|GLOBAL and the APPL_DB
+// LLDP_LOC_CHASSIS singleton. Chassis-id / system-name / system-description
+// fall back to loc chassis, so subscribe (ONCE/SAMPLE/ON_CHANGE) must watch
+// that hash. The empty key is required: Redis stores it as the table name
+// with no key component.
+func fillLldpGlobalSubscribe(result *XfmrSubscOutParams) {
+	result.dbDataMap[db.ConfigDB] = map[string]map[string]map[string]string{
+		LLDP_CFG_TABLE: {LLDP_GLOBAL_KEY: {}},
+	}
+	result.dbDataMap[db.ApplDB] = map[string]map[string]map[string]string{
+		LLDP_LOC_CHASSIS_TABLE: {"": {}},
+	}
+	result.onChange = OnchangeEnable
+	result.nOpts = &notificationOpts{pType: OnChange}
+	result.isVirtualTbl = false
 }
 
 // --- Interfaces transformer ---
