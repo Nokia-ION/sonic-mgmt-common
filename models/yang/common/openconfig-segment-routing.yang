@@ -617,6 +617,7 @@ module openconfig-segment-routing {
         type sr-sid-type;
         type enumeration {
             enum DYNAMIC {
+              value 16;
               description
                 "The SID chosen for the Adjacency SID should be dynamically
                 allocated from the system's dynamic range of Segment
