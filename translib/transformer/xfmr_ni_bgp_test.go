@@ -346,3 +346,82 @@ func Test_openconfig_network_instance_bgp_neighbor_enabled(t *testing.T) {
 
 	unloadDB(db.ConfigDB, cleanupTbl)
 }
+
+func Test_openconfig_network_instance_bgp_global_use_multiple_paths_ebgp_maximum_paths(t *testing.T) {
+	var url, urlInputBodyJSON string
+
+	preReqMap := map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": map[string]interface{}{
+				"local_asn": "65100",
+			},
+		},
+		"BGP_GLOBALS_AF": map[string]interface{}{
+			"default|ipv4_unicast": map[string]interface{}{
+				"max_ebgp_paths": "2",
+			},
+			"default|ipv6_unicast": map[string]interface{}{
+				"max_ebgp_paths": "2",
+			},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"BGP_GLOBALS_AF": map[string]interface{}{
+			"default|ipv4_unicast": "",
+			"default|ipv6_unicast": "",
+		},
+		"BGP_GLOBALS": map[string]interface{}{"default": ""},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	url = "/openconfig-network-instance:network-instances/network-instance[name=default]/protocols/protocol[identifier=BGP][name=bgp]/bgp/global/use-multiple-paths/ebgp/config/maximum-paths"
+	urlInputBodyJSON = "{\"openconfig-network-instance:maximum-paths\":16}"
+	t.Run("PATCH network-instance BGP eBGP maximum-paths", processSetRequest(url, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"BGP_GLOBALS_AF": map[string]interface{}{
+			"default|ipv4_unicast": map[string]interface{}{
+				"max_ebgp_paths": "16",
+			},
+		},
+	}
+	t.Run("Verify BGP_GLOBALS_AF ipv4 max_ebgp_paths mapping", verifyDbResult(rclient, "BGP_GLOBALS_AF|default|ipv4_unicast", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"BGP_GLOBALS_AF": map[string]interface{}{
+			"default|ipv6_unicast": map[string]interface{}{
+				"max_ebgp_paths": "16",
+			},
+		},
+	}
+	t.Run("Verify BGP_GLOBALS_AF ipv6 max_ebgp_paths mapping", verifyDbResult(rclient, "BGP_GLOBALS_AF|default|ipv6_unicast", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	expectedGetJSON := "{\"openconfig-network-instance:maximum-paths\":16}"
+	t.Run("GET network-instance BGP eBGP maximum-paths", processGetRequest(url, nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("DELETE network-instance BGP eBGP maximum-paths", processDeleteRequest(url, false))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"BGP_GLOBALS_AF": map[string]interface{}{
+			"default|ipv4_unicast": map[string]interface{}{},
+		},
+	}
+	t.Run("Verify BGP_GLOBALS_AF ipv4 max_ebgp_paths cleared", verifyDbResult(rclient, "BGP_GLOBALS_AF|default|ipv4_unicast", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"BGP_GLOBALS_AF": map[string]interface{}{
+			"default|ipv6_unicast": map[string]interface{}{},
+		},
+	}
+	t.Run("Verify BGP_GLOBALS_AF ipv6 max_ebgp_paths cleared", verifyDbResult(rclient, "BGP_GLOBALS_AF|default|ipv6_unicast", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
