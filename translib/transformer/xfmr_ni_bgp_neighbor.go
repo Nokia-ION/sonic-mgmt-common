@@ -36,6 +36,7 @@ const (
 	niBgpNbrAfTbl          = "BGP_NEIGHBOR_AF"
 	niBgpNbrPeerGroupFld   = "peer_group_name"
 	niBgpNbrAdminStatus    = "admin_status"
+	niBgpNbrRouteMapInFld  = "route_map_in@"
 	niBgpNbrAllowAsInFld   = "allow_as_in"
 	niBgpNbrAllowAsCntFld  = "allow_as_count"
 	niBgpNbrAllowAsOrigFld = "allow_as_origin"
@@ -45,10 +46,12 @@ const (
 
 var niBgpNbrReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/protocols/protocol\[identifier=BGP\]\[name=bgp\]/bgp/neighbors/neighbor\[neighbor-address=([^\]]+)\]/config(?:/(peer-group|enabled))?$`)
 var niBgpNbrAsPathOptReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/protocols/protocol\[identifier=BGP\]\[name=bgp\]/bgp/neighbors/neighbor\[neighbor-address=([^\]]+)\]/as-path-options/config(?:/(allow-own-as))?$`)
+var niBgpNbrAfApplyReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/protocols/protocol\[identifier=BGP\]\[name=bgp\]/bgp/neighbors/neighbor\[neighbor-address=([^\]]+)\]/afi-safis/afi-safi\[afi-safi-name=([^\]]+)\]/apply-policy/config(?:/(import-policy))?$`)
 
 type niBgpNbrReqInfo struct {
 	niName       string
 	neighborAddr string
+	afiSafi      string
 	targetLeaf   string // "", "peer-group", "enabled"
 	targetPath   string
 }
@@ -85,8 +88,44 @@ func parseNiBgpNbrRequestUri(uri string) (*niBgpNbrReqInfo, error) {
 			targetPath:   "neighbor-as-path-options-config",
 		}, nil
 	}
+	m = niBgpNbrAfApplyReqUriRe.FindStringSubmatch(uri)
+	if len(m) >= 4 {
+		leaf := ""
+		if len(m) >= 5 {
+			leaf = m[4]
+		}
+		afiSafi, ok := normalizeNiBgpNbrAfiSafiName(m[3])
+		if !ok {
+			return nil, tlerr.InvalidArgsError{
+				Format: "unsupported afi-safi-name for network-instance BGP neighbor apply-policy mapping: " + m[3],
+			}
+		}
+		return &niBgpNbrReqInfo{
+			niName:       m[1],
+			neighborAddr: m[2],
+			afiSafi:      afiSafi,
+			targetLeaf:   leaf,
+			targetPath:   "neighbor-af-apply-policy-config",
+		}, nil
+	}
 	return nil, tlerr.InvalidArgsError{
 		Format: "unsupported path for network-instance BGP neighbor config mapping: " + uri,
+	}
+}
+
+func normalizeNiBgpNbrAfiSafiName(v string) (string, bool) {
+	s := strings.TrimSpace(v)
+	if idx := strings.LastIndex(s, ":"); idx >= 0 {
+		s = s[idx+1:]
+	}
+	s = strings.ToLower(strings.ReplaceAll(s, "-", "_"))
+	switch s {
+	case niBgpAfiSafiIPv4:
+		return niBgpAfiSafiIPv4, true
+	case niBgpAfiSafiIPv6:
+		return niBgpAfiSafiIPv6, true
+	default:
+		return "", false
 	}
 }
 
@@ -168,6 +207,106 @@ func getNiBgpNbrAsPathOptionsCfgObj(s *ygot.GoStruct, niName, neighborAddr strin
 	}
 	ygot.BuildEmptyTree(nbrObj)
 	return nbrObj.AsPathOptions.Config
+}
+
+func getNiBgpNbrAfApplyPolicyCfgObj(s *ygot.GoStruct, niName, neighborAddr, afiSafi string, createIfMissing bool) *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Neighbors_Neighbor_AfiSafis_AfiSafi_ApplyPolicy_Config {
+	if s == nil || *s == nil {
+		return nil
+	}
+
+	deviceObj, ok := (*s).(*ocbinds.Device)
+	if !ok || deviceObj == nil {
+		return nil
+	}
+	ygot.BuildEmptyTree(deviceObj)
+
+	if deviceObj.NetworkInstances == nil {
+		if !createIfMissing {
+			return nil
+		}
+		deviceObj.NetworkInstances = &ocbinds.OpenconfigNetworkInstance_NetworkInstances{}
+	}
+
+	niObj, ok := deviceObj.NetworkInstances.NetworkInstance[niName]
+	if !ok || niObj == nil {
+		if !createIfMissing {
+			return nil
+		}
+		var err error
+		niObj, err = deviceObj.NetworkInstances.NewNetworkInstance(niName)
+		if err != nil || niObj == nil {
+			return nil
+		}
+	}
+
+	if niObj.Protocols == nil {
+		if !createIfMissing {
+			return nil
+		}
+		niObj.Protocols = &ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols{}
+	}
+	if niObj.Protocols.Protocol == nil {
+		if !createIfMissing {
+			return nil
+		}
+		niObj.Protocols.Protocol = make(map[ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Key]*ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol)
+	}
+
+	wantKey := ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Key{
+		Identifier: ocbinds.OpenconfigPolicyTypes_INSTALL_PROTOCOL_TYPE_BGP,
+		Name:       "bgp",
+	}
+	pObj, ok := niObj.Protocols.Protocol[wantKey]
+	if !ok || pObj == nil {
+		if !createIfMissing {
+			return nil
+		}
+		var err error
+		pObj, err = niObj.Protocols.NewProtocol(ocbinds.OpenconfigPolicyTypes_INSTALL_PROTOCOL_TYPE_BGP, "bgp")
+		if err != nil || pObj == nil {
+			return nil
+		}
+	}
+	ygot.BuildEmptyTree(pObj)
+
+	var nbrObj *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Neighbors_Neighbor
+	nbrObj, ok = pObj.Bgp.Neighbors.Neighbor[neighborAddr]
+	if !ok || nbrObj == nil {
+		if !createIfMissing {
+			return nil
+		}
+		var err error
+		nbrObj, err = pObj.Bgp.Neighbors.NewNeighbor(neighborAddr)
+		if err != nil || nbrObj == nil {
+			return nil
+		}
+	}
+	ygot.BuildEmptyTree(nbrObj)
+
+	afiKey := ocbinds.E_OpenconfigBgpTypes_AFI_SAFI_TYPE(0)
+	switch afiSafi {
+	case niBgpAfiSafiIPv4:
+		afiKey = ocbinds.OpenconfigBgpTypes_AFI_SAFI_TYPE_IPV4_UNICAST
+	case niBgpAfiSafiIPv6:
+		afiKey = ocbinds.OpenconfigBgpTypes_AFI_SAFI_TYPE_IPV6_UNICAST
+	default:
+		return nil
+	}
+
+	var afObj *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Neighbors_Neighbor_AfiSafis_AfiSafi
+	afObj, ok = nbrObj.AfiSafis.AfiSafi[afiKey]
+	if !ok || afObj == nil {
+		if !createIfMissing {
+			return nil
+		}
+		var err error
+		afObj, err = nbrObj.AfiSafis.NewAfiSafi(afiKey)
+		if err != nil || afObj == nil {
+			return nil
+		}
+	}
+	ygot.BuildEmptyTree(afObj)
+	return afObj.ApplyPolicy.Config
 }
 
 func getNiBgpNbrCfgObj(s *ygot.GoStruct, niName, neighborAddr string, createIfMissing bool) *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Neighbors_Neighbor_Config {
@@ -479,6 +618,105 @@ func makeNiBgpNbrAfResMap(niName, neighborAddr string, fields map[string]string)
 	}
 }
 
+func makeNiBgpNbrAfSingleResMap(niName, neighborAddr, afiSafi string, fields map[string]string) map[string]map[string]db.Value {
+	return map[string]map[string]db.Value{
+		niBgpNbrAfTbl: {
+			niName + "|" + neighborAddr + "|" + afiSafi: db.Value{Field: fields},
+		},
+	}
+}
+
+func parseNiBgpNbrImportPolicyValue(v interface{}) (string, bool) {
+	switch val := v.(type) {
+	case string:
+		s := strings.TrimSpace(val)
+		return s, s != ""
+	case *string:
+		if val != nil {
+			s := strings.TrimSpace(*val)
+			return s, s != ""
+		}
+	case []string:
+		for _, item := range val {
+			s := strings.TrimSpace(item)
+			if s != "" {
+				return s, true
+			}
+		}
+	case []interface{}:
+		for _, item := range val {
+			if s, ok := item.(string); ok {
+				v := strings.TrimSpace(s)
+				if v != "" {
+					return v, true
+				}
+			}
+		}
+	}
+	return "", false
+}
+
+func parseNiBgpNbrImportPolicyFromParam(param interface{}) (string, bool) {
+	if param == nil {
+		return "", false
+	}
+	if p, ok := parseNiBgpNbrImportPolicyValue(param); ok {
+		return p, true
+	}
+
+	rv := reflect.ValueOf(param)
+	for rv.IsValid() && (rv.Kind() == reflect.Interface || rv.Kind() == reflect.Ptr) {
+		if rv.IsNil() {
+			return "", false
+		}
+		rv = rv.Elem()
+	}
+	if !rv.IsValid() {
+		return "", false
+	}
+	if rv.Kind() == reflect.Struct {
+		fv := rv.FieldByName("ImportPolicy")
+		if fv.IsValid() && fv.CanInterface() {
+			if p, ok := parseNiBgpNbrImportPolicyValue(fv.Interface()); ok {
+				return p, true
+			}
+		}
+	}
+	if rv.Kind() == reflect.Map {
+		for _, mk := range rv.MapKeys() {
+			k := fmt.Sprint(mk.Interface())
+			if k == "import-policy" || strings.HasSuffix(k, ":import-policy") {
+				mv := rv.MapIndex(mk)
+				if mv.IsValid() && mv.CanInterface() {
+					if p, ok := parseNiBgpNbrImportPolicyValue(mv.Interface()); ok {
+						return p, true
+					}
+				}
+			}
+		}
+	}
+	return "", false
+}
+
+func parseNiBgpNbrImportPolicy(inParams XfmrParams) (string, error) {
+	reqInfo, err := parseNiBgpNbrRequestUri(inParams.requestUri)
+	if err != nil {
+		return "", err
+	}
+	if p, ok := parseNiBgpNbrImportPolicyFromParam(inParams.param); ok {
+		return p, nil
+	}
+	cfgObj := getNiBgpNbrAfApplyPolicyCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.neighborAddr, reqInfo.afiSafi, false)
+	if cfgObj == nil || len(cfgObj.ImportPolicy) == 0 {
+		return "", tlerr.InvalidArgsError{Format: "BGP neighbor AFI-SAFI apply-policy import-policy is missing in request payload"}
+	}
+	p := strings.TrimSpace(cfgObj.ImportPolicy[0])
+	if p == "" {
+		return "", tlerr.InvalidArgsError{Format: "BGP neighbor AFI-SAFI apply-policy import-policy is missing in request payload"}
+	}
+	return p, nil
+}
+
 func parseNiBgpNbrAllowOwnAsValue(v interface{}) (*uint8, bool) {
 	switch val := v.(type) {
 	case uint8:
@@ -586,6 +824,14 @@ var YangToDb_ni_bgp_nbr_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 	}
 
 	if inParams.oper == DELETE {
+		if reqInfo.targetPath == "neighbor-af-apply-policy-config" {
+			switch reqInfo.targetLeaf {
+			case "", "import-policy":
+				return makeNiBgpNbrAfSingleResMap(reqInfo.niName, reqInfo.neighborAddr, reqInfo.afiSafi, map[string]string{niBgpNbrRouteMapInFld: ""}), nil
+			default:
+				return res, tlerr.NotSupportedError{Format: "DELETE supported only for /neighbors/neighbor/afi-safis/afi-safi/apply-policy/config or /neighbors/neighbor/afi-safis/afi-safi/apply-policy/config/import-policy", Path: inParams.requestUri}
+			}
+		}
 		if reqInfo.targetPath == "neighbor-as-path-options-config" {
 			switch reqInfo.targetLeaf {
 			case "", "allow-own-as":
@@ -605,6 +851,19 @@ var YangToDb_ni_bgp_nbr_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 			return makeNiBgpNbrResMap(reqInfo.niName, reqInfo.neighborAddr, map[string]string{niBgpNbrAdminStatus: ""}), nil
 		default:
 			return res, tlerr.NotSupportedError{Format: "DELETE supported only for /neighbors/neighbor/config/peer-group or /neighbors/neighbor/config/enabled", Path: inParams.requestUri}
+		}
+	}
+
+	if reqInfo.targetPath == "neighbor-af-apply-policy-config" {
+		switch reqInfo.targetLeaf {
+		case "", "import-policy":
+			importPolicy, err := parseNiBgpNbrImportPolicy(inParams)
+			if err != nil {
+				return res, err
+			}
+			return makeNiBgpNbrAfSingleResMap(reqInfo.niName, reqInfo.neighborAddr, reqInfo.afiSafi, map[string]string{niBgpNbrRouteMapInFld: importPolicy}), nil
+		default:
+			return res, tlerr.NotSupportedError{Format: "unsupported leaf under neighbor AFI-SAFI apply-policy config", Path: inParams.requestUri}
 		}
 	}
 
@@ -706,6 +965,23 @@ var DbToYang_ni_bgp_nbr_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams)
 				cfgObj.Enabled = enabled
 			}
 		}
+	}
+	if reqInfo.targetPath == "neighbor-af-apply-policy-config" {
+		afEntry, afErr := cfgDb.GetEntry(&db.TableSpec{Name: niBgpNbrAfTbl}, db.Key{Comp: []string{reqInfo.niName, reqInfo.neighborAddr, reqInfo.afiSafi}})
+		if afErr != nil {
+			return afErr
+		}
+		applyCfgObj := getNiBgpNbrAfApplyPolicyCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.neighborAddr, reqInfo.afiSafi, true)
+		if applyCfgObj == nil {
+			return tlerr.InvalidArgsError{Format: "Unable to locate BGP neighbor AFI-SAFI apply-policy config object in YANG tree"}
+		}
+		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == "import-policy" {
+			importPolicy, ok := afEntry.Field[niBgpNbrRouteMapInFld]
+			if ok && strings.TrimSpace(importPolicy) != "" {
+				applyCfgObj.ImportPolicy = []string{strings.TrimSpace(importPolicy)}
+			}
+		}
+		return nil
 	}
 	if reqInfo.targetPath == "neighbor-as-path-options-config" {
 		v4Entry, errV4 := cfgDb.GetEntry(&db.TableSpec{Name: niBgpNbrAfTbl}, db.Key{Comp: []string{reqInfo.niName, reqInfo.neighborAddr, niBgpAfiSafiIPv4}})
