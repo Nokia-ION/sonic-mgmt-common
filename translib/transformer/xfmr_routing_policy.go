@@ -32,33 +32,35 @@ import (
 )
 
 const (
-	rpolRouteMapSetTbl            = "ROUTE_MAP_SET"
-	rpolRouteMapTbl               = "ROUTE_MAP"
-	rpolRouteOperationFld         = "route_operation"
-	rpolMatchPrefixSetFld         = "match_prefix_set"
-	rpolMatchIpv6PrefixSetFld     = "match_ipv6_prefix_set"
-	rpolSetCommunityInlineFld     = "set_community_inline"
-	rpolSetCommunityRefFld        = "set_community_ref"
-	rpolSetAsnFld                 = "set_asn"
-	rpolSetRepeatAsnFld           = "set_repeat_asn"
-	rpolRouteOpPermit             = "permit"
-	rpolRouteOpDeny               = "deny"
-	rpolTargetPolicyDefCfg        = "policy-definition-config"
-	rpolTargetStmtActionsCfg      = "statement-actions-config"
-	rpolTargetStmtCondMatchPfxCfg = "statement-conditions-match-prefix-set-config"
-	rpolTargetStmtBgpSetCommunity = "statement-actions-bgp-set-community"
-	rpolTargetStmtBgpSetAsPathCfg = "statement-actions-bgp-set-as-path-prepend-config"
-	rpolPolicyDefNameLeaf         = "name"
-	rpolPolicyResultLeaf          = "policy-result"
-	rpolPrefixSetLeaf             = "prefix-set"
-	rpolAsnLeaf                   = "asn"
-	rpolRepeatNLeaf               = "repeat-n"
+	rpolRouteMapSetTbl                     = "ROUTE_MAP_SET"
+	rpolRouteMapTbl                        = "ROUTE_MAP"
+	rpolRouteOperationFld                  = "route_operation"
+	rpolMatchPrefixSetFld                  = "match_prefix_set"
+	rpolMatchIpv6PrefixSetFld              = "match_ipv6_prefix_set"
+	rpolSetCommunityInlineFld              = "set_community_inline"
+	rpolSetCommunityRefFld                 = "set_community_ref"
+	rpolSetAsnFld                          = "set_asn"
+	rpolSetRepeatAsnFld                    = "set_repeat_asn"
+	rpolRouteOpPermit                      = "permit"
+	rpolRouteOpDeny                        = "deny"
+	rpolTargetPolicyDefCfg                 = "policy-definition-config"
+	rpolTargetStmtActionsCfg               = "statement-actions-config"
+	rpolTargetStmtCondMatchPfxCfg          = "statement-conditions-match-prefix-set-config"
+	rpolTargetStmtBgpSetCommunity          = "statement-actions-bgp-set-community"
+	rpolTargetStmtBgpSetCommunityInlineCfg = "statement-actions-bgp-set-community-inline-config"
+	rpolTargetStmtBgpSetAsPathCfg          = "statement-actions-bgp-set-as-path-prepend-config"
+	rpolPolicyDefNameLeaf                  = "name"
+	rpolPolicyResultLeaf                   = "policy-result"
+	rpolPrefixSetLeaf                      = "prefix-set"
+	rpolAsnLeaf                            = "asn"
+	rpolRepeatNLeaf                        = "repeat-n"
 )
 
 var rpolPolicyDefCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/config(?:/(name))?$`)
 var rpolStmtActionsCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/actions/config(?:/(policy-result))?$`)
 var rpolStmtCondMatchPfxCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/conditions/match-prefix-set/config(?:/(prefix-set))?$`)
 var rpolStmtBgpSetCommunityReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/actions/bgp-actions/set-community$`)
+var rpolStmtBgpSetCommunityInlineCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/actions/bgp-actions/set-community/inline/config(?:/(communities))?$`)
 var rpolStmtBgpSetAsPathCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/actions/bgp-actions/set-as-path-prepend/config(?:/(asn|repeat-n))?$`)
 
 type rpolReqInfo struct {
@@ -119,6 +121,19 @@ func parseRpolRequestUri(uri string) (*rpolReqInfo, error) {
 			stmtName:   m[2],
 			targetLeaf: "",
 			targetPath: rpolTargetStmtBgpSetCommunity,
+		}, nil
+	}
+	m = rpolStmtBgpSetCommunityInlineCfgReqUriRe.FindStringSubmatch(uri)
+	if len(m) >= 3 {
+		leaf := ""
+		if len(m) >= 4 {
+			leaf = m[3]
+		}
+		return &rpolReqInfo{
+			policyName: m[1],
+			stmtName:   m[2],
+			targetLeaf: leaf,
+			targetPath: rpolTargetStmtBgpSetCommunityInlineCfg,
 		}, nil
 	}
 	m = rpolStmtBgpSetAsPathCfgReqUriRe.FindStringSubmatch(uri)
@@ -436,6 +451,116 @@ func getRpolPolicyStmtBgpSetCommunityRefCfgObj(s *ygot.GoStruct, policyName, stm
 	}
 	ygot.BuildEmptyTree(stmtObj)
 	return stmtObj.Actions.BgpActions.SetCommunity.Reference.Config
+}
+
+func getRpolPolicyStmtBgpSetCommunityInlineCfgObj(s *ygot.GoStruct, policyName, stmtName string, createIfMissing bool) *ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_SetCommunity_Inline_Config {
+	if s == nil || *s == nil {
+		return nil
+	}
+
+	deviceObj, ok := (*s).(*ocbinds.Device)
+	if !ok || deviceObj == nil {
+		return nil
+	}
+	ygot.BuildEmptyTree(deviceObj)
+
+	if deviceObj.RoutingPolicy == nil {
+		if !createIfMissing {
+			return nil
+		}
+		deviceObj.RoutingPolicy = &ocbinds.OpenconfigRoutingPolicy_RoutingPolicy{}
+	}
+	if deviceObj.RoutingPolicy.PolicyDefinitions == nil {
+		if !createIfMissing {
+			return nil
+		}
+		deviceObj.RoutingPolicy.PolicyDefinitions = &ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions{}
+	}
+
+	pdObj, ok := deviceObj.RoutingPolicy.PolicyDefinitions.PolicyDefinition[policyName]
+	if !ok || pdObj == nil {
+		if !createIfMissing {
+			return nil
+		}
+		var err error
+		pdObj, err = deviceObj.RoutingPolicy.PolicyDefinitions.NewPolicyDefinition(policyName)
+		if err != nil || pdObj == nil {
+			return nil
+		}
+	}
+	ygot.BuildEmptyTree(pdObj)
+
+	stmtObj, ok := pdObj.Statements.Statement[stmtName]
+	if !ok || stmtObj == nil {
+		if !createIfMissing {
+			return nil
+		}
+		var err error
+		stmtObj, err = pdObj.Statements.NewStatement(stmtName)
+		if err != nil || stmtObj == nil {
+			return nil
+		}
+	}
+	ygot.BuildEmptyTree(stmtObj)
+	return stmtObj.Actions.BgpActions.SetCommunity.Inline.Config
+}
+
+func rpolSetCommunityInlineCommunitiesToSlice(cfgObj *ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_SetCommunity_Inline_Config) ([]string, error) {
+	if cfgObj == nil || len(cfgObj.Communities) == 0 {
+		return nil, nil
+	}
+	out := make([]string, 0, len(cfgObj.Communities))
+	for _, c := range cfgObj.Communities {
+		switch v := c.(type) {
+		case *ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_SetCommunity_Inline_Config_Communities_Union_String:
+			out = append(out, strings.TrimSpace(v.String))
+		case *ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_SetCommunity_Inline_Config_Communities_Union_Uint32:
+			out = append(out, strconv.FormatUint(uint64(v.Uint32), 10))
+		case *ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_SetCommunity_Inline_Config_Communities_Union_E_OpenconfigBgpTypes_BGP_WELL_KNOWN_STD_COMMUNITY:
+			out = append(out, strings.TrimSpace(v.E_OpenconfigBgpTypes_BGP_WELL_KNOWN_STD_COMMUNITY.String()))
+		default:
+			return nil, tlerr.InvalidArgsError{Format: "unsupported set-community inline communities value in request payload"}
+		}
+	}
+	return out, nil
+}
+
+func rpolSetCommunityInlineEncode(communities []string, additive bool) string {
+	if len(communities) == 0 {
+		return ""
+	}
+	out := make([]string, 0, len(communities))
+	for _, c := range communities {
+		v := strings.TrimSpace(c)
+		if v == "" {
+			continue
+		}
+		if additive {
+			v += " additive"
+		}
+		out = append(out, v)
+	}
+	return strings.Join(out, ", ")
+}
+
+func rpolSetCommunityInlineDecode(in string) ([]string, bool) {
+	parts := strings.Split(in, ",")
+	out := make([]string, 0, len(parts))
+	additive := false
+	for _, p := range parts {
+		v := strings.TrimSpace(p)
+		if v == "" {
+			continue
+		}
+		if strings.HasSuffix(v, " additive") {
+			additive = true
+			v = strings.TrimSpace(strings.TrimSuffix(v, " additive"))
+		}
+		if v != "" {
+			out = append(out, v)
+		}
+	}
+	return out, additive
 }
 
 func parseRpolPolicyNameValue(v interface{}) (string, bool) {
@@ -883,6 +1008,10 @@ var YangToDb_routing_policy_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 				rpolSetCommunityInlineFld: "",
 				rpolSetCommunityRefFld:    "",
 			}), nil
+		case rpolTargetStmtBgpSetCommunityInlineCfg:
+			return makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, map[string]string{
+				rpolSetCommunityInlineFld: "",
+			}), nil
 		case rpolTargetStmtBgpSetAsPathCfg:
 			fields := map[string]string{}
 			switch reqInfo.targetLeaf {
@@ -990,10 +1119,41 @@ var YangToDb_routing_policy_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 				rpolSetCommunityRefFld:    strings.TrimSpace(*refCfgObj.CommunitySetRef),
 			}), nil
 		case ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_SetCommunity_Config_Method_INLINE:
-			return res, tlerr.NotSupportedError{Format: "set-community method INLINE requires inline/config path implementation", Path: inParams.requestUri}
+			inlineCfgObj := getRpolPolicyStmtBgpSetCommunityInlineCfgObj(inParams.ygRoot, reqInfo.policyName, reqInfo.stmtName, false)
+			communities, err := rpolSetCommunityInlineCommunitiesToSlice(inlineCfgObj)
+			if err != nil {
+				return res, err
+			}
+			if len(communities) == 0 {
+				return res, tlerr.InvalidArgsError{Format: "routing-policy statement actions bgp-actions set-community inline config communities is missing in request payload"}
+			}
+			inlineValue := rpolSetCommunityInlineEncode(communities, cfgObj.Options == ocbinds.OpenconfigBgpPolicy_BgpSetCommunityOptionType_ADD)
+			return makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, map[string]string{
+				rpolSetCommunityInlineFld: inlineValue,
+				rpolSetCommunityRefFld:    "",
+			}), nil
 		default:
 			return res, tlerr.InvalidArgsError{Format: "routing-policy statement actions bgp-actions set-community config method is missing or unsupported"}
 		}
+	}
+	if reqInfo.targetPath == rpolTargetStmtBgpSetCommunityInlineCfg {
+		_, err := parseRpolStmtNameToUint16(reqInfo.stmtName)
+		if err != nil {
+			return res, err
+		}
+		inlineCfgObj := getRpolPolicyStmtBgpSetCommunityInlineCfgObj(inParams.ygRoot, reqInfo.policyName, reqInfo.stmtName, false)
+		communities, err := rpolSetCommunityInlineCommunitiesToSlice(inlineCfgObj)
+		if err != nil {
+			return res, err
+		}
+		if len(communities) == 0 {
+			return res, tlerr.InvalidArgsError{Format: "routing-policy statement actions bgp-actions set-community inline config communities is missing in request payload"}
+		}
+		inlineValue := rpolSetCommunityInlineEncode(communities, false)
+		return makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, map[string]string{
+			rpolSetCommunityInlineFld: inlineValue,
+			rpolSetCommunityRefFld:    "",
+		}), nil
 	}
 	if reqInfo.targetPath == rpolTargetStmtBgpSetAsPathCfg && (reqInfo.targetLeaf == "" || reqInfo.targetLeaf == rpolAsnLeaf || reqInfo.targetLeaf == rpolRepeatNLeaf) {
 		_, err := parseRpolStmtNameToUint16(reqInfo.stmtName)
@@ -1157,6 +1317,41 @@ var DbToYang_routing_policy_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams)
 			refCfgObj := getRpolPolicyStmtBgpSetCommunityRefCfgObj(inParams.ygRoot, reqInfo.policyName, reqInfo.stmtName, true)
 			if refCfgObj != nil {
 				refCfgObj.CommunitySetRef = ygot.String(strings.TrimSpace(ref))
+			}
+		} else if inline, ok := entry.Field[rpolSetCommunityInlineFld]; ok && strings.TrimSpace(inline) != "" {
+			cfgObj.Method = ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_SetCommunity_Config_Method_INLINE
+			decoded, additive := rpolSetCommunityInlineDecode(inline)
+			if additive {
+				cfgObj.Options = ocbinds.OpenconfigBgpPolicy_BgpSetCommunityOptionType_ADD
+			}
+			inlineCfgObj := getRpolPolicyStmtBgpSetCommunityInlineCfgObj(inParams.ygRoot, reqInfo.policyName, reqInfo.stmtName, true)
+			if inlineCfgObj != nil {
+				inlineCfgObj.Communities = make([]ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_SetCommunity_Inline_Config_Communities_Union, 0, len(decoded))
+				for _, c := range decoded {
+					unionVal, err := inlineCfgObj.To_OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_SetCommunity_Inline_Config_Communities_Union(c)
+					if err == nil {
+						inlineCfgObj.Communities = append(inlineCfgObj.Communities, unionVal)
+					}
+				}
+			}
+		}
+		return nil
+	}
+	if reqInfo.targetPath == rpolTargetStmtBgpSetCommunityInlineCfg {
+		inlineCfgObj := getRpolPolicyStmtBgpSetCommunityInlineCfgObj(inParams.ygRoot, reqInfo.policyName, reqInfo.stmtName, true)
+		if inlineCfgObj == nil {
+			return tlerr.InvalidArgsError{Format: "Unable to locate routing-policy statement actions bgp-actions set-community inline config object in YANG tree"}
+		}
+		inline, ok := entry.Field[rpolSetCommunityInlineFld]
+		if !ok || strings.TrimSpace(inline) == "" {
+			return nil
+		}
+		decoded, _ := rpolSetCommunityInlineDecode(inline)
+		inlineCfgObj.Communities = make([]ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_SetCommunity_Inline_Config_Communities_Union, 0, len(decoded))
+		for _, c := range decoded {
+			unionVal, err := inlineCfgObj.To_OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_SetCommunity_Inline_Config_Communities_Union(c)
+			if err == nil {
+				inlineCfgObj.Communities = append(inlineCfgObj.Communities, unionVal)
 			}
 		}
 		return nil
