@@ -21,6 +21,7 @@ package transformer
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/Azure/sonic-mgmt-common/translib/db"
@@ -33,14 +34,16 @@ const (
 	niBgpPeerGroupTbl        = "BGP_PEER_GROUP"
 	niBgpPgTargetCfg         = "peer-group-config"
 	niBgpPgPeerGroupNameLeaf = "peer-group-name"
+	niBgpPgPeerAsLeaf        = "peer-as"
+	niBgpPgAsnFld            = "asn"
 )
 
-var niBgpPgCfgReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/protocols/protocol\[identifier=BGP\]\[name=bgp\]/bgp/peer-groups/peer-group\[peer-group-name=([^\]]+)\]/config(?:/(peer-group-name))?$`)
+var niBgpPgCfgReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/protocols/protocol\[identifier=BGP\]\[name=bgp\]/bgp/peer-groups/peer-group\[peer-group-name=([^\]]+)\]/config(?:/(peer-group-name|peer-as))?$`)
 
 type niBgpPgReqInfo struct {
 	niName        string
 	peerGroupName string
-	targetLeaf    string // "", "peer-group-name"
+	targetLeaf    string // "", "peer-group-name", "peer-as"
 	targetPath    string
 }
 
@@ -164,6 +167,16 @@ func parseNiBgpPgNameFromParam(param interface{}) (string, bool) {
 	return "", false
 }
 
+func parseNiBgpPgAsnFromParam(param interface{}) (*uint32, bool) {
+	if param == nil {
+		return nil, false
+	}
+	if as, ok := parseNiBgpAsValue(param); ok {
+		return as, true
+	}
+	return nil, false
+}
+
 var YangToDb_ni_bgp_pg_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (map[string]map[string]db.Value, error) {
 	res := make(map[string]map[string]db.Value)
 	reqInfo, err := parseNiBgpPgRequestUri(inParams.requestUri)
@@ -172,11 +185,14 @@ var YangToDb_ni_bgp_pg_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) 
 	}
 
 	if inParams.oper == DELETE {
-		if reqInfo.targetLeaf == niBgpPgPeerGroupNameLeaf {
+		switch reqInfo.targetLeaf {
+		case niBgpPgPeerGroupNameLeaf:
 			// Key leaf delete implies peer-group node deletion.
 			return makeNiBgpPgResMap(reqInfo.niName, reqInfo.peerGroupName, nil), nil
+		case niBgpPgPeerAsLeaf:
+			return makeNiBgpPgResMap(reqInfo.niName, reqInfo.peerGroupName, map[string]string{niBgpPgAsnFld: ""}), nil
 		}
-		return res, tlerr.NotSupportedError{Format: "DELETE supported only for /peer-groups/peer-group/config/peer-group-name", Path: inParams.requestUri}
+		return res, tlerr.NotSupportedError{Format: "DELETE supported only for /peer-groups/peer-group/config/peer-group-name or /peer-groups/peer-group/config/peer-as", Path: inParams.requestUri}
 	}
 
 	switch reqInfo.targetLeaf {
@@ -186,6 +202,16 @@ var YangToDb_ni_bgp_pg_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) 
 		}
 		// Ensure the key entry exists; no field write needed for key leaf.
 		return makeNiBgpPgResMap(reqInfo.niName, reqInfo.peerGroupName, map[string]string{}), nil
+	case niBgpPgPeerAsLeaf:
+		asn, ok := parseNiBgpPgAsnFromParam(inParams.param)
+		if !ok {
+			cfgObj := getNiBgpPeerGroupCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.peerGroupName, false)
+			if cfgObj == nil || cfgObj.PeerAs == nil {
+				return res, tlerr.InvalidArgsError{Format: "BGP peer-group peer-as is missing in request payload"}
+			}
+			asn = cfgObj.PeerAs
+		}
+		return makeNiBgpPgResMap(reqInfo.niName, reqInfo.peerGroupName, map[string]string{niBgpPgAsnFld: strconv.FormatUint(uint64(*asn), 10)}), nil
 	default:
 		return res, tlerr.NotSupportedError{Format: "unsupported leaf under peer-group config", Path: inParams.requestUri}
 	}
@@ -212,6 +238,17 @@ var DbToYang_ni_bgp_pg_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) 
 	if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == niBgpPgPeerGroupNameLeaf {
 		pg := reqInfo.peerGroupName
 		cfgObj.PeerGroupName = &pg
+	}
+	if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == niBgpPgPeerAsLeaf {
+		asn, ok := entry.Field[niBgpPgAsnFld]
+		if ok && strings.TrimSpace(asn) != "" {
+			asnU64, err := strconv.ParseUint(strings.TrimSpace(asn), 10, 32)
+			if err != nil {
+				return err
+			}
+			asnU32 := uint32(asnU64)
+			cfgObj.PeerAs = &asnU32
+		}
 	}
 	return nil
 }
