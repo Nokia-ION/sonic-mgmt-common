@@ -122,6 +122,47 @@ func TestKeyMatches(t *testing.T) {
 	t.Run("ipaddr", keyMatch(NewKey("10.1.2.3/24"), NewKey("10.*"), true))
 }
 
+func TestRedis2keySingletonAndKeyed(t *testing.T) {
+	appl := &DB{Opts: &Options{TableNameSeparator: ":", KeySeparator: ":"}}
+	cfg := &DB{Opts: &Options{TableNameSeparator: "|", KeySeparator: "|"}}
+	tsLoc := &TableSpec{Name: "LLDP_LOC_CHASSIS"}
+	tsEntry := &TableSpec{Name: "LLDP_ENTRY_TABLE"}
+	tsLldp := &TableSpec{Name: "LLDP"}
+	tsComp := &TableSpec{Name: "LLDP_LOC_CHASSIS", CompCt: 1}
+
+	got := appl.redis2key(tsLoc, "LLDP_LOC_CHASSIS")
+	if !got.Equals(Key{}) {
+		t.Fatalf("singleton redis2key: got %v, want empty Key", got)
+	}
+	if rk := appl.key2redis(tsLoc, got); rk != "LLDP_LOC_CHASSIS" {
+		t.Fatalf("singleton key2redis round-trip: got %q", rk)
+	}
+
+	got = appl.redis2key(tsComp, "LLDP_LOC_CHASSIS")
+	if !got.Equals(Key{}) {
+		t.Fatalf("singleton redis2key with CompCt: got %v, want empty Key", got)
+	}
+
+	got = appl.redis2key(tsEntry, "LLDP_ENTRY_TABLE:Ethernet0")
+	if !got.Equals(Key{Comp: []string{"Ethernet0"}}) {
+		t.Fatalf("keyed APPL_DB redis2key: got %v", got)
+	}
+
+	got = cfg.redis2key(tsLldp, "LLDP|GLOBAL")
+	if !got.Equals(Key{Comp: []string{"GLOBAL"}}) {
+		t.Fatalf("CONFIG_DB redis2key: got %v", got)
+	}
+
+	ts, key := appl.redis2ts_key("LLDP_LOC_CHASSIS")
+	if ts.Name != "LLDP_LOC_CHASSIS" || !key.Equals(Key{}) {
+		t.Fatalf("redis2ts_key singleton: ts=%v key=%v", ts, key)
+	}
+	ts, key = appl.redis2ts_key("LLDP_ENTRY_TABLE:Ethernet0")
+	if ts.Name != "LLDP_ENTRY_TABLE" || !key.Equals(Key{Comp: []string{"Ethernet0"}}) {
+		t.Fatalf("redis2ts_key keyed: ts=%v key=%v", ts, key)
+	}
+}
+
 func keyMatch(k, p *Key, exp bool) func(*testing.T) {
 	return func(t *testing.T) {
 		t.Helper()
