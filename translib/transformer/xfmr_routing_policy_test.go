@@ -541,3 +541,78 @@ func Test_openconfig_routing_policy_policy_definition_statement_actions_bgp_acti
 
 	unloadDB(db.ConfigDB, cleanupTbl)
 }
+
+func Test_openconfig_routing_policy_policy_definition_statement_conditions_bgp_conditions_config(t *testing.T) {
+	var url, urlInputBodyJSON string
+
+	preReqMap := map[string]interface{}{
+		"ROUTE_MAP_SET": map[string]interface{}{
+			"POL1": map[string]interface{}{},
+		},
+		"COMMUNITY_SET": map[string]interface{}{
+			"COMM1": map[string]interface{}{},
+		},
+		"EXTENDED_COMMUNITY_SET": map[string]interface{}{
+			"EXTCOMM1": map[string]interface{}{},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": "",
+		},
+		"ROUTE_MAP_SET": map[string]interface{}{
+			"POL1": "",
+		},
+		"COMMUNITY_SET": map[string]interface{}{
+			"COMM1": "",
+		},
+		"EXTENDED_COMMUNITY_SET": map[string]interface{}{
+			"EXTCOMM1": "",
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	url = "/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition[name=POL1]/statements/statement[name=10]/conditions/bgp-conditions/config"
+	urlInputBodyJSON = "{\"openconfig-bgp-policy:config\":{\"med-eq\":100,\"origin-eq\":\"EGP\",\"local-pref-eq\":300,\"community-set\":\"COMM1\",\"ext-community-set\":\"EXTCOMM1\"}}"
+	t.Run("PATCH routing-policy statement conditions bgp-conditions config", processSetRequest(url, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": map[string]interface{}{
+				"match_med":           "100",
+				"match_origin":        "egp",
+				"match_local_pref":    "300",
+				"match_community":     "COMM1",
+				"match_ext_community": "EXTCOMM1",
+			},
+		},
+	}
+	t.Run("Verify ROUTE_MAP bgp-conditions config fields mapping", verifyDbResult(rclient, "ROUTE_MAP|POL1|10", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET routing-policy statement bgp-conditions med-eq", processGetRequest(url+"/med-eq", nil, "{\"openconfig-bgp-policy:med-eq\":100}", false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET routing-policy statement bgp-conditions origin-eq", processGetRequest(url+"/origin-eq", nil, "{\"openconfig-bgp-policy:origin-eq\":\"EGP\"}", false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET routing-policy statement bgp-conditions local-pref-eq", processGetRequest(url+"/local-pref-eq", nil, "{\"openconfig-bgp-policy:local-pref-eq\":300}", false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET routing-policy statement bgp-conditions community-set", processGetRequest(url+"/community-set", nil, "{\"openconfig-bgp-policy:community-set\":\"COMM1\"}", false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET routing-policy statement bgp-conditions ext-community-set", processGetRequest(url+"/ext-community-set", nil, "{\"openconfig-bgp-policy:ext-community-set\":\"EXTCOMM1\"}", false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("DELETE routing-policy statement conditions bgp-conditions config", processDeleteRequest(url, false))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": map[string]interface{}{},
+		},
+	}
+	t.Run("Verify ROUTE_MAP bgp-conditions config fields cleared", verifyDbResult(rclient, "ROUTE_MAP|POL1|10", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
