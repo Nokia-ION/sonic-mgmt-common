@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -33,28 +34,41 @@ import (
 )
 
 const (
-	niBgpGlobalsTbl = "BGP_GLOBALS"
-	niBgpGlobalsKey = "default"
-	niBgpAsFld      = "local_asn"
-	niBgpCfgUri     = "/openconfig-network-instance:network-instances/network-instance[name=default]/protocols/protocol[identifier=BGP][name=bgp]/bgp/global/config"
-	niBgpAsUri      = niBgpCfgUri + "/as"
+	niBgpGlobalsTbl  = "BGP_GLOBALS"
+	niBgpAsFld       = "local_asn"
+	niBgpRouterIdFld = "router_id"
 )
+
+var niBgpReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/protocols/protocol\[identifier=BGP\]\[name=bgp\]/bgp/global/config(?:/(as|router-id))?$`)
+
+type niBgpReqInfo struct {
+	niName     string
+	targetLeaf string // "", "as", "router-id"
+}
 
 func init() {
 	XlateFuncBind("YangToDb_ni_bgp_global_cfg_xfmr", YangToDb_ni_bgp_global_cfg_xfmr)
 	XlateFuncBind("DbToYang_ni_bgp_global_cfg_xfmr", DbToYang_ni_bgp_global_cfg_xfmr)
 }
 
-func validateNiBgpRequestUri(uri string) error {
-	if uri == niBgpCfgUri || uri == niBgpAsUri {
-		return nil
+func parseNiBgpRequestUri(uri string) (*niBgpReqInfo, error) {
+	m := niBgpReqUriRe.FindStringSubmatch(uri)
+	if len(m) >= 2 {
+		leaf := ""
+		if len(m) >= 3 {
+			leaf = m[2]
+		}
+		return &niBgpReqInfo{
+			niName:     m[1],
+			targetLeaf: leaf,
+		}, nil
 	}
-	return tlerr.InvalidArgsError{
-		Format: "unsupported path for network-instance BGP global AS mapping: " + uri,
+	return nil, tlerr.InvalidArgsError{
+		Format: "unsupported path for network-instance BGP global config mapping: " + uri,
 	}
 }
 
-func getNiBgpGlobalCfgObj(s *ygot.GoStruct, createIfMissing bool) *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Global_Config {
+func getNiBgpGlobalCfgObj(s *ygot.GoStruct, niName string, createIfMissing bool) *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Global_Config {
 	if s == nil || *s == nil {
 		return nil
 	}
@@ -72,13 +86,13 @@ func getNiBgpGlobalCfgObj(s *ygot.GoStruct, createIfMissing bool) *ocbinds.Openc
 		deviceObj.NetworkInstances = &ocbinds.OpenconfigNetworkInstance_NetworkInstances{}
 	}
 
-	niObj, ok := deviceObj.NetworkInstances.NetworkInstance[niBgpGlobalsKey]
+	niObj, ok := deviceObj.NetworkInstances.NetworkInstance[niName]
 	if !ok || niObj == nil {
 		if !createIfMissing {
 			return nil
 		}
 		var err error
-		niObj, err = deviceObj.NetworkInstances.NewNetworkInstance(niBgpGlobalsKey)
+		niObj, err = deviceObj.NetworkInstances.NewNetworkInstance(niName)
 		if err != nil || niObj == nil {
 			return nil
 		}
@@ -247,11 +261,15 @@ func parseNiBgpAsFromParam(param interface{}) (*uint32, bool) {
 }
 
 func parseNiBgpAs(inParams XfmrParams) (*uint32, error) {
+	reqInfo, err := parseNiBgpRequestUri(inParams.requestUri)
+	if err != nil {
+		return nil, err
+	}
 	if asPtr, ok := parseNiBgpAsFromParam(inParams.param); ok {
 		return asPtr, nil
 	}
 
-	cfgObj := getNiBgpGlobalCfgObj(inParams.ygRoot, false)
+	cfgObj := getNiBgpGlobalCfgObj(inParams.ygRoot, reqInfo.niName, false)
 	if cfgObj == nil || cfgObj.As == nil {
 		return nil, tlerr.InvalidArgsError{Format: "BGP global AS is missing in request payload"}
 	}
@@ -259,13 +277,90 @@ func parseNiBgpAs(inParams XfmrParams) (*uint32, error) {
 	return cfgObj.As, nil
 }
 
-func makeNiBgpGlobalsResMap(asVal string) map[string]map[string]db.Value {
+func parseNiBgpRouterIdValue(v interface{}) (string, bool) {
+	switch val := v.(type) {
+	case string:
+		if strings.TrimSpace(val) != "" {
+			return strings.TrimSpace(val), true
+		}
+	case *string:
+		if val != nil {
+			s := strings.TrimSpace(*val)
+			if s != "" {
+				return s, true
+			}
+		}
+	}
+	return "", false
+}
+
+func parseNiBgpRouterIdFromParam(param interface{}) (string, bool) {
+	if param == nil {
+		return "", false
+	}
+	if rid, ok := parseNiBgpRouterIdValue(param); ok {
+		return rid, true
+	}
+
+	rv := reflect.ValueOf(param)
+	for rv.IsValid() && (rv.Kind() == reflect.Interface || rv.Kind() == reflect.Ptr) {
+		if rv.IsNil() {
+			return "", false
+		}
+		rv = rv.Elem()
+	}
+	if !rv.IsValid() {
+		return "", false
+	}
+
+	if rv.Kind() == reflect.Struct {
+		fv := rv.FieldByName("RouterId")
+		if fv.IsValid() && fv.CanInterface() {
+			if rid, ok := parseNiBgpRouterIdValue(fv.Interface()); ok {
+				return rid, true
+			}
+		}
+	}
+
+	if rv.Kind() == reflect.Map {
+		for _, mk := range rv.MapKeys() {
+			k := fmt.Sprint(mk.Interface())
+			if k == "router-id" || strings.HasSuffix(k, ":router-id") {
+				mv := rv.MapIndex(mk)
+				if mv.IsValid() && mv.CanInterface() {
+					if rid, ok := parseNiBgpRouterIdValue(mv.Interface()); ok {
+						return rid, true
+					}
+				}
+			}
+		}
+	}
+
+	return "", false
+}
+
+func parseNiBgpRouterId(inParams XfmrParams) (string, error) {
+	reqInfo, err := parseNiBgpRequestUri(inParams.requestUri)
+	if err != nil {
+		return "", err
+	}
+	if rid, ok := parseNiBgpRouterIdFromParam(inParams.param); ok {
+		return rid, nil
+	}
+
+	cfgObj := getNiBgpGlobalCfgObj(inParams.ygRoot, reqInfo.niName, false)
+	if cfgObj == nil || cfgObj.RouterId == nil || strings.TrimSpace(*cfgObj.RouterId) == "" {
+		return "", tlerr.InvalidArgsError{Format: "BGP global router-id is missing in request payload"}
+	}
+
+	return strings.TrimSpace(*cfgObj.RouterId), nil
+}
+
+func makeNiBgpGlobalsResMap(niName string, fields map[string]string) map[string]map[string]db.Value {
 	return map[string]map[string]db.Value{
 		niBgpGlobalsTbl: {
-			niBgpGlobalsKey: db.Value{
-				Field: map[string]string{
-					niBgpAsFld: asVal,
-				},
+			niName: db.Value{
+				Field: fields,
 			},
 		},
 	}
@@ -274,31 +369,69 @@ func makeNiBgpGlobalsResMap(asVal string) map[string]map[string]db.Value {
 var YangToDb_ni_bgp_global_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (map[string]map[string]db.Value, error) {
 	res := make(map[string]map[string]db.Value)
 
-	if err := validateNiBgpRequestUri(inParams.requestUri); err != nil {
-		return res, err
-	}
-
-	// DELETE: clear only the AS field in BGP_GLOBALS|default. Returning the
-	// field under the DELETE operation removes that field from the entry.
-	if inParams.oper == DELETE {
-		if inParams.requestUri != niBgpAsUri {
-			return res, tlerr.NotSupportedError{Format: "DELETE supported only for /config/as", Path: inParams.requestUri}
-		}
-		return makeNiBgpGlobalsResMap(""), nil
-	}
-
-	asPtr, err := parseNiBgpAs(inParams)
+	reqInfo, err := parseNiBgpRequestUri(inParams.requestUri)
 	if err != nil {
 		return res, err
 	}
 
+	// DELETE: clear only the targeted field in BGP_GLOBALS|default.
+	if inParams.oper == DELETE {
+		switch reqInfo.targetLeaf {
+		case "as":
+			return makeNiBgpGlobalsResMap(reqInfo.niName, map[string]string{niBgpAsFld: ""}), nil
+		case "router-id":
+			return makeNiBgpGlobalsResMap(reqInfo.niName, map[string]string{niBgpRouterIdFld: ""}), nil
+		default:
+			return res, tlerr.NotSupportedError{Format: "DELETE supported only for /config/as or /config/router-id", Path: inParams.requestUri}
+		}
+	}
+
+	fields := make(map[string]string)
+	switch reqInfo.targetLeaf {
+	case "as":
+		asPtr, err := parseNiBgpAs(inParams)
+		if err != nil {
+			return res, err
+		}
+		fields[niBgpAsFld] = strconv.FormatUint(uint64(*asPtr), 10)
+	case "router-id":
+		rid, err := parseNiBgpRouterId(inParams)
+		if err != nil {
+			return res, err
+		}
+		fields[niBgpRouterIdFld] = rid
+	default:
+		// For container update accept any subset of supported leaves.
+		if asPtr, ok := parseNiBgpAsFromParam(inParams.param); ok {
+			fields[niBgpAsFld] = strconv.FormatUint(uint64(*asPtr), 10)
+		}
+		if rid, ok := parseNiBgpRouterIdFromParam(inParams.param); ok {
+			fields[niBgpRouterIdFld] = rid
+		}
+		if len(fields) == 0 {
+			cfgObj := getNiBgpGlobalCfgObj(inParams.ygRoot, reqInfo.niName, false)
+			if cfgObj != nil {
+				if cfgObj.As != nil {
+					fields[niBgpAsFld] = strconv.FormatUint(uint64(*cfgObj.As), 10)
+				}
+				if cfgObj.RouterId != nil && strings.TrimSpace(*cfgObj.RouterId) != "" {
+					fields[niBgpRouterIdFld] = strings.TrimSpace(*cfgObj.RouterId)
+				}
+			}
+		}
+		if len(fields) == 0 {
+			return res, tlerr.InvalidArgsError{Format: "BGP global config payload missing supported fields (as/router-id)"}
+		}
+	}
+
 	// Return the primary result map directly so translib commits the write for
-	// both container (/config) and leaf (/config/as) targeted requests.
-	return makeNiBgpGlobalsResMap(strconv.FormatUint(uint64(*asPtr), 10)), nil
+	// both container and leaf targeted requests.
+	return makeNiBgpGlobalsResMap(reqInfo.niName, fields), nil
 }
 
 var DbToYang_ni_bgp_global_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) error {
-	if err := validateNiBgpRequestUri(inParams.requestUri); err != nil {
+	reqInfo, err := parseNiBgpRequestUri(inParams.requestUri)
+	if err != nil {
 		return err
 	}
 
@@ -307,27 +440,34 @@ var DbToYang_ni_bgp_global_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrPara
 		return tlerr.InvalidArgsError{Format: "ConfigDB nil for network-instance BGP global config"}
 	}
 
-	entry, err := cfgDb.GetEntry(&db.TableSpec{Name: niBgpGlobalsTbl}, db.Key{Comp: []string{niBgpGlobalsKey}})
+	entry, err := cfgDb.GetEntry(&db.TableSpec{Name: niBgpGlobalsTbl}, db.Key{Comp: []string{reqInfo.niName}})
 	if err != nil {
 		return err
 	}
 
-	asStr, ok := entry.Field[niBgpAsFld]
-	if !ok || asStr == "" {
-		return nil
-	}
-
-	asVal, err := strconv.ParseUint(asStr, 10, 32)
-	if err != nil {
-		return err
-	}
-
-	cfgObj := getNiBgpGlobalCfgObj(inParams.ygRoot, true)
+	cfgObj := getNiBgpGlobalCfgObj(inParams.ygRoot, reqInfo.niName, true)
 	if cfgObj == nil {
 		return tlerr.InvalidArgsError{Format: "Unable to locate BGP global config object in YANG tree"}
 	}
 
-	asU32 := uint32(asVal)
-	cfgObj.As = &asU32
+	if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == "as" {
+		asStr, ok := entry.Field[niBgpAsFld]
+		if ok && asStr != "" {
+			asVal, err := strconv.ParseUint(asStr, 10, 32)
+			if err != nil {
+				return err
+			}
+			asU32 := uint32(asVal)
+			cfgObj.As = &asU32
+		}
+	}
+	if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == "router-id" {
+		rid, ok := entry.Field[niBgpRouterIdFld]
+		if ok && strings.TrimSpace(rid) != "" {
+			rid = strings.TrimSpace(rid)
+			cfgObj.RouterId = &rid
+		}
+	}
+
 	return nil
 }

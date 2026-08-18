@@ -9,7 +9,7 @@ module openconfig-network-instance-annot {
     import openconfig-network-instance { prefix oc-netinst; }
 
     // The network-instance and protocol OC lists have no dedicated CONFIG_DB
-    // table; the BGP global AS is stored in CONFIG_DB:BGP_GLOBALS|default.
+    // table; BGP global config is stored in CONFIG_DB:BGP_GLOBALS|<ni-name>.
     // Mark these ancestor lists as virtual tables so the translib parent-table
     // existence check (verifyParentTableOc) does not reject the request before
     // the BGP global config transformer runs.
@@ -33,8 +33,15 @@ module openconfig-network-instance-annot {
     }
 
     // A leaf-targeted GET dispatches via the leaf's own subtree transformer,
-    // so the AS leaf must also carry the mapping (not just the parent config).
+    // so each supported leaf must also carry the mapping (not just config).
     deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:bgp/oc-netinst:global/oc-netinst:config/oc-netinst:as {
+      deviate add {
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "ni_bgp_global_cfg_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:bgp/oc-netinst:global/oc-netinst:config/oc-netinst:router-id {
       deviate add {
           sonic-ext:db-name "CONFIG_DB";
           sonic-ext:subtree-transformer "ni_bgp_global_cfg_xfmr";
