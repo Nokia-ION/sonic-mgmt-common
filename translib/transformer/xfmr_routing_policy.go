@@ -37,19 +37,25 @@ const (
 	rpolRouteOperationFld         = "route_operation"
 	rpolMatchPrefixSetFld         = "match_prefix_set"
 	rpolMatchIpv6PrefixSetFld     = "match_ipv6_prefix_set"
+	rpolSetAsnFld                 = "set_asn"
+	rpolSetRepeatAsnFld           = "set_repeat_asn"
 	rpolRouteOpPermit             = "permit"
 	rpolRouteOpDeny               = "deny"
 	rpolTargetPolicyDefCfg        = "policy-definition-config"
 	rpolTargetStmtActionsCfg      = "statement-actions-config"
 	rpolTargetStmtCondMatchPfxCfg = "statement-conditions-match-prefix-set-config"
+	rpolTargetStmtBgpSetAsPathCfg = "statement-actions-bgp-set-as-path-prepend-config"
 	rpolPolicyDefNameLeaf         = "name"
 	rpolPolicyResultLeaf          = "policy-result"
 	rpolPrefixSetLeaf             = "prefix-set"
+	rpolAsnLeaf                   = "asn"
+	rpolRepeatNLeaf               = "repeat-n"
 )
 
 var rpolPolicyDefCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/config(?:/(name))?$`)
 var rpolStmtActionsCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/actions/config(?:/(policy-result))?$`)
 var rpolStmtCondMatchPfxCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/conditions/match-prefix-set/config(?:/(prefix-set))?$`)
+var rpolStmtBgpSetAsPathCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/actions/bgp-actions/set-as-path-prepend/config(?:/(asn|repeat-n))?$`)
 
 type rpolReqInfo struct {
 	policyName string
@@ -100,6 +106,19 @@ func parseRpolRequestUri(uri string) (*rpolReqInfo, error) {
 			stmtName:   m[2],
 			targetLeaf: leaf,
 			targetPath: rpolTargetStmtCondMatchPfxCfg,
+		}, nil
+	}
+	m = rpolStmtBgpSetAsPathCfgReqUriRe.FindStringSubmatch(uri)
+	if len(m) >= 3 {
+		leaf := ""
+		if len(m) >= 4 {
+			leaf = m[3]
+		}
+		return &rpolReqInfo{
+			policyName: m[1],
+			stmtName:   m[2],
+			targetLeaf: leaf,
+			targetPath: rpolTargetStmtBgpSetAsPathCfg,
 		}, nil
 	}
 	return nil, tlerr.InvalidArgsError{
@@ -248,6 +267,58 @@ func getRpolPolicyStmtCondMatchPrefixSetCfgObj(s *ygot.GoStruct, policyName, stm
 	}
 	ygot.BuildEmptyTree(stmtObj)
 	return stmtObj.Conditions.MatchPrefixSet.Config
+}
+
+func getRpolPolicyStmtBgpSetAsPathPrependCfgObj(s *ygot.GoStruct, policyName, stmtName string, createIfMissing bool) *ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_SetAsPathPrepend_Config {
+	if s == nil || *s == nil {
+		return nil
+	}
+
+	deviceObj, ok := (*s).(*ocbinds.Device)
+	if !ok || deviceObj == nil {
+		return nil
+	}
+	ygot.BuildEmptyTree(deviceObj)
+
+	if deviceObj.RoutingPolicy == nil {
+		if !createIfMissing {
+			return nil
+		}
+		deviceObj.RoutingPolicy = &ocbinds.OpenconfigRoutingPolicy_RoutingPolicy{}
+	}
+	if deviceObj.RoutingPolicy.PolicyDefinitions == nil {
+		if !createIfMissing {
+			return nil
+		}
+		deviceObj.RoutingPolicy.PolicyDefinitions = &ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions{}
+	}
+
+	pdObj, ok := deviceObj.RoutingPolicy.PolicyDefinitions.PolicyDefinition[policyName]
+	if !ok || pdObj == nil {
+		if !createIfMissing {
+			return nil
+		}
+		var err error
+		pdObj, err = deviceObj.RoutingPolicy.PolicyDefinitions.NewPolicyDefinition(policyName)
+		if err != nil || pdObj == nil {
+			return nil
+		}
+	}
+	ygot.BuildEmptyTree(pdObj)
+
+	stmtObj, ok := pdObj.Statements.Statement[stmtName]
+	if !ok || stmtObj == nil {
+		if !createIfMissing {
+			return nil
+		}
+		var err error
+		stmtObj, err = pdObj.Statements.NewStatement(stmtName)
+		if err != nil || stmtObj == nil {
+			return nil
+		}
+	}
+	ygot.BuildEmptyTree(stmtObj)
+	return stmtObj.Actions.BgpActions.SetAsPathPrepend.Config
 }
 
 func parseRpolPolicyNameValue(v interface{}) (string, bool) {
@@ -430,6 +501,184 @@ func parseRpolPrefixSetFromParam(param interface{}) (string, bool) {
 	return "", false
 }
 
+func parseRpolAsnValue(v interface{}) (*uint32, bool) {
+	var out uint64
+	switch val := v.(type) {
+	case uint32:
+		out = uint64(val)
+	case uint64:
+		out = val
+	case int:
+		if val < 0 {
+			return nil, false
+		}
+		out = uint64(val)
+	case float64:
+		if val < 0 || val != float64(uint64(val)) {
+			return nil, false
+		}
+		out = uint64(val)
+	case string:
+		p := strings.TrimSpace(val)
+		if p == "" {
+			return nil, false
+		}
+		u, err := strconv.ParseUint(p, 10, 32)
+		if err != nil {
+			return nil, false
+		}
+		out = u
+	case *uint32:
+		if val == nil {
+			return nil, false
+		}
+		x := *val
+		return &x, true
+	default:
+		return nil, false
+	}
+	if out > uint64(^uint32(0)) {
+		return nil, false
+	}
+	x := uint32(out)
+	return &x, true
+}
+
+func parseRpolAsnFromParam(param interface{}) (*uint32, bool) {
+	if param == nil {
+		return nil, false
+	}
+	if asn, ok := parseRpolAsnValue(param); ok {
+		return asn, true
+	}
+
+	rv := reflect.ValueOf(param)
+	for rv.IsValid() && (rv.Kind() == reflect.Interface || rv.Kind() == reflect.Ptr) {
+		if rv.IsNil() {
+			return nil, false
+		}
+		rv = rv.Elem()
+	}
+	if !rv.IsValid() {
+		return nil, false
+	}
+
+	if rv.Kind() == reflect.Struct {
+		fv := rv.FieldByName("Asn")
+		if fv.IsValid() && fv.CanInterface() {
+			if asn, ok := parseRpolAsnValue(fv.Interface()); ok {
+				return asn, true
+			}
+		}
+	}
+
+	if rv.Kind() == reflect.Map {
+		for _, mk := range rv.MapKeys() {
+			k := fmt.Sprint(mk.Interface())
+			if k == "asn" || strings.HasSuffix(k, ":asn") {
+				mv := rv.MapIndex(mk)
+				if mv.IsValid() && mv.CanInterface() {
+					if asn, ok := parseRpolAsnValue(mv.Interface()); ok {
+						return asn, true
+					}
+				}
+			}
+		}
+	}
+	return nil, false
+}
+
+func parseRpolRepeatNValue(v interface{}) (*uint8, bool) {
+	var out uint64
+	switch val := v.(type) {
+	case uint8:
+		out = uint64(val)
+	case uint16:
+		out = uint64(val)
+	case uint32:
+		out = uint64(val)
+	case uint64:
+		out = val
+	case int:
+		if val < 0 {
+			return nil, false
+		}
+		out = uint64(val)
+	case float64:
+		if val < 0 || val != float64(uint64(val)) {
+			return nil, false
+		}
+		out = uint64(val)
+	case string:
+		p := strings.TrimSpace(val)
+		if p == "" {
+			return nil, false
+		}
+		u, err := strconv.ParseUint(p, 10, 8)
+		if err != nil {
+			return nil, false
+		}
+		out = u
+	case *uint8:
+		if val == nil {
+			return nil, false
+		}
+		x := *val
+		return &x, true
+	default:
+		return nil, false
+	}
+	if out > uint64(^uint8(0)) {
+		return nil, false
+	}
+	x := uint8(out)
+	return &x, true
+}
+
+func parseRpolRepeatNFromParam(param interface{}) (*uint8, bool) {
+	if param == nil {
+		return nil, false
+	}
+	if rep, ok := parseRpolRepeatNValue(param); ok {
+		return rep, true
+	}
+
+	rv := reflect.ValueOf(param)
+	for rv.IsValid() && (rv.Kind() == reflect.Interface || rv.Kind() == reflect.Ptr) {
+		if rv.IsNil() {
+			return nil, false
+		}
+		rv = rv.Elem()
+	}
+	if !rv.IsValid() {
+		return nil, false
+	}
+
+	if rv.Kind() == reflect.Struct {
+		fv := rv.FieldByName("RepeatN")
+		if fv.IsValid() && fv.CanInterface() {
+			if rep, ok := parseRpolRepeatNValue(fv.Interface()); ok {
+				return rep, true
+			}
+		}
+	}
+
+	if rv.Kind() == reflect.Map {
+		for _, mk := range rv.MapKeys() {
+			k := fmt.Sprint(mk.Interface())
+			if k == "repeat-n" || strings.HasSuffix(k, ":repeat-n") {
+				mv := rv.MapIndex(mk)
+				if mv.IsValid() && mv.CanInterface() {
+					if rep, ok := parseRpolRepeatNValue(mv.Interface()); ok {
+						return rep, true
+					}
+				}
+			}
+		}
+	}
+	return nil, false
+}
+
 func rpolPolicyResultToRouteOp(v ocbinds.E_OpenconfigRoutingPolicy_PolicyResultType) (string, bool) {
 	switch v {
 	case ocbinds.OpenconfigRoutingPolicy_PolicyResultType_ACCEPT_ROUTE:
@@ -512,6 +761,18 @@ var YangToDb_routing_policy_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 				rpolMatchPrefixSetFld:     "",
 				rpolMatchIpv6PrefixSetFld: "",
 			}), nil
+		case rpolTargetStmtBgpSetAsPathCfg:
+			fields := map[string]string{}
+			switch reqInfo.targetLeaf {
+			case "", rpolAsnLeaf:
+				fields[rpolSetAsnFld] = ""
+				fields[rpolSetRepeatAsnFld] = ""
+			case rpolRepeatNLeaf:
+				fields[rpolSetRepeatAsnFld] = ""
+			default:
+				return res, tlerr.NotSupportedError{Format: "DELETE supported only for /actions/bgp-actions/set-as-path-prepend/config, /actions/bgp-actions/set-as-path-prepend/config/asn, or /actions/bgp-actions/set-as-path-prepend/config/repeat-n", Path: inParams.requestUri}
+			}
+			return makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, fields), nil
 		}
 		return res, tlerr.NotSupportedError{Format: "unsupported DELETE path under routing-policy mapping", Path: inParams.requestUri}
 	}
@@ -581,6 +842,89 @@ var YangToDb_routing_policy_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 		}
 		return makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, fields), nil
 	}
+	if reqInfo.targetPath == rpolTargetStmtBgpSetAsPathCfg && (reqInfo.targetLeaf == "" || reqInfo.targetLeaf == rpolAsnLeaf || reqInfo.targetLeaf == rpolRepeatNLeaf) {
+		_, err := parseRpolStmtNameToUint16(reqInfo.stmtName)
+		if err != nil {
+			return res, err
+		}
+
+		var asn *uint32
+		var repeatN *uint8
+		var asnFromPayload, repeatFromPayload bool
+
+		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == rpolAsnLeaf {
+			asn, asnFromPayload = parseRpolAsnFromParam(inParams.param)
+		}
+		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == rpolRepeatNLeaf {
+			repeatN, repeatFromPayload = parseRpolRepeatNFromParam(inParams.param)
+		}
+		if reqInfo.targetLeaf == "" {
+			cfgObj := getRpolPolicyStmtBgpSetAsPathPrependCfgObj(inParams.ygRoot, reqInfo.policyName, reqInfo.stmtName, false)
+			if cfgObj != nil {
+				if !asnFromPayload && cfgObj.Asn != nil {
+					asn = cfgObj.Asn
+					asnFromPayload = true
+				}
+				if !repeatFromPayload && cfgObj.RepeatN != nil {
+					repeatN = cfgObj.RepeatN
+					repeatFromPayload = true
+				}
+			}
+		}
+		if reqInfo.targetLeaf == rpolAsnLeaf && !asnFromPayload {
+			cfgObj := getRpolPolicyStmtBgpSetAsPathPrependCfgObj(inParams.ygRoot, reqInfo.policyName, reqInfo.stmtName, false)
+			if cfgObj != nil && cfgObj.Asn != nil {
+				asn = cfgObj.Asn
+				asnFromPayload = true
+			}
+			if !asnFromPayload {
+				return res, tlerr.InvalidArgsError{Format: "routing-policy statement actions bgp-actions set-as-path-prepend config asn is missing in request payload"}
+			}
+		}
+		if reqInfo.targetLeaf == rpolRepeatNLeaf && !repeatFromPayload {
+			cfgObj := getRpolPolicyStmtBgpSetAsPathPrependCfgObj(inParams.ygRoot, reqInfo.policyName, reqInfo.stmtName, false)
+			if cfgObj != nil && cfgObj.RepeatN != nil {
+				repeatN = cfgObj.RepeatN
+				repeatFromPayload = true
+			}
+			if !repeatFromPayload {
+				return res, tlerr.InvalidArgsError{Format: "routing-policy statement actions bgp-actions set-as-path-prepend config repeat-n is missing in request payload"}
+			}
+		}
+		if !asnFromPayload && !repeatFromPayload {
+			return res, tlerr.InvalidArgsError{Format: "routing-policy statement actions bgp-actions set-as-path-prepend config payload missing supported fields (asn/repeat-n)"}
+		}
+		if asnFromPayload && asn != nil && *asn == 0 {
+			return res, tlerr.InvalidArgsError{Format: "routing-policy statement actions bgp-actions set-as-path-prepend config asn cannot be 0"}
+		}
+
+		if repeatFromPayload {
+			hasAsn := asnFromPayload
+			if !hasAsn {
+				cfgDb := inParams.dbs[db.ConfigDB]
+				if cfgDb == nil {
+					return res, tlerr.InvalidArgsError{Format: "ConfigDB nil for routing-policy mapping"}
+				}
+				entry, err := cfgDb.GetEntry(&db.TableSpec{Name: rpolRouteMapTbl}, db.Key{Comp: []string{reqInfo.policyName, reqInfo.stmtName}})
+				if err == nil {
+					existingAsn, ok := entry.Field[rpolSetAsnFld]
+					hasAsn = ok && strings.TrimSpace(existingAsn) != ""
+				}
+			}
+			if !hasAsn {
+				return res, tlerr.InvalidArgsError{Format: "routing-policy statement actions bgp-actions set-as-path-prepend config repeat-n requires asn to be configured"}
+			}
+		}
+
+		fields := map[string]string{}
+		if asnFromPayload && asn != nil {
+			fields[rpolSetAsnFld] = strconv.FormatUint(uint64(*asn), 10)
+		}
+		if repeatFromPayload && repeatN != nil {
+			fields[rpolSetRepeatAsnFld] = strconv.FormatUint(uint64(*repeatN), 10)
+		}
+		return makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, fields), nil
+	}
 	return res, tlerr.NotSupportedError{Format: "unsupported leaf under routing-policy mapping", Path: inParams.requestUri}
 }
 
@@ -646,6 +990,27 @@ var DbToYang_routing_policy_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams)
 				cfgObj.PrefixSet = ygot.String(strings.TrimSpace(pfxSet))
 			} else if pfxSet6, ok := entry.Field[rpolMatchIpv6PrefixSetFld]; ok && strings.TrimSpace(pfxSet6) != "" {
 				cfgObj.PrefixSet = ygot.String(strings.TrimSpace(pfxSet6))
+			}
+		}
+		return nil
+	}
+	if reqInfo.targetPath == rpolTargetStmtBgpSetAsPathCfg {
+		cfgObj := getRpolPolicyStmtBgpSetAsPathPrependCfgObj(inParams.ygRoot, reqInfo.policyName, reqInfo.stmtName, true)
+		if cfgObj == nil {
+			return tlerr.InvalidArgsError{Format: "Unable to locate routing-policy statement actions bgp-actions set-as-path-prepend config object in YANG tree"}
+		}
+		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == rpolAsnLeaf {
+			if asnStr, ok := entry.Field[rpolSetAsnFld]; ok && strings.TrimSpace(asnStr) != "" {
+				if asn, convErr := strconv.ParseUint(strings.TrimSpace(asnStr), 10, 32); convErr == nil {
+					cfgObj.Asn = ygot.Uint32(uint32(asn))
+				}
+			}
+		}
+		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == rpolRepeatNLeaf {
+			if repStr, ok := entry.Field[rpolSetRepeatAsnFld]; ok && strings.TrimSpace(repStr) != "" {
+				if rep, convErr := strconv.ParseUint(strings.TrimSpace(repStr), 10, 8); convErr == nil {
+					cfgObj.RepeatN = ygot.Uint8(uint8(rep))
+				}
 			}
 		}
 		return nil
