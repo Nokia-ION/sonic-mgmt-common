@@ -70,20 +70,104 @@ func Test_openconfig_network_instance_bgp_global_as(t *testing.T) {
 	t.Run("Verify BGP_GLOBALS local_asn cleared", verifyDbResult(rclient, "BGP_GLOBALS|default", expectedMap, false))
 	time.Sleep(1 * time.Second)
 
-	expectedInvalidPathErr := tlerr.InvalidArgsError{
-		Format: "unsupported path for network-instance BGP global AS mapping: /openconfig-network-instance:network-instances/network-instance[name=blue]/protocols/protocol[identifier=BGP][name=bgp]/bgp/global/config/as",
+	preReqMap = map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"blue": map[string]interface{}{
+				"local_asn": "65250",
+			},
+		},
 	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
 	url = "/openconfig-network-instance:network-instances/network-instance[name=blue]/protocols/protocol[identifier=BGP][name=bgp]/bgp/global/config/as"
 	urlInputBodyJSON = "{\"openconfig-network-instance:as\":65300}"
-	t.Run("PATCH non-default network-instance rejected", processSetRequest(url, urlInputBodyJSON, "PATCH", true, expectedInvalidPathErr))
+	t.Run("PATCH non-default network-instance accepted", processSetRequest(url, urlInputBodyJSON, "PATCH", false, nil))
 	time.Sleep(1 * time.Second)
 
+	expectedMap = map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"blue": map[string]interface{}{
+				"local_asn": "65300",
+			},
+		},
+	}
+	t.Run("Verify non-default VRF BGP_GLOBALS local_asn mapping", verifyDbResult(rclient, "BGP_GLOBALS|blue", expectedMap, false))
+	time.Sleep(1 * time.Second)
+	unloadDB(db.ConfigDB, map[string]interface{}{"BGP_GLOBALS": map[string]interface{}{"blue": ""}})
+
 	expectedInvalidProtoErr := tlerr.InvalidArgsError{
-		Format: "unsupported path for network-instance BGP global AS mapping: /openconfig-network-instance:network-instances/network-instance[name=default]/protocols/protocol[identifier=STATIC][name=static]/bgp/global/config/as",
+		Format: "unsupported path for network-instance BGP global config mapping: /openconfig-network-instance:network-instances/network-instance[name=default]/protocols/protocol[identifier=STATIC][name=static]/bgp/global/config/as",
 	}
 	url = "/openconfig-network-instance:network-instances/network-instance[name=default]/protocols/protocol[identifier=STATIC][name=static]/bgp/global/config/as"
 	urlInputBodyJSON = "{\"openconfig-network-instance:as\":65300}"
 	t.Run("PATCH non-BGP protocol key rejected", processSetRequest(url, urlInputBodyJSON, "PATCH", true, expectedInvalidProtoErr))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_network_instance_bgp_global_router_id(t *testing.T) {
+	var url, urlInputBodyJSON string
+
+	preReqMap := map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": map[string]interface{}{
+				"local_asn": "65100",
+				"router_id": "1.1.1.1",
+			},
+		},
+	}
+	cleanupTbl := map[string]interface{}{"BGP_GLOBALS": map[string]interface{}{"default": ""}}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	url = "/openconfig-network-instance:network-instances/network-instance[name=default]/protocols/protocol[identifier=BGP][name=bgp]/bgp/global/config/router-id"
+	urlInputBodyJSON = "{\"openconfig-network-instance:router-id\":\"2.2.2.2\"}"
+	t.Run("PATCH network-instance BGP global router-id", processSetRequest(url, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": map[string]interface{}{
+				"local_asn": "65100",
+				"router_id": "2.2.2.2",
+			},
+		},
+	}
+	t.Run("Verify BGP_GLOBALS router_id mapping", verifyDbResult(rclient, "BGP_GLOBALS|default", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	expectedGetJSON := "{\"openconfig-network-instance:router-id\":\"2.2.2.2\"}"
+	t.Run("GET network-instance BGP global router-id", processGetRequest(url, nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	cfgURL := "/openconfig-network-instance:network-instances/network-instance[name=default]/protocols/protocol[identifier=BGP][name=bgp]/bgp/global/config"
+	urlInputBodyJSON = "{\"openconfig-network-instance:router-id\":\"3.3.3.3\"}"
+	t.Run("PATCH network-instance BGP global config with router-id", processSetRequest(cfgURL, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": map[string]interface{}{
+				"local_asn": "65100",
+				"router_id": "3.3.3.3",
+			},
+		},
+	}
+	t.Run("Verify BGP_GLOBALS router_id mapping via config container", verifyDbResult(rclient, "BGP_GLOBALS|default", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("DELETE network-instance BGP global router-id", processDeleteRequest(url, false))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": map[string]interface{}{
+				"local_asn": "65100",
+			},
+		},
+	}
+	t.Run("Verify BGP_GLOBALS router_id cleared", verifyDbResult(rclient, "BGP_GLOBALS|default", expectedMap, false))
 	time.Sleep(1 * time.Second)
 
 	unloadDB(db.ConfigDB, cleanupTbl)
