@@ -34,16 +34,21 @@ import (
 )
 
 const (
-	niBgpGlobalsTbl  = "BGP_GLOBALS"
-	niBgpAsFld       = "local_asn"
-	niBgpRouterIdFld = "router_id"
+	niBgpGlobalsTbl              = "BGP_GLOBALS"
+	niBgpAsFld                   = "local_asn"
+	niBgpRouterIdFld             = "router_id"
+	niBgpAlwaysCompareMedFld     = "always_compare_med"
+	niBgpTargetGlobalCfg         = "global-config"
+	niBgpTargetRouteSelectConfig = "route-selection-options-config"
 )
 
-var niBgpReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/protocols/protocol\[identifier=BGP\]\[name=bgp\]/bgp/global/config(?:/(as|router-id))?$`)
+var niBgpGlobalCfgReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/protocols/protocol\[identifier=BGP\]\[name=bgp\]/bgp/global/config(?:/(as|router-id))?$`)
+var niBgpGlobalRouteSelectReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/protocols/protocol\[identifier=BGP\]\[name=bgp\]/bgp/global/route-selection-options/config(?:/(always-compare-med))?$`)
 
 type niBgpReqInfo struct {
-	niName     string
-	targetLeaf string // "", "as", "router-id"
+	niName         string
+	targetLeaf     string // "", "as", "router-id", "always-compare-med"
+	targetPathKind string
 }
 
 func init() {
@@ -52,15 +57,29 @@ func init() {
 }
 
 func parseNiBgpRequestUri(uri string) (*niBgpReqInfo, error) {
-	m := niBgpReqUriRe.FindStringSubmatch(uri)
+	m := niBgpGlobalCfgReqUriRe.FindStringSubmatch(uri)
 	if len(m) >= 2 {
 		leaf := ""
 		if len(m) >= 3 {
 			leaf = m[2]
 		}
 		return &niBgpReqInfo{
-			niName:     m[1],
-			targetLeaf: leaf,
+			niName:         m[1],
+			targetLeaf:     leaf,
+			targetPathKind: niBgpTargetGlobalCfg,
+		}, nil
+	}
+
+	m = niBgpGlobalRouteSelectReqUriRe.FindStringSubmatch(uri)
+	if len(m) >= 2 {
+		leaf := ""
+		if len(m) >= 3 {
+			leaf = m[2]
+		}
+		return &niBgpReqInfo{
+			niName:         m[1],
+			targetLeaf:     leaf,
+			targetPathKind: niBgpTargetRouteSelectConfig,
 		}, nil
 	}
 	return nil, tlerr.InvalidArgsError{
@@ -147,6 +166,86 @@ func getNiBgpGlobalCfgObj(s *ygot.GoStruct, niName string, createIfMissing bool)
 	}
 	ygot.BuildEmptyTree(pObj)
 	return pObj.Bgp.Global.Config
+}
+
+func getNiBgpGlobalRouteSelectCfgObj(s *ygot.GoStruct, niName string, createIfMissing bool) *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Global_RouteSelectionOptions_Config {
+	if s == nil || *s == nil {
+		return nil
+	}
+
+	deviceObj, ok := (*s).(*ocbinds.Device)
+	if !ok || deviceObj == nil {
+		return nil
+	}
+	ygot.BuildEmptyTree(deviceObj)
+
+	if deviceObj.NetworkInstances == nil {
+		if !createIfMissing {
+			return nil
+		}
+		deviceObj.NetworkInstances = &ocbinds.OpenconfigNetworkInstance_NetworkInstances{}
+	}
+
+	niObj, ok := deviceObj.NetworkInstances.NetworkInstance[niName]
+	if !ok || niObj == nil {
+		if !createIfMissing {
+			return nil
+		}
+		var err error
+		niObj, err = deviceObj.NetworkInstances.NewNetworkInstance(niName)
+		if err != nil || niObj == nil {
+			return nil
+		}
+	}
+
+	if niObj.Protocols == nil {
+		if !createIfMissing {
+			return nil
+		}
+		niObj.Protocols = &ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols{}
+	}
+	if niObj.Protocols.Protocol == nil {
+		if !createIfMissing {
+			return nil
+		}
+		niObj.Protocols.Protocol = make(map[ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Key]*ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol)
+	}
+
+	wantKey := ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Key{
+		Identifier: ocbinds.OpenconfigPolicyTypes_INSTALL_PROTOCOL_TYPE_BGP,
+		Name:       "bgp",
+	}
+	if pObj, ok := niObj.Protocols.Protocol[wantKey]; ok && pObj != nil {
+		ygot.BuildEmptyTree(pObj)
+		return pObj.Bgp.Global.RouteSelectionOptions.Config
+	}
+
+	for pKey, pObj := range niObj.Protocols.Protocol {
+		if pObj == nil || pObj.Bgp == nil || pObj.Bgp.Global == nil {
+			continue
+		}
+		if !strings.Contains(fmt.Sprint(pKey.Identifier), "BGP") {
+			continue
+		}
+		if pKey.Name != "bgp" {
+			if pObj.Name == nil || *pObj.Name != "bgp" {
+				continue
+			}
+		}
+		ygot.BuildEmptyTree(pObj)
+		return pObj.Bgp.Global.RouteSelectionOptions.Config
+	}
+
+	if !createIfMissing {
+		return nil
+	}
+
+	pObj, err := niObj.Protocols.NewProtocol(ocbinds.OpenconfigPolicyTypes_INSTALL_PROTOCOL_TYPE_BGP, "bgp")
+	if err != nil || pObj == nil {
+		return nil
+	}
+	ygot.BuildEmptyTree(pObj)
+	return pObj.Bgp.Global.RouteSelectionOptions.Config
 }
 
 func parseNiBgpAsValue(v interface{}) (*uint32, bool) {
@@ -356,6 +455,93 @@ func parseNiBgpRouterId(inParams XfmrParams) (string, error) {
 	return strings.TrimSpace(*cfgObj.RouterId), nil
 }
 
+func parseNiBgpBoolValue(v interface{}) (*bool, bool) {
+	switch val := v.(type) {
+	case bool:
+		b := val
+		return &b, true
+	case *bool:
+		if val != nil {
+			return val, true
+		}
+	case string:
+		s := strings.TrimSpace(val)
+		if b, err := strconv.ParseBool(s); err == nil {
+			return &b, true
+		}
+	case *string:
+		if val != nil {
+			s := strings.TrimSpace(*val)
+			if b, err := strconv.ParseBool(s); err == nil {
+				return &b, true
+			}
+		}
+	}
+	return nil, false
+}
+
+func parseNiBgpAlwaysCompareMedFromParam(param interface{}) (*bool, bool) {
+	if param == nil {
+		return nil, false
+	}
+	if med, ok := parseNiBgpBoolValue(param); ok {
+		return med, true
+	}
+
+	rv := reflect.ValueOf(param)
+	for rv.IsValid() && (rv.Kind() == reflect.Interface || rv.Kind() == reflect.Ptr) {
+		if rv.IsNil() {
+			return nil, false
+		}
+		rv = rv.Elem()
+	}
+	if !rv.IsValid() {
+		return nil, false
+	}
+
+	if rv.Kind() == reflect.Struct {
+		fv := rv.FieldByName("AlwaysCompareMed")
+		if fv.IsValid() && fv.CanInterface() {
+			if med, ok := parseNiBgpBoolValue(fv.Interface()); ok {
+				return med, true
+			}
+		}
+	}
+
+	if rv.Kind() == reflect.Map {
+		for _, mk := range rv.MapKeys() {
+			k := fmt.Sprint(mk.Interface())
+			if k == "always-compare-med" || strings.HasSuffix(k, ":always-compare-med") {
+				mv := rv.MapIndex(mk)
+				if mv.IsValid() && mv.CanInterface() {
+					if med, ok := parseNiBgpBoolValue(mv.Interface()); ok {
+						return med, true
+					}
+				}
+			}
+		}
+	}
+
+	return nil, false
+}
+
+func parseNiBgpAlwaysCompareMed(inParams XfmrParams) (*bool, error) {
+	reqInfo, err := parseNiBgpRequestUri(inParams.requestUri)
+	if err != nil {
+		return nil, err
+	}
+	if med, ok := parseNiBgpAlwaysCompareMedFromParam(inParams.param); ok {
+		return med, nil
+	}
+
+	cfgObj := getNiBgpGlobalRouteSelectCfgObj(inParams.ygRoot, reqInfo.niName, false)
+	if cfgObj == nil || cfgObj.AlwaysCompareMed == nil {
+		return nil, tlerr.InvalidArgsError{Format: "BGP global always-compare-med is missing in request payload"}
+	}
+
+	return cfgObj.AlwaysCompareMed, nil
+}
+
 func makeNiBgpGlobalsResMap(niName string, fields map[string]string) map[string]map[string]db.Value {
 	return map[string]map[string]db.Value{
 		niBgpGlobalsTbl: {
@@ -374,15 +560,17 @@ var YangToDb_ni_bgp_global_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPara
 		return res, err
 	}
 
-	// DELETE: clear only the targeted field in BGP_GLOBALS|default.
+	// DELETE: clear only the targeted field in BGP_GLOBALS|<ni-name>.
 	if inParams.oper == DELETE {
 		switch reqInfo.targetLeaf {
 		case "as":
 			return makeNiBgpGlobalsResMap(reqInfo.niName, map[string]string{niBgpAsFld: ""}), nil
 		case "router-id":
 			return makeNiBgpGlobalsResMap(reqInfo.niName, map[string]string{niBgpRouterIdFld: ""}), nil
+		case "always-compare-med":
+			return makeNiBgpGlobalsResMap(reqInfo.niName, map[string]string{niBgpAlwaysCompareMedFld: ""}), nil
 		default:
-			return res, tlerr.NotSupportedError{Format: "DELETE supported only for /config/as or /config/router-id", Path: inParams.requestUri}
+			return res, tlerr.NotSupportedError{Format: "DELETE supported only for /config/as, /config/router-id, or /route-selection-options/config/always-compare-med", Path: inParams.requestUri}
 		}
 	}
 
@@ -400,27 +588,50 @@ var YangToDb_ni_bgp_global_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPara
 			return res, err
 		}
 		fields[niBgpRouterIdFld] = rid
+	case "always-compare-med":
+		med, err := parseNiBgpAlwaysCompareMed(inParams)
+		if err != nil {
+			return res, err
+		}
+		fields[niBgpAlwaysCompareMedFld] = strconv.FormatBool(*med)
 	default:
-		// For container update accept any subset of supported leaves.
-		if asPtr, ok := parseNiBgpAsFromParam(inParams.param); ok {
-			fields[niBgpAsFld] = strconv.FormatUint(uint64(*asPtr), 10)
-		}
-		if rid, ok := parseNiBgpRouterIdFromParam(inParams.param); ok {
-			fields[niBgpRouterIdFld] = rid
-		}
-		if len(fields) == 0 {
-			cfgObj := getNiBgpGlobalCfgObj(inParams.ygRoot, reqInfo.niName, false)
-			if cfgObj != nil {
-				if cfgObj.As != nil {
-					fields[niBgpAsFld] = strconv.FormatUint(uint64(*cfgObj.As), 10)
-				}
-				if cfgObj.RouterId != nil && strings.TrimSpace(*cfgObj.RouterId) != "" {
-					fields[niBgpRouterIdFld] = strings.TrimSpace(*cfgObj.RouterId)
+		switch reqInfo.targetPathKind {
+		case niBgpTargetGlobalCfg:
+			// For global config container updates, accept any subset of supported leaves.
+			if asPtr, ok := parseNiBgpAsFromParam(inParams.param); ok {
+				fields[niBgpAsFld] = strconv.FormatUint(uint64(*asPtr), 10)
+			}
+			if rid, ok := parseNiBgpRouterIdFromParam(inParams.param); ok {
+				fields[niBgpRouterIdFld] = rid
+			}
+			if len(fields) == 0 {
+				cfgObj := getNiBgpGlobalCfgObj(inParams.ygRoot, reqInfo.niName, false)
+				if cfgObj != nil {
+					if cfgObj.As != nil {
+						fields[niBgpAsFld] = strconv.FormatUint(uint64(*cfgObj.As), 10)
+					}
+					if cfgObj.RouterId != nil && strings.TrimSpace(*cfgObj.RouterId) != "" {
+						fields[niBgpRouterIdFld] = strings.TrimSpace(*cfgObj.RouterId)
+					}
 				}
 			}
-		}
-		if len(fields) == 0 {
-			return res, tlerr.InvalidArgsError{Format: "BGP global config payload missing supported fields (as/router-id)"}
+			if len(fields) == 0 {
+				return res, tlerr.InvalidArgsError{Format: "BGP global config payload missing supported fields (as/router-id)"}
+			}
+		case niBgpTargetRouteSelectConfig:
+			// For route-selection-options config container updates, support always-compare-med.
+			if med, ok := parseNiBgpAlwaysCompareMedFromParam(inParams.param); ok {
+				fields[niBgpAlwaysCompareMedFld] = strconv.FormatBool(*med)
+			}
+			if len(fields) == 0 {
+				cfgObj := getNiBgpGlobalRouteSelectCfgObj(inParams.ygRoot, reqInfo.niName, false)
+				if cfgObj != nil && cfgObj.AlwaysCompareMed != nil {
+					fields[niBgpAlwaysCompareMedFld] = strconv.FormatBool(*cfgObj.AlwaysCompareMed)
+				}
+			}
+			if len(fields) == 0 {
+				return res, tlerr.InvalidArgsError{Format: "BGP route-selection-options config payload missing supported field (always-compare-med)"}
+			}
 		}
 	}
 
@@ -445,27 +656,45 @@ var DbToYang_ni_bgp_global_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrPara
 		return err
 	}
 
-	cfgObj := getNiBgpGlobalCfgObj(inParams.ygRoot, reqInfo.niName, true)
-	if cfgObj == nil {
-		return tlerr.InvalidArgsError{Format: "Unable to locate BGP global config object in YANG tree"}
+	if reqInfo.targetPathKind == niBgpTargetGlobalCfg {
+		cfgObj := getNiBgpGlobalCfgObj(inParams.ygRoot, reqInfo.niName, true)
+		if cfgObj == nil {
+			return tlerr.InvalidArgsError{Format: "Unable to locate BGP global config object in YANG tree"}
+		}
+
+		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == "as" {
+			asStr, ok := entry.Field[niBgpAsFld]
+			if ok && asStr != "" {
+				asVal, err := strconv.ParseUint(asStr, 10, 32)
+				if err != nil {
+					return err
+				}
+				asU32 := uint32(asVal)
+				cfgObj.As = &asU32
+			}
+		}
+		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == "router-id" {
+			rid, ok := entry.Field[niBgpRouterIdFld]
+			if ok && strings.TrimSpace(rid) != "" {
+				rid = strings.TrimSpace(rid)
+				cfgObj.RouterId = &rid
+			}
+		}
+		return nil
 	}
 
-	if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == "as" {
-		asStr, ok := entry.Field[niBgpAsFld]
-		if ok && asStr != "" {
-			asVal, err := strconv.ParseUint(asStr, 10, 32)
+	rsoCfgObj := getNiBgpGlobalRouteSelectCfgObj(inParams.ygRoot, reqInfo.niName, true)
+	if rsoCfgObj == nil {
+		return tlerr.InvalidArgsError{Format: "Unable to locate BGP global route-selection-options config object in YANG tree"}
+	}
+	if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == "always-compare-med" {
+		medStr, ok := entry.Field[niBgpAlwaysCompareMedFld]
+		if ok && strings.TrimSpace(medStr) != "" {
+			med, err := strconv.ParseBool(strings.TrimSpace(medStr))
 			if err != nil {
 				return err
 			}
-			asU32 := uint32(asVal)
-			cfgObj.As = &asU32
-		}
-	}
-	if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == "router-id" {
-		rid, ok := entry.Field[niBgpRouterIdFld]
-		if ok && strings.TrimSpace(rid) != "" {
-			rid = strings.TrimSpace(rid)
-			cfgObj.RouterId = &rid
+			rsoCfgObj.AlwaysCompareMed = &med
 		}
 	}
 
