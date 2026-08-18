@@ -32,17 +32,25 @@ import (
 )
 
 const (
-	niBgpNbrTbl          = "BGP_NEIGHBOR"
-	niBgpNbrPeerGroupFld = "peer_group_name"
-	niBgpNbrAdminStatus  = "admin_status"
+	niBgpNbrTbl            = "BGP_NEIGHBOR"
+	niBgpNbrAfTbl          = "BGP_NEIGHBOR_AF"
+	niBgpNbrPeerGroupFld   = "peer_group_name"
+	niBgpNbrAdminStatus    = "admin_status"
+	niBgpNbrAllowAsInFld   = "allow_as_in"
+	niBgpNbrAllowAsCntFld  = "allow_as_count"
+	niBgpNbrAllowAsOrigFld = "allow_as_origin"
+	niBgpAfiSafiIPv4       = "ipv4_unicast"
+	niBgpAfiSafiIPv6       = "ipv6_unicast"
 )
 
 var niBgpNbrReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/protocols/protocol\[identifier=BGP\]\[name=bgp\]/bgp/neighbors/neighbor\[neighbor-address=([^\]]+)\]/config(?:/(peer-group|enabled))?$`)
+var niBgpNbrAsPathOptReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/protocols/protocol\[identifier=BGP\]\[name=bgp\]/bgp/neighbors/neighbor\[neighbor-address=([^\]]+)\]/as-path-options/config(?:/(allow-own-as))?$`)
 
 type niBgpNbrReqInfo struct {
 	niName       string
 	neighborAddr string
 	targetLeaf   string // "", "peer-group", "enabled"
+	targetPath   string
 }
 
 func init() {
@@ -61,11 +69,105 @@ func parseNiBgpNbrRequestUri(uri string) (*niBgpNbrReqInfo, error) {
 			niName:       m[1],
 			neighborAddr: m[2],
 			targetLeaf:   leaf,
+			targetPath:   "neighbor-config",
+		}, nil
+	}
+	m = niBgpNbrAsPathOptReqUriRe.FindStringSubmatch(uri)
+	if len(m) >= 3 {
+		leaf := ""
+		if len(m) >= 4 {
+			leaf = m[3]
+		}
+		return &niBgpNbrReqInfo{
+			niName:       m[1],
+			neighborAddr: m[2],
+			targetLeaf:   leaf,
+			targetPath:   "neighbor-as-path-options-config",
 		}, nil
 	}
 	return nil, tlerr.InvalidArgsError{
 		Format: "unsupported path for network-instance BGP neighbor config mapping: " + uri,
 	}
+}
+
+func getNiBgpNbrAsPathOptionsCfgObj(s *ygot.GoStruct, niName, neighborAddr string, createIfMissing bool) *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Neighbors_Neighbor_AsPathOptions_Config {
+	if s == nil || *s == nil {
+		return nil
+	}
+
+	deviceObj, ok := (*s).(*ocbinds.Device)
+	if !ok || deviceObj == nil {
+		return nil
+	}
+	ygot.BuildEmptyTree(deviceObj)
+
+	if deviceObj.NetworkInstances == nil {
+		if !createIfMissing {
+			return nil
+		}
+		deviceObj.NetworkInstances = &ocbinds.OpenconfigNetworkInstance_NetworkInstances{}
+	}
+
+	niObj, ok := deviceObj.NetworkInstances.NetworkInstance[niName]
+	if !ok || niObj == nil {
+		if !createIfMissing {
+			return nil
+		}
+		var err error
+		niObj, err = deviceObj.NetworkInstances.NewNetworkInstance(niName)
+		if err != nil || niObj == nil {
+			return nil
+		}
+	}
+
+	if niObj.Protocols == nil {
+		if !createIfMissing {
+			return nil
+		}
+		niObj.Protocols = &ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols{}
+	}
+	if niObj.Protocols.Protocol == nil {
+		if !createIfMissing {
+			return nil
+		}
+		niObj.Protocols.Protocol = make(map[ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Key]*ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol)
+	}
+
+	wantKey := ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Key{
+		Identifier: ocbinds.OpenconfigPolicyTypes_INSTALL_PROTOCOL_TYPE_BGP,
+		Name:       "bgp",
+	}
+	if pObj, ok := niObj.Protocols.Protocol[wantKey]; ok && pObj != nil {
+		ygot.BuildEmptyTree(pObj)
+		if nbrObj, ok := pObj.Bgp.Neighbors.Neighbor[neighborAddr]; ok && nbrObj != nil {
+			ygot.BuildEmptyTree(nbrObj)
+			return nbrObj.AsPathOptions.Config
+		}
+		if !createIfMissing {
+			return nil
+		}
+		nbrObj, err := pObj.Bgp.Neighbors.NewNeighbor(neighborAddr)
+		if err != nil || nbrObj == nil {
+			return nil
+		}
+		ygot.BuildEmptyTree(nbrObj)
+		return nbrObj.AsPathOptions.Config
+	}
+
+	if !createIfMissing {
+		return nil
+	}
+	pObj, err := niObj.Protocols.NewProtocol(ocbinds.OpenconfigPolicyTypes_INSTALL_PROTOCOL_TYPE_BGP, "bgp")
+	if err != nil || pObj == nil {
+		return nil
+	}
+	ygot.BuildEmptyTree(pObj)
+	nbrObj, err := pObj.Bgp.Neighbors.NewNeighbor(neighborAddr)
+	if err != nil || nbrObj == nil {
+		return nil
+	}
+	ygot.BuildEmptyTree(nbrObj)
+	return nbrObj.AsPathOptions.Config
 }
 
 func getNiBgpNbrCfgObj(s *ygot.GoStruct, niName, neighborAddr string, createIfMissing bool) *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Neighbors_Neighbor_Config {
@@ -368,6 +470,113 @@ func makeNiBgpNbrResMap(niName, neighborAddr string, fields map[string]string) m
 	}
 }
 
+func makeNiBgpNbrAfResMap(niName, neighborAddr string, fields map[string]string) map[string]map[string]db.Value {
+	return map[string]map[string]db.Value{
+		niBgpNbrAfTbl: {
+			niName + "|" + neighborAddr + "|" + niBgpAfiSafiIPv4: db.Value{Field: fields},
+			niName + "|" + neighborAddr + "|" + niBgpAfiSafiIPv6: db.Value{Field: fields},
+		},
+	}
+}
+
+func parseNiBgpNbrAllowOwnAsValue(v interface{}) (*uint8, bool) {
+	switch val := v.(type) {
+	case uint8:
+		x := val
+		return &x, true
+	case uint16:
+		if val <= 255 {
+			x := uint8(val)
+			return &x, true
+		}
+	case uint32:
+		if val <= 255 {
+			x := uint8(val)
+			return &x, true
+		}
+	case int:
+		if val >= 0 && val <= 255 {
+			x := uint8(val)
+			return &x, true
+		}
+	case float64:
+		if val >= 0 && val <= 255 && val == float64(uint8(val)) {
+			x := uint8(val)
+			return &x, true
+		}
+	case string:
+		if u, err := strconv.ParseUint(strings.TrimSpace(val), 10, 8); err == nil {
+			x := uint8(u)
+			return &x, true
+		}
+	case *uint8:
+		if val != nil {
+			return val, true
+		}
+	}
+	return nil, false
+}
+
+func parseNiBgpNbrAllowOwnAsFromParam(param interface{}) (*uint8, bool) {
+	if param == nil {
+		return nil, false
+	}
+	if allow, ok := parseNiBgpNbrAllowOwnAsValue(param); ok {
+		return allow, true
+	}
+
+	rv := reflect.ValueOf(param)
+	for rv.IsValid() && (rv.Kind() == reflect.Interface || rv.Kind() == reflect.Ptr) {
+		if rv.IsNil() {
+			return nil, false
+		}
+		rv = rv.Elem()
+	}
+	if !rv.IsValid() {
+		return nil, false
+	}
+
+	if rv.Kind() == reflect.Struct {
+		fv := rv.FieldByName("AllowOwnAs")
+		if fv.IsValid() && fv.CanInterface() {
+			if allow, ok := parseNiBgpNbrAllowOwnAsValue(fv.Interface()); ok {
+				return allow, true
+			}
+		}
+	}
+
+	if rv.Kind() == reflect.Map {
+		for _, mk := range rv.MapKeys() {
+			k := fmt.Sprint(mk.Interface())
+			if k == "allow-own-as" || strings.HasSuffix(k, ":allow-own-as") {
+				mv := rv.MapIndex(mk)
+				if mv.IsValid() && mv.CanInterface() {
+					if allow, ok := parseNiBgpNbrAllowOwnAsValue(mv.Interface()); ok {
+						return allow, true
+					}
+				}
+			}
+		}
+	}
+	return nil, false
+}
+
+func parseNiBgpNbrAllowOwnAs(inParams XfmrParams) (*uint8, error) {
+	reqInfo, err := parseNiBgpNbrRequestUri(inParams.requestUri)
+	if err != nil {
+		return nil, err
+	}
+	if allow, ok := parseNiBgpNbrAllowOwnAsFromParam(inParams.param); ok {
+		return allow, nil
+	}
+
+	asPathCfgObj := getNiBgpNbrAsPathOptionsCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.neighborAddr, false)
+	if asPathCfgObj == nil || asPathCfgObj.AllowOwnAs == nil {
+		return nil, tlerr.InvalidArgsError{Format: "BGP neighbor as-path-options allow-own-as is missing in request payload"}
+	}
+	return asPathCfgObj.AllowOwnAs, nil
+}
+
 var YangToDb_ni_bgp_nbr_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (map[string]map[string]db.Value, error) {
 	res := make(map[string]map[string]db.Value)
 
@@ -377,6 +586,18 @@ var YangToDb_ni_bgp_nbr_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 	}
 
 	if inParams.oper == DELETE {
+		if reqInfo.targetPath == "neighbor-as-path-options-config" {
+			switch reqInfo.targetLeaf {
+			case "", "allow-own-as":
+				return makeNiBgpNbrAfResMap(reqInfo.niName, reqInfo.neighborAddr, map[string]string{
+					niBgpNbrAllowAsInFld:   "",
+					niBgpNbrAllowAsCntFld:  "",
+					niBgpNbrAllowAsOrigFld: "",
+				}), nil
+			default:
+				return res, tlerr.NotSupportedError{Format: "DELETE supported only for /neighbors/neighbor/as-path-options/config or /neighbors/neighbor/as-path-options/config/allow-own-as", Path: inParams.requestUri}
+			}
+		}
 		switch reqInfo.targetLeaf {
 		case "peer-group":
 			return makeNiBgpNbrResMap(reqInfo.niName, reqInfo.neighborAddr, map[string]string{niBgpNbrPeerGroupFld: ""}), nil
@@ -384,6 +605,30 @@ var YangToDb_ni_bgp_nbr_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 			return makeNiBgpNbrResMap(reqInfo.niName, reqInfo.neighborAddr, map[string]string{niBgpNbrAdminStatus: ""}), nil
 		default:
 			return res, tlerr.NotSupportedError{Format: "DELETE supported only for /neighbors/neighbor/config/peer-group or /neighbors/neighbor/config/enabled", Path: inParams.requestUri}
+		}
+	}
+
+	if reqInfo.targetPath == "neighbor-as-path-options-config" {
+		switch reqInfo.targetLeaf {
+		case "", "allow-own-as":
+			allowOwnAs, err := parseNiBgpNbrAllowOwnAs(inParams)
+			if err != nil {
+				return res, err
+			}
+			if *allowOwnAs == 0 {
+				return makeNiBgpNbrAfResMap(reqInfo.niName, reqInfo.neighborAddr, map[string]string{
+					niBgpNbrAllowAsInFld:   "",
+					niBgpNbrAllowAsCntFld:  "",
+					niBgpNbrAllowAsOrigFld: "",
+				}), nil
+			}
+			return makeNiBgpNbrAfResMap(reqInfo.niName, reqInfo.neighborAddr, map[string]string{
+				niBgpNbrAllowAsInFld:   "true",
+				niBgpNbrAllowAsCntFld:  strconv.FormatUint(uint64(*allowOwnAs), 10),
+				niBgpNbrAllowAsOrigFld: "",
+			}), nil
+		default:
+			return res, tlerr.NotSupportedError{Format: "unsupported leaf under neighbor as-path-options config", Path: inParams.requestUri}
 		}
 	}
 
@@ -461,6 +706,56 @@ var DbToYang_ni_bgp_nbr_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams)
 				cfgObj.Enabled = enabled
 			}
 		}
+	}
+	if reqInfo.targetPath == "neighbor-as-path-options-config" {
+		v4Entry, errV4 := cfgDb.GetEntry(&db.TableSpec{Name: niBgpNbrAfTbl}, db.Key{Comp: []string{reqInfo.niName, reqInfo.neighborAddr, niBgpAfiSafiIPv4}})
+		v6Entry, errV6 := cfgDb.GetEntry(&db.TableSpec{Name: niBgpNbrAfTbl}, db.Key{Comp: []string{reqInfo.niName, reqInfo.neighborAddr, niBgpAfiSafiIPv6}})
+		if errV4 != nil && errV6 != nil {
+			if errV4 != nil {
+				return errV4
+			}
+			return errV6
+		}
+		getAllowOwnAs := func(entry db.Value) *uint8 {
+			allowIn := strings.ToLower(strings.TrimSpace(entry.Field[niBgpNbrAllowAsInFld])) == "true"
+			if !allowIn {
+				return nil
+			}
+			cntStr := strings.TrimSpace(entry.Field[niBgpNbrAllowAsCntFld])
+			if cntStr == "" {
+				def := uint8(1)
+				return &def
+			}
+			cnt, err := strconv.ParseUint(cntStr, 10, 8)
+			if err != nil {
+				return nil
+			}
+			val := uint8(cnt)
+			return &val
+		}
+		var v4Allow, v6Allow *uint8
+		if errV4 == nil {
+			v4Allow = getAllowOwnAs(v4Entry)
+		}
+		if errV6 == nil {
+			v6Allow = getAllowOwnAs(v6Entry)
+		}
+		if v4Allow != nil && v6Allow != nil && *v4Allow != *v6Allow {
+			return tlerr.InvalidArgsError{Format: fmt.Sprintf("inconsistent allow-own-as across AFI-SAFIs for neighbor %s in %s (ipv4=%d, ipv6=%d)", reqInfo.neighborAddr, reqInfo.niName, *v4Allow, *v6Allow)}
+		}
+
+		asPathCfgObj := getNiBgpNbrAsPathOptionsCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.neighborAddr, true)
+		if asPathCfgObj == nil {
+			return tlerr.InvalidArgsError{Format: "Unable to locate BGP neighbor as-path-options config object in YANG tree"}
+		}
+		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == "allow-own-as" {
+			if v4Allow != nil {
+				asPathCfgObj.AllowOwnAs = v4Allow
+			} else if v6Allow != nil {
+				asPathCfgObj.AllowOwnAs = v6Allow
+			}
+		}
+		return nil
 	}
 	return nil
 }
