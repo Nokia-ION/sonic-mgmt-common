@@ -160,4 +160,46 @@ module openconfig-routing-policy-annot {
       }
     }
 
+    deviation /oc-rpol:routing-policy/oc-rpol:policy-definitions/oc-rpol:policy-definition/oc-rpol:statements/oc-rpol:statement/oc-rpol:conditions/oc-bgp-pol:bgp-conditions/oc-bgp-pol:config {
+      deviate add {
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "routing_policy_xfmr";
+      }
+    }
+
+    deviation /oc-rpol:routing-policy/oc-rpol:policy-definitions/oc-rpol:policy-definition/oc-rpol:statements/oc-rpol:statement/oc-rpol:conditions/oc-bgp-pol:bgp-conditions/oc-bgp-pol:config/oc-bgp-pol:med-eq {
+      deviate add {
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "routing_policy_xfmr";
+      }
+    }
+
+    deviation /oc-rpol:routing-policy/oc-rpol:policy-definitions/oc-rpol:policy-definition/oc-rpol:statements/oc-rpol:statement/oc-rpol:conditions/oc-bgp-pol:bgp-conditions/oc-bgp-pol:config/oc-bgp-pol:origin-eq {
+      deviate add {
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "routing_policy_xfmr";
+      }
+    }
+
+    deviation /oc-rpol:routing-policy/oc-rpol:policy-definitions/oc-rpol:policy-definition/oc-rpol:statements/oc-rpol:statement/oc-rpol:conditions/oc-bgp-pol:bgp-conditions/oc-bgp-pol:config/oc-bgp-pol:local-pref-eq {
+      deviate add {
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "routing_policy_xfmr";
+      }
+    }
+
+    deviation /oc-rpol:routing-policy/oc-rpol:policy-definitions/oc-rpol:policy-definition/oc-rpol:statements/oc-rpol:statement/oc-rpol:conditions/oc-bgp-pol:bgp-conditions/oc-bgp-pol:config/oc-bgp-pol:community-set {
+      deviate add {
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "routing_policy_xfmr";
+      }
+    }
+
+    deviation /oc-rpol:routing-policy/oc-rpol:policy-definitions/oc-rpol:policy-definition/oc-rpol:statements/oc-rpol:statement/oc-rpol:conditions/oc-bgp-pol:bgp-conditions/oc-bgp-pol:config/oc-bgp-pol:ext-community-set {
+      deviate add {
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "routing_policy_xfmr";
+      }
+    }
+
 }
