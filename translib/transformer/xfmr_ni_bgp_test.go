@@ -287,3 +287,62 @@ func Test_openconfig_network_instance_bgp_neighbor_peer_group(t *testing.T) {
 
 	unloadDB(db.ConfigDB, cleanupTbl)
 }
+
+func Test_openconfig_network_instance_bgp_neighbor_enabled(t *testing.T) {
+	var url, urlInputBodyJSON string
+
+	preReqMap := map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": map[string]interface{}{
+				"local_asn": "65100",
+			},
+		},
+		"BGP_NEIGHBOR": map[string]interface{}{
+			"default|20.0.0.1": map[string]interface{}{
+				"asn":          "65200",
+				"admin_status": "up",
+			},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"BGP_NEIGHBOR": map[string]interface{}{"default|20.0.0.1": ""},
+		"BGP_GLOBALS":  map[string]interface{}{"default": ""},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	url = "/openconfig-network-instance:network-instances/network-instance[name=default]/protocols/protocol[identifier=BGP][name=bgp]/bgp/neighbors/neighbor[neighbor-address=20.0.0.1]/config/enabled"
+	urlInputBodyJSON = "{\"openconfig-network-instance:enabled\":false}"
+	t.Run("PATCH network-instance BGP neighbor enabled false", processSetRequest(url, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"BGP_NEIGHBOR": map[string]interface{}{
+			"default|20.0.0.1": map[string]interface{}{
+				"asn":          "65200",
+				"admin_status": "down",
+			},
+		},
+	}
+	t.Run("Verify BGP_NEIGHBOR admin_status down mapping", verifyDbResult(rclient, "BGP_NEIGHBOR|default|20.0.0.1", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	expectedGetJSON := "{\"openconfig-network-instance:enabled\":false}"
+	t.Run("GET network-instance BGP neighbor enabled false", processGetRequest(url, nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("DELETE network-instance BGP neighbor enabled", processDeleteRequest(url, false))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"BGP_NEIGHBOR": map[string]interface{}{
+			"default|20.0.0.1": map[string]interface{}{
+				"asn": "65200",
+			},
+		},
+	}
+	t.Run("Verify BGP_NEIGHBOR admin_status cleared", verifyDbResult(rclient, "BGP_NEIGHBOR|default|20.0.0.1", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
