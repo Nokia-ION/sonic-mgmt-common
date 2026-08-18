@@ -45,7 +45,7 @@ const (
 	niBgpPgKeepaliveFld      = "keepalive"
 	niBgpPgHoldTimeFld       = "holdtime"
 	niBgpPgMaxPfxLimitFld    = "max_prefix_limit"
-	niBgpAfiSafiIPv4         = "ipv4_unicast"
+	niBgpPgAfiSafiIPv4       = "ipv4_unicast"
 )
 
 var niBgpPgCfgReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/protocols/protocol\[identifier=BGP\]\[name=bgp\]/bgp/peer-groups/peer-group\[peer-group-name=([^\]]+)\]/config(?:/(peer-group-name|peer-as))?$`)
@@ -489,7 +489,7 @@ var YangToDb_ni_bgp_pg_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) 
 		case niBgpPgHoldTimeLeaf:
 			return makeNiBgpPgResMap(reqInfo.niName, reqInfo.peerGroupName, map[string]string{niBgpPgHoldTimeFld: ""}), nil
 		case niBgpPgMaxPrefixesLeaf:
-			return makeNiBgpPgAfResMap(reqInfo.niName, reqInfo.peerGroupName, niBgpAfiSafiIPv4, map[string]string{niBgpPgMaxPfxLimitFld: ""}), nil
+			return makeNiBgpPgAfResMap(reqInfo.niName, reqInfo.peerGroupName, niBgpPgAfiSafiIPv4, map[string]string{niBgpPgMaxPfxLimitFld: ""}), nil
 		}
 		return res, tlerr.NotSupportedError{Format: "DELETE supported only for /peer-groups/peer-group/config/peer-group-name, /peer-groups/peer-group/config/peer-as, /peer-groups/peer-group/timers/config/keepalive-interval, /peer-groups/peer-group/timers/config/hold-time, or /peer-groups/peer-group/afi-safis/afi-safi/ipv4-unicast/prefix-limit/config/max-prefixes", Path: inParams.requestUri}
 	}
@@ -527,7 +527,7 @@ var YangToDb_ni_bgp_pg_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) 
 				}
 				max = pfxObj.MaxPrefixes
 			}
-			return makeNiBgpPgAfResMap(reqInfo.niName, reqInfo.peerGroupName, niBgpAfiSafiIPv4, map[string]string{
+			return makeNiBgpPgAfResMap(reqInfo.niName, reqInfo.peerGroupName, niBgpPgAfiSafiIPv4, map[string]string{
 				niBgpPgMaxPfxLimitFld: strconv.FormatUint(uint64(*max), 10),
 			}), nil
 		default:
@@ -578,7 +578,7 @@ var DbToYang_ni_bgp_pg_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) 
 		return err
 	}
 	if reqInfo.targetPath == niBgpPgTargetAfV4PfxCfg {
-		afEntry, err := cfgDb.GetEntry(&db.TableSpec{Name: niBgpPeerGroupAfTbl}, db.Key{Comp: []string{reqInfo.niName, reqInfo.peerGroupName, niBgpAfiSafiIPv4}})
+		afEntry, err := cfgDb.GetEntry(&db.TableSpec{Name: niBgpPeerGroupAfTbl}, db.Key{Comp: []string{reqInfo.niName, reqInfo.peerGroupName, niBgpPgAfiSafiIPv4}})
 		if err != nil {
 			return err
 		}
