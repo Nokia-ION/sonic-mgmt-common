@@ -37,6 +37,8 @@ const (
 	rpolRouteOperationFld         = "route_operation"
 	rpolMatchPrefixSetFld         = "match_prefix_set"
 	rpolMatchIpv6PrefixSetFld     = "match_ipv6_prefix_set"
+	rpolSetCommunityInlineFld     = "set_community_inline"
+	rpolSetCommunityRefFld        = "set_community_ref"
 	rpolSetAsnFld                 = "set_asn"
 	rpolSetRepeatAsnFld           = "set_repeat_asn"
 	rpolRouteOpPermit             = "permit"
@@ -44,6 +46,7 @@ const (
 	rpolTargetPolicyDefCfg        = "policy-definition-config"
 	rpolTargetStmtActionsCfg      = "statement-actions-config"
 	rpolTargetStmtCondMatchPfxCfg = "statement-conditions-match-prefix-set-config"
+	rpolTargetStmtBgpSetCommunity = "statement-actions-bgp-set-community"
 	rpolTargetStmtBgpSetAsPathCfg = "statement-actions-bgp-set-as-path-prepend-config"
 	rpolPolicyDefNameLeaf         = "name"
 	rpolPolicyResultLeaf          = "policy-result"
@@ -55,6 +58,7 @@ const (
 var rpolPolicyDefCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/config(?:/(name))?$`)
 var rpolStmtActionsCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/actions/config(?:/(policy-result))?$`)
 var rpolStmtCondMatchPfxCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/conditions/match-prefix-set/config(?:/(prefix-set))?$`)
+var rpolStmtBgpSetCommunityReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/actions/bgp-actions/set-community$`)
 var rpolStmtBgpSetAsPathCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/actions/bgp-actions/set-as-path-prepend/config(?:/(asn|repeat-n))?$`)
 
 type rpolReqInfo struct {
@@ -106,6 +110,15 @@ func parseRpolRequestUri(uri string) (*rpolReqInfo, error) {
 			stmtName:   m[2],
 			targetLeaf: leaf,
 			targetPath: rpolTargetStmtCondMatchPfxCfg,
+		}, nil
+	}
+	m = rpolStmtBgpSetCommunityReqUriRe.FindStringSubmatch(uri)
+	if len(m) >= 3 {
+		return &rpolReqInfo{
+			policyName: m[1],
+			stmtName:   m[2],
+			targetLeaf: "",
+			targetPath: rpolTargetStmtBgpSetCommunity,
 		}, nil
 	}
 	m = rpolStmtBgpSetAsPathCfgReqUriRe.FindStringSubmatch(uri)
@@ -319,6 +332,110 @@ func getRpolPolicyStmtBgpSetAsPathPrependCfgObj(s *ygot.GoStruct, policyName, st
 	}
 	ygot.BuildEmptyTree(stmtObj)
 	return stmtObj.Actions.BgpActions.SetAsPathPrepend.Config
+}
+
+func getRpolPolicyStmtBgpSetCommunityCfgObj(s *ygot.GoStruct, policyName, stmtName string, createIfMissing bool) *ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_SetCommunity_Config {
+	if s == nil || *s == nil {
+		return nil
+	}
+
+	deviceObj, ok := (*s).(*ocbinds.Device)
+	if !ok || deviceObj == nil {
+		return nil
+	}
+	ygot.BuildEmptyTree(deviceObj)
+
+	if deviceObj.RoutingPolicy == nil {
+		if !createIfMissing {
+			return nil
+		}
+		deviceObj.RoutingPolicy = &ocbinds.OpenconfigRoutingPolicy_RoutingPolicy{}
+	}
+	if deviceObj.RoutingPolicy.PolicyDefinitions == nil {
+		if !createIfMissing {
+			return nil
+		}
+		deviceObj.RoutingPolicy.PolicyDefinitions = &ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions{}
+	}
+
+	pdObj, ok := deviceObj.RoutingPolicy.PolicyDefinitions.PolicyDefinition[policyName]
+	if !ok || pdObj == nil {
+		if !createIfMissing {
+			return nil
+		}
+		var err error
+		pdObj, err = deviceObj.RoutingPolicy.PolicyDefinitions.NewPolicyDefinition(policyName)
+		if err != nil || pdObj == nil {
+			return nil
+		}
+	}
+	ygot.BuildEmptyTree(pdObj)
+
+	stmtObj, ok := pdObj.Statements.Statement[stmtName]
+	if !ok || stmtObj == nil {
+		if !createIfMissing {
+			return nil
+		}
+		var err error
+		stmtObj, err = pdObj.Statements.NewStatement(stmtName)
+		if err != nil || stmtObj == nil {
+			return nil
+		}
+	}
+	ygot.BuildEmptyTree(stmtObj)
+	return stmtObj.Actions.BgpActions.SetCommunity.Config
+}
+
+func getRpolPolicyStmtBgpSetCommunityRefCfgObj(s *ygot.GoStruct, policyName, stmtName string, createIfMissing bool) *ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_SetCommunity_Reference_Config {
+	if s == nil || *s == nil {
+		return nil
+	}
+
+	deviceObj, ok := (*s).(*ocbinds.Device)
+	if !ok || deviceObj == nil {
+		return nil
+	}
+	ygot.BuildEmptyTree(deviceObj)
+
+	if deviceObj.RoutingPolicy == nil {
+		if !createIfMissing {
+			return nil
+		}
+		deviceObj.RoutingPolicy = &ocbinds.OpenconfigRoutingPolicy_RoutingPolicy{}
+	}
+	if deviceObj.RoutingPolicy.PolicyDefinitions == nil {
+		if !createIfMissing {
+			return nil
+		}
+		deviceObj.RoutingPolicy.PolicyDefinitions = &ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions{}
+	}
+
+	pdObj, ok := deviceObj.RoutingPolicy.PolicyDefinitions.PolicyDefinition[policyName]
+	if !ok || pdObj == nil {
+		if !createIfMissing {
+			return nil
+		}
+		var err error
+		pdObj, err = deviceObj.RoutingPolicy.PolicyDefinitions.NewPolicyDefinition(policyName)
+		if err != nil || pdObj == nil {
+			return nil
+		}
+	}
+	ygot.BuildEmptyTree(pdObj)
+
+	stmtObj, ok := pdObj.Statements.Statement[stmtName]
+	if !ok || stmtObj == nil {
+		if !createIfMissing {
+			return nil
+		}
+		var err error
+		stmtObj, err = pdObj.Statements.NewStatement(stmtName)
+		if err != nil || stmtObj == nil {
+			return nil
+		}
+	}
+	ygot.BuildEmptyTree(stmtObj)
+	return stmtObj.Actions.BgpActions.SetCommunity.Reference.Config
 }
 
 func parseRpolPolicyNameValue(v interface{}) (string, bool) {
@@ -761,6 +878,11 @@ var YangToDb_routing_policy_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 				rpolMatchPrefixSetFld:     "",
 				rpolMatchIpv6PrefixSetFld: "",
 			}), nil
+		case rpolTargetStmtBgpSetCommunity:
+			return makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, map[string]string{
+				rpolSetCommunityInlineFld: "",
+				rpolSetCommunityRefFld:    "",
+			}), nil
 		case rpolTargetStmtBgpSetAsPathCfg:
 			fields := map[string]string{}
 			switch reqInfo.targetLeaf {
@@ -841,6 +963,37 @@ var YangToDb_routing_policy_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 			return res, tlerr.InvalidArgsError{Format: fmt.Sprintf("unsupported PREFIX_SET mode %s for set %s", mode, pfxSet)}
 		}
 		return makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, fields), nil
+	}
+	if reqInfo.targetPath == rpolTargetStmtBgpSetCommunity {
+		_, err := parseRpolStmtNameToUint16(reqInfo.stmtName)
+		if err != nil {
+			return res, err
+		}
+		cfgObj := getRpolPolicyStmtBgpSetCommunityCfgObj(inParams.ygRoot, reqInfo.policyName, reqInfo.stmtName, false)
+		if cfgObj == nil {
+			return res, tlerr.InvalidArgsError{Format: "routing-policy statement actions bgp-actions set-community config is missing in request payload"}
+		}
+
+		if cfgObj.Options != ocbinds.OpenconfigBgpPolicy_BgpSetCommunityOptionType_UNSET &&
+			cfgObj.Options != ocbinds.OpenconfigBgpPolicy_BgpSetCommunityOptionType_ADD {
+			return res, tlerr.InvalidArgsError{Format: "routing-policy statement actions bgp-actions set-community config options only supports ADD"}
+		}
+
+		switch cfgObj.Method {
+		case ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_SetCommunity_Config_Method_REFERENCE:
+			refCfgObj := getRpolPolicyStmtBgpSetCommunityRefCfgObj(inParams.ygRoot, reqInfo.policyName, reqInfo.stmtName, false)
+			if refCfgObj == nil || refCfgObj.CommunitySetRef == nil || strings.TrimSpace(*refCfgObj.CommunitySetRef) == "" {
+				return res, tlerr.InvalidArgsError{Format: "routing-policy statement actions bgp-actions set-community reference config community-set-ref is missing in request payload"}
+			}
+			return makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, map[string]string{
+				rpolSetCommunityInlineFld: "",
+				rpolSetCommunityRefFld:    strings.TrimSpace(*refCfgObj.CommunitySetRef),
+			}), nil
+		case ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_SetCommunity_Config_Method_INLINE:
+			return res, tlerr.NotSupportedError{Format: "set-community method INLINE requires inline/config path implementation", Path: inParams.requestUri}
+		default:
+			return res, tlerr.InvalidArgsError{Format: "routing-policy statement actions bgp-actions set-community config method is missing or unsupported"}
+		}
 	}
 	if reqInfo.targetPath == rpolTargetStmtBgpSetAsPathCfg && (reqInfo.targetLeaf == "" || reqInfo.targetLeaf == rpolAsnLeaf || reqInfo.targetLeaf == rpolRepeatNLeaf) {
 		_, err := parseRpolStmtNameToUint16(reqInfo.stmtName)
@@ -990,6 +1143,20 @@ var DbToYang_routing_policy_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams)
 				cfgObj.PrefixSet = ygot.String(strings.TrimSpace(pfxSet))
 			} else if pfxSet6, ok := entry.Field[rpolMatchIpv6PrefixSetFld]; ok && strings.TrimSpace(pfxSet6) != "" {
 				cfgObj.PrefixSet = ygot.String(strings.TrimSpace(pfxSet6))
+			}
+		}
+		return nil
+	}
+	if reqInfo.targetPath == rpolTargetStmtBgpSetCommunity {
+		cfgObj := getRpolPolicyStmtBgpSetCommunityCfgObj(inParams.ygRoot, reqInfo.policyName, reqInfo.stmtName, true)
+		if cfgObj == nil {
+			return tlerr.InvalidArgsError{Format: "Unable to locate routing-policy statement actions bgp-actions set-community config object in YANG tree"}
+		}
+		if ref, ok := entry.Field[rpolSetCommunityRefFld]; ok && strings.TrimSpace(ref) != "" {
+			cfgObj.Method = ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_SetCommunity_Config_Method_REFERENCE
+			refCfgObj := getRpolPolicyStmtBgpSetCommunityRefCfgObj(inParams.ygRoot, reqInfo.policyName, reqInfo.stmtName, true)
+			if refCfgObj != nil {
+				refCfgObj.CommunitySetRef = ygot.String(strings.TrimSpace(ref))
 			}
 		}
 		return nil
