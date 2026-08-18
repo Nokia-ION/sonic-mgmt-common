@@ -18,7 +18,11 @@
 
 package transformer
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/Azure/sonic-mgmt-common/translib/db"
+)
 
 func TestBridgeIdToMacPriorityDottedFormat(t *testing.T) {
 	priority, mac := bridgeIdToMacPriority("8000.781f.7cfc.b617")
@@ -71,5 +75,29 @@ func TestBridgeIdToMacPriorityRemoteRoot(t *testing.T) {
 	}
 	if mac != "b8:6a:97:e2:4e:9c" {
 		t.Fatalf("expected mac b8:6a:97:e2:4e:9c, got %q", mac)
+	}
+}
+
+func TestResolveRstpRootPortRootBridge(t *testing.T) {
+	_, ok := resolveRstpRootPort(nil, "Root")
+	if ok {
+		t.Fatal("root bridge must not expose a root port")
+	}
+}
+
+func TestIsRstpRootBridgeByRootPort(t *testing.T) {
+	entry := db.Value{Field: map[string]string{"root_port": "Root"}}
+	if !isRstpRootBridge(entry) {
+		t.Fatal("expected root bridge when root_port is Root")
+	}
+}
+
+func TestIsRstpRootBridgeByMatchingAddresses(t *testing.T) {
+	entry := db.Value{Field: map[string]string{
+		"bridge_address": "8000.781f.7cfc.b617",
+		"root_address":   "8000.781f.7cfc.b617",
+	}}
+	if !isRstpRootBridge(entry) {
+		t.Fatal("expected root bridge when bridge and root addresses match")
 	}
 }
