@@ -32,19 +32,24 @@ import (
 )
 
 const (
-	rpolRouteMapSetTbl       = "ROUTE_MAP_SET"
-	rpolRouteMapTbl          = "ROUTE_MAP"
-	rpolRouteOperationFld    = "route_operation"
-	rpolRouteOpPermit        = "permit"
-	rpolRouteOpDeny          = "deny"
-	rpolTargetPolicyDefCfg   = "policy-definition-config"
-	rpolTargetStmtActionsCfg = "statement-actions-config"
-	rpolPolicyDefNameLeaf    = "name"
-	rpolPolicyResultLeaf     = "policy-result"
+	rpolRouteMapSetTbl            = "ROUTE_MAP_SET"
+	rpolRouteMapTbl               = "ROUTE_MAP"
+	rpolRouteOperationFld         = "route_operation"
+	rpolMatchPrefixSetFld         = "match_prefix_set"
+	rpolMatchIpv6PrefixSetFld     = "match_ipv6_prefix_set"
+	rpolRouteOpPermit             = "permit"
+	rpolRouteOpDeny               = "deny"
+	rpolTargetPolicyDefCfg        = "policy-definition-config"
+	rpolTargetStmtActionsCfg      = "statement-actions-config"
+	rpolTargetStmtCondMatchPfxCfg = "statement-conditions-match-prefix-set-config"
+	rpolPolicyDefNameLeaf         = "name"
+	rpolPolicyResultLeaf          = "policy-result"
+	rpolPrefixSetLeaf             = "prefix-set"
 )
 
 var rpolPolicyDefCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/config(?:/(name))?$`)
 var rpolStmtActionsCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/actions/config(?:/(policy-result))?$`)
+var rpolStmtCondMatchPfxCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/conditions/match-prefix-set/config(?:/(prefix-set))?$`)
 
 type rpolReqInfo struct {
 	policyName string
@@ -82,6 +87,19 @@ func parseRpolRequestUri(uri string) (*rpolReqInfo, error) {
 			stmtName:   m[2],
 			targetLeaf: leaf,
 			targetPath: rpolTargetStmtActionsCfg,
+		}, nil
+	}
+	m = rpolStmtCondMatchPfxCfgReqUriRe.FindStringSubmatch(uri)
+	if len(m) >= 3 {
+		leaf := ""
+		if len(m) >= 4 {
+			leaf = m[3]
+		}
+		return &rpolReqInfo{
+			policyName: m[1],
+			stmtName:   m[2],
+			targetLeaf: leaf,
+			targetPath: rpolTargetStmtCondMatchPfxCfg,
 		}, nil
 	}
 	return nil, tlerr.InvalidArgsError{
@@ -178,6 +196,58 @@ func getRpolPolicyStmtActionsCfgObj(s *ygot.GoStruct, policyName, stmtName strin
 	}
 	ygot.BuildEmptyTree(stmtObj)
 	return stmtObj.Actions.Config
+}
+
+func getRpolPolicyStmtCondMatchPrefixSetCfgObj(s *ygot.GoStruct, policyName, stmtName string, createIfMissing bool) *ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Conditions_MatchPrefixSet_Config {
+	if s == nil || *s == nil {
+		return nil
+	}
+
+	deviceObj, ok := (*s).(*ocbinds.Device)
+	if !ok || deviceObj == nil {
+		return nil
+	}
+	ygot.BuildEmptyTree(deviceObj)
+
+	if deviceObj.RoutingPolicy == nil {
+		if !createIfMissing {
+			return nil
+		}
+		deviceObj.RoutingPolicy = &ocbinds.OpenconfigRoutingPolicy_RoutingPolicy{}
+	}
+	if deviceObj.RoutingPolicy.PolicyDefinitions == nil {
+		if !createIfMissing {
+			return nil
+		}
+		deviceObj.RoutingPolicy.PolicyDefinitions = &ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions{}
+	}
+
+	pdObj, ok := deviceObj.RoutingPolicy.PolicyDefinitions.PolicyDefinition[policyName]
+	if !ok || pdObj == nil {
+		if !createIfMissing {
+			return nil
+		}
+		var err error
+		pdObj, err = deviceObj.RoutingPolicy.PolicyDefinitions.NewPolicyDefinition(policyName)
+		if err != nil || pdObj == nil {
+			return nil
+		}
+	}
+	ygot.BuildEmptyTree(pdObj)
+
+	stmtObj, ok := pdObj.Statements.Statement[stmtName]
+	if !ok || stmtObj == nil {
+		if !createIfMissing {
+			return nil
+		}
+		var err error
+		stmtObj, err = pdObj.Statements.NewStatement(stmtName)
+		if err != nil || stmtObj == nil {
+			return nil
+		}
+	}
+	ygot.BuildEmptyTree(stmtObj)
+	return stmtObj.Conditions.MatchPrefixSet.Config
 }
 
 func parseRpolPolicyNameValue(v interface{}) (string, bool) {
@@ -302,6 +372,64 @@ func parseRpolPolicyResultFromParam(param interface{}) (ocbinds.E_OpenconfigRout
 	return ocbinds.OpenconfigRoutingPolicy_PolicyResultType_UNSET, false
 }
 
+func parseRpolPrefixSetValue(v interface{}) (string, bool) {
+	switch val := v.(type) {
+	case string:
+		s := strings.TrimSpace(val)
+		return s, s != ""
+	case *string:
+		if val != nil {
+			s := strings.TrimSpace(*val)
+			return s, s != ""
+		}
+	}
+	return "", false
+}
+
+func parseRpolPrefixSetFromParam(param interface{}) (string, bool) {
+	if param == nil {
+		return "", false
+	}
+	if pfxSet, ok := parseRpolPrefixSetValue(param); ok {
+		return pfxSet, true
+	}
+
+	rv := reflect.ValueOf(param)
+	for rv.IsValid() && (rv.Kind() == reflect.Interface || rv.Kind() == reflect.Ptr) {
+		if rv.IsNil() {
+			return "", false
+		}
+		rv = rv.Elem()
+	}
+	if !rv.IsValid() {
+		return "", false
+	}
+
+	if rv.Kind() == reflect.Struct {
+		fv := rv.FieldByName("PrefixSet")
+		if fv.IsValid() && fv.CanInterface() {
+			if pfxSet, ok := parseRpolPrefixSetValue(fv.Interface()); ok {
+				return pfxSet, true
+			}
+		}
+	}
+
+	if rv.Kind() == reflect.Map {
+		for _, mk := range rv.MapKeys() {
+			k := fmt.Sprint(mk.Interface())
+			if k == "prefix-set" || strings.HasSuffix(k, ":prefix-set") {
+				mv := rv.MapIndex(mk)
+				if mv.IsValid() && mv.CanInterface() {
+					if pfxSet, ok := parseRpolPrefixSetValue(mv.Interface()); ok {
+						return pfxSet, true
+					}
+				}
+			}
+		}
+	}
+	return "", false
+}
+
 func rpolPolicyResultToRouteOp(v ocbinds.E_OpenconfigRoutingPolicy_PolicyResultType) (string, bool) {
 	switch v {
 	case ocbinds.OpenconfigRoutingPolicy_PolicyResultType_ACCEPT_ROUTE:
@@ -336,6 +464,18 @@ func parseRpolStmtNameToUint16(stmtName string) (uint16, error) {
 	return uint16(u64), nil
 }
 
+func getRpolPrefixSetMode(cfgDb *db.DB, pfxSet string) (string, error) {
+	entry, err := cfgDb.GetEntry(&db.TableSpec{Name: "PREFIX_SET"}, db.Key{Comp: []string{pfxSet}})
+	if err != nil {
+		return "", err
+	}
+	mode, ok := entry.Field["mode"]
+	if !ok || strings.TrimSpace(mode) == "" {
+		return "", tlerr.InvalidArgsError{Format: fmt.Sprintf("PREFIX_SET %s missing mode field", pfxSet)}
+	}
+	return strings.ToLower(strings.TrimSpace(mode)), nil
+}
+
 func makeRpolRouteMapSetResMap(policyName string, fields map[string]string) map[string]map[string]db.Value {
 	return map[string]map[string]db.Value{
 		rpolRouteMapSetTbl: {
@@ -364,7 +504,16 @@ var YangToDb_routing_policy_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 		if reqInfo.targetPath == rpolTargetPolicyDefCfg {
 			return makeRpolRouteMapSetResMap(reqInfo.policyName, nil), nil
 		}
-		return makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, map[string]string{rpolRouteOperationFld: ""}), nil
+		switch reqInfo.targetPath {
+		case rpolTargetStmtActionsCfg:
+			return makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, map[string]string{rpolRouteOperationFld: ""}), nil
+		case rpolTargetStmtCondMatchPfxCfg:
+			return makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, map[string]string{
+				rpolMatchPrefixSetFld:     "",
+				rpolMatchIpv6PrefixSetFld: "",
+			}), nil
+		}
+		return res, tlerr.NotSupportedError{Format: "unsupported DELETE path under routing-policy mapping", Path: inParams.requestUri}
 	}
 
 	if reqInfo.targetPath == rpolTargetPolicyDefCfg && (reqInfo.targetLeaf == "" || reqInfo.targetLeaf == rpolPolicyDefNameLeaf) {
@@ -398,7 +547,40 @@ var YangToDb_routing_policy_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 		}
 		return makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, map[string]string{rpolRouteOperationFld: routeOp}), nil
 	}
-
+	if reqInfo.targetPath == rpolTargetStmtCondMatchPfxCfg && (reqInfo.targetLeaf == "" || reqInfo.targetLeaf == rpolPrefixSetLeaf) {
+		_, err := parseRpolStmtNameToUint16(reqInfo.stmtName)
+		if err != nil {
+			return res, err
+		}
+		pfxSet, ok := parseRpolPrefixSetFromParam(inParams.param)
+		if !ok {
+			cfgObj := getRpolPolicyStmtCondMatchPrefixSetCfgObj(inParams.ygRoot, reqInfo.policyName, reqInfo.stmtName, false)
+			if cfgObj == nil || cfgObj.PrefixSet == nil || strings.TrimSpace(*cfgObj.PrefixSet) == "" {
+				return res, tlerr.InvalidArgsError{Format: "routing-policy statement conditions match-prefix-set config prefix-set is missing in request payload"}
+			}
+			pfxSet = strings.TrimSpace(*cfgObj.PrefixSet)
+		}
+		cfgDb := inParams.dbs[db.ConfigDB]
+		if cfgDb == nil {
+			return res, tlerr.InvalidArgsError{Format: "ConfigDB nil for routing-policy mapping"}
+		}
+		mode, err := getRpolPrefixSetMode(cfgDb, pfxSet)
+		if err != nil {
+			return res, err
+		}
+		fields := map[string]string{
+			rpolMatchPrefixSetFld:     "",
+			rpolMatchIpv6PrefixSetFld: "",
+		}
+		if mode == "ipv4" {
+			fields[rpolMatchPrefixSetFld] = pfxSet
+		} else if mode == "ipv6" {
+			fields[rpolMatchIpv6PrefixSetFld] = pfxSet
+		} else {
+			return res, tlerr.InvalidArgsError{Format: fmt.Sprintf("unsupported PREFIX_SET mode %s for set %s", mode, pfxSet)}
+		}
+		return makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, fields), nil
+	}
 	return res, tlerr.NotSupportedError{Format: "unsupported leaf under routing-policy mapping", Path: inParams.requestUri}
 }
 
@@ -439,17 +621,34 @@ var DbToYang_routing_policy_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams)
 		return err
 	}
 
-	cfgObj := getRpolPolicyStmtActionsCfgObj(inParams.ygRoot, reqInfo.policyName, reqInfo.stmtName, true)
-	if cfgObj == nil {
-		return tlerr.InvalidArgsError{Format: "Unable to locate routing-policy statement actions config object in YANG tree"}
-	}
-	if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == rpolPolicyResultLeaf {
-		routeOp, ok := entry.Field[rpolRouteOperationFld]
-		if ok && strings.TrimSpace(routeOp) != "" {
-			if polRes, conv := rpolRouteOpToPolicyResult(routeOp); conv {
-				cfgObj.PolicyResult = polRes
+	if reqInfo.targetPath == rpolTargetStmtActionsCfg {
+		cfgObj := getRpolPolicyStmtActionsCfgObj(inParams.ygRoot, reqInfo.policyName, reqInfo.stmtName, true)
+		if cfgObj == nil {
+			return tlerr.InvalidArgsError{Format: "Unable to locate routing-policy statement actions config object in YANG tree"}
+		}
+		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == rpolPolicyResultLeaf {
+			routeOp, ok := entry.Field[rpolRouteOperationFld]
+			if ok && strings.TrimSpace(routeOp) != "" {
+				if polRes, conv := rpolRouteOpToPolicyResult(routeOp); conv {
+					cfgObj.PolicyResult = polRes
+				}
 			}
 		}
+		return nil
 	}
-	return nil
+	if reqInfo.targetPath == rpolTargetStmtCondMatchPfxCfg {
+		cfgObj := getRpolPolicyStmtCondMatchPrefixSetCfgObj(inParams.ygRoot, reqInfo.policyName, reqInfo.stmtName, true)
+		if cfgObj == nil {
+			return tlerr.InvalidArgsError{Format: "Unable to locate routing-policy statement conditions match-prefix-set config object in YANG tree"}
+		}
+		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == rpolPrefixSetLeaf {
+			if pfxSet, ok := entry.Field[rpolMatchPrefixSetFld]; ok && strings.TrimSpace(pfxSet) != "" {
+				cfgObj.PrefixSet = ygot.String(strings.TrimSpace(pfxSet))
+			} else if pfxSet6, ok := entry.Field[rpolMatchIpv6PrefixSetFld]; ok && strings.TrimSpace(pfxSet6) != "" {
+				cfgObj.PrefixSet = ygot.String(strings.TrimSpace(pfxSet6))
+			}
+		}
+		return nil
+	}
+	return tlerr.NotSupportedError{Format: "unsupported leaf under routing-policy mapping", Path: inParams.requestUri}
 }
