@@ -47,6 +47,8 @@ openconfig-spanning-tree-annot.yang
 sonic-qos-fwd-group.yang
 sonic-qos-umf-classifier.yang
 openconfig-storm-control-ext.yang
+openconfig-network-instance.yang
+openconfig-network-instance-annot.yang
 gnsi-authz.yang
 gnsi-pathz.yang
 gnsi-certz.yang
