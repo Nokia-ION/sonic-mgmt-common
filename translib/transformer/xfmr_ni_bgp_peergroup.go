@@ -37,12 +37,14 @@ const (
 	niBgpPgPeerGroupNameLeaf = "peer-group-name"
 	niBgpPgPeerAsLeaf        = "peer-as"
 	niBgpPgKeepaliveLeaf     = "keepalive-interval"
+	niBgpPgHoldTimeLeaf      = "hold-time"
 	niBgpPgAsnFld            = "asn"
 	niBgpPgKeepaliveFld      = "keepalive"
+	niBgpPgHoldTimeFld       = "holdtime"
 )
 
 var niBgpPgCfgReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/protocols/protocol\[identifier=BGP\]\[name=bgp\]/bgp/peer-groups/peer-group\[peer-group-name=([^\]]+)\]/config(?:/(peer-group-name|peer-as))?$`)
-var niBgpPgTimersReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/protocols/protocol\[identifier=BGP\]\[name=bgp\]/bgp/peer-groups/peer-group\[peer-group-name=([^\]]+)\]/timers/config(?:/(keepalive-interval))?$`)
+var niBgpPgTimersReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/protocols/protocol\[identifier=BGP\]\[name=bgp\]/bgp/peer-groups/peer-group\[peer-group-name=([^\]]+)\]/timers/config(?:/(keepalive-interval|hold-time))?$`)
 
 type niBgpPgReqInfo struct {
 	niName        string
@@ -311,6 +313,16 @@ func parseNiBgpPgKeepaliveFromParam(param interface{}) (*uint16, bool) {
 	return nil, false
 }
 
+func parseNiBgpPgHoldTimeFromParam(param interface{}) (*uint16, bool) {
+	if param == nil {
+		return nil, false
+	}
+	if iv, ok := parseNiBgpPgIntervalValue(param); ok {
+		return iv, true
+	}
+	return nil, false
+}
+
 var YangToDb_ni_bgp_pg_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (map[string]map[string]db.Value, error) {
 	res := make(map[string]map[string]db.Value)
 	reqInfo, err := parseNiBgpPgRequestUri(inParams.requestUri)
@@ -327,8 +339,10 @@ var YangToDb_ni_bgp_pg_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) 
 			return makeNiBgpPgResMap(reqInfo.niName, reqInfo.peerGroupName, map[string]string{niBgpPgAsnFld: ""}), nil
 		case niBgpPgKeepaliveLeaf:
 			return makeNiBgpPgResMap(reqInfo.niName, reqInfo.peerGroupName, map[string]string{niBgpPgKeepaliveFld: ""}), nil
+		case niBgpPgHoldTimeLeaf:
+			return makeNiBgpPgResMap(reqInfo.niName, reqInfo.peerGroupName, map[string]string{niBgpPgHoldTimeFld: ""}), nil
 		}
-		return res, tlerr.NotSupportedError{Format: "DELETE supported only for /peer-groups/peer-group/config/peer-group-name, /peer-groups/peer-group/config/peer-as, or /peer-groups/peer-group/timers/config/keepalive-interval", Path: inParams.requestUri}
+		return res, tlerr.NotSupportedError{Format: "DELETE supported only for /peer-groups/peer-group/config/peer-group-name, /peer-groups/peer-group/config/peer-as, /peer-groups/peer-group/timers/config/keepalive-interval, or /peer-groups/peer-group/timers/config/hold-time", Path: inParams.requestUri}
 	}
 
 	if reqInfo.targetPath == niBgpPgTargetCfg {
@@ -355,7 +369,7 @@ var YangToDb_ni_bgp_pg_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) 
 	}
 
 	switch reqInfo.targetLeaf {
-	case niBgpPgKeepaliveLeaf, "":
+	case niBgpPgKeepaliveLeaf:
 		keepalive, ok := parseNiBgpPgKeepaliveFromParam(inParams.param)
 		if !ok {
 			tmObj := getNiBgpPeerGroupTimersCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.peerGroupName, false)
@@ -366,6 +380,17 @@ var YangToDb_ni_bgp_pg_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) 
 			keepalive = &iv
 		}
 		return makeNiBgpPgResMap(reqInfo.niName, reqInfo.peerGroupName, map[string]string{niBgpPgKeepaliveFld: strconv.FormatUint(uint64(*keepalive), 10)}), nil
+	case niBgpPgHoldTimeLeaf:
+		hold, ok := parseNiBgpPgHoldTimeFromParam(inParams.param)
+		if !ok {
+			tmObj := getNiBgpPeerGroupTimersCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.peerGroupName, false)
+			if tmObj == nil || tmObj.HoldTime == nil {
+				return res, tlerr.InvalidArgsError{Format: "BGP peer-group hold-time is missing in request payload"}
+			}
+			iv := uint16(*tmObj.HoldTime)
+			hold = &iv
+		}
+		return makeNiBgpPgResMap(reqInfo.niName, reqInfo.peerGroupName, map[string]string{niBgpPgHoldTimeFld: strconv.FormatUint(uint64(*hold), 10)}), nil
 	default:
 		return res, tlerr.NotSupportedError{Format: "unsupported leaf under peer-group timers config", Path: inParams.requestUri}
 	}
@@ -421,6 +446,17 @@ var DbToYang_ni_bgp_pg_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) 
 			}
 			iv := float64(uint16(ival))
 			tmObj.KeepaliveInterval = &iv
+		}
+	}
+	if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == niBgpPgHoldTimeLeaf {
+		hold, ok := entry.Field[niBgpPgHoldTimeFld]
+		if ok && strings.TrimSpace(hold) != "" {
+			ival, err := strconv.ParseUint(strings.TrimSpace(hold), 10, 16)
+			if err != nil {
+				return err
+			}
+			iv := float64(uint16(ival))
+			tmObj.HoldTime = &iv
 		}
 	}
 	return nil
