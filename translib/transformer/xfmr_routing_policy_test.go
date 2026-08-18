@@ -75,3 +75,55 @@ func Test_openconfig_routing_policy_policy_definition_config_name(t *testing.T) 
 
 	unloadDB(db.ConfigDB, cleanupTbl)
 }
+
+func Test_openconfig_routing_policy_policy_definition_statement_actions_config_policy_result(t *testing.T) {
+	var url, urlInputBodyJSON string
+
+	preReqMap := map[string]interface{}{
+		"ROUTE_MAP_SET": map[string]interface{}{
+			"POL1": map[string]interface{}{},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": "",
+		},
+		"ROUTE_MAP_SET": map[string]interface{}{
+			"POL1": "",
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	url = "/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition[name=POL1]/statements/statement[name=10]/actions/config/policy-result"
+	urlInputBodyJSON = "{\"openconfig-routing-policy:policy-result\":\"ACCEPT_ROUTE\"}"
+	t.Run("PATCH routing-policy statement actions config policy-result", processSetRequest(url, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": map[string]interface{}{
+				"route_operation": "permit",
+			},
+		},
+	}
+	t.Run("Verify ROUTE_MAP route_operation mapping", verifyDbResult(rclient, "ROUTE_MAP|POL1|10", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	expectedGetJSON := "{\"openconfig-routing-policy:policy-result\":\"ACCEPT_ROUTE\"}"
+	t.Run("GET routing-policy statement actions config policy-result", processGetRequest(url, nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("DELETE routing-policy statement actions config policy-result", processDeleteRequest(url, false))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": map[string]interface{}{},
+		},
+	}
+	t.Run("Verify ROUTE_MAP route_operation cleared", verifyDbResult(rclient, "ROUTE_MAP|POL1|10", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}

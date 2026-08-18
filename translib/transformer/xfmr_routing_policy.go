@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/Azure/sonic-mgmt-common/translib/db"
@@ -31,15 +32,23 @@ import (
 )
 
 const (
-	rpolRouteMapSetTbl     = "ROUTE_MAP_SET"
-	rpolTargetPolicyDefCfg = "policy-definition-config"
-	rpolPolicyDefNameLeaf  = "name"
+	rpolRouteMapSetTbl       = "ROUTE_MAP_SET"
+	rpolRouteMapTbl          = "ROUTE_MAP"
+	rpolRouteOperationFld    = "route_operation"
+	rpolRouteOpPermit        = "permit"
+	rpolRouteOpDeny          = "deny"
+	rpolTargetPolicyDefCfg   = "policy-definition-config"
+	rpolTargetStmtActionsCfg = "statement-actions-config"
+	rpolPolicyDefNameLeaf    = "name"
+	rpolPolicyResultLeaf     = "policy-result"
 )
 
 var rpolPolicyDefCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/config(?:/(name))?$`)
+var rpolStmtActionsCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/actions/config(?:/(policy-result))?$`)
 
 type rpolReqInfo struct {
 	policyName string
+	stmtName   string
 	targetLeaf string
 	targetPath string
 }
@@ -60,6 +69,19 @@ func parseRpolRequestUri(uri string) (*rpolReqInfo, error) {
 			policyName: m[1],
 			targetLeaf: leaf,
 			targetPath: rpolTargetPolicyDefCfg,
+		}, nil
+	}
+	m = rpolStmtActionsCfgReqUriRe.FindStringSubmatch(uri)
+	if len(m) >= 3 {
+		leaf := ""
+		if len(m) >= 4 {
+			leaf = m[3]
+		}
+		return &rpolReqInfo{
+			policyName: m[1],
+			stmtName:   m[2],
+			targetLeaf: leaf,
+			targetPath: rpolTargetStmtActionsCfg,
 		}, nil
 	}
 	return nil, tlerr.InvalidArgsError{
@@ -104,6 +126,58 @@ func getRpolPolicyDefCfgObj(s *ygot.GoStruct, policyName string, createIfMissing
 	}
 	ygot.BuildEmptyTree(pdObj)
 	return pdObj.Config
+}
+
+func getRpolPolicyStmtActionsCfgObj(s *ygot.GoStruct, policyName, stmtName string, createIfMissing bool) *ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_Config {
+	if s == nil || *s == nil {
+		return nil
+	}
+
+	deviceObj, ok := (*s).(*ocbinds.Device)
+	if !ok || deviceObj == nil {
+		return nil
+	}
+	ygot.BuildEmptyTree(deviceObj)
+
+	if deviceObj.RoutingPolicy == nil {
+		if !createIfMissing {
+			return nil
+		}
+		deviceObj.RoutingPolicy = &ocbinds.OpenconfigRoutingPolicy_RoutingPolicy{}
+	}
+	if deviceObj.RoutingPolicy.PolicyDefinitions == nil {
+		if !createIfMissing {
+			return nil
+		}
+		deviceObj.RoutingPolicy.PolicyDefinitions = &ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions{}
+	}
+
+	pdObj, ok := deviceObj.RoutingPolicy.PolicyDefinitions.PolicyDefinition[policyName]
+	if !ok || pdObj == nil {
+		if !createIfMissing {
+			return nil
+		}
+		var err error
+		pdObj, err = deviceObj.RoutingPolicy.PolicyDefinitions.NewPolicyDefinition(policyName)
+		if err != nil || pdObj == nil {
+			return nil
+		}
+	}
+	ygot.BuildEmptyTree(pdObj)
+
+	stmtObj, ok := pdObj.Statements.Statement[stmtName]
+	if !ok || stmtObj == nil {
+		if !createIfMissing {
+			return nil
+		}
+		var err error
+		stmtObj, err = pdObj.Statements.NewStatement(stmtName)
+		if err != nil || stmtObj == nil {
+			return nil
+		}
+	}
+	ygot.BuildEmptyTree(stmtObj)
+	return stmtObj.Actions.Config
 }
 
 func parseRpolPolicyNameValue(v interface{}) (string, bool) {
@@ -164,10 +238,116 @@ func parseRpolPolicyNameFromParam(param interface{}) (string, bool) {
 	return "", false
 }
 
+func parseRpolPolicyResultValue(v interface{}) (ocbinds.E_OpenconfigRoutingPolicy_PolicyResultType, bool) {
+	switch val := v.(type) {
+	case ocbinds.E_OpenconfigRoutingPolicy_PolicyResultType:
+		switch val {
+		case ocbinds.OpenconfigRoutingPolicy_PolicyResultType_ACCEPT_ROUTE,
+			ocbinds.OpenconfigRoutingPolicy_PolicyResultType_REJECT_ROUTE:
+			return val, true
+		}
+	case string:
+		s := strings.ToUpper(strings.TrimSpace(val))
+		switch s {
+		case "ACCEPT_ROUTE":
+			return ocbinds.OpenconfigRoutingPolicy_PolicyResultType_ACCEPT_ROUTE, true
+		case "REJECT_ROUTE":
+			return ocbinds.OpenconfigRoutingPolicy_PolicyResultType_REJECT_ROUTE, true
+		}
+	}
+	return ocbinds.OpenconfigRoutingPolicy_PolicyResultType_UNSET, false
+}
+
+func parseRpolPolicyResultFromParam(param interface{}) (ocbinds.E_OpenconfigRoutingPolicy_PolicyResultType, bool) {
+	if param == nil {
+		return ocbinds.OpenconfigRoutingPolicy_PolicyResultType_UNSET, false
+	}
+	if p, ok := parseRpolPolicyResultValue(param); ok {
+		return p, true
+	}
+
+	rv := reflect.ValueOf(param)
+	for rv.IsValid() && (rv.Kind() == reflect.Interface || rv.Kind() == reflect.Ptr) {
+		if rv.IsNil() {
+			return ocbinds.OpenconfigRoutingPolicy_PolicyResultType_UNSET, false
+		}
+		rv = rv.Elem()
+	}
+	if !rv.IsValid() {
+		return ocbinds.OpenconfigRoutingPolicy_PolicyResultType_UNSET, false
+	}
+
+	if rv.Kind() == reflect.Struct {
+		fv := rv.FieldByName("PolicyResult")
+		if fv.IsValid() && fv.CanInterface() {
+			if p, ok := parseRpolPolicyResultValue(fv.Interface()); ok {
+				return p, true
+			}
+		}
+	}
+
+	if rv.Kind() == reflect.Map {
+		for _, mk := range rv.MapKeys() {
+			k := fmt.Sprint(mk.Interface())
+			if k == "policy-result" || strings.HasSuffix(k, ":policy-result") {
+				mv := rv.MapIndex(mk)
+				if mv.IsValid() && mv.CanInterface() {
+					if p, ok := parseRpolPolicyResultValue(mv.Interface()); ok {
+						return p, true
+					}
+				}
+			}
+		}
+	}
+	return ocbinds.OpenconfigRoutingPolicy_PolicyResultType_UNSET, false
+}
+
+func rpolPolicyResultToRouteOp(v ocbinds.E_OpenconfigRoutingPolicy_PolicyResultType) (string, bool) {
+	switch v {
+	case ocbinds.OpenconfigRoutingPolicy_PolicyResultType_ACCEPT_ROUTE:
+		return rpolRouteOpPermit, true
+	case ocbinds.OpenconfigRoutingPolicy_PolicyResultType_REJECT_ROUTE:
+		return rpolRouteOpDeny, true
+	default:
+		return "", false
+	}
+}
+
+func rpolRouteOpToPolicyResult(v string) (ocbinds.E_OpenconfigRoutingPolicy_PolicyResultType, bool) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case rpolRouteOpPermit:
+		return ocbinds.OpenconfigRoutingPolicy_PolicyResultType_ACCEPT_ROUTE, true
+	case rpolRouteOpDeny:
+		return ocbinds.OpenconfigRoutingPolicy_PolicyResultType_REJECT_ROUTE, true
+	default:
+		return ocbinds.OpenconfigRoutingPolicy_PolicyResultType_UNSET, false
+	}
+}
+
+func parseRpolStmtNameToUint16(stmtName string) (uint16, error) {
+	s := strings.TrimSpace(stmtName)
+	if s == "" {
+		return 0, tlerr.InvalidArgsError{Format: "routing-policy statement name is empty"}
+	}
+	u64, err := strconv.ParseUint(s, 10, 16)
+	if err != nil || u64 == 0 {
+		return 0, tlerr.InvalidArgsError{Format: "routing-policy statement name must be an integer in range 1..65535"}
+	}
+	return uint16(u64), nil
+}
+
 func makeRpolRouteMapSetResMap(policyName string, fields map[string]string) map[string]map[string]db.Value {
 	return map[string]map[string]db.Value{
 		rpolRouteMapSetTbl: {
 			policyName: db.Value{Field: fields},
+		},
+	}
+}
+
+func makeRpolRouteMapResMap(policyName, stmtName string, fields map[string]string) map[string]map[string]db.Value {
+	return map[string]map[string]db.Value{
+		rpolRouteMapTbl: {
+			policyName + "|" + stmtName: db.Value{Field: fields},
 		},
 	}
 }
@@ -181,10 +361,13 @@ var YangToDb_routing_policy_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 	}
 
 	if inParams.oper == DELETE {
-		return makeRpolRouteMapSetResMap(reqInfo.policyName, nil), nil
+		if reqInfo.targetPath == rpolTargetPolicyDefCfg {
+			return makeRpolRouteMapSetResMap(reqInfo.policyName, nil), nil
+		}
+		return makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, map[string]string{rpolRouteOperationFld: ""}), nil
 	}
 
-	if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == rpolPolicyDefNameLeaf {
+	if reqInfo.targetPath == rpolTargetPolicyDefCfg && (reqInfo.targetLeaf == "" || reqInfo.targetLeaf == rpolPolicyDefNameLeaf) {
 		if name, ok := parseRpolPolicyNameFromParam(inParams.param); ok && name != reqInfo.policyName {
 			return res, tlerr.InvalidArgsError{Format: fmt.Sprintf("policy-definition name payload (%s) does not match key (%s)", name, reqInfo.policyName)}
 		}
@@ -196,8 +379,27 @@ var YangToDb_routing_policy_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 		}
 		return makeRpolRouteMapSetResMap(reqInfo.policyName, map[string]string{}), nil
 	}
+	if reqInfo.targetPath == rpolTargetStmtActionsCfg && (reqInfo.targetLeaf == "" || reqInfo.targetLeaf == rpolPolicyResultLeaf) {
+		_, err := parseRpolStmtNameToUint16(reqInfo.stmtName)
+		if err != nil {
+			return res, err
+		}
+		polRes, ok := parseRpolPolicyResultFromParam(inParams.param)
+		if !ok {
+			cfgObj := getRpolPolicyStmtActionsCfgObj(inParams.ygRoot, reqInfo.policyName, reqInfo.stmtName, false)
+			if cfgObj == nil {
+				return res, tlerr.InvalidArgsError{Format: "routing-policy statement actions config policy-result is missing in request payload"}
+			}
+			polRes = cfgObj.PolicyResult
+		}
+		routeOp, ok := rpolPolicyResultToRouteOp(polRes)
+		if !ok {
+			return res, tlerr.InvalidArgsError{Format: "unsupported routing-policy policy-result value"}
+		}
+		return makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, map[string]string{rpolRouteOperationFld: routeOp}), nil
+	}
 
-	return res, tlerr.NotSupportedError{Format: "unsupported leaf under routing-policy policy-definition config", Path: inParams.requestUri}
+	return res, tlerr.NotSupportedError{Format: "unsupported leaf under routing-policy mapping", Path: inParams.requestUri}
 }
 
 var DbToYang_routing_policy_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) error {
@@ -211,19 +413,43 @@ var DbToYang_routing_policy_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams)
 		return tlerr.InvalidArgsError{Format: "ConfigDB nil for routing-policy mapping"}
 	}
 
-	_, err = cfgDb.GetEntry(&db.TableSpec{Name: rpolRouteMapSetTbl}, db.Key{Comp: []string{reqInfo.policyName}})
+	if reqInfo.targetPath == rpolTargetPolicyDefCfg {
+		_, err = cfgDb.GetEntry(&db.TableSpec{Name: rpolRouteMapSetTbl}, db.Key{Comp: []string{reqInfo.policyName}})
+		if err != nil {
+			return err
+		}
+
+		cfgObj := getRpolPolicyDefCfgObj(inParams.ygRoot, reqInfo.policyName, true)
+		if cfgObj == nil {
+			return tlerr.InvalidArgsError{Format: "Unable to locate routing-policy policy-definition config object in YANG tree"}
+		}
+		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == rpolPolicyDefNameLeaf {
+			name := reqInfo.policyName
+			cfgObj.Name = &name
+		}
+		return nil
+	}
+
+	_, err = parseRpolStmtNameToUint16(reqInfo.stmtName)
+	if err != nil {
+		return err
+	}
+	entry, err := cfgDb.GetEntry(&db.TableSpec{Name: rpolRouteMapTbl}, db.Key{Comp: []string{reqInfo.policyName, reqInfo.stmtName}})
 	if err != nil {
 		return err
 	}
 
-	cfgObj := getRpolPolicyDefCfgObj(inParams.ygRoot, reqInfo.policyName, true)
+	cfgObj := getRpolPolicyStmtActionsCfgObj(inParams.ygRoot, reqInfo.policyName, reqInfo.stmtName, true)
 	if cfgObj == nil {
-		return tlerr.InvalidArgsError{Format: "Unable to locate routing-policy policy-definition config object in YANG tree"}
+		return tlerr.InvalidArgsError{Format: "Unable to locate routing-policy statement actions config object in YANG tree"}
 	}
-	if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == rpolPolicyDefNameLeaf {
-		name := reqInfo.policyName
-		cfgObj.Name = &name
+	if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == rpolPolicyResultLeaf {
+		routeOp, ok := entry.Field[rpolRouteOperationFld]
+		if ok && strings.TrimSpace(routeOp) != "" {
+			if polRes, conv := rpolRouteOpToPolicyResult(routeOp); conv {
+				cfgObj.PolicyResult = polRes
+			}
+		}
 	}
-
 	return nil
 }
