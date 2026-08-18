@@ -1136,3 +1136,72 @@ func Test_openconfig_network_instance_bgp_global_afi_safi_ipv6_unicast_config(t 
 
 	unloadDB(db.ConfigDB, cleanupTbl)
 }
+
+func Test_openconfig_network_instance_table_connections_table_connection_config_import_policy(t *testing.T) {
+	var url, urlInputBodyJSON string
+
+	preReqMap := map[string]interface{}{
+		"ROUTE_MAP_SET": map[string]interface{}{
+			"RM-REDIST-1": map[string]interface{}{},
+			"RM-REDIST-2": map[string]interface{}{},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"ROUTE_REDISTRIBUTE": map[string]interface{}{
+			"default|static|bgp|ipv4": "",
+		},
+		"ROUTE_MAP_SET": map[string]interface{}{
+			"RM-REDIST-1": "",
+			"RM-REDIST-2": "",
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	url = "/openconfig-network-instance:network-instances/network-instance[name=default]/table-connections/table-connection[src-protocol=STATIC][dst-protocol=BGP][address-family=IPV4]/config/import-policy"
+	urlInputBodyJSON = "{\"openconfig-network-instance:import-policy\":[\"RM-REDIST-1\"]}"
+	t.Run("PATCH network-instance table-connection import-policy", processSetRequest(url, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"ROUTE_REDISTRIBUTE": map[string]interface{}{
+			"default|static|bgp|ipv4": map[string]interface{}{
+				"route_map": "RM-REDIST-1",
+			},
+		},
+	}
+	t.Run("Verify ROUTE_REDISTRIBUTE route_map mapping", verifyDbResult(rclient, "ROUTE_REDISTRIBUTE|default|static|bgp|ipv4", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	expectedGetJSON := "{\"openconfig-network-instance:import-policy\":[\"RM-REDIST-1\"]}"
+	t.Run("GET network-instance table-connection import-policy", processGetRequest(url, nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	url = "/openconfig-network-instance:network-instances/network-instance[name=default]/table-connections/table-connection[src-protocol=STATIC][dst-protocol=BGP][address-family=IPV4]/config"
+	urlInputBodyJSON = "{\"openconfig-network-instance:config\":{\"import-policy\":[\"RM-REDIST-2\"]}}"
+	t.Run("PATCH network-instance table-connection config", processSetRequest(url, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"ROUTE_REDISTRIBUTE": map[string]interface{}{
+			"default|static|bgp|ipv4": map[string]interface{}{
+				"route_map": "RM-REDIST-2",
+			},
+		},
+	}
+	t.Run("Verify ROUTE_REDISTRIBUTE route_map update", verifyDbResult(rclient, "ROUTE_REDISTRIBUTE|default|static|bgp|ipv4", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("DELETE network-instance table-connection config import-policy", processDeleteRequest(url+"/import-policy", false))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"ROUTE_REDISTRIBUTE": map[string]interface{}{
+			"default|static|bgp|ipv4": map[string]interface{}{},
+		},
+	}
+	t.Run("Verify ROUTE_REDISTRIBUTE route_map cleared", verifyDbResult(rclient, "ROUTE_REDISTRIBUTE|default|static|bgp|ipv4", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
