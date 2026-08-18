@@ -49,6 +49,7 @@ func init() {
 	XlateFuncBind("YangToDb_intf_type_xfmr", YangToDb_intf_type_xfmr)
 	XlateFuncBind("DbToYang_intf_type_xfmr", DbToYang_intf_type_xfmr)
 	XlateFuncBind("DbToYang_intf_admin_status_xfmr", DbToYang_intf_admin_status_xfmr)
+	XlateFuncBind("DbToYang_intf_oper_status_xfmr", DbToYang_intf_oper_status_xfmr)
 	XlateFuncBind("YangToDb_intf_enabled_xfmr", YangToDb_intf_enabled_xfmr)
 	XlateFuncBind("DbToYang_intf_enabled_xfmr", DbToYang_intf_enabled_xfmr)
 	XlateFuncBind("DbToYang_intf_eth_aggr_id_xfmr", DbToYang_intf_eth_aggr_id_xfmr)
@@ -111,6 +112,7 @@ func init() {
 
 const (
 	PORT_ADMIN_STATUS = "admin_status"
+	PORT_OPER_STATUS  = "oper_status"
 	PORT_SPEED        = "speed"
 	PORT_AUTONEG      = "autoneg"
 
@@ -798,6 +800,55 @@ var DbToYang_intf_admin_status_xfmr FieldXfmrDbtoYang = func(inParams XfmrParams
 	}
 
 	return result, err
+}
+
+func operStatusDbToOC(operStatus string) ocbinds.E_OpenconfigInterfaces_Interfaces_Interface_State_OperStatus {
+	switch operStatus {
+	case "up":
+		return ocbinds.OpenconfigInterfaces_Interfaces_Interface_State_OperStatus_UP
+	case "testing":
+		return ocbinds.OpenconfigInterfaces_Interfaces_Interface_State_OperStatus_TESTING
+	case "unknown":
+		return ocbinds.OpenconfigInterfaces_Interfaces_Interface_State_OperStatus_UNKNOWN
+	case "not present":
+		return ocbinds.OpenconfigInterfaces_Interfaces_Interface_State_OperStatus_NOT_PRESENT
+	default:
+		return ocbinds.OpenconfigInterfaces_Interfaces_Interface_State_OperStatus_DOWN
+	}
+}
+
+var DbToYang_intf_oper_status_xfmr FieldXfmrDbtoYang = func(inParams XfmrParams) (map[string]interface{}, error) {
+	result := make(map[string]interface{})
+
+	data := (*inParams.dbDataMap)[inParams.curDb]
+
+	intfType, _, ierr := getIntfTypeByName(inParams.key)
+	if intfType == IntfTypeUnset || ierr != nil {
+		log.Info("DbToYang_intf_oper_status_xfmr - Invalid interface type IntfTypeUnset")
+		return result, errors.New("Invalid interface type IntfTypeUnset")
+	}
+	intTbl := IntfTypeTblMap[intfType]
+
+	tblName, _ := getPortTableNameByDBId(intTbl, inParams.curDb)
+	if _, ok := data[tblName]; !ok {
+		log.Info("DbToYang_intf_oper_status_xfmr table not found : ", tblName)
+		return result, errors.New("table not found : " + tblName)
+	}
+	pTbl := data[tblName]
+	if _, ok := pTbl[inParams.key]; !ok {
+		log.Info("DbToYang_intf_oper_status_xfmr Interface not found : ", inParams.key)
+		return result, errors.New("Interface not found : " + inParams.key)
+	}
+	prtInst := pTbl[inParams.key]
+	operStatus, ok := prtInst.Field[PORT_OPER_STATUS]
+	if ok {
+		status := operStatusDbToOC(operStatus)
+		result["oper-status"] = ocbinds.E_OpenconfigInterfaces_Interfaces_Interface_State_OperStatus.ΛMap(status)["E_OpenconfigInterfaces_Interfaces_Interface_State_OperStatus"][int64(status)].Name
+	} else {
+		log.Info("Oper status field not found in DB")
+	}
+
+	return result, nil
 }
 
 var YangToDb_intf_enabled_xfmr FieldXfmrYangToDb = func(inParams XfmrParams) (map[string]string, error) {

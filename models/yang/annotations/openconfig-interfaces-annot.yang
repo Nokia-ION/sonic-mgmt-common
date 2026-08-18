@@ -92,6 +92,13 @@ module openconfig-interfaces-annot {
         }
     }
 
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:state/oc-intf:oper-status {
+        deviate add {
+            sonic-ext:field-transformer "intf_oper_status_xfmr";
+            sonic-ext:field-name "oper_status";
+        }
+    }
+
     deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:config/oc-intf:enabled {
         deviate add {
             sonic-ext:field-transformer "intf_enabled_xfmr";
