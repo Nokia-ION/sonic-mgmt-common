@@ -575,7 +575,7 @@ func resolveRstpRootPort(appDb *db.DB, rootPortName string) (uint16, bool) {
 		return 0, false
 	}
 	if strings.EqualFold(rootPortName, "Root") {
-		return 0, true
+		return 0, false
 	}
 	appEntry, err := getApplProducerStateEntry(appDb, STP_MST_PORT_APP_TBL, mstPortAppKey(rootPortName))
 	if err != nil || !appEntry.IsPopulated() {
@@ -709,9 +709,11 @@ func fillRstpStateFromDb(state *ocbinds.OpenconfigSpanningTree_Stp_Rstp_State, c
 	if cost, ok := resolveRstpRootCost(appDb, appEntry); ok {
 		state.RootCost = &cost
 	}
-	if rootPortName := appEntry.Get("root_port"); rootPortName != "" {
-		if portNum, ok := resolveRstpRootPort(appDb, rootPortName); ok {
-			state.RootPort = &portNum
+	if !isRstpRootBridge(appEntry) {
+		if rootPortName := strings.TrimSpace(appEntry.Get("root_port")); rootPortName != "" {
+			if portNum, ok := resolveRstpRootPort(appDb, rootPortName); ok {
+				state.RootPort = &portNum
+			}
 		}
 	}
 	if val := appEntry.Get("hold_time"); val != "" {
