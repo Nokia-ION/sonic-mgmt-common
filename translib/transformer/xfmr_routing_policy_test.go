@@ -76,6 +76,63 @@ func Test_openconfig_routing_policy_policy_definition_config_name(t *testing.T) 
 	unloadDB(db.ConfigDB, cleanupTbl)
 }
 
+func Test_openconfig_routing_policy_policy_definition_statement_name(t *testing.T) {
+	var url, urlInputBodyJSON string
+
+	preReqMap := map[string]interface{}{
+		"ROUTE_MAP_SET": map[string]interface{}{
+			"POL1": map[string]interface{}{},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": "",
+		},
+		"ROUTE_MAP_SET": map[string]interface{}{
+			"POL1": "",
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	url = "/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition[name=POL1]/statements/statement[name=10]/name"
+	urlInputBodyJSON = "{\"openconfig-routing-policy:name\":\"10\"}"
+	t.Run("PATCH routing-policy statement name", processSetRequest(url, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": map[string]interface{}{},
+		},
+	}
+	t.Run("Verify ROUTE_MAP statement row", verifyDbResult(rclient, "ROUTE_MAP|POL1|10", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	expectedGetJSON := "{\"openconfig-routing-policy:name\":\"10\"}"
+	t.Run("GET routing-policy statement name", processGetRequest(url, nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	expectedErr := tlerr.InvalidArgsError{
+		Format: "statement name payload (20) does not match key (10)",
+	}
+	urlInputBodyJSON = "{\"openconfig-routing-policy:name\":\"20\"}"
+	t.Run("PATCH statement name mismatch rejected", processSetRequest(url, urlInputBodyJSON, "PATCH", true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	t.Run("DELETE routing-policy statement name", processDeleteRequest(url, false))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": map[string]interface{}{},
+		},
+	}
+	t.Run("Verify ROUTE_MAP statement row deleted", verifyDbResult(rclient, "ROUTE_MAP|POL1|10", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
 func Test_openconfig_routing_policy_policy_definition_statement_actions_config_policy_result(t *testing.T) {
 	var url, urlInputBodyJSON string
 
