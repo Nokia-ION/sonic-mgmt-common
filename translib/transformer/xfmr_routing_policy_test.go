@@ -133,6 +133,56 @@ func Test_openconfig_routing_policy_policy_definition_statement_name(t *testing.
 	unloadDB(db.ConfigDB, cleanupTbl)
 }
 
+func Test_openconfig_routing_policy_defined_sets_bgp_defined_sets_community_set_name(t *testing.T) {
+	var url, urlInputBodyJSON string
+
+	preReqMap := map[string]interface{}{}
+	cleanupTbl := map[string]interface{}{
+		"COMMUNITY_SET": map[string]interface{}{
+			"COMM1": "",
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	url = "/openconfig-routing-policy:routing-policy/defined-sets/bgp-defined-sets/community-sets/community-set[community-set-name=COMM1]/community-set-name"
+	urlInputBodyJSON = "{\"openconfig-bgp-policy:community-set-name\":\"COMM1\"}"
+	t.Run("PATCH routing-policy community-set-name", processSetRequest(url, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"COMMUNITY_SET": map[string]interface{}{
+			"COMM1": map[string]interface{}{},
+		},
+	}
+	t.Run("Verify COMMUNITY_SET row", verifyDbResult(rclient, "COMMUNITY_SET|COMM1", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	expectedGetJSON := "{\"openconfig-bgp-policy:community-set-name\":\"COMM1\"}"
+	t.Run("GET routing-policy community-set-name", processGetRequest(url, nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	expectedErr := tlerr.InvalidArgsError{
+		Format: "community-set-name payload (COMM2) does not match key (COMM1)",
+	}
+	urlInputBodyJSON = "{\"openconfig-bgp-policy:community-set-name\":\"COMM2\"}"
+	t.Run("PATCH community-set-name mismatch rejected", processSetRequest(url, urlInputBodyJSON, "PATCH", true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	t.Run("DELETE routing-policy community-set-name", processDeleteRequest(url, false))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"COMMUNITY_SET": map[string]interface{}{
+			"COMM1": map[string]interface{}{},
+		},
+	}
+	t.Run("Verify COMMUNITY_SET row deleted", verifyDbResult(rclient, "COMMUNITY_SET|COMM1", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
 func Test_openconfig_routing_policy_policy_definition_statement_actions_config_policy_result(t *testing.T) {
 	var url, urlInputBodyJSON string
 
