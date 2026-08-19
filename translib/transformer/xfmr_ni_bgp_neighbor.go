@@ -40,8 +40,8 @@ const (
 	niBgpNbrAllowAsInFld   = "allow_as_in"
 	niBgpNbrAllowAsCntFld  = "allow_as_count"
 	niBgpNbrAllowAsOrigFld = "allow_as_origin"
-	niBgpAfiSafiIPv4       = "ipv4_unicast"
-	niBgpAfiSafiIPv6       = "ipv6_unicast"
+	niBgpNbrAfiSafiIPv4    = "ipv4_unicast"
+	niBgpNbrAfiSafiIPv6    = "ipv6_unicast"
 )
 
 var niBgpNbrReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/protocols/protocol\[identifier=BGP\]\[name=bgp\]/bgp/neighbors/neighbor\[neighbor-address=([^\]]+)\]/config(?:/(peer-group|enabled))?$`)
@@ -120,10 +120,10 @@ func normalizeNiBgpNbrAfiSafiName(v string) (string, bool) {
 	}
 	s = strings.ToLower(strings.ReplaceAll(s, "-", "_"))
 	switch s {
-	case niBgpAfiSafiIPv4:
-		return niBgpAfiSafiIPv4, true
-	case niBgpAfiSafiIPv6:
-		return niBgpAfiSafiIPv6, true
+	case niBgpNbrAfiSafiIPv4:
+		return niBgpNbrAfiSafiIPv4, true
+	case niBgpNbrAfiSafiIPv6:
+		return niBgpNbrAfiSafiIPv6, true
 	default:
 		return "", false
 	}
@@ -285,9 +285,9 @@ func getNiBgpNbrAfApplyPolicyCfgObj(s *ygot.GoStruct, niName, neighborAddr, afiS
 
 	afiKey := ocbinds.E_OpenconfigBgpTypes_AFI_SAFI_TYPE(0)
 	switch afiSafi {
-	case niBgpAfiSafiIPv4:
+	case niBgpNbrAfiSafiIPv4:
 		afiKey = ocbinds.OpenconfigBgpTypes_AFI_SAFI_TYPE_IPV4_UNICAST
-	case niBgpAfiSafiIPv6:
+	case niBgpNbrAfiSafiIPv6:
 		afiKey = ocbinds.OpenconfigBgpTypes_AFI_SAFI_TYPE_IPV6_UNICAST
 	default:
 		return nil
@@ -612,8 +612,8 @@ func makeNiBgpNbrResMap(niName, neighborAddr string, fields map[string]string) m
 func makeNiBgpNbrAfResMap(niName, neighborAddr string, fields map[string]string) map[string]map[string]db.Value {
 	return map[string]map[string]db.Value{
 		niBgpNbrAfTbl: {
-			niName + "|" + neighborAddr + "|" + niBgpAfiSafiIPv4: db.Value{Field: fields},
-			niName + "|" + neighborAddr + "|" + niBgpAfiSafiIPv6: db.Value{Field: fields},
+			niName + "|" + neighborAddr + "|" + niBgpNbrAfiSafiIPv4: db.Value{Field: fields},
+			niName + "|" + neighborAddr + "|" + niBgpNbrAfiSafiIPv6: db.Value{Field: fields},
 		},
 	}
 }
@@ -984,8 +984,8 @@ var DbToYang_ni_bgp_nbr_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams)
 		return nil
 	}
 	if reqInfo.targetPath == "neighbor-as-path-options-config" {
-		v4Entry, errV4 := cfgDb.GetEntry(&db.TableSpec{Name: niBgpNbrAfTbl}, db.Key{Comp: []string{reqInfo.niName, reqInfo.neighborAddr, niBgpAfiSafiIPv4}})
-		v6Entry, errV6 := cfgDb.GetEntry(&db.TableSpec{Name: niBgpNbrAfTbl}, db.Key{Comp: []string{reqInfo.niName, reqInfo.neighborAddr, niBgpAfiSafiIPv6}})
+		v4Entry, errV4 := cfgDb.GetEntry(&db.TableSpec{Name: niBgpNbrAfTbl}, db.Key{Comp: []string{reqInfo.niName, reqInfo.neighborAddr, niBgpNbrAfiSafiIPv4}})
+		v6Entry, errV6 := cfgDb.GetEntry(&db.TableSpec{Name: niBgpNbrAfTbl}, db.Key{Comp: []string{reqInfo.niName, reqInfo.neighborAddr, niBgpNbrAfiSafiIPv6}})
 		if errV4 != nil && errV6 != nil {
 			if errV4 != nil {
 				return errV4
