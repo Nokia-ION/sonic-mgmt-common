@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/Azure/sonic-mgmt-common/translib/db"
+	"github.com/Azure/sonic-mgmt-common/translib/tlerr"
 )
 
 const stpTestIfName = "Ethernet0"
@@ -389,4 +390,27 @@ func Test_get_stp_full_tree(t *testing.T) {
 
 	url := "/openconfig-spanning-tree:stp"
 	t.Run("get full STP tree", processGetRequest(url, nil, "", false))
+}
+
+func Test_get_rstp_when_disabled(t *testing.T) {
+	loadDB(db.ConfigDB, map[string]interface{}{})
+	time.Sleep(1 * time.Second)
+
+	notFound := tlerr.NotFoundError{Format: "Resource not found"}
+	for _, url := range []string{
+		"/openconfig-spanning-tree:stp/rstp",
+		"/openconfig-spanning-tree:stp/rstp/config/bridge-priority",
+		"/openconfig-spanning-tree:stp/rstp/state",
+		"/openconfig-spanning-tree:stp/rstp/state/root-port",
+	} {
+		url := url
+		t.Run(url, processGetRequest(url, nil, "", true, notFound))
+	}
+
+	t.Run("get /stp omits rstp", processGetRequest(
+		"/openconfig-spanning-tree:stp",
+		nil,
+		`{"openconfig-spanning-tree:stp":{}}`,
+		false,
+	))
 }
