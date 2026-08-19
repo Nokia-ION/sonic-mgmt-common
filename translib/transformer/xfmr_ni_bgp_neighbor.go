@@ -35,6 +35,7 @@ const (
 	niBgpNbrTbl           = "BGP_NEIGHBOR"
 	niBgpNbrAfTbl         = "BGP_NEIGHBOR_AF"
 	niBgpNbrPeerGroupFld  = "peer_group_name"
+	niBgpNbrAsnFld        = "asn"
 	niBgpNbrAdminStatus   = "admin_status"
 	niBgpNbrRouteMapInFld = "route_map_in"
 	niBgpNbrAllowAsInFld  = "allow_as_in"
@@ -43,7 +44,7 @@ const (
 	niBgpNbrAfiSafiIPv6   = "ipv6_unicast"
 )
 
-var niBgpNbrReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/protocols/protocol\[identifier=BGP\]\[name=bgp\]/bgp/neighbors/neighbor\[neighbor-address=([^\]]+)\]/config(?:/(peer-group|enabled))?$`)
+var niBgpNbrReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/protocols/protocol\[identifier=BGP\]\[name=bgp\]/bgp/neighbors/neighbor\[neighbor-address=([^\]]+)\]/config(?:/(peer-group|enabled|peer-as))?$`)
 var niBgpNbrAsPathOptReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/protocols/protocol\[identifier=BGP\]\[name=bgp\]/bgp/neighbors/neighbor\[neighbor-address=([^\]]+)\]/as-path-options/config(?:/(allow-own-as))?$`)
 var niBgpNbrAfApplyReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/protocols/protocol\[identifier=BGP\]\[name=bgp\]/bgp/neighbors/neighbor\[neighbor-address=([^\]]+)\]/afi-safis/afi-safi\[afi-safi-name=([^\]]+)\]/apply-policy/config(?:/(import-policy))?$`)
 
@@ -51,7 +52,7 @@ type niBgpNbrReqInfo struct {
 	niName       string
 	neighborAddr string
 	afiSafi      string
-	targetLeaf   string // "", "peer-group", "enabled"
+	targetLeaf   string // "", "peer-group", "enabled", "peer-as"
 	targetPath   string
 }
 
@@ -600,6 +601,66 @@ func parseNiBgpNbrEnabled(inParams XfmrParams) (*bool, error) {
 	return cfgObj.Enabled, nil
 }
 
+func parseNiBgpNbrPeerAsFromParam(param interface{}) (*uint32, bool) {
+	if param == nil {
+		return nil, false
+	}
+	if asn, ok := parseNiBgpAsValue(param); ok {
+		return asn, true
+	}
+
+	rv := reflect.ValueOf(param)
+	for rv.IsValid() && (rv.Kind() == reflect.Interface || rv.Kind() == reflect.Ptr) {
+		if rv.IsNil() {
+			return nil, false
+		}
+		rv = rv.Elem()
+	}
+	if !rv.IsValid() {
+		return nil, false
+	}
+
+	if rv.Kind() == reflect.Struct {
+		fv := rv.FieldByName("PeerAs")
+		if fv.IsValid() && fv.CanInterface() {
+			if asn, ok := parseNiBgpAsValue(fv.Interface()); ok {
+				return asn, true
+			}
+		}
+	}
+
+	if rv.Kind() == reflect.Map {
+		for _, mk := range rv.MapKeys() {
+			k := fmt.Sprint(mk.Interface())
+			if k == "peer-as" || strings.HasSuffix(k, ":peer-as") {
+				mv := rv.MapIndex(mk)
+				if mv.IsValid() && mv.CanInterface() {
+					if asn, ok := parseNiBgpAsValue(mv.Interface()); ok {
+						return asn, true
+					}
+				}
+			}
+		}
+	}
+	return nil, false
+}
+
+func parseNiBgpNbrPeerAs(inParams XfmrParams) (*uint32, error) {
+	reqInfo, err := parseNiBgpNbrRequestUri(inParams.requestUri)
+	if err != nil {
+		return nil, err
+	}
+	if asn, ok := parseNiBgpNbrPeerAsFromParam(inParams.param); ok {
+		return asn, nil
+	}
+
+	cfgObj := getNiBgpNbrCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.neighborAddr, false)
+	if cfgObj == nil || cfgObj.PeerAs == nil {
+		return nil, tlerr.InvalidArgsError{Format: "BGP neighbor peer-as is missing in request payload"}
+	}
+	return cfgObj.PeerAs, nil
+}
+
 func makeNiBgpNbrResMap(niName, neighborAddr string, fields map[string]string) map[string]map[string]db.Value {
 	return map[string]map[string]db.Value{
 		niBgpNbrTbl: {
@@ -857,10 +918,12 @@ var YangToDb_ni_bgp_nbr_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 		switch reqInfo.targetLeaf {
 		case "peer-group":
 			return makeNiBgpNbrResMap(reqInfo.niName, reqInfo.neighborAddr, map[string]string{niBgpNbrPeerGroupFld: ""}), nil
+		case "peer-as":
+			return makeNiBgpNbrResMap(reqInfo.niName, reqInfo.neighborAddr, map[string]string{niBgpNbrAsnFld: ""}), nil
 		case "enabled":
 			return makeNiBgpNbrResMap(reqInfo.niName, reqInfo.neighborAddr, map[string]string{niBgpNbrAdminStatus: ""}), nil
 		default:
-			return res, tlerr.NotSupportedError{Format: "DELETE supported only for /neighbors/neighbor/config/peer-group or /neighbors/neighbor/config/enabled", Path: inParams.requestUri}
+			return res, tlerr.NotSupportedError{Format: "DELETE supported only for /neighbors/neighbor/config/peer-group, /neighbors/neighbor/config/peer-as, or /neighbors/neighbor/config/enabled", Path: inParams.requestUri}
 		}
 	}
 
@@ -907,6 +970,12 @@ var YangToDb_ni_bgp_nbr_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 			return res, err
 		}
 		fields[niBgpNbrPeerGroupFld] = pg
+	case "peer-as":
+		asn, err := parseNiBgpNbrPeerAs(inParams)
+		if err != nil {
+			return res, err
+		}
+		fields[niBgpNbrAsnFld] = strconv.FormatUint(uint64(*asn), 10)
 	case "enabled":
 		enabled, err := parseNiBgpNbrEnabled(inParams)
 		if err != nil {
@@ -917,6 +986,9 @@ var YangToDb_ni_bgp_nbr_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 		if pg, ok := parseNiBgpNbrPeerGroupFromParam(inParams.param); ok {
 			fields[niBgpNbrPeerGroupFld] = pg
 		}
+		if asn, ok := parseNiBgpNbrPeerAsFromParam(inParams.param); ok {
+			fields[niBgpNbrAsnFld] = strconv.FormatUint(uint64(*asn), 10)
+		}
 		if enabled, ok := parseNiBgpNbrEnabledFromParam(inParams.param); ok {
 			fields[niBgpNbrAdminStatus] = niBgpNbrEnabledToAdminStatus(*enabled)
 		}
@@ -926,13 +998,16 @@ var YangToDb_ni_bgp_nbr_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 				if cfgObj.PeerGroup != nil && strings.TrimSpace(*cfgObj.PeerGroup) != "" {
 					fields[niBgpNbrPeerGroupFld] = strings.TrimSpace(*cfgObj.PeerGroup)
 				}
+				if cfgObj.PeerAs != nil {
+					fields[niBgpNbrAsnFld] = strconv.FormatUint(uint64(*cfgObj.PeerAs), 10)
+				}
 				if cfgObj.Enabled != nil {
 					fields[niBgpNbrAdminStatus] = niBgpNbrEnabledToAdminStatus(*cfgObj.Enabled)
 				}
 			}
 		}
 		if len(fields) == 0 {
-			return res, tlerr.InvalidArgsError{Format: "BGP neighbor config payload missing supported fields (peer-group/enabled)"}
+			return res, tlerr.InvalidArgsError{Format: "BGP neighbor config payload missing supported fields (peer-group/peer-as/enabled)"}
 		}
 	}
 	return makeNiBgpNbrResMap(reqInfo.niName, reqInfo.neighborAddr, fields), nil
@@ -964,6 +1039,17 @@ var DbToYang_ni_bgp_nbr_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams)
 		if ok && strings.TrimSpace(pg) != "" {
 			pg = strings.TrimSpace(pg)
 			cfgObj.PeerGroup = &pg
+		}
+	}
+	if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == "peer-as" {
+		asn, ok := entry.Field[niBgpNbrAsnFld]
+		if ok && strings.TrimSpace(asn) != "" {
+			asnU64, err := strconv.ParseUint(strings.TrimSpace(asn), 10, 32)
+			if err != nil {
+				return tlerr.InvalidArgsError{Format: fmt.Sprintf("invalid BGP_NEIGHBOR.asn value %q for neighbor %s in %s", asn, reqInfo.neighborAddr, reqInfo.niName)}
+			}
+			asnU32 := uint32(asnU64)
+			cfgObj.PeerAs = &asnU32
 		}
 	}
 	if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == "enabled" {
