@@ -797,12 +797,31 @@ func rpolSetCommunityInlineCommunitiesToSlice(cfgObj *ocbinds.OpenconfigRoutingP
 		case *ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_SetCommunity_Inline_Config_Communities_Union_Uint32:
 			out = append(out, strconv.FormatUint(uint64(v.Uint32), 10))
 		case *ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_SetCommunity_Inline_Config_Communities_Union_E_OpenconfigBgpTypes_BGP_WELL_KNOWN_STD_COMMUNITY:
-			out = append(out, strings.TrimSpace(v.E_OpenconfigBgpTypes_BGP_WELL_KNOWN_STD_COMMUNITY.String()))
+			if c, ok := rpolWellKnownStdCommunityToString(v.E_OpenconfigBgpTypes_BGP_WELL_KNOWN_STD_COMMUNITY); ok {
+				out = append(out, c)
+			} else {
+				return nil, tlerr.InvalidArgsError{Format: "unsupported set-community inline well-known community in request payload"}
+			}
 		default:
 			return nil, tlerr.InvalidArgsError{Format: "unsupported set-community inline communities value in request payload"}
 		}
 	}
 	return out, nil
+}
+
+func rpolWellKnownStdCommunityToString(v ocbinds.E_OpenconfigBgpTypes_BGP_WELL_KNOWN_STD_COMMUNITY) (string, bool) {
+	switch v {
+	case ocbinds.OpenconfigBgpTypes_BGP_WELL_KNOWN_STD_COMMUNITY_NOPEER:
+		return "NOPEER", true
+	case ocbinds.OpenconfigBgpTypes_BGP_WELL_KNOWN_STD_COMMUNITY_NO_ADVERTISE:
+		return "NO_ADVERTISE", true
+	case ocbinds.OpenconfigBgpTypes_BGP_WELL_KNOWN_STD_COMMUNITY_NO_EXPORT:
+		return "NO_EXPORT", true
+	case ocbinds.OpenconfigBgpTypes_BGP_WELL_KNOWN_STD_COMMUNITY_NO_EXPORT_SUBCONFED:
+		return "NO_EXPORT_SUBCONFED", true
+	default:
+		return "", false
+	}
 }
 
 func rpolSetCommunityInlineEncode(communities []string, additive bool) string {
