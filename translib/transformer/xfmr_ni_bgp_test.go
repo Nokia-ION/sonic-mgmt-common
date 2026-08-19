@@ -1192,6 +1192,17 @@ func Test_openconfig_network_instance_table_connections_table_connection_config_
 	t.Run("Verify ROUTE_REDISTRIBUTE route_map update", verifyDbResult(rclient, "ROUTE_REDISTRIBUTE|default|static|bgp|ipv4", expectedMap, false))
 	time.Sleep(1 * time.Second)
 
+	url = "/openconfig-network-instance:network-instances/network-instance[name=default]/table-connections/table-connection[src-protocol=STATIC][dst-protocol=BGP][address-family=IPV4]/config/import-policy"
+	urlInputBodyJSON = "{\"openconfig-network-instance:import-policy\":[\"RM-REDIST-1\",\"RM-REDIST-2\"]}"
+	expectedErr := tlerr.InvalidArgsError{
+		Format: "table-connection import-policy supports exactly one policy, got 2",
+	}
+	t.Run("PATCH network-instance table-connection import-policy rejects multiple values", processSetRequest(url, urlInputBodyJSON, "PATCH", true, expectedErr))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify ROUTE_REDISTRIBUTE route_map unchanged after invalid multi-value import-policy", verifyDbResult(rclient, "ROUTE_REDISTRIBUTE|default|static|bgp|ipv4", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	url = "/openconfig-network-instance:network-instances/network-instance[name=default]/table-connections/table-connection[src-protocol=STATIC][dst-protocol=BGP][address-family=IPV4]/config"
 	t.Run("DELETE network-instance table-connection config import-policy", processDeleteRequest(url+"/import-policy", false))
 	time.Sleep(1 * time.Second)
 

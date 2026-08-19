@@ -201,56 +201,59 @@ func getNiTableConnCfgObj(s *ygot.GoStruct, reqInfo *niTableConnReqInfo, createI
 	return tcObj.Config
 }
 
-func parseNiTableConnImportPolicyValue(v interface{}) (string, bool) {
+func parseNiTableConnImportPolicyValues(v interface{}) []string {
+	out := make([]string, 0)
 	switch val := v.(type) {
 	case string:
 		s := strings.TrimSpace(val)
-		return s, s != ""
+		if s != "" {
+			out = append(out, s)
+		}
 	case *string:
 		if val != nil {
 			s := strings.TrimSpace(*val)
-			return s, s != ""
+			if s != "" {
+				out = append(out, s)
+			}
 		}
 	case []string:
 		for _, p := range val {
 			if s := strings.TrimSpace(p); s != "" {
-				return s, true
+				out = append(out, s)
 			}
 		}
 	case []interface{}:
 		for _, it := range val {
-			if s, ok := parseNiTableConnImportPolicyValue(it); ok {
-				return s, true
-			}
+			out = append(out, parseNiTableConnImportPolicyValues(it)...)
 		}
 	}
-	return "", false
+	return out
 }
 
-func parseNiTableConnImportPolicyFromParam(param interface{}) (string, bool) {
+func parseNiTableConnImportPolicyFromParam(param interface{}) ([]string, bool) {
 	if param == nil {
-		return "", false
+		return nil, false
 	}
-	if v, ok := parseNiTableConnImportPolicyValue(param); ok {
-		return v, true
+	if values := parseNiTableConnImportPolicyValues(param); len(values) > 0 {
+		return values, true
 	}
 
 	rv := reflect.ValueOf(param)
 	for rv.IsValid() && (rv.Kind() == reflect.Interface || rv.Kind() == reflect.Ptr) {
 		if rv.IsNil() {
-			return "", false
+			return nil, false
 		}
 		rv = rv.Elem()
 	}
 	if !rv.IsValid() {
-		return "", false
+		return nil, false
 	}
 
 	if rv.Kind() == reflect.Struct {
 		fv := rv.FieldByName("ImportPolicy")
 		if fv.IsValid() && fv.CanInterface() {
-			if v, ok := parseNiTableConnImportPolicyValue(fv.Interface()); ok {
-				return v, true
+			if values := parseNiTableConnImportPolicyValues(fv.Interface()); len(values) > 0 {
+				return values, true
 			}
 		}
 	}
@@ -261,30 +264,43 @@ func parseNiTableConnImportPolicyFromParam(param interface{}) (string, bool) {
 			if k == niTableConnImportPolicyLeaf || strings.HasSuffix(k, ":"+niTableConnImportPolicyLeaf) {
 				mv := rv.MapIndex(mk)
 				if mv.IsValid() && mv.CanInterface() {
-					if v, ok := parseNiTableConnImportPolicyValue(mv.Interface()); ok {
-						return v, true
+					if values := parseNiTableConnImportPolicyValues(mv.Interface()); len(values) > 0 {
+						return values, true
 					}
 				}
 			}
 		}
 	}
-	return "", false
+	return nil, false
+}
+
+func parseNiTableConnSingleImportPolicy(values []string) (string, error) {
+	if len(values) == 0 {
+		return "", tlerr.InvalidArgsError{Format: "table-connection import-policy is missing in request payload"}
+	}
+	if len(values) > 1 {
+		return "", tlerr.InvalidArgsError{
+			Format: fmt.Sprintf("table-connection import-policy supports exactly one policy, got %d", len(values)),
+		}
+	}
+	return values[0], nil
 }
 
 func parseNiTableConnImportPolicy(inParams XfmrParams, reqInfo *niTableConnReqInfo) (string, error) {
-	if v, ok := parseNiTableConnImportPolicyFromParam(inParams.param); ok {
-		return v, nil
+	if values, ok := parseNiTableConnImportPolicyFromParam(inParams.param); ok {
+		return parseNiTableConnSingleImportPolicy(values)
 	}
 	cfgObj := getNiTableConnCfgObj(inParams.ygRoot, reqInfo, false)
 	if cfgObj == nil || len(cfgObj.ImportPolicy) == 0 {
 		return "", tlerr.InvalidArgsError{Format: "table-connection import-policy is missing in request payload"}
 	}
+	values := make([]string, 0, len(cfgObj.ImportPolicy))
 	for _, p := range cfgObj.ImportPolicy {
 		if s := strings.TrimSpace(p); s != "" {
-			return s, nil
+			values = append(values, s)
 		}
 	}
-	return "", tlerr.InvalidArgsError{Format: "table-connection import-policy is missing in request payload"}
+	return parseNiTableConnSingleImportPolicy(values)
 }
 
 func makeNiTableConnResMap(niName, srcProto, dstProto, af string, fields map[string]string) (map[string]map[string]db.Value, error) {
