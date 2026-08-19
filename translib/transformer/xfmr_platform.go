@@ -144,8 +144,14 @@ const (
 	COMP_STORAGE_ST = "/openconfig-platform:components/component/storage/state"
 
 	/** Supported POWER SUPPLY URIs **/
-	COMP_PS       = "/openconfig-platform:components/component/power-supply"
-	COMP_PS_STATE = "/openconfig-platform:components/component/power-supply/state"
+	COMP_PS                      = "/openconfig-platform:components/component/power-supply"
+	COMP_PS_STATE                = "/openconfig-platform:components/component/power-supply/state"
+	COMP_PS_STATE_CAPACITY       = COMP_PS_STATE + "/openconfig-platform-psu:capacity"
+	COMP_PS_STATE_INPUT_CURRENT  = COMP_PS_STATE + "/openconfig-platform-psu:input-current"
+	COMP_PS_STATE_INPUT_VOLTAGE  = COMP_PS_STATE + "/openconfig-platform-psu:input-voltage"
+	COMP_PS_STATE_OUTPUT_CURRENT = COMP_PS_STATE + "/openconfig-platform-psu:output-current"
+	COMP_PS_STATE_OUTPUT_VOLTAGE = COMP_PS_STATE + "/openconfig-platform-psu:output-voltage"
+	COMP_PS_STATE_OUTPUT_POWER   = COMP_PS_STATE + "/openconfig-platform-psu:output-power"
 
 	/** Supported Fan URIs **/
 	COMP_FAN       = "/openconfig-platform:components/component/fan"
@@ -243,7 +249,7 @@ const (
 )
 
 type PSUInfo struct {
-	Capacity          string
+	Capacity          ocbinds.Binary
 	Enabled           bool
 	Input_Current     ocbinds.Binary
 	Input_Voltage     ocbinds.Binary
@@ -1941,10 +1947,6 @@ func compTypeToFuncCall(cType componentType, compName, subKey string, pfComp *oc
 	case CompTypePsu:
 		if pType == SingularPath {
 			return fillPsuInfo(pfComp, compName, false, false, targetUriPath, d)
-		} else if pType == AllPaths {
-			if err := fillPsuInfo(pfComp, compName, true, true, targetUriPath, d); err != nil {
-				return err
-			}
 		}
 		return fillPsuInfo(pfComp, compName, true, false, targetUriPath, d)
 	case CompTypeFan:
@@ -2080,12 +2082,40 @@ func getPsuInfoFromDb(name string, d *db.DB) (PSUInfo, error) {
 	psuInfo.Manufacturer = convertUTF8EndcodedString(psuEntry.Get("mfr_id"))
 	psuInfo.Part_Number = convertUTF8EndcodedString(psuEntry.Get("part-no"))
 	psuInfo.Serial_Number = convertUTF8EndcodedString(psuEntry.Get("serial"))
-	psuInfo.Input_Current = extractFloat32Str("input_current", &psuEntry)
-	psuInfo.Input_Voltage = extractFloat32Str("input_voltage", &psuEntry)
-	psuInfo.Output_Voltage = extractFloat32Str("output_voltage", &psuEntry)
-	psuInfo.Output_Current = extractFloat32Str("output_current", &psuEntry)
-	psuInfo.Output_Power = extractFloat32Str("output_power", &psuEntry)
+	setPsuElectricalInfo(&psuInfo, &psuEntry)
 	return psuInfo, err
+}
+
+// setPsuElectricalInfo maps STATE_DB PSU_INFO electrical fields onto PSUInfo.
+// Prefers SONiC field names (voltage/current/power/max_power) with legacy
+// output_* fallbacks. Non-float values such as "N/A" leave the Binary nil.
+func setPsuElectricalInfo(psuInfo *PSUInfo, psuEntry *db.Value) {
+	psuInfo.Input_Current = extractFloat32Str("input_current", psuEntry)
+	psuInfo.Input_Voltage = extractFloat32Str("input_voltage", psuEntry)
+	psuInfo.Output_Voltage = extractFloat32StrWithFallback("voltage", "output_voltage", psuEntry)
+	psuInfo.Output_Current = extractFloat32StrWithFallback("current", "output_current", psuEntry)
+	psuInfo.Output_Power = extractFloat32StrWithFallback("power", "output_power", psuEntry)
+	psuInfo.Capacity = extractFloat32Str("max_power", psuEntry)
+}
+
+func ensurePsuPowerSupplyState(psuCom *ocbinds.OpenconfigPlatform_Components_Component) {
+	if psuCom.PowerSupply == nil {
+		ygot.BuildEmptyTree(psuCom)
+		ygot.BuildEmptyTree(psuCom.PowerSupply)
+	}
+	if psuCom.PowerSupply.State == nil {
+		ygot.BuildEmptyTree(psuCom.PowerSupply.State)
+	}
+}
+
+func applyPsuPowerSupplyState(psuCom *ocbinds.OpenconfigPlatform_Components_Component, psuInfo PSUInfo) {
+	ensurePsuPowerSupplyState(psuCom)
+	psuCom.PowerSupply.State.Capacity = psuInfo.Capacity
+	psuCom.PowerSupply.State.InputCurrent = psuInfo.Input_Current
+	psuCom.PowerSupply.State.InputVoltage = psuInfo.Input_Voltage
+	psuCom.PowerSupply.State.OutputCurrent = psuInfo.Output_Current
+	psuCom.PowerSupply.State.OutputVoltage = psuInfo.Output_Voltage
+	psuCom.PowerSupply.State.OutputPower = psuInfo.Output_Power
 }
 
 func fillPsuInfo(psuCom *ocbinds.OpenconfigPlatform_Components_Component,
@@ -2104,11 +2134,8 @@ func fillPsuInfo(psuCom *ocbinds.OpenconfigPlatform_Components_Component,
 	if all {
 		psuCom.Config.Name = &name
 		if getPowerStats {
-			if err != nil {
-				log.V(lvl.DEBUG).Info("float data error")
-				return err
-			}
-			return err
+			applyPsuPowerSupplyState(psuCom, psuInfo)
+			return nil
 		}
 		psuEepromState.Empty = &empty
 		psuEepromState.Name = &name
@@ -2152,11 +2179,7 @@ func fillPsuInfo(psuCom *ocbinds.OpenconfigPlatform_Components_Component,
 		}
 
 		psuEepromState.Removable = &psuInfo.Removable
-		psuCom.PowerSupply.State.InputCurrent = psuInfo.Input_Current
-		psuCom.PowerSupply.State.InputVoltage = psuInfo.Input_Voltage
-		psuCom.PowerSupply.State.OutputCurrent = psuInfo.Output_Current
-		psuCom.PowerSupply.State.OutputVoltage = psuInfo.Output_Voltage
-		psuCom.PowerSupply.State.OutputPower = psuInfo.Output_Power
+		applyPsuPowerSupplyState(psuCom, psuInfo)
 
 		return err
 	}
@@ -2214,6 +2237,24 @@ func fillPsuInfo(psuCom *ocbinds.OpenconfigPlatform_Components_Component,
 		}
 	case COMP_STATE_REMOVABLE:
 		psuEepromState.Removable = &psuInfo.Removable
+	case COMP_PS_STATE_CAPACITY:
+		ensurePsuPowerSupplyState(psuCom)
+		psuCom.PowerSupply.State.Capacity = psuInfo.Capacity
+	case COMP_PS_STATE_INPUT_CURRENT:
+		ensurePsuPowerSupplyState(psuCom)
+		psuCom.PowerSupply.State.InputCurrent = psuInfo.Input_Current
+	case COMP_PS_STATE_INPUT_VOLTAGE:
+		ensurePsuPowerSupplyState(psuCom)
+		psuCom.PowerSupply.State.InputVoltage = psuInfo.Input_Voltage
+	case COMP_PS_STATE_OUTPUT_CURRENT:
+		ensurePsuPowerSupplyState(psuCom)
+		psuCom.PowerSupply.State.OutputCurrent = psuInfo.Output_Current
+	case COMP_PS_STATE_OUTPUT_VOLTAGE:
+		ensurePsuPowerSupplyState(psuCom)
+		psuCom.PowerSupply.State.OutputVoltage = psuInfo.Output_Voltage
+	case COMP_PS_STATE_OUTPUT_POWER:
+		ensurePsuPowerSupplyState(psuCom)
+		psuCom.PowerSupply.State.OutputPower = psuInfo.Output_Power
 	default:
 		return fmt.Errorf("unsupported leaf path for PSU component: %v", targetUriPath)
 	}
