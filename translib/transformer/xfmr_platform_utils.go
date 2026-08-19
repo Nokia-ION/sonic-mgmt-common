@@ -47,6 +47,7 @@ func readAndParseCounter(entry *db.Value, attr string, counter_val **uint64) err
 
 // Extracts a float32 string from the DB entry field. Converts this string to a
 // 4 byte binary value compatible with oc:ieeefloat32 format.
+// Missing fields or non-float values (e.g. "N/A") yield nil so the leaf is omitted.
 func extractFloat32Str(fieldName string, dbEntry *db.Value) ocbinds.Binary {
 	redisStr, ok := dbEntry.Field[fieldName]
 	if !ok {
@@ -58,4 +59,17 @@ func extractFloat32Str(fieldName string, dbEntry *db.Value) ocbinds.Binary {
 		return nil
 	}
 	return base64Str
+}
+
+// extractFloat32StrWithFallback tries primaryField first, then fallbackField if
+// the primary is missing or not a convertible float. An empty fallbackField
+// disables the secondary lookup.
+func extractFloat32StrWithFallback(primaryField, fallbackField string, dbEntry *db.Value) ocbinds.Binary {
+	if v := extractFloat32Str(primaryField, dbEntry); v != nil {
+		return v
+	}
+	if fallbackField == "" {
+		return nil
+	}
+	return extractFloat32Str(fallbackField, dbEntry)
 }

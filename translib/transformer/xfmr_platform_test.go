@@ -1,6 +1,7 @@
 package transformer
 
 import (
+	"encoding/binary"
 	"math"
 	"testing"
 
@@ -451,4 +452,157 @@ func TestGetSysComponentsFanWildcard(t *testing.T) {
 			}
 		})
 	}
+}
+
+func ieeeFloat32FromBinary(b ocbinds.Binary) (float32, bool) {
+	if len(b) != 4 {
+		return 0, false
+	}
+	return math.Float32frombits(binary.BigEndian.Uint32(b)), true
+}
+
+func assertIEEEFloat32(t *testing.T, got ocbinds.Binary, want float32) {
+	t.Helper()
+	v, ok := ieeeFloat32FromBinary(got)
+	if !ok {
+		t.Fatalf("expected 4-byte ieeefloat32, got %v", got)
+	}
+	if math.Abs(float64(v-want)) > 1e-5 {
+		t.Fatalf("got %v, want %v", v, want)
+	}
+}
+
+func TestExtractFloat32StrWithFallback(t *testing.T) {
+	t.Run("primary preferred over fallback", func(t *testing.T) {
+		entry := &db.Value{Field: map[string]string{
+			"voltage":        "12.5",
+			"output_voltage": "11.0",
+		}}
+		assertIEEEFloat32(t, extractFloat32StrWithFallback("voltage", "output_voltage", entry), 12.5)
+	})
+	t.Run("fallback when primary missing", func(t *testing.T) {
+		entry := &db.Value{Field: map[string]string{"output_voltage": "11.0"}}
+		assertIEEEFloat32(t, extractFloat32StrWithFallback("voltage", "output_voltage", entry), 11.0)
+	})
+	t.Run("fallback when primary is N/A", func(t *testing.T) {
+		entry := &db.Value{Field: map[string]string{
+			"voltage":        "N/A",
+			"output_voltage": "11.0",
+		}}
+		assertIEEEFloat32(t, extractFloat32StrWithFallback("voltage", "output_voltage", entry), 11.0)
+	})
+	t.Run("omit when both unavailable", func(t *testing.T) {
+		entry := &db.Value{Field: map[string]string{"voltage": "N/A"}}
+		if got := extractFloat32StrWithFallback("voltage", "output_voltage", entry); got != nil {
+			t.Fatalf("expected nil, got %v", got)
+		}
+	})
+	t.Run("no fallback field", func(t *testing.T) {
+		entry := &db.Value{Field: map[string]string{"max_power": "750"}}
+		assertIEEEFloat32(t, extractFloat32StrWithFallback("max_power", "", entry), 750)
+		if got := extractFloat32StrWithFallback("missing", "", entry); got != nil {
+			t.Fatalf("expected nil, got %v", got)
+		}
+	})
+}
+
+func TestSetPsuElectricalInfoSonicFields(t *testing.T) {
+	entry := &db.Value{Field: map[string]string{
+		"voltage":       "12.00875",
+		"current":       "3.1",
+		"power":         "37.227125",
+		"input_voltage": "N/A",
+		"input_current": "N/A",
+		"max_power":     "N/A",
+	}}
+	var info PSUInfo
+	setPsuElectricalInfo(&info, entry)
+
+	assertIEEEFloat32(t, info.Output_Voltage, 12.00875)
+	assertIEEEFloat32(t, info.Output_Current, 3.1)
+	assertIEEEFloat32(t, info.Output_Power, 37.227125)
+	if info.Input_Voltage != nil || info.Input_Current != nil || info.Capacity != nil {
+		t.Fatalf("expected N/A electrical leaves to be omitted, got inV=%v inC=%v cap=%v",
+			info.Input_Voltage, info.Input_Current, info.Capacity)
+	}
+}
+
+func TestSetPsuElectricalInfoLegacyFallback(t *testing.T) {
+	entry := &db.Value{Field: map[string]string{
+		"output_voltage": "12.0",
+		"output_current": "4.0",
+		"output_power":   "48.0",
+		"max_power":      "750.5",
+		"input_voltage":  "220.0",
+		"input_current":  "1.5",
+	}}
+	var info PSUInfo
+	setPsuElectricalInfo(&info, entry)
+
+	assertIEEEFloat32(t, info.Output_Voltage, 12.0)
+	assertIEEEFloat32(t, info.Output_Current, 4.0)
+	assertIEEEFloat32(t, info.Output_Power, 48.0)
+	assertIEEEFloat32(t, info.Capacity, 750.5)
+	assertIEEEFloat32(t, info.Input_Voltage, 220.0)
+	assertIEEEFloat32(t, info.Input_Current, 1.5)
+}
+
+func TestApplyPsuPowerSupplyState(t *testing.T) {
+	comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+	ygot.BuildEmptyTree(comp)
+	info := PSUInfo{
+		Output_Voltage: mustIEEEFloat32(t, "12.00875"),
+		Output_Current: mustIEEEFloat32(t, "3.1"),
+		Output_Power:   mustIEEEFloat32(t, "37.227125"),
+	}
+	applyPsuPowerSupplyState(comp, info)
+
+	if comp.PowerSupply == nil || comp.PowerSupply.State == nil {
+		t.Fatal("expected power-supply/state to be populated")
+	}
+	st := comp.PowerSupply.State
+	assertIEEEFloat32(t, st.OutputVoltage, 12.00875)
+	assertIEEEFloat32(t, st.OutputCurrent, 3.1)
+	assertIEEEFloat32(t, st.OutputPower, 37.227125)
+	if st.InputVoltage != nil || st.Capacity != nil {
+		t.Fatalf("expected nil input-voltage/capacity, got %v / %v", st.InputVoltage, st.Capacity)
+	}
+}
+
+func mustIEEEFloat32(t *testing.T, s string) ocbinds.Binary {
+	t.Helper()
+	b, err := float32StrTo4Bytes(s)
+	if err != nil {
+		t.Fatalf("float32StrTo4Bytes(%q): %v", s, err)
+	}
+	return b
+}
+
+func TestFillPsuInfoPowerStatsPath(t *testing.T) {
+	// Exercise apply path used for /power-supply and /power-supply/state without
+	// requiring a live Redis PSU_INFO row: map fields then apply state.
+	entry := &db.Value{Field: map[string]string{
+		"voltage": "12.0",
+		"current": "2.0",
+		"power":   "24.0",
+	}}
+	var info PSUInfo
+	setPsuElectricalInfo(&info, entry)
+
+	comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+	ygot.BuildEmptyTree(comp)
+	applyPsuPowerSupplyState(comp, info)
+
+	st := comp.PowerSupply.State
+	assertIEEEFloat32(t, st.OutputVoltage, 12.0)
+	assertIEEEFloat32(t, st.OutputCurrent, 2.0)
+	assertIEEEFloat32(t, st.OutputPower, 24.0)
+}
+
+func TestEnsurePsuSingularLeafAssignment(t *testing.T) {
+	comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+	ensurePsuPowerSupplyState(comp)
+	want := mustIEEEFloat32(t, "12.5")
+	comp.PowerSupply.State.OutputVoltage = want
+	assertIEEEFloat32(t, comp.PowerSupply.State.OutputVoltage, 12.5)
 }
