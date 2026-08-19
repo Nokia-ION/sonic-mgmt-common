@@ -28,9 +28,15 @@ SONICYANG_IMPORTS += sonic-gnmi.yang
 SONICYANG_IMPORTS += sonic-storm-control.yang
 
 # BGP global OC mapping uses CONFIG_DB:BGP_GLOBALS|<vrf>.
-# Import BGP SONiC YANGs so CVL schema contains table/key metadata.
+# Import BGP and routing-policy SONiC YANGs so CVL schema contains
+# table/key metadata for all mapped OC paths.
 SONICYANG_IMPORTS += sonic-bgp-global.yang
 SONICYANG_IMPORTS += sonic-bgp-device-global.yang
+SONICYANG_IMPORTS += sonic-bgp-neighbor.yang
+SONICYANG_IMPORTS += sonic-bgp-peergroup.yang
+SONICYANG_IMPORTS += sonic-route-common.yang
+SONICYANG_IMPORTS += sonic-route-map.yang
+SONICYANG_IMPORTS += sonic-routing-policy-sets.yang
 SONICYANG_IMPORTS += sonic-loopback-interface.yang
 
 ##
