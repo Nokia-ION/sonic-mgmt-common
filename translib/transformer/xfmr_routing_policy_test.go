@@ -134,7 +134,7 @@ func Test_openconfig_routing_policy_policy_definition_statement_name(t *testing.
 }
 
 func Test_openconfig_routing_policy_defined_sets_bgp_defined_sets_community_set_name(t *testing.T) {
-	var url, urlInputBodyJSON string
+	var url, prefixedUrl, urlInputBodyJSON string
 
 	preReqMap := map[string]interface{}{}
 	cleanupTbl := map[string]interface{}{
@@ -160,6 +160,12 @@ func Test_openconfig_routing_policy_defined_sets_bgp_defined_sets_community_set_
 
 	expectedGetJSON := "{\"openconfig-bgp-policy:community-set-name\":\"COMM1\"}"
 	t.Run("GET routing-policy community-set-name", processGetRequest(url, nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	prefixedUrl = "/openconfig-routing-policy:routing-policy/defined-sets/openconfig-bgp-policy:bgp-defined-sets/openconfig-bgp-policy:community-sets/openconfig-bgp-policy:community-set[openconfig-bgp-policy:community-set-name=COMM1]/openconfig-bgp-policy:community-set-name"
+	t.Run("PATCH routing-policy community-set-name with module-prefixed augment segments", processSetRequest(prefixedUrl, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("GET routing-policy community-set-name with module-prefixed augment segments", processGetRequest(prefixedUrl, nil, expectedGetJSON, false))
 	time.Sleep(1 * time.Second)
 
 	expectedErr := tlerr.InvalidArgsError{
@@ -483,7 +489,7 @@ func Test_openconfig_routing_policy_policy_definition_statement_actions_bgp_acti
 }
 
 func Test_openconfig_routing_policy_policy_definition_statement_actions_bgp_actions_config(t *testing.T) {
-	var url, urlInputBodyJSON string
+	var url, prefixedUrl, urlInputBodyJSON string
 
 	preReqMap := map[string]interface{}{
 		"ROUTE_MAP_SET": map[string]interface{}{
@@ -528,6 +534,12 @@ func Test_openconfig_routing_policy_policy_definition_statement_actions_bgp_acti
 	t.Run("GET routing-policy statement bgp-actions set-med", processGetRequest(url+"/set-med", nil, "{\"openconfig-bgp-policy:set-med\":100}", false))
 	time.Sleep(1 * time.Second)
 
+	prefixedUrl = "/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition[name=POL1]/statements/statement[name=10]/actions/openconfig-bgp-policy:bgp-actions/openconfig-bgp-policy:config"
+	t.Run("PATCH routing-policy statement bgp-actions config with module-prefixed augment segments", processSetRequest(prefixedUrl, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("GET routing-policy statement bgp-actions set-local-pref with module-prefixed augment segments", processGetRequest(prefixedUrl+"/openconfig-bgp-policy:set-local-pref", nil, "{\"openconfig-bgp-policy:set-local-pref\":200}", false))
+	time.Sleep(1 * time.Second)
+
 	t.Run("DELETE routing-policy statement actions bgp-actions config", processDeleteRequest(url, false))
 	time.Sleep(1 * time.Second)
 
@@ -543,7 +555,7 @@ func Test_openconfig_routing_policy_policy_definition_statement_actions_bgp_acti
 }
 
 func Test_openconfig_routing_policy_policy_definition_statement_conditions_bgp_conditions_config(t *testing.T) {
-	var url, urlInputBodyJSON string
+	var url, prefixedUrl, urlInputBodyJSON string
 
 	preReqMap := map[string]interface{}{
 		"ROUTE_MAP_SET": map[string]interface{}{
@@ -601,6 +613,12 @@ func Test_openconfig_routing_policy_policy_definition_statement_conditions_bgp_c
 	t.Run("GET routing-policy statement bgp-conditions community-set", processGetRequest(url+"/community-set", nil, "{\"openconfig-bgp-policy:community-set\":\"COMM1\"}", false))
 	time.Sleep(1 * time.Second)
 	t.Run("GET routing-policy statement bgp-conditions ext-community-set", processGetRequest(url+"/ext-community-set", nil, "{\"openconfig-bgp-policy:ext-community-set\":\"EXTCOMM1\"}", false))
+	time.Sleep(1 * time.Second)
+
+	prefixedUrl = "/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition[name=POL1]/statements/statement[name=10]/conditions/openconfig-bgp-policy:bgp-conditions/openconfig-bgp-policy:config"
+	t.Run("PATCH routing-policy statement bgp-conditions config with module-prefixed augment segments", processSetRequest(prefixedUrl, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("GET routing-policy statement bgp-conditions med-eq with module-prefixed augment segments", processGetRequest(prefixedUrl+"/openconfig-bgp-policy:med-eq", nil, "{\"openconfig-bgp-policy:med-eq\":100}", false))
 	time.Sleep(1 * time.Second)
 
 	t.Run("DELETE routing-policy statement conditions bgp-conditions config", processDeleteRequest(url, false))
