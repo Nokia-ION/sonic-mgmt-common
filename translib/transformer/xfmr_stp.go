@@ -709,6 +709,8 @@ func fillRstpStateFromDb(state *ocbinds.OpenconfigSpanningTree_Stp_Rstp_State, c
 	if cost, ok := resolveRstpRootCost(appDb, appEntry); ok {
 		state.RootCost = &cost
 	}
+	// BuildEmptyTree may pre-init optional leaves to zero.
+	state.RootPort = nil
 	if !isRstpRootBridge(appEntry) {
 		if rootPortName := strings.TrimSpace(appEntry.Get("root_port")); rootPortName != "" {
 			if portNum, ok := resolveRstpRootPort(appDb, rootPortName); ok {
@@ -1172,6 +1174,37 @@ func requireRstpEnabled(cfgDb *db.DB) error {
 	return nil
 }
 
+func requireRstpEnabledForGet(cfgDb *db.DB) error {
+	enabled, err := isRstpEnabled(cfgDb)
+	if err != nil {
+		return err
+	}
+	if !enabled {
+		return tlerr.NotFoundError{Format: "Resource not found"}
+	}
+	return nil
+}
+
+// ensureRstpEnabledForGet clears the RSTP subtree when spanning-tree is disabled.
+// Direct GETs under /rstp return NotFound; parent GETs (e.g. /stp) omit RSTP silently.
+func ensureRstpEnabledForGet(stpRoot *ocbinds.OpenconfigSpanningTree_Stp, cfgDb *db.DB, requestUri string) error {
+	enabled, err := isRstpEnabled(cfgDb)
+	if err != nil {
+		return err
+	}
+	if enabled {
+		return nil
+	}
+	if stpRoot != nil {
+		stpRoot.Rstp = nil
+	}
+	targetUriPath, _, _ := XfmrRemoveXPATHPredicates(requestUri)
+	if strings.Contains(targetUriPath, "/rstp") {
+		return tlerr.NotFoundError{Format: "Resource not found"}
+	}
+	return nil
+}
+
 // ---------------- Field transformers ----------------
 
 var YangToDb_stp_enabled_protocol_xfmr FieldXfmrYangToDb = func(inParams XfmrParams) (map[string]string, error) {
@@ -1228,6 +1261,9 @@ var YangToDb_stp_bridge_priority_xfmr FieldXfmrYangToDb = func(inParams XfmrPara
 
 var DbToYang_stp_bridge_priority_xfmr FieldXfmrDbtoYang = func(inParams XfmrParams) (map[string]interface{}, error) {
 	res := make(map[string]interface{})
+	if err := requireRstpEnabledForGet(stpCfgDb(inParams)); err != nil {
+		return res, err
+	}
 	entry, err := getMstInstCfgEntry(stpCfgDb(inParams))
 	if err != nil {
 		return res, err
@@ -1485,12 +1521,15 @@ var DbToYang_stp_rstp_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) error
 	if stpRoot == nil {
 		return errors.New("stp root is nil")
 	}
+	cfgDb := inParams.dbs[db.ConfigDB]
+	if err := ensureRstpEnabledForGet(stpRoot, cfgDb, inParams.requestUri); err != nil {
+		return err
+	}
 	ygot.BuildEmptyTree(stpRoot)
 	if stpRoot.Rstp == nil {
 		stpRoot.Rstp = &ocbinds.OpenconfigSpanningTree_Stp_Rstp{}
 	}
 	targetUriPath, _, _ := XfmrRemoveXPATHPredicates(inParams.requestUri)
-	cfgDb := inParams.dbs[db.ConfigDB]
 	appDb := inParams.dbs[db.ApplDB]
 
 	if strings.HasPrefix(targetUriPath, STP_RSTP_STATE) || targetUriPath == STP_RSTP {
@@ -1553,6 +1592,20 @@ var YangToDb_stp_rstp_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (map[
 var Subscribe_stp_rstp_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSubscInParams) (XfmrSubscOutParams, error) {
 	var result XfmrSubscOutParams
 	result.dbDataMap = make(RedisDbSubscribeMap)
+	if inParams.subscProc == TRANSLATE_EXISTS {
+		result.isVirtualTbl = true
+		return result, nil
+	}
+	if inParams.subscProc == TRANSLATE_SUBSCRIBE {
+		enabled, err := isRstpEnabled(inParams.dbs[db.ConfigDB])
+		if err != nil {
+			return result, err
+		}
+		if !enabled {
+			result.isVirtualTbl = true
+			return result, nil
+		}
+	}
 	result.dbDataMap[db.ConfigDB] = map[string]map[string]map[string]string{
 		STP_MST_TBL:      {STP_MST_GLOBAL_KEY: {"hello_time": "", "max_age": "", "forward_delay": "", "hold_count": ""}},
 		STP_MST_INST_TBL: {mstInstCfgKey(): {"bridge_priority": ""}},
@@ -1561,6 +1614,7 @@ var Subscribe_stp_rstp_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSubscInPara
 		STP_MST_INST_APP_TBL: {mstInstCfgKey(): {"bridge_address": "", "bridge_priority": "", "root_address": "", "root_path_cost": "", "root_port": "", "hold_time": "", "topology_change_count": ""}},
 		STP_MST_PORT_APP_TBL: {mstPortAppKey("*"): {"path_cost": "", "desig_cost": "", "external_cost": "", "role": ""}},
 	}
+	result.isVirtualTbl = false
 	return result, nil
 }
 
@@ -1571,13 +1625,16 @@ var DbToYang_stp_rstp_intf_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) 
 	if stpRoot == nil {
 		return errors.New("stp root is nil")
 	}
+	cfgDb := inParams.dbs[db.ConfigDB]
+	if err := ensureRstpEnabledForGet(stpRoot, cfgDb, inParams.requestUri); err != nil {
+		return err
+	}
 	ygot.BuildEmptyTree(stpRoot)
 	intfMap := ensureStpRstpInterfaces(stpRoot)
 	targetUriPath, _, _ := XfmrRemoveXPATHPredicates(inParams.requestUri)
 	pathInfo := NewPathInfo(inParams.uri)
 	ifName := pathInfo.Var("name")
 
-	cfgDb := inParams.dbs[db.ConfigDB]
 	appDb := inParams.dbs[db.ApplDB]
 
 	if ifName != "" {
@@ -1632,9 +1689,24 @@ var YangToDb_stp_rstp_intf_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) 
 var Subscribe_stp_rstp_intf_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSubscInParams) (XfmrSubscOutParams, error) {
 	var result XfmrSubscOutParams
 	result.dbDataMap = make(RedisDbSubscribeMap)
+	if inParams.subscProc == TRANSLATE_EXISTS {
+		result.isVirtualTbl = true
+		return result, nil
+	}
+	if inParams.subscProc == TRANSLATE_SUBSCRIBE {
+		enabled, err := isRstpEnabled(inParams.dbs[db.ConfigDB])
+		if err != nil {
+			return result, err
+		}
+		if !enabled {
+			result.isVirtualTbl = true
+			return result, nil
+		}
+	}
 	result.dbDataMap[db.ApplDB] = map[string]map[string]map[string]string{
 		STP_MST_PORT_APP_TBL: {mstPortAppKey("*"): {"*": ""}},
 	}
+	result.isVirtualTbl = false
 	return result, nil
 }
 
