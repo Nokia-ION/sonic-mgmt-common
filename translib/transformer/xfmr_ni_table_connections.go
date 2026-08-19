@@ -37,7 +37,8 @@ const (
 	niTableConnImportPolicyLeaf = "import-policy"
 )
 
-var niTableConnCfgReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/table-connections/table-connection\[src-protocol=([^\]]+)\]\[dst-protocol=([^\]]+)\]\[address-family=([^\]]+)\]/config(?:/(import-policy))?$`)
+var niTableConnCfgReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/table-connections/table-connection((?:\[[^\]]+\]){3})/config(?:/(import-policy))?$`)
+var niTableConnListKeyRe = regexp.MustCompile(`\[(src-protocol|dst-protocol|address-family)=([^\]]+)\]`)
 
 type niTableConnReqInfo struct {
 	niName        string
@@ -55,16 +56,36 @@ func init() {
 
 func parseNiTableConnRequestUri(uri string) (*niTableConnReqInfo, error) {
 	m := niTableConnCfgReqUriRe.FindStringSubmatch(uri)
-	if len(m) >= 5 {
+	if len(m) >= 3 {
+		keyPairs := niTableConnListKeyRe.FindAllStringSubmatch(m[2], -1)
+		if len(keyPairs) != 3 {
+			return nil, tlerr.InvalidArgsError{
+				Format: "unsupported path for network-instance table-connections mapping: " + uri,
+			}
+		}
+		keys := map[string]string{}
+		for _, p := range keyPairs {
+			if len(p) == 3 {
+				keys[p[1]] = p[2]
+			}
+		}
+		srcProtocol, srcOK := keys["src-protocol"]
+		dstProtocol, dstOK := keys["dst-protocol"]
+		addressFamily, afOK := keys["address-family"]
+		if !srcOK || !dstOK || !afOK {
+			return nil, tlerr.InvalidArgsError{
+				Format: "unsupported path for network-instance table-connections mapping: " + uri,
+			}
+		}
 		leaf := ""
-		if len(m) >= 6 {
-			leaf = m[5]
+		if len(m) >= 4 {
+			leaf = m[3]
 		}
 		return &niTableConnReqInfo{
 			niName:        m[1],
-			srcProtocol:   m[2],
-			dstProtocol:   m[3],
-			addressFamily: m[4],
+			srcProtocol:   srcProtocol,
+			dstProtocol:   dstProtocol,
+			addressFamily: addressFamily,
 			targetLeaf:    leaf,
 			targetPath:    niTableConnTargetCfg,
 		}, nil
