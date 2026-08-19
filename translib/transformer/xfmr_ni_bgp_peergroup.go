@@ -43,6 +43,7 @@ const (
 	niBgpPgHoldTimeLeaf      = "hold-time"
 	niBgpPgMaxPrefixesLeaf   = "max-prefixes"
 	niBgpPgExportPolicyLeaf  = "export-policy"
+	niBgpPgNameFld           = "peer_group_name"
 	niBgpPgAsnFld            = "asn"
 	niBgpPgKeepaliveFld      = "keepalive"
 	niBgpPgHoldTimeFld       = "holdtime"
@@ -675,8 +676,8 @@ var YangToDb_ni_bgp_pg_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) 
 			if pg, ok := parseNiBgpPgNameFromParam(inParams.param); ok && pg != reqInfo.peerGroupName {
 				return res, tlerr.InvalidArgsError{Format: fmt.Sprintf("peer-group-name payload (%s) does not match key (%s)", pg, reqInfo.peerGroupName)}
 			}
-			// Ensure the key entry exists; no field write needed for key leaf.
-			return makeNiBgpPgResMap(reqInfo.niName, reqInfo.peerGroupName, map[string]string{}), nil
+			// Persist key leaf in DB field as requested by schema usage.
+			return makeNiBgpPgResMap(reqInfo.niName, reqInfo.peerGroupName, map[string]string{niBgpPgNameFld: reqInfo.peerGroupName}), nil
 		case niBgpPgPeerAsLeaf:
 			asn, ok := parseNiBgpPgAsnFromParam(inParams.param)
 			if !ok {

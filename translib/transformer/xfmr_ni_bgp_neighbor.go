@@ -32,16 +32,15 @@ import (
 )
 
 const (
-	niBgpNbrTbl            = "BGP_NEIGHBOR"
-	niBgpNbrAfTbl          = "BGP_NEIGHBOR_AF"
-	niBgpNbrPeerGroupFld   = "peer_group_name"
-	niBgpNbrAdminStatus    = "admin_status"
-	niBgpNbrRouteMapInFld  = "route_map_in@"
-	niBgpNbrAllowAsInFld   = "allow_as_in"
-	niBgpNbrAllowAsCntFld  = "allow_as_count"
-	niBgpNbrAllowAsOrigFld = "allow_as_origin"
-	niBgpNbrAfiSafiIPv4    = "ipv4_unicast"
-	niBgpNbrAfiSafiIPv6    = "ipv6_unicast"
+	niBgpNbrTbl           = "BGP_NEIGHBOR"
+	niBgpNbrAfTbl         = "BGP_NEIGHBOR_AF"
+	niBgpNbrPeerGroupFld  = "peer_group_name"
+	niBgpNbrAdminStatus   = "admin_status"
+	niBgpNbrRouteMapInFld = "route_map_in"
+	niBgpNbrAllowAsInFld  = "allow_as_in"
+	niBgpNbrAllowAsCntFld = "allow_as_count"
+	niBgpNbrAfiSafiIPv4   = "ipv4_unicast"
+	niBgpNbrAfiSafiIPv6   = "ipv6_unicast"
 )
 
 var niBgpNbrReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/protocols/protocol\[identifier=BGP\]\[name=bgp\]/bgp/neighbors/neighbor\[neighbor-address=([^\]]+)\]/config(?:/(peer-group|enabled))?$`)
@@ -626,6 +625,18 @@ func makeNiBgpNbrAfSingleResMap(niName, neighborAddr, afiSafi string, fields map
 	}
 }
 
+func ensureNiBgpNbrParentRow(res map[string]map[string]db.Value, niName, neighborAddr string) map[string]map[string]db.Value {
+	if res == nil {
+		res = make(map[string]map[string]db.Value)
+	}
+	if _, ok := res[niBgpNbrTbl]; !ok {
+		res[niBgpNbrTbl] = make(map[string]db.Value)
+	}
+	// Ensure parent key exists for AF-table writes that have BGP_NEIGHBOR dependency.
+	res[niBgpNbrTbl][niName+"|"+neighborAddr] = db.Value{Field: map[string]string{}}
+	return res
+}
+
 func parseNiBgpNbrImportPolicyValue(v interface{}) (string, bool) {
 	switch val := v.(type) {
 	case string:
@@ -827,7 +838,7 @@ var YangToDb_ni_bgp_nbr_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 		if reqInfo.targetPath == "neighbor-af-apply-policy-config" {
 			switch reqInfo.targetLeaf {
 			case "", "import-policy":
-				return makeNiBgpNbrAfSingleResMap(reqInfo.niName, reqInfo.neighborAddr, reqInfo.afiSafi, map[string]string{niBgpNbrRouteMapInFld: ""}), nil
+				return ensureNiBgpNbrParentRow(makeNiBgpNbrAfSingleResMap(reqInfo.niName, reqInfo.neighborAddr, reqInfo.afiSafi, map[string]string{niBgpNbrRouteMapInFld: ""}), reqInfo.niName, reqInfo.neighborAddr), nil
 			default:
 				return res, tlerr.NotSupportedError{Format: "DELETE supported only for /neighbors/neighbor/afi-safis/afi-safi/apply-policy/config or /neighbors/neighbor/afi-safis/afi-safi/apply-policy/config/import-policy", Path: inParams.requestUri}
 			}
@@ -835,11 +846,10 @@ var YangToDb_ni_bgp_nbr_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 		if reqInfo.targetPath == "neighbor-as-path-options-config" {
 			switch reqInfo.targetLeaf {
 			case "", "allow-own-as":
-				return makeNiBgpNbrAfResMap(reqInfo.niName, reqInfo.neighborAddr, map[string]string{
-					niBgpNbrAllowAsInFld:   "",
-					niBgpNbrAllowAsCntFld:  "",
-					niBgpNbrAllowAsOrigFld: "",
-				}), nil
+				return ensureNiBgpNbrParentRow(makeNiBgpNbrAfResMap(reqInfo.niName, reqInfo.neighborAddr, map[string]string{
+					niBgpNbrAllowAsInFld:  "",
+					niBgpNbrAllowAsCntFld: "",
+				}), reqInfo.niName, reqInfo.neighborAddr), nil
 			default:
 				return res, tlerr.NotSupportedError{Format: "DELETE supported only for /neighbors/neighbor/as-path-options/config or /neighbors/neighbor/as-path-options/config/allow-own-as", Path: inParams.requestUri}
 			}
@@ -861,7 +871,7 @@ var YangToDb_ni_bgp_nbr_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 			if err != nil {
 				return res, err
 			}
-			return makeNiBgpNbrAfSingleResMap(reqInfo.niName, reqInfo.neighborAddr, reqInfo.afiSafi, map[string]string{niBgpNbrRouteMapInFld: importPolicy}), nil
+			return ensureNiBgpNbrParentRow(makeNiBgpNbrAfSingleResMap(reqInfo.niName, reqInfo.neighborAddr, reqInfo.afiSafi, map[string]string{niBgpNbrRouteMapInFld: importPolicy}), reqInfo.niName, reqInfo.neighborAddr), nil
 		default:
 			return res, tlerr.NotSupportedError{Format: "unsupported leaf under neighbor AFI-SAFI apply-policy config", Path: inParams.requestUri}
 		}
@@ -875,17 +885,15 @@ var YangToDb_ni_bgp_nbr_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 				return res, err
 			}
 			if *allowOwnAs == 0 {
-				return makeNiBgpNbrAfResMap(reqInfo.niName, reqInfo.neighborAddr, map[string]string{
-					niBgpNbrAllowAsInFld:   "",
-					niBgpNbrAllowAsCntFld:  "",
-					niBgpNbrAllowAsOrigFld: "",
-				}), nil
+				return ensureNiBgpNbrParentRow(makeNiBgpNbrAfResMap(reqInfo.niName, reqInfo.neighborAddr, map[string]string{
+					niBgpNbrAllowAsInFld:  "",
+					niBgpNbrAllowAsCntFld: "",
+				}), reqInfo.niName, reqInfo.neighborAddr), nil
 			}
-			return makeNiBgpNbrAfResMap(reqInfo.niName, reqInfo.neighborAddr, map[string]string{
-				niBgpNbrAllowAsInFld:   "true",
-				niBgpNbrAllowAsCntFld:  strconv.FormatUint(uint64(*allowOwnAs), 10),
-				niBgpNbrAllowAsOrigFld: "",
-			}), nil
+			return ensureNiBgpNbrParentRow(makeNiBgpNbrAfResMap(reqInfo.niName, reqInfo.neighborAddr, map[string]string{
+				niBgpNbrAllowAsInFld:  "true",
+				niBgpNbrAllowAsCntFld: strconv.FormatUint(uint64(*allowOwnAs), 10),
+			}), reqInfo.niName, reqInfo.neighborAddr), nil
 		default:
 			return res, tlerr.NotSupportedError{Format: "unsupported leaf under neighbor as-path-options config", Path: inParams.requestUri}
 		}
