@@ -532,6 +532,16 @@ func Test_openconfig_network_instance_bgp_peer_group_name(t *testing.T) {
 	t.Run("PATCH network-instance BGP peer-group-name", processSetRequest(url, urlInputBodyJSON, "PATCH", false, nil))
 	time.Sleep(1 * time.Second)
 
+	expectedMap := map[string]interface{}{
+		"BGP_PEER_GROUP": map[string]interface{}{
+			"default|PG1": map[string]interface{}{
+				"peer_group_name": "PG1",
+			},
+		},
+	}
+	t.Run("Verify BGP_PEER_GROUP peer_group_name mapping", verifyDbResult(rclient, "BGP_PEER_GROUP|default|PG1", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
 	expectedGetJSON := "{\"openconfig-network-instance:peer-group-name\":\"PG1\"}"
 	t.Run("GET network-instance BGP peer-group-name", processGetRequest(url, nil, expectedGetJSON, false))
 	time.Sleep(1 * time.Second)
@@ -1175,6 +1185,10 @@ func Test_openconfig_network_instance_table_connections_table_connection_config_
 
 	expectedGetJSON := "{\"openconfig-network-instance:import-policy\":[\"RM-REDIST-1\"]}"
 	t.Run("GET network-instance table-connection import-policy", processGetRequest(url, nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	reorderedUrl := "/openconfig-network-instance:network-instances/network-instance[name=default]/table-connections/table-connection[address-family=IPV4][dst-protocol=BGP][src-protocol=STATIC]/config/import-policy"
+	t.Run("GET network-instance table-connection import-policy with reordered list keys", processGetRequest(reorderedUrl, nil, expectedGetJSON, false))
 	time.Sleep(1 * time.Second)
 
 	url = "/openconfig-network-instance:network-instances/network-instance[name=default]/table-connections/table-connection[src-protocol=STATIC][dst-protocol=BGP][address-family=IPV4]/config"
