@@ -152,7 +152,9 @@ func Test_openconfig_routing_policy_defined_sets_bgp_defined_sets_community_set_
 
 	expectedMap := map[string]interface{}{
 		"COMMUNITY_SET": map[string]interface{}{
-			"COMM1": map[string]interface{}{},
+			"COMM1": map[string]interface{}{
+				"set_type": "STANDARD",
+			},
 		},
 	}
 	t.Run("Verify COMMUNITY_SET row", verifyDbResult(rclient, "COMMUNITY_SET|COMM1", expectedMap, false))
