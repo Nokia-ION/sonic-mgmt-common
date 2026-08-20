@@ -1182,6 +1182,68 @@ func populateEgressInterface(inParams XfmrParams, intfObj *ocbinds.OpenconfigQos
 	return nil
 }
 
+// queueTypeAbbrev maps a SAI queue type to the short label used by the
+// "show queue counters" CLI (queuestat), so gNMI/OpenConfig queue names can
+// match the CLI output (e.g. UC0, MC8).
+func queueTypeAbbrev(saiQueueType string) string {
+	switch saiQueueType {
+	case "SAI_QUEUE_TYPE_UNICAST":
+		return "UC"
+	case "SAI_QUEUE_TYPE_MULTICAST":
+		return "MC"
+	case "SAI_QUEUE_TYPE_UNICAST_VOQ":
+		return "VOQ"
+	case "SAI_QUEUE_TYPE_ALL":
+		return "ALL"
+	default:
+		return ""
+	}
+}
+
+// populateEgressQueuesFromCounters enumerates an interface's egress queues
+// directly from COUNTERS_QUEUE_NAME_MAP / COUNTERS_QUEUE_TYPE_MAP (the same
+// source as the "show queue counters" CLI) and fills their OpenConfig state
+// counters. It is used as a fallback when no OpenConfig queue-name-to-id map
+// (CONFIG_DB QUEUE_NAME_TO_ID_MAP) has been provisioned, so queue-counter
+// telemetry works out-of-the-box and mirrors the CLI/native COUNTERS_DB view.
+func populateEgressQueuesFromCounters(inParams XfmrParams, queuesObj *ocbinds.OpenconfigQos_Qos_Interfaces_Interface_Output_Queues, targetUriPath, intfName string, queueToOidMap map[string]string, queueTypeMap db.Value) error {
+	stateUriPath := targetUriPath
+	if stateUriPath == "/openconfig-qos:qos/interfaces/interface/output" ||
+		stateUriPath == "/openconfig-qos:qos/interfaces/interface/output/queues" {
+		stateUriPath = "/openconfig-qos:qos/interfaces/interface/output/queues/queue/state"
+	}
+
+	for qid, oid := range queueToOidMap {
+		// Name matches queuestat: "<type><index>", e.g. UC0, MC8.
+		queueName := queueTypeAbbrev(queueTypeMap.Field[oid]) + qid
+
+		queueObj, err := queuesObj.NewQueue(queueName)
+		if err != nil {
+			log.V(lvl.ERROR).Infof("populateEgressQueuesFromCounters - unable to allocate new queue %v: %v", queueName, err)
+			return err
+		}
+		ygot.BuildEmptyTree(queueObj)
+		queueObj.Name = &queueName
+		ygot.BuildEmptyTree(queueObj.State)
+		state := queueObj.State
+		state.Name = &queueName
+		if queueObj.Config != nil {
+			queueObj.Config.Name = &queueName
+		}
+
+		val := uint64(0)
+		state.TransmitPkts = &val
+		state.TransmitOctets = &val
+		state.DroppedPkts = &val
+
+		if err = populateQCounters(inParams, stateUriPath, oid, state); err != nil {
+			log.V(tlerr.ErrorSeverity(err)).Info(err)
+			continue
+		}
+	}
+	return nil
+}
+
 func populateEgressInterfaceQueues(inParams XfmrParams, queuesObj *ocbinds.OpenconfigQos_Qos_Interfaces_Interface_Output_Queues) error {
 	var present bool
 
@@ -1229,6 +1291,14 @@ func populateEgressInterfaceQueues(inParams XfmrParams, queuesObj *ocbinds.Openc
 
 	// Get the queues defined for this interface type.
 	queueToQidMap := queueToQidMapCacheByType(inParams, getQueueMapType(intfName))
+
+	// When no OpenConfig queue-name-to-id map has been provisioned (the UMF
+	// CONFIG_DB QUEUE_NAME_TO_ID_MAP table is empty), fall back to enumerating
+	// queues straight from COUNTERS_QUEUE_NAME_MAP so telemetry matches the
+	// "show queue counters" CLI without requiring UMF-style QoS config.
+	if len(queueToQidMap) == 0 {
+		return populateEgressQueuesFromCounters(inParams, queuesObj, targetUriPath, intfName, queueToOidMap, queueTypeMap)
+	}
 
 	for queue, qid := range queueToQidMap {
 		if queue == "" {
