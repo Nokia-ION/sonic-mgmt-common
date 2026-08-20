@@ -157,7 +157,8 @@ func TestGetSysComponentsWithUnknownComponentType(t *testing.T) {
 }
 
 // TestParseXcvrDomValue covers the per-lane DOM value parser, including the
-// "N/A" sentinel that xcvrd writes for unused/unsupported lanes.
+// "N/A" sentinel that xcvrd writes for unused/unsupported lanes and the "-inf"
+// it writes for a lane receiving 0 mW.
 func TestParseXcvrDomValue(t *testing.T) {
 	cases := []struct {
 		in     string
@@ -168,6 +169,11 @@ func TestParseXcvrDomValue(t *testing.T) {
 		{"N/A", 0, false},
 		{"n/a", 0, false},
 		{"junk", 0, false},
+		{"-inf", 0, false},
+		{"-Inf", 0, false},
+		{"inf", 0, false},
+		{"-infinity", 0, false},
+		{"nan", 0, false},
 		{"-4.145", -4.145, true},
 		{"0", 0, true},
 		{"6.834", 6.834, true},
@@ -216,6 +222,80 @@ func TestTrimXcvrMfgDate(t *testing.T) {
 			t.Errorf("trimXcvrMfgDate(%q)=%q, want %q", c.in, got, c.want)
 		}
 	}
+}
+
+// newXcvrChannelForTest returns a physical channel with its State sub-containers
+// built, ready for convAndFillDBValues.
+func newXcvrChannelForTest(t *testing.T) *ocbinds.OpenconfigPlatform_Components_Component_Transceiver_PhysicalChannels_Channel {
+	t.Helper()
+	comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+	ygot.BuildEmptyTree(comp)
+	ygot.BuildEmptyTree(comp.Transceiver)
+	channel, err := comp.Transceiver.PhysicalChannels.NewChannel(0)
+	if err != nil {
+		t.Fatalf("NewChannel(0) returned an error: %v", err)
+	}
+	ygot.BuildEmptyTree(channel)
+	ygot.BuildEmptyTree(channel.State)
+	return channel
+}
+
+// TestConvAndFillDBValues covers the per-channel DOM leaves, in particular that
+// the "-inf" xcvrd writes for a lane receiving 0 mW is omitted rather than
+// reported as a non-finite decimal64.
+func TestConvAndFillDBValues(t *testing.T) {
+	const eps = 1e-6
+
+	t.Run("finite readings are reported", func(t *testing.T) {
+		channel := newXcvrChannelForTest(t)
+		convAndFillDBValues("-4.145", "-3.969", "6.834", "False", channel)
+
+		if channel.State.InputPower.Instant == nil || math.Abs(*channel.State.InputPower.Instant-(-4.145)) > eps {
+			t.Errorf("InputPower.Instant = %v, want -4.145", channel.State.InputPower.Instant)
+		}
+		if channel.State.OutputPower.Instant == nil || math.Abs(*channel.State.OutputPower.Instant-(-3.969)) > eps {
+			t.Errorf("OutputPower.Instant = %v, want -3.969", channel.State.OutputPower.Instant)
+		}
+		if channel.State.LaserBiasCurrent.Instant == nil || math.Abs(*channel.State.LaserBiasCurrent.Instant-6.834) > eps {
+			t.Errorf("LaserBiasCurrent.Instant = %v, want 6.834", channel.State.LaserBiasCurrent.Instant)
+		}
+		if channel.State.TxLaser == nil || !*channel.State.TxLaser {
+			t.Errorf("TxLaser = %v, want true", channel.State.TxLaser)
+		}
+	})
+
+	t.Run("dark lane omits optical power", func(t *testing.T) {
+		channel := newXcvrChannelForTest(t)
+		convAndFillDBValues("-inf", "-inf", "0.0", "True", channel)
+
+		if channel.State.InputPower.Instant != nil {
+			t.Errorf("InputPower.Instant = %v, want nil", *channel.State.InputPower.Instant)
+		}
+		if channel.State.OutputPower.Instant != nil {
+			t.Errorf("OutputPower.Instant = %v, want nil", *channel.State.OutputPower.Instant)
+		}
+		if channel.State.LaserBiasCurrent.Instant == nil || *channel.State.LaserBiasCurrent.Instant != 0 {
+			t.Errorf("LaserBiasCurrent.Instant = %v, want 0", channel.State.LaserBiasCurrent.Instant)
+		}
+		if channel.State.TxLaser == nil || *channel.State.TxLaser {
+			t.Errorf("TxLaser = %v, want false", channel.State.TxLaser)
+		}
+	})
+
+	t.Run("unused lane omits all readings", func(t *testing.T) {
+		channel := newXcvrChannelForTest(t)
+		convAndFillDBValues("N/A", "N/A", "N/A", "", channel)
+
+		if channel.State.InputPower.Instant != nil {
+			t.Errorf("InputPower.Instant = %v, want nil", *channel.State.InputPower.Instant)
+		}
+		if channel.State.OutputPower.Instant != nil {
+			t.Errorf("OutputPower.Instant = %v, want nil", *channel.State.OutputPower.Instant)
+		}
+		if channel.State.LaserBiasCurrent.Instant != nil {
+			t.Errorf("LaserBiasCurrent.Instant = %v, want nil", *channel.State.LaserBiasCurrent.Instant)
+		}
+	})
 }
 
 // newXcvrStateForTest returns a transceiver State object with the optical-power
@@ -285,6 +365,50 @@ func TestFillXcvrAggregatePower(t *testing.T) {
 		var xcvrInfo XcvrInfo
 		for i := 0; i < XCVR_LANE_LIMIT; i++ {
 			xcvrInfo.Lanes[i] = XcvrLane{RxPowerLane: "N/A", TxPowerLane: "N/A", TxBiasLane: "N/A"}
+		}
+
+		fillXcvrAggregatePower(xcvrState, xcvrInfo)
+
+		if xcvrState.InputPower.Instant != nil {
+			t.Errorf("InputPower.Instant = %v, want nil", *xcvrState.InputPower.Instant)
+		}
+		if xcvrState.OutputPower.Instant != nil {
+			t.Errorf("OutputPower.Instant = %v, want nil", *xcvrState.OutputPower.Instant)
+		}
+		if xcvrState.LaserBiasCurrent.Instant != nil {
+			t.Errorf("LaserBiasCurrent.Instant = %v, want nil", *xcvrState.LaserBiasCurrent.Instant)
+		}
+	})
+
+	t.Run("dark lanes are excluded from the aggregate", func(t *testing.T) {
+		xcvrState := newXcvrStateForTest(t)
+		var xcvrInfo XcvrInfo
+		// A lane receiving no light is written by xcvrd as "-inf" dBm; it must
+		// contribute nothing rather than poison the sum.
+		xcvrInfo.Lanes[0] = XcvrLane{RxPowerLane: "0", TxPowerLane: "0", TxBiasLane: "1.0"}
+		xcvrInfo.Lanes[1] = XcvrLane{RxPowerLane: "-inf", TxPowerLane: "-inf", TxBiasLane: "-inf"}
+		for i := 2; i < XCVR_LANE_LIMIT; i++ {
+			xcvrInfo.Lanes[i] = XcvrLane{RxPowerLane: "N/A", TxPowerLane: "N/A", TxBiasLane: "N/A"}
+		}
+
+		fillXcvrAggregatePower(xcvrState, xcvrInfo)
+
+		if xcvrState.InputPower.Instant == nil || math.Abs(*xcvrState.InputPower.Instant) > eps {
+			t.Errorf("InputPower.Instant = %v, want 0", xcvrState.InputPower.Instant)
+		}
+		if xcvrState.OutputPower.Instant == nil || math.Abs(*xcvrState.OutputPower.Instant) > eps {
+			t.Errorf("OutputPower.Instant = %v, want 0", xcvrState.OutputPower.Instant)
+		}
+		if xcvrState.LaserBiasCurrent.Instant == nil || math.Abs(*xcvrState.LaserBiasCurrent.Instant-1.0) > eps {
+			t.Errorf("LaserBiasCurrent.Instant = %v, want 1.0", xcvrState.LaserBiasCurrent.Instant)
+		}
+	})
+
+	t.Run("all lanes dark leaves aggregate unset", func(t *testing.T) {
+		xcvrState := newXcvrStateForTest(t)
+		var xcvrInfo XcvrInfo
+		for i := 0; i < XCVR_LANE_LIMIT; i++ {
+			xcvrInfo.Lanes[i] = XcvrLane{RxPowerLane: "-inf", TxPowerLane: "-inf", TxBiasLane: "-inf"}
 		}
 
 		fillXcvrAggregatePower(xcvrState, xcvrInfo)

@@ -2784,26 +2784,20 @@ var sfpTypeToMaxLanesMap = map[string]int{
 }
 
 func convAndFillDBValues(rxpField, txpField, txbField, txdisableField string, channel *ocbinds.OpenconfigPlatform_Components_Component_Transceiver_PhysicalChannels_Channel) {
-	if rxpField != "" {
-		if rxPower, err := strconv.ParseFloat(rxpField, 64); err == nil {
-			channel.State.InputPower.Instant = &rxPower
-		} else {
-			log.V(lvl.DEBUG).Infof("Error converting rxPower (\"%s\") from string to float64", rxpField)
-		}
+	if rxPower, ok := parseXcvrDomValue(rxpField); ok {
+		channel.State.InputPower.Instant = &rxPower
+	} else if rxpField != "" {
+		log.V(lvl.DEBUG).Infof("Skipping rxPower (\"%s\"): not a finite reading", rxpField)
 	}
-	if txpField != "" {
-		if txPower, err := strconv.ParseFloat(txpField, 64); err == nil {
-			channel.State.OutputPower.Instant = &txPower
-		} else {
-			log.V(lvl.DEBUG).Infof("Error converting txPower (\"%s\") from string to float64", txpField)
-		}
+	if txPower, ok := parseXcvrDomValue(txpField); ok {
+		channel.State.OutputPower.Instant = &txPower
+	} else if txpField != "" {
+		log.V(lvl.DEBUG).Infof("Skipping txPower (\"%s\"): not a finite reading", txpField)
 	}
-	if txbField != "" {
-		if txBias, err := strconv.ParseFloat(txbField, 64); err == nil {
-			channel.State.LaserBiasCurrent.Instant = &txBias
-		} else {
-			log.V(lvl.DEBUG).Infof("Error converting txBias (\"%s\") from string to float64", txbField)
-		}
+	if txBias, ok := parseXcvrDomValue(txbField); ok {
+		channel.State.LaserBiasCurrent.Instant = &txBias
+	} else if txbField != "" {
+		log.V(lvl.DEBUG).Infof("Skipping txBias (\"%s\"): not a finite reading", txbField)
 	}
 	txLaserEnable := false
 	if txdisableField == "False" || txdisableField == "false" {
@@ -2816,13 +2810,20 @@ func convAndFillDBValues(rxpField, txpField, txbField, txdisableField string, ch
 parseXcvrDomValue parses a per-lane DOM sensor field into a float. xcvrd
 populates unused/unsupported lanes with the sentinel "N/A" (and absent fields
 are empty), both of which are treated as "no reading".
+
+xcvrd converts optical power to dBm with 10*log10(mW), so a lane reading 0 mW
+is written to the DB as "-inf". strconv.ParseFloat accepts that spelling, and
+an infinity cannot be encoded as a YANG decimal64: JSON_IETF renders it as the
+string "-Inf" and PROTO as float_val: -inf, either of which makes a strict
+client such as ygnmi fail to unmarshal the whole response. Treat non-finite
+values as "no reading" so the leaf is omitted instead.
 */
 func parseXcvrDomValue(field string) (float64, bool) {
 	if field == "" || strings.EqualFold(field, "N/A") {
 		return 0, false
 	}
 	v, err := strconv.ParseFloat(field, 64)
-	if err != nil {
+	if err != nil || math.IsInf(v, 0) || math.IsNaN(v) {
 		return 0, false
 	}
 	return v, true
