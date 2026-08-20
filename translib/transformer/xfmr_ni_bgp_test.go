@@ -590,11 +590,11 @@ func Test_openconfig_network_instance_bgp_peer_group_name(t *testing.T) {
 	expectedMap := map[string]interface{}{
 		"BGP_PEER_GROUP": map[string]interface{}{
 			"default|PG1": map[string]interface{}{
-				"peer_group_name": "PG1",
+				"asn": "65200",
 			},
 		},
 	}
-	t.Run("Verify BGP_PEER_GROUP peer_group_name mapping", verifyDbResult(rclient, "BGP_PEER_GROUP|default|PG1", expectedMap, false))
+	t.Run("Verify BGP_PEER_GROUP row unchanged for peer-group-name key update", verifyDbResult(rclient, "BGP_PEER_GROUP|default|PG1", expectedMap, false))
 	time.Sleep(1 * time.Second)
 
 	expectedGetJSON := "{\"openconfig-network-instance:peer-group-name\":\"PG1\"}"
