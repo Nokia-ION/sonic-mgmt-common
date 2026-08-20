@@ -296,24 +296,33 @@ var YangToDb_sys_config_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (ma
 	return memMap, nil
 }
 
-var DbToYang_sys_config_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) error {
-	sysObj := getAppRootObject(inParams)
-	var err error
+// getSystemHostAndDomainName reads hostname and domain_name from
+// DEVICE_METADATA|localhost. Both /system/config and /system/state expose them.
+func getSystemHostAndDomainName(inParams XfmrParams) (hostname string, domainName string, err error) {
 	cfgDb := inParams.dbs[db.ConfigDB]
 	if cfgDb == nil {
 		cfgDb, err = db.NewDB(getDBOptions(db.ConfigDB))
 		if err != nil {
-			return tlerr.InvalidArgsError{Format: err.Error()}
+			return "", "", tlerr.InvalidArgsError{Format: err.Error()}
 		}
 		defer cfgDb.DeleteDB()
 	}
 
 	entry, err := cfgDb.GetEntry(&db.TableSpec{Name: "DEVICE_METADATA"}, db.Key{Comp: []string{"localhost"}})
 	if err != nil {
+		return "", "", err
+	}
+
+	return entry.Get("hostname"), entry.Get("domain_name"), nil
+}
+
+var DbToYang_sys_config_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) error {
+	sysObj := getAppRootObject(inParams)
+
+	hostname, domainName, err := getSystemHostAndDomainName(inParams)
+	if err != nil {
 		return err
 	}
-	hostname := entry.Get("hostname")
-	domainName := entry.Get("domain_name")
 
 	ygot.BuildEmptyTree(sysObj)
 	sysObj.Config.Hostname = &hostname
@@ -377,9 +386,16 @@ var DbToYang_sys_state_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) erro
 		return err
 	}
 
+	hostname, domainName, err := getSystemHostAndDomainName(inParams)
+	if err != nil {
+		return err
+	}
+
 	ygot.BuildEmptyTree(sysObj)
 	sysObj.State.BootTime = &bootTime
 	sysObj.State.UpTime = &upTime
+	sysObj.State.Hostname = &hostname
+	sysObj.State.DomainName = &domainName
 	return nil
 }
 
