@@ -35,6 +35,8 @@ const (
 	rpolRouteMapSetTbl                     = "ROUTE_MAP_SET"
 	rpolRouteMapTbl                        = "ROUTE_MAP"
 	rpolCommunitySetTbl                    = "COMMUNITY_SET"
+	rpolExtCommunitySetTbl                 = "EXTENDED_COMMUNITY_SET"
+	rpolPrefixSetTbl                       = "PREFIX_SET"
 	rpolRouteOperationFld                  = "route_operation"
 	rpolMatchPrefixSetFld                  = "match_prefix_set"
 	rpolMatchIpv6PrefixSetFld              = "match_ipv6_prefix_set"
@@ -79,6 +81,8 @@ const (
 	rpolLocalPrefEqLeaf                    = "local-pref-eq"
 	rpolCommunitySetLeaf                   = "community-set"
 	rpolExtCommunitySetLeaf                = "ext-community-set"
+	rpolSetTypeFld                         = "set_type"
+	rpolPrefixSetModeFld                   = "mode"
 )
 
 var rpolPolicyDefCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/config(?:/(name))?$`)
@@ -1545,6 +1549,37 @@ func makeRpolCommunitySetResMap(communitySetName string, fields map[string]strin
 	}
 }
 
+func makeRpolExtCommunitySetResMap(communitySetName string, fields map[string]string) map[string]map[string]db.Value {
+	return map[string]map[string]db.Value{
+		rpolExtCommunitySetTbl: {
+			communitySetName: db.Value{Field: fields},
+		},
+	}
+}
+
+func makeRpolPrefixSetResMap(prefixSetName string, fields map[string]string) map[string]map[string]db.Value {
+	return map[string]map[string]db.Value{
+		rpolPrefixSetTbl: {
+			prefixSetName: db.Value{Field: fields},
+		},
+	}
+}
+
+func mergeDbResMap(dst map[string]map[string]db.Value, src map[string]map[string]db.Value) map[string]map[string]db.Value {
+	if dst == nil {
+		dst = make(map[string]map[string]db.Value)
+	}
+	for tbl, entries := range src {
+		if _, ok := dst[tbl]; !ok {
+			dst[tbl] = make(map[string]db.Value)
+		}
+		for key, val := range entries {
+			dst[tbl][key] = val
+		}
+	}
+	return dst
+}
+
 var YangToDb_routing_policy_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (map[string]map[string]db.Value, error) {
 	res := make(map[string]map[string]db.Value)
 
@@ -1663,7 +1698,10 @@ var YangToDb_routing_policy_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 		if name, ok := parseRpolCommunitySetNameFromParam(inParams.param); ok && name != reqInfo.communitySetName {
 			return res, tlerr.InvalidArgsError{Format: fmt.Sprintf("community-set-name payload (%s) does not match key (%s)", name, reqInfo.communitySetName)}
 		}
-		return makeRpolCommunitySetResMap(reqInfo.communitySetName, map[string]string{}), nil
+		// Force materialization of COMMUNITY_SET key by writing a valid default field.
+		return makeRpolCommunitySetResMap(reqInfo.communitySetName, map[string]string{
+			rpolSetTypeFld: "STANDARD",
+		}), nil
 	}
 	if reqInfo.targetPath == rpolTargetStmtActionsCfg && (reqInfo.targetLeaf == "" || reqInfo.targetLeaf == rpolPolicyResultLeaf) {
 		_, err := parseRpolStmtNameToUint16(reqInfo.stmtName)
@@ -1702,8 +1740,12 @@ var YangToDb_routing_policy_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 			return res, tlerr.InvalidArgsError{Format: "ConfigDB nil for routing-policy mapping"}
 		}
 		mode, err := getRpolPrefixSetMode(cfgDb, pfxSet)
+		pfxSetAutoCreate := false
 		if err != nil {
-			return res, err
+			// If PREFIX_SET doesn't exist yet, auto-create a minimal IPv4 entry so
+			// dependent match-prefix-set writes can proceed.
+			mode = "ipv4"
+			pfxSetAutoCreate = true
 		}
 		fields := map[string]string{
 			rpolMatchPrefixSetFld:     "",
@@ -1716,7 +1758,13 @@ var YangToDb_routing_policy_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 		} else {
 			return res, tlerr.InvalidArgsError{Format: fmt.Sprintf("unsupported PREFIX_SET mode %s for set %s", mode, pfxSet)}
 		}
-		return makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, fields), nil
+		res = makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, fields)
+		if pfxSetAutoCreate {
+			res = mergeDbResMap(res, makeRpolPrefixSetResMap(pfxSet, map[string]string{
+				rpolPrefixSetModeFld: "IPv4",
+			}))
+		}
+		return res, nil
 	}
 	if reqInfo.targetPath == rpolTargetStmtBgpActionsCfg {
 		_, err := parseRpolStmtNameToUint16(reqInfo.stmtName)
@@ -1812,10 +1860,15 @@ var YangToDb_routing_policy_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 			if refCfgObj == nil || refCfgObj.CommunitySetRef == nil || strings.TrimSpace(*refCfgObj.CommunitySetRef) == "" {
 				return res, tlerr.InvalidArgsError{Format: "routing-policy statement actions bgp-actions set-community reference config community-set-ref is missing in request payload"}
 			}
-			return makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, map[string]string{
+			refName := strings.TrimSpace(*refCfgObj.CommunitySetRef)
+			res = makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, map[string]string{
 				rpolSetCommunityInlineFld: "",
-				rpolSetCommunityRefFld:    strings.TrimSpace(*refCfgObj.CommunitySetRef),
-			}), nil
+				rpolSetCommunityRefFld:    refName,
+			})
+			res = mergeDbResMap(res, makeRpolCommunitySetResMap(refName, map[string]string{
+				rpolSetTypeFld: "STANDARD",
+			}))
+			return res, nil
 		case ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_SetCommunity_Config_Method_INLINE:
 			inlineCfgObj := getRpolPolicyStmtBgpSetCommunityInlineCfgObj(inParams.ygRoot, reqInfo.policyName, reqInfo.stmtName, false)
 			communities, err := rpolSetCommunityInlineCommunitiesToSlice(inlineCfgObj)
@@ -2016,7 +2069,18 @@ var YangToDb_routing_policy_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 		if len(fields) == 0 {
 			return res, tlerr.InvalidArgsError{Format: "routing-policy statement conditions bgp-conditions config payload missing supported fields (med-eq/origin-eq/local-pref-eq/community-set/ext-community-set)"}
 		}
-		return makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, fields), nil
+		res = makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, fields)
+		if cName, ok := fields[rpolMatchCommunityFld]; ok && strings.TrimSpace(cName) != "" {
+			res = mergeDbResMap(res, makeRpolCommunitySetResMap(strings.TrimSpace(cName), map[string]string{
+				rpolSetTypeFld: "STANDARD",
+			}))
+		}
+		if ecName, ok := fields[rpolMatchExtCommunityFld]; ok && strings.TrimSpace(ecName) != "" {
+			res = mergeDbResMap(res, makeRpolExtCommunitySetResMap(strings.TrimSpace(ecName), map[string]string{
+				rpolSetTypeFld: "STANDARD",
+			}))
+		}
+		return res, nil
 	}
 	return res, tlerr.NotSupportedError{Format: "unsupported leaf under routing-policy mapping", Path: inParams.requestUri}
 }
