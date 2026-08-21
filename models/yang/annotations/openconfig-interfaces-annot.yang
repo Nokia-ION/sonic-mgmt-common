@@ -10,9 +10,11 @@ module openconfig-interfaces-annot {
     import openconfig-vlan {prefix oc-vlan; }
     import openconfig-if-ip {prefix oc-ip; }
     import openconfig-if-aggregate { prefix oc-lag; }
+    import openconfig-if-ethernet { prefix oc-eth; }
     import openconfig-p4rt { prefix "p4rt-if"; }
     import openconfig-platform-port { prefix "oc-plat-port"; }
     import openconfig-platform-transceiver { prefix "oc-plat-xcvr"; }
+    import openconfig-storm-control-ext { prefix oc-storm-ext; }
 
     deviation /oc-intf:interfaces/oc-intf:interface {
         deviate add {
@@ -180,6 +182,13 @@ module openconfig-interfaces-annot {
         deviate add {
             sonic-ext:subtree-transformer "sw_vlans_xfmr";
             sonic-ext:path-transformer "sw_vlans_path_xfmr";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-eth:ethernet/oc-storm-ext:storm-control {
+        deviate add {
+            sonic-ext:subtree-transformer "storm_control_xfmr";
+            sonic-ext:path-transformer "storm_control_path_xfmr";
         }
     }
     
