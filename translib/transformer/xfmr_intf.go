@@ -407,6 +407,14 @@ func performIfNameKeyXfmrOp(inParams *XfmrParams, requestUriPath *string, ifName
 						if log.V(3) {
 							log.Infof("allow replace operation for VRRP L3 path")
 						}
+					} else if strings.Contains(*requestUriPath, "openconfig-storm-control-ext:storm-control") {
+						// Storm-control writes only touch PORT_STORM_CONTROL, never the PORT
+						// table, so they cannot drop the critical attributes this guard protects.
+						// A new entry always arrives as REPLACE because gNMI UPDATE on a
+						// non-existent instance falls back to REPLACE.
+						if log.V(3) {
+							log.Infof("allow replace operation for storm-control path")
+						}
 					} else {
 						// OC interfaces yang does not have attributes to set Physical interface critical attributes like speed, alias, lanes, index.
 						// Replace/PUT request without the critical attributes would end up in deletion of the same in PORT table, which cannot be allowed.

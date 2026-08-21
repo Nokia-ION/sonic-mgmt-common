@@ -21,6 +21,11 @@ SONICYANG_IMPORTS += sonic-spanning-tree.yang
 # config path; without it CVL rejects the write ("Invalid table or key for
 # GNMI|gnmi"). Its sonic-mgmt_vrf import is pulled in transitively.
 SONICYANG_IMPORTS += sonic-gnmi.yang
+# sonic-storm-control provides the PORT_STORM_CONTROL table. Required so CVL can
+# validate translib writes driven by the openconfig-storm-control-ext augment;
+# without it CVL rejects the write ("Invalid table or key for
+# PORT_STORM_CONTROL|<ifname>|<storm_type>"). Imports sonic-port, already listed.
+SONICYANG_IMPORTS += sonic-storm-control.yang
 
 ##
 # Local sonic yangs that import modules from SONICYANG_IMPORTS must be copied
