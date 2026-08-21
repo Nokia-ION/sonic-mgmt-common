@@ -1,0 +1,153 @@
+module openconfig-storm-control-ext {
+
+  yang-version "1";
+
+  namespace "http://openconfig.net/yang/interfaces/storm-control-ext";
+
+  prefix "oc-storm-ext";
+
+  import openconfig-interfaces { prefix oc-if; }
+  import openconfig-if-ethernet { prefix oc-eth; }
+  import openconfig-extensions { prefix oc-ext; }
+
+  organization "OpenConfig working group";
+
+  contact
+    "OpenConfig working group
+    www.openconfig.net";
+
+  description
+    "This module adds extensions to the base OpenConfig interfaces model to
+    support BUM (broadcast, unknown-unicast, unknown-multicast) storm
+    control, i.e. rate-limiting flooded traffic ingressing a physical port
+    and dropping the excess. OpenConfig has no standard storm-control model,
+    so this augments the ethernet container with one entry per storm type.
+
+    It maps to the SONiC CONFIG_DB PORT_STORM_CONTROL table, keyed
+    '<ifname>|<storm_type>' with a 'kbps' rate field, which PolicerOrch
+    programs as a SAI storm-control policer bound to the port via
+    SAI_PORT_ATTR_{BROADCAST,FLOOD,MULTICAST}_STORM_CONTROL_POLICER_ID.";
+
+  oc-ext:openconfig-version "0.1.0";
+
+  revision "2026-08-21" {
+    description
+      "Add BUM storm control on ethernet interfaces.";
+    reference "0.1.0";
+  }
+
+  oc-ext:catalog-organization "openconfig";
+  oc-ext:origin "openconfig";
+
+  typedef storm-control-type {
+    type enumeration {
+      enum BROADCAST {
+        description
+          "Traffic addressed to the broadcast MAC address.";
+      }
+      enum UNKNOWN_UNICAST {
+        description
+          "Unicast traffic whose destination MAC is not in the forwarding
+          table, and which is therefore flooded.";
+      }
+      enum UNKNOWN_MULTICAST {
+        description
+          "Multicast traffic with no matching multicast forwarding entry,
+          and which is therefore flooded.";
+      }
+    }
+    description
+      "The classes of flooded traffic that can be rate-limited
+      independently on an ingress port.";
+  }
+
+  grouping storm-control-entry-config {
+    description
+      "Rate limit applied to one class of flooded traffic on an ingress
+      port. Traffic of that class above the limit is dropped.";
+
+    leaf storm-type {
+      type storm-control-type;
+      description
+        "The class of flooded traffic this rate limit applies to.";
+    }
+
+    leaf level {
+      type decimal64 {
+        fraction-digits 3;
+        range "0..100";
+      }
+      units "percent";
+      description
+        "Rate limit expressed as a percentage of the port's line rate. A
+        level of 1 on an 800G port drops broadcast traffic above 8 Gbps.
+        Mutually exclusive with 'kbps'; the device resolves the percentage
+        against the configured port speed and programs the resulting
+        absolute rate, so changing the port speed does not re-scale a
+        previously configured level.";
+    }
+
+    leaf kbps {
+      type uint64 {
+        range "0..100000000";
+      }
+      units "kilobit/s";
+      description
+        "Rate limit as an absolute rate in kilobits per second. Mutually
+        exclusive with 'level'.";
+    }
+  }
+
+  grouping storm-control-top {
+    description
+      "Top-level grouping for per-port BUM storm control.";
+
+    container storm-control {
+      description
+        "Rate limiting of flooded traffic ingressing this port. A storm
+        type with no entry is not rate limited.";
+
+      container entries {
+        description
+          "Enclosing container for the per-storm-type rate limits.";
+
+        list entry {
+          key "storm-type";
+
+          description
+            "Rate limit for one class of flooded traffic.";
+
+          leaf storm-type {
+            type leafref {
+              path "../config/storm-type";
+            }
+            description
+              "Reference to the storm type being rate limited.";
+          }
+
+          container config {
+            description
+              "Configurable rate limit for this storm type.";
+            uses storm-control-entry-config;
+          }
+
+          container state {
+            config false;
+            description
+              "Operational state of the rate limit for this storm type.
+              Both the absolute rate and its equivalent percentage of line
+              rate are reported, whichever was configured.";
+            uses storm-control-entry-config;
+          }
+        }
+      }
+    }
+  }
+
+  augment "/oc-if:interfaces/oc-if:interface/oc-eth:ethernet" {
+    description
+      "Adds BUM storm control to physical ethernet interfaces.";
+    uses storm-control-top;
+  }
+
+}
