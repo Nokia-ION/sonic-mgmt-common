@@ -150,6 +150,10 @@ func Test_openconfig_routing_policy_defined_sets_bgp_defined_sets_community_set_
 	t.Run("PATCH routing-policy community-set-name", processSetRequest(url, urlInputBodyJSON, "PATCH", false, nil))
 	time.Sleep(1 * time.Second)
 
+	configNameURL := "/openconfig-routing-policy:routing-policy/defined-sets/bgp-defined-sets/community-sets/community-set[community-set-name=COMM1]/config/community-set-name"
+	t.Run("PATCH routing-policy community-set config/community-set-name", processSetRequest(configNameURL, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
 	expectedMap := map[string]interface{}{
 		"COMMUNITY_SET": map[string]interface{}{
 			"COMM1": map[string]interface{}{
@@ -162,6 +166,8 @@ func Test_openconfig_routing_policy_defined_sets_bgp_defined_sets_community_set_
 
 	expectedGetJSON := "{\"openconfig-bgp-policy:community-set-name\":\"COMM1\"}"
 	t.Run("GET routing-policy community-set-name", processGetRequest(url, nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET routing-policy community-set config/community-set-name", processGetRequest(configNameURL, nil, expectedGetJSON, false))
 	time.Sleep(1 * time.Second)
 
 	prefixedUrl = "/openconfig-routing-policy:routing-policy/defined-sets/openconfig-bgp-policy:bgp-defined-sets/openconfig-bgp-policy:community-sets/openconfig-bgp-policy:community-set[openconfig-bgp-policy:community-set-name=COMM1]/openconfig-bgp-policy:community-set-name"
