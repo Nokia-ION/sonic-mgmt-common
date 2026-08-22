@@ -942,10 +942,6 @@ var YangToDb_intf_name_xfmr FieldXfmrYangToDb = func(inParams XfmrParams) (map[s
 	if strings.HasPrefix(ifName, VLAN) {
 		vlanId := ifName[len("Vlan"):]
 		res_map["vlanid"] = vlanId
-	} else if strings.HasPrefix(ifName, PORTCHANNEL) {
-		res_map["NULL"] = "NULL"
-	} else if strings.HasPrefix(ifName, ETHERNET) {
-		res_map["NULL"] = "NULL"
 	}
 	log.Info("YangToDb_intf_name_xfmr: res_map:", res_map)
 	return res_map, err
