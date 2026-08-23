@@ -84,6 +84,7 @@ func stpMstInstAppPrereq() map[string]interface{} {
 				"priority":      "128",
 				"path_cost":     "200",
 				"desig_cost":    "400",
+				"desig_port":    "32772",
 				"port_state":    "FORWARDING",
 				"role":          "root",
 				"bpdu_sent":     "10",
@@ -110,11 +111,6 @@ func stpEnableRstpExpected() map[string]interface{} {
 				"priority":              "128",
 			},
 		},
-		"STP_MST_PORT": map[string]interface{}{
-			"0|" + stpTestIfName: map[string]interface{}{
-				"priority": "128",
-			},
-		},
 	}
 }
 
@@ -124,6 +120,18 @@ func stpEnableRstpCleanup() map[string]interface{} {
 		"STP_MST_INST": map[string]interface{}{"0": ""},
 		"STP_PORT":     map[string]interface{}{stpTestIfName: ""},
 		"STP_MST_PORT": map[string]interface{}{"0|" + stpTestIfName: ""},
+	}
+}
+
+func verifyStpMstPortNotCreatedOnEnable(t *testing.T) {
+	t.Helper()
+	key := "STP_MST_PORT|0|" + stpTestIfName
+	exists, err := rclient.Exists(context.Background(), key).Result()
+	if err != nil {
+		t.Fatalf("redis EXISTS failed for %s: %v", key, err)
+	}
+	if exists != 0 {
+		t.Fatalf("expected %s to be absent so stpd can auto-derive path cost", key)
 	}
 }
 
@@ -138,6 +146,7 @@ func Test_set_rstp_enabled_protocol(t *testing.T) {
 	t.Run("enable RSTP via enabled-protocol", processSetRequest(url, body, "POST", false, nil))
 	time.Sleep(1 * time.Second)
 	t.Run("verify MST mode and MSTI 0 defaults", verifyDbResult(rclient, "STP|GLOBAL", expected, false))
+	t.Run("verify STP_MST_PORT not created on enable", verifyStpMstPortNotCreatedOnEnable)
 	unloadDB(db.ConfigDB, cleanup)
 }
 
@@ -153,6 +162,7 @@ func Test_set_rstp_enabled_protocol_cold_start_update(t *testing.T) {
 	t.Run("enable RSTP via UPDATE on cold start", processSetRequest(url, body, "PATCH", false, nil))
 	time.Sleep(1 * time.Second)
 	t.Run("verify MST mode and MSTI 0 defaults after cold-start UPDATE", verifyDbResult(rclient, "STP|GLOBAL", expected, false))
+	t.Run("verify STP_MST_PORT not created on enable", verifyStpMstPortNotCreatedOnEnable)
 	unloadDB(db.ConfigDB, cleanup)
 }
 
@@ -167,6 +177,7 @@ func Test_set_rstp_enabled_protocol_patch(t *testing.T) {
 	t.Run("enable RSTP via PATCH on global config", processSetRequest(url, body, "PATCH", false, nil))
 	time.Sleep(1 * time.Second)
 	t.Run("verify MST mode and MSTI 0 defaults after PATCH", verifyDbResult(rclient, "STP|GLOBAL", expected, false))
+	t.Run("verify STP_MST_PORT not created on enable", verifyStpMstPortNotCreatedOnEnable)
 	unloadDB(db.ConfigDB, cleanup)
 }
 
@@ -276,6 +287,82 @@ func Test_set_rstp_link_type(t *testing.T) {
 	t.Run("verify link_type in STP_PORT", verifyDbResult(rclient, "STP_PORT|"+stpTestIfName, expected, false))
 }
 
+func Test_set_rstp_port_priority(t *testing.T) {
+	url := "/openconfig-spanning-tree:stp/rstp/interfaces/interface[name=" + stpTestIfName + "]/config/port-priority"
+	body := `{"openconfig-spanning-tree:port-priority":16}`
+	expected := map[string]interface{}{
+		"STP_MST_PORT": map[string]interface{}{
+			"0|" + stpTestIfName: map[string]interface{}{
+				"path_cost": "1",
+				"priority":  "16",
+			},
+		},
+	}
+
+	loadDB(db.ConfigDB, stpMstInstPrereq("32768"))
+	time.Sleep(1 * time.Second)
+	t.Run("set RSTP port-priority", processSetRequest(url, body, "POST", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("verify STP_MST_PORT priority", verifyDbResult(rclient, "STP_MST_PORT|0|"+stpTestIfName, expected, false))
+}
+
+func Test_set_rstp_port_priority_zero(t *testing.T) {
+	url := "/openconfig-spanning-tree:stp/rstp/interfaces/interface[name=" + stpTestIfName + "]/config/port-priority"
+	body := `{"openconfig-spanning-tree:port-priority":0}`
+	expected := map[string]interface{}{
+		"STP_MST_PORT": map[string]interface{}{
+			"0|" + stpTestIfName: map[string]interface{}{
+				"path_cost": "1",
+				"priority":  "0",
+			},
+		},
+	}
+
+	loadDB(db.ConfigDB, stpMstInstPrereq("32768"))
+	time.Sleep(1 * time.Second)
+	t.Run("set RSTP port-priority 0", processSetRequest(url, body, "POST", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("verify STP_MST_PORT priority is 0", verifyDbResult(rclient, "STP_MST_PORT|0|"+stpTestIfName, expected, false))
+}
+
+func Test_set_rstp_port_cost(t *testing.T) {
+	url := "/openconfig-spanning-tree:stp/rstp/interfaces/interface[name=" + stpTestIfName + "]/config/cost"
+	body := `{"openconfig-spanning-tree:cost":2000}`
+	expected := map[string]interface{}{
+		"STP_MST_PORT": map[string]interface{}{
+			"0|" + stpTestIfName: map[string]interface{}{
+				"path_cost": "2000",
+				"priority":  "128",
+			},
+		},
+	}
+
+	loadDB(db.ConfigDB, stpMstInstPrereq("32768"))
+	time.Sleep(1 * time.Second)
+	t.Run("set RSTP cost", processSetRequest(url, body, "POST", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("verify STP_MST_PORT path_cost", verifyDbResult(rclient, "STP_MST_PORT|0|"+stpTestIfName, expected, false))
+}
+
+func Test_set_rstp_intf_config_container(t *testing.T) {
+	url := "/openconfig-spanning-tree:stp/rstp/interfaces/interface[name=" + stpTestIfName + "]/config"
+	body := `{"openconfig-spanning-tree:config":{"port-priority":32,"cost":4000}}`
+	expected := map[string]interface{}{
+		"STP_MST_PORT": map[string]interface{}{
+			"0|" + stpTestIfName: map[string]interface{}{
+				"priority":  "32",
+				"path_cost": "4000",
+			},
+		},
+	}
+
+	loadDB(db.ConfigDB, stpMstInstPrereq("32768"))
+	time.Sleep(1 * time.Second)
+	t.Run("set RSTP interface config container", processSetRequest(url, body, "POST", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("verify STP_MST_PORT priority and path_cost", verifyDbResult(rclient, "STP_MST_PORT|0|"+stpTestIfName, expected, false))
+}
+
 func Test_get_rstp_state_msti0(t *testing.T) {
 	loadDB(db.ConfigDB, stpMstInstPrereq("32768"))
 	loadDB(db.ApplDB, stpMstInstAppPrereq())
@@ -297,6 +384,52 @@ func Test_get_rstp_config(t *testing.T) {
 
 	url = "/openconfig-spanning-tree:stp/rstp/config/bridge-priority"
 	t.Run("get RSTP bridge priority", processGetRequest(url, nil, "", false))
+}
+
+func Test_get_rstp_interface_config(t *testing.T) {
+	prereq := stpMstInstPrereq("32768")
+	prereq["STP_MST_PORT"].(map[string]interface{})["0|"+stpTestIfName] = map[string]interface{}{
+		"path_cost": "2000",
+		"priority":  "0",
+	}
+	loadDB(db.ConfigDB, prereq)
+	time.Sleep(1 * time.Second)
+
+	url := "/openconfig-spanning-tree:stp/rstp/interfaces/interface[name=" + stpTestIfName + "]/config/port-priority"
+	t.Run("get RSTP port-priority from CONFIG_DB", processGetRequest(url, nil, `{"openconfig-spanning-tree:port-priority":0}`, false))
+
+	url = "/openconfig-spanning-tree:stp/rstp/interfaces/interface[name=" + stpTestIfName + "]/config/cost"
+	t.Run("get RSTP cost from CONFIG_DB", processGetRequest(url, nil, `{"openconfig-spanning-tree:cost":2000}`, false))
+
+	url = "/openconfig-spanning-tree:stp/rstp/interfaces/interface[name=" + stpTestIfName + "]/config"
+	t.Run("get RSTP interface config container from CONFIG_DB", processGetRequest(url, nil,
+		`{"openconfig-spanning-tree:config":{"name":"Ethernet0","cost":2000,"port-priority":0}}`, false))
+}
+
+func Test_get_rstp_interface_config_cli_key(t *testing.T) {
+	prereq := stpMstInstPrereq("32768")
+	delete(prereq["STP_MST_PORT"].(map[string]interface{}), "0|"+stpTestIfName)
+	prereq["STP_MST_PORT"].(map[string]interface{})["MST_INSTANCE|0|"+stpTestIfName] = map[string]interface{}{
+		"path_cost": "1",
+		"priority":  "128",
+	}
+	prereq["STP_PORT"].(map[string]interface{})[stpTestIfName] = map[string]interface{}{
+		"enabled":   "true",
+		"path_cost": "99",
+		"priority":  "16",
+	}
+	loadDB(db.ConfigDB, prereq)
+	time.Sleep(1 * time.Second)
+
+	url := "/openconfig-spanning-tree:stp/rstp/interfaces/interface[name=" + stpTestIfName + "]/config/port-priority"
+	t.Run("get RSTP port-priority from CLI STP_MST_PORT key", processGetRequest(url, nil, `{"openconfig-spanning-tree:port-priority":128}`, false))
+
+	url = "/openconfig-spanning-tree:stp/rstp/interfaces/interface[name=" + stpTestIfName + "]/config/cost"
+	t.Run("get RSTP cost from CLI STP_MST_PORT key", processGetRequest(url, nil, `{"openconfig-spanning-tree:cost":1}`, false))
+
+	url = "/openconfig-spanning-tree:stp/rstp/interfaces/interface[name=" + stpTestIfName + "]/config"
+	t.Run("get RSTP interface config from CLI STP_MST_PORT key", processGetRequest(url, nil,
+		`{"openconfig-spanning-tree:config":{"name":"Ethernet0","cost":1,"port-priority":128}}`, false))
 }
 
 func Test_get_stp_interface_config(t *testing.T) {

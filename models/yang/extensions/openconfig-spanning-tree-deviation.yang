@@ -28,6 +28,12 @@ module openconfig-spanning-tree-deviation {
         reference "0.2.0";
     }
 
+    revision 2026-08-22 {
+        description
+            "Allow RSTP interface port-priority 0 to match SONiC/IEEE range.";
+        reference "0.2.1";
+    }
+
     deviation /oc-stp:stp/oc-stp:mstp {
         deviate not-supported;
     }
@@ -40,6 +46,22 @@ module openconfig-spanning-tree-deviation {
         deviate replace {
             type uint32 {
                 range "0..61440";
+            }
+        }
+    }
+
+    deviation /oc-stp:stp/oc-stp:rstp/oc-stp:interfaces/oc-stp:interface/oc-stp:config/oc-stp:port-priority {
+        deviate replace {
+            type uint8 {
+                range "0..240";
+            }
+        }
+    }
+
+    deviation /oc-stp:stp/oc-stp:rstp/oc-stp:interfaces/oc-stp:interface/oc-stp:state/oc-stp:port-priority {
+        deviate replace {
+            type uint8 {
+                range "0..240";
             }
         }
     }
