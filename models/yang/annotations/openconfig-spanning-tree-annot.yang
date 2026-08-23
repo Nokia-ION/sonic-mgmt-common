@@ -50,6 +50,13 @@ module openconfig-spanning-tree-annot {
         reference "0.2.4";
     }
 
+    revision 2026-08-22 {
+        description
+            "Map RSTP interface config cost and port-priority to CONFIG_DB STP_MST_PORT.
+             Allow port-priority 0 to match SONiC/IEEE range.";
+        reference "0.2.5";
+    }
+
     deviation /oc-stp:stp {
         deviate add {
             sonic-ext:post-transformer "stp_post_xfmr";
@@ -147,11 +154,50 @@ module openconfig-spanning-tree-annot {
         }
     }
 
+    deviation /oc-stp:stp/oc-stp:rstp/oc-stp:interfaces/oc-stp:interface/oc-stp:config {
+        deviate add {
+            sonic-ext:db-name "CONFIG_DB";
+            sonic-ext:table-name "STP_MST_PORT";
+            sonic-ext:key-transformer "stp_rstp_intf_key_xfmr";
+            sonic-ext:subtree-transformer "stp_rstp_intf_xfmr";
+        }
+    }
+
+    deviation /oc-stp:stp/oc-stp:rstp/oc-stp:interfaces/oc-stp:interface/oc-stp:config/oc-stp:port-priority {
+        deviate add {
+            sonic-ext:field-transformer "stp_rstp_port_priority_xfmr";
+            sonic-ext:field-name "priority";
+        }
+    }
+
+    deviation /oc-stp:stp/oc-stp:rstp/oc-stp:interfaces/oc-stp:interface/oc-stp:config/oc-stp:port-priority {
+        deviate replace {
+            type uint8 {
+                range "0..240";
+            }
+        }
+    }
+
+    deviation /oc-stp:stp/oc-stp:rstp/oc-stp:interfaces/oc-stp:interface/oc-stp:config/oc-stp:cost {
+        deviate add {
+            sonic-ext:field-transformer "stp_rstp_port_cost_xfmr";
+            sonic-ext:field-name "path_cost";
+        }
+    }
+
     deviation /oc-stp:stp/oc-stp:rstp/oc-stp:interfaces/oc-stp:interface/oc-stp:state {
         deviate add {
             sonic-ext:db-name "APPL_DB";
             sonic-ext:subtree-transformer "stp_rstp_intf_xfmr";
             sonic-ext:virtual-table "true";
+        }
+    }
+
+    deviation /oc-stp:stp/oc-stp:rstp/oc-stp:interfaces/oc-stp:interface/oc-stp:state/oc-stp:port-priority {
+        deviate replace {
+            type uint8 {
+                range "0..240";
+            }
         }
     }
 

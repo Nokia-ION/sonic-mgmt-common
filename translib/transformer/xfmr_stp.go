@@ -73,6 +73,7 @@ const (
 	STP_RSTP_STATE       = "/openconfig-spanning-tree:stp/rstp/state"
 	STP_RSTP_INTERFACES  = "/openconfig-spanning-tree:stp/rstp/interfaces"
 	STP_RSTP_INTERFACE   = "/openconfig-spanning-tree:stp/rstp/interfaces/interface"
+	STP_RSTP_INTF_CONFIG = "/openconfig-spanning-tree:stp/rstp/interfaces/interface/config"
 	STP_INTF_COMMON      = "/openconfig-spanning-tree:stp/interfaces"
 	STP_INTF_COMMON_INTF = "/openconfig-spanning-tree:stp/interfaces/interface"
 )
@@ -106,6 +107,10 @@ func init() {
 	XlateFuncBind("DbToYang_stp_edge_port_xfmr", DbToYang_stp_edge_port_xfmr)
 	XlateFuncBind("YangToDb_stp_link_type_xfmr", YangToDb_stp_link_type_xfmr)
 	XlateFuncBind("DbToYang_stp_link_type_xfmr", DbToYang_stp_link_type_xfmr)
+	XlateFuncBind("YangToDb_stp_rstp_port_priority_xfmr", YangToDb_stp_rstp_port_priority_xfmr)
+	XlateFuncBind("DbToYang_stp_rstp_port_priority_xfmr", DbToYang_stp_rstp_port_priority_xfmr)
+	XlateFuncBind("YangToDb_stp_rstp_port_cost_xfmr", YangToDb_stp_rstp_port_cost_xfmr)
+	XlateFuncBind("DbToYang_stp_rstp_port_cost_xfmr", DbToYang_stp_rstp_port_cost_xfmr)
 	XlateFuncBind("stp_post_xfmr", stp_post_xfmr)
 }
 
@@ -151,6 +156,10 @@ func mstPortCfgKey(ifName string) string {
 	// CONFIG_DB/CVL key follows YANG list keys (inst_id|ifname). CLI may use
 	// MST_INSTANCE|<id>|<ifname>; stpmgr accepts both formats.
 	return fmt.Sprintf("%d|%s", RSTP_MSTI_ID, ifName)
+}
+
+func mstPortCliCfgKey(ifName string) string {
+	return fmt.Sprintf("MST_INSTANCE|%d|%s", RSTP_MSTI_ID, ifName)
 }
 
 func mstPortAppKey(ifName string) string {
@@ -219,12 +228,6 @@ func defaultStpPortBootstrapFields() map[string]string {
 	}
 }
 
-func defaultMstPortFields() map[string]string {
-	return map[string]string{
-		"priority": DEFAULT_PORT_PRIORITY,
-	}
-}
-
 func enableRstpGlobal(res map[string]map[string]db.Value) {
 	globalMap := make(map[string]db.Value)
 	globalMap[STP_GLOBAL_KEY] = db.Value{Field: map[string]string{"mode": STP_MODE_MST}}
@@ -266,14 +269,13 @@ func populateMstPortEntries(cfgDb *db.DB, res map[string]map[string]db.Value) er
 		portMap = make(map[string]db.Value)
 		res[STP_PORT_TBL] = portMap
 	}
-	mstPortMap := res[STP_MST_PORT_TBL]
-	if mstPortMap == nil {
-		mstPortMap = make(map[string]db.Value)
-		res[STP_MST_PORT_TBL] = mstPortMap
-	}
+	// Do not create STP_MST_PORT here. stpmgr treats a missing instance
+	// path_cost as 0 (explicit) rather than -1 (auto), which zeros the
+	// operational cost instead of deriving it from port speed. Instance
+	// rows are created only when /rstp/interfaces/interface/config SET
+	// writes cost or port-priority.
 	for _, ifName := range intfs {
 		portMap[ifName] = db.Value{Field: defaultStpPortBootstrapFields()}
-		mstPortMap[mstPortCfgKey(ifName)] = db.Value{Field: defaultMstPortFields()}
 	}
 	return nil
 }
@@ -433,6 +435,21 @@ func parseUint16Default(val, def string) uint16 {
 		return uint16(parsed64)
 	}
 	return uint16(parsed)
+}
+
+// IEEE 802.1D Port Identifier: 4-bit encoded priority, 12-bit port number.
+// stpd publishes (priority << 12) | number in APPL_DB desig_port; 0xFFFF means unset.
+func decodeStpDesignatedPortId(val string) (priority uint8, portNum uint16, ok bool) {
+	if val == "" {
+		return 0, 0, false
+	}
+	portId := parseUint16Default(val, "0")
+	if portId == 0xFFFF {
+		return 0, 0, false
+	}
+	priority = uint8((portId >> 12) << 4)
+	portNum = portId & 0x0FFF
+	return priority, portNum, true
 }
 
 func parseUint32Default(val, def string) uint32 {
@@ -741,21 +758,67 @@ func fillRstpInterfaceConfig(intf *ocbinds.OpenconfigSpanningTree_Stp_Rstp_Inter
 	}
 	intf.Config.Name = &name
 
-	mstPortEntry, err := cfgDb.GetEntry(&db.TableSpec{Name: STP_MST_PORT_TBL}, db.Key{Comp: []string{mstPortCfgKey(ifName)}})
-	if err != nil && !tlerr.IsTranslibRedisClientEntryNotExist(err) {
+	mstPortEntry, err := getRstpMstPortCfgEntry(cfgDb, ifName)
+	if err != nil {
 		return err
 	}
-	if mstPortEntry.IsPopulated() {
-		if val := mstPortEntry.Get("path_cost"); val != "" {
-			cost := parseUint32Default(val, DEFAULT_PATH_COST)
-			intf.Config.Cost = &cost
+	applyRstpIntfConfigFields(intf, mstPortEntry, true)
+
+	if intf.Config.Cost == nil || intf.Config.PortPriority == nil {
+		portEntry, err := getRstpStpPortCfgEntry(cfgDb, ifName)
+		if err != nil {
+			return err
 		}
-		if val := mstPortEntry.Get("priority"); val != "" {
-			priority := parseUint8Default(val, DEFAULT_PORT_PRIORITY)
-			intf.Config.PortPriority = &priority
-		}
+		applyRstpIntfConfigFields(intf, portEntry, false)
 	}
 	return nil
+}
+
+func applyRstpIntfConfigFields(intf *ocbinds.OpenconfigSpanningTree_Stp_Rstp_Interfaces_Interface, entry db.Value, overwrite bool) {
+	if intf == nil || intf.Config == nil || !entry.IsPopulated() {
+		return
+	}
+	if val := entry.Get("path_cost"); val != "" && (overwrite || intf.Config.Cost == nil) {
+		cost := parseUint32Default(val, DEFAULT_PATH_COST)
+		intf.Config.Cost = &cost
+	}
+	if val := entry.Get("priority"); val != "" && (overwrite || intf.Config.PortPriority == nil) {
+		priority := parseUint8Default(val, DEFAULT_PORT_PRIORITY)
+		intf.Config.PortPriority = &priority
+	}
+}
+
+func getRstpMstPortCfgEntry(cfgDb *db.DB, ifName string) (db.Value, error) {
+	if cfgDb == nil || ifName == "" {
+		return db.Value{}, nil
+	}
+	keys := []db.Key{
+		{Comp: []string{mstPortCfgKey(ifName)}},
+		{Comp: []string{mstInstCfgKey(), ifName}},
+		{Comp: []string{mstPortCliCfgKey(ifName)}},
+		{Comp: []string{"MST_INSTANCE", mstInstCfgKey(), ifName}},
+	}
+	for _, key := range keys {
+		entry, err := cfgDb.GetEntry(&db.TableSpec{Name: STP_MST_PORT_TBL}, key)
+		if err != nil && !tlerr.IsTranslibRedisClientEntryNotExist(err) {
+			return db.Value{}, err
+		}
+		if entry.IsPopulated() {
+			return entry, nil
+		}
+	}
+	return db.Value{}, nil
+}
+
+func getRstpStpPortCfgEntry(cfgDb *db.DB, ifName string) (db.Value, error) {
+	if cfgDb == nil || ifName == "" {
+		return db.Value{}, nil
+	}
+	entry, err := cfgDb.GetEntry(&db.TableSpec{Name: STP_PORT_TBL}, db.Key{Comp: []string{ifName}})
+	if err != nil && !tlerr.IsTranslibRedisClientEntryNotExist(err) {
+		return db.Value{}, err
+	}
+	return entry, nil
 }
 
 func fillRstpInterfaceState(intf *ocbinds.OpenconfigSpanningTree_Stp_Rstp_Interfaces_Interface, cfgDb, appDb *db.DB, ifName string) error {
@@ -824,8 +887,10 @@ func fillRstpInterfaceState(intf *ocbinds.OpenconfigSpanningTree_Stp_Rstp_Interf
 		}
 	}
 	if val := appEntry.Get("desig_port"); val != "" {
-		portNum := parseUint16Default(val, "0")
-		intf.State.DesignatedPortNum = &portNum
+		if prio, portNum, ok := decodeStpDesignatedPortId(val); ok {
+			intf.State.DesignatedPortPriority = &prio
+			intf.State.DesignatedPortNum = &portNum
+		}
 	}
 	if val := appEntry.Get("fwd_transitions"); val != "" {
 		ft := parseUint64Default(val)
@@ -1017,6 +1082,123 @@ func shouldMapStpRstpConfigLeaf(targetUriPath, leaf string) bool {
 	return targetUriPath == STP_RSTP_CONFIG+"/"+leaf
 }
 
+func shouldMapStpRstpIntfConfigLeaf(targetUriPath, leaf string) bool {
+	if targetUriPath == STP_RSTP_INTF_CONFIG ||
+		targetUriPath == STP_RSTP_INTERFACE ||
+		targetUriPath == STP_RSTP_INTERFACES ||
+		targetUriPath == STP_RSTP {
+		return true
+	}
+	return targetUriPath == STP_RSTP_INTF_CONFIG+"/"+leaf
+}
+
+func rstpIntfConfigUri(targetUriPath string) bool {
+	return strings.Contains(targetUriPath, "/config") && !strings.Contains(targetUriPath, "/state")
+}
+
+func rstpIntfNameFromDbKey(key string) string {
+	for _, sep := range []string{":", "|"} {
+		if parts := strings.SplitN(key, sep, 2); len(parts) == 2 && parts[1] != "" {
+			return parts[1]
+		}
+	}
+	return key
+}
+
+func rstpIntfNameFromParams(inParams XfmrParams) string {
+	ifName := NewPathInfo(inParams.uri).Var("name")
+	if ifName == "" {
+		ifName = NewPathInfo(inParams.requestUri).Var("name")
+	}
+	if ifName == "" && inParams.key != "" {
+		ifName = rstpIntfNameFromDbKey(inParams.key)
+	}
+	return ifName
+}
+
+func rstpIntfDbKey(ifName, targetUriPath string) string {
+	if rstpIntfConfigUri(targetUriPath) {
+		if ifName == "*" {
+			return fmt.Sprintf("%d|*", RSTP_MSTI_ID)
+		}
+		return mstPortCfgKey(ifName)
+	}
+	if ifName == "*" {
+		return fmt.Sprintf("%d:*", RSTP_MSTI_ID)
+	}
+	return mstPortAppKey(ifName)
+}
+
+func rstpIntfNameFromTblKey(params XfmrDbToYgPathParams) (string, error) {
+	if params.tblName != STP_MST_PORT_APP_TBL && params.tblName != STP_MST_PORT_TBL {
+		return "", errors.New("wrong table for RSTP interface path xfmr")
+	}
+	if len(params.tblKeyComp) >= 2 {
+		return params.tblKeyComp[len(params.tblKeyComp)-1], nil
+	}
+	if len(params.tblKeyComp) == 0 {
+		return "", errors.New("invalid STP MST port key")
+	}
+	name := rstpIntfNameFromDbKey(params.tblKeyComp[0])
+	if name == "" {
+		return "", errors.New("invalid STP MST port key format")
+	}
+	return name, nil
+}
+
+func rstpIntfConfigFromRoot(inParams XfmrParams, ifName string) *ocbinds.OpenconfigSpanningTree_Stp_Rstp_Interfaces_Interface_Config {
+	stpRoot := getStpRoot(inParams.ygRoot)
+	if stpRoot == nil || stpRoot.Rstp == nil || stpRoot.Rstp.Interfaces == nil || ifName == "" {
+		return nil
+	}
+	intf, ok := stpRoot.Rstp.Interfaces.Interface[ifName]
+	if !ok || intf == nil {
+		return nil
+	}
+	return intf.Config
+}
+
+func uint8FromParam(param interface{}) *uint8 {
+	switch v := param.(type) {
+	case *uint8:
+		return v
+	case uint8:
+		return &v
+	}
+	return nil
+}
+
+func uint32FromParam(param interface{}) *uint32 {
+	switch v := param.(type) {
+	case *uint32:
+		return v
+	case uint32:
+		return &v
+	}
+	return nil
+}
+
+func rstpIntfConfigFieldsFromRequest(inParams XfmrParams, ifName, targetUriPath string) map[string]string {
+	fields := make(map[string]string)
+	cfg := rstpIntfConfigFromRoot(inParams, ifName)
+
+	if shouldMapStpRstpIntfConfigLeaf(targetUriPath, "port-priority") {
+		if cfg != nil && cfg.PortPriority != nil {
+			fields["priority"] = strconv.FormatUint(uint64(*cfg.PortPriority), 10)
+		} else if prio := uint8FromParam(inParams.param); prio != nil {
+			fields["priority"] = strconv.FormatUint(uint64(*prio), 10)
+		}
+	}
+	if shouldMapStpRstpIntfConfigLeaf(targetUriPath, "cost") {
+		if cfg != nil && cfg.Cost != nil {
+			fields["path_cost"] = strconv.FormatUint(uint64(*cfg.Cost), 10)
+		} else if cost := uint32FromParam(inParams.param); cost != nil {
+			fields["path_cost"] = strconv.FormatUint(uint64(*cost), 10)
+		}
+	}
+	return fields
+}
+
 func enabledProtocolsFromParam(param interface{}) []ocbinds.E_OpenconfigSpanningTreeTypes_STP_PROTOCOL {
 	if param == nil {
 		return nil
@@ -1160,7 +1342,21 @@ func stpCfgDb(inParams XfmrParams) *db.DB {
 	if inParams.dbs[db.ConfigDB] != nil {
 		return inParams.dbs[db.ConfigDB]
 	}
-	return inParams.d
+	if inParams.d != nil && inParams.curDb == db.ConfigDB {
+		return inParams.d
+	}
+	return inParams.dbs[db.ConfigDB]
+}
+
+func resolveStpCfgDb(inParams XfmrParams) (*db.DB, func(), error) {
+	if cfgDb := stpCfgDb(inParams); cfgDb != nil {
+		return cfgDb, func() {}, nil
+	}
+	opened, err := db.NewDB(getDBOptions(db.ConfigDB))
+	if err != nil {
+		return nil, func() {}, err
+	}
+	return opened, func() { _ = opened.DeleteDB() }, nil
 }
 
 func requireRstpEnabled(cfgDb *db.DB) error {
@@ -1367,6 +1563,108 @@ var DbToYang_stp_link_type_xfmr FieldXfmrDbtoYang = func(inParams XfmrParams) (m
 		if lt := entry.Get("link_type"); lt != "" && lt != "auto" {
 			res["link-type"] = dbLinkTypeToOc(lt)
 		}
+	}
+	return res, nil
+}
+
+var YangToDb_stp_rstp_port_priority_xfmr FieldXfmrYangToDb = func(inParams XfmrParams) (map[string]string, error) {
+	res := make(map[string]string)
+	if inParams.oper == DELETE {
+		res["priority"] = DEFAULT_PORT_PRIORITY
+		return res, nil
+	}
+	if err := requireRstpEnabled(stpCfgDb(inParams)); err != nil {
+		return res, err
+	}
+	ifName := rstpIntfNameFromParams(inParams)
+	cfg := rstpIntfConfigFromRoot(inParams, ifName)
+	if cfg != nil && cfg.PortPriority != nil {
+		res["priority"] = strconv.FormatUint(uint64(*cfg.PortPriority), 10)
+		return res, nil
+	}
+	if prio := uint8FromParam(inParams.param); prio != nil {
+		res["priority"] = strconv.FormatUint(uint64(*prio), 10)
+		return res, nil
+	}
+	return res, errors.New("port-priority is required")
+}
+
+var DbToYang_stp_rstp_port_priority_xfmr FieldXfmrDbtoYang = func(inParams XfmrParams) (map[string]interface{}, error) {
+	res := make(map[string]interface{})
+	ifName := rstpIntfNameFromParams(inParams)
+	if ifName == "" {
+		return res, nil
+	}
+	cfgDb, closer, err := resolveStpCfgDb(inParams)
+	if err != nil {
+		return res, err
+	}
+	defer closer()
+	entry, err := getRstpMstPortCfgEntry(cfgDb, ifName)
+	if err != nil {
+		return res, err
+	}
+	if val := entry.Get("priority"); val != "" {
+		res["port-priority"] = parseUint8Default(val, DEFAULT_PORT_PRIORITY)
+		return res, nil
+	}
+	portEntry, err := getRstpStpPortCfgEntry(cfgDb, ifName)
+	if err != nil {
+		return res, err
+	}
+	if val := portEntry.Get("priority"); val != "" {
+		res["port-priority"] = parseUint8Default(val, DEFAULT_PORT_PRIORITY)
+	}
+	return res, nil
+}
+
+var YangToDb_stp_rstp_port_cost_xfmr FieldXfmrYangToDb = func(inParams XfmrParams) (map[string]string, error) {
+	res := make(map[string]string)
+	if inParams.oper == DELETE {
+		res["path_cost"] = ""
+		return res, nil
+	}
+	if err := requireRstpEnabled(stpCfgDb(inParams)); err != nil {
+		return res, err
+	}
+	ifName := rstpIntfNameFromParams(inParams)
+	cfg := rstpIntfConfigFromRoot(inParams, ifName)
+	if cfg != nil && cfg.Cost != nil {
+		res["path_cost"] = strconv.FormatUint(uint64(*cfg.Cost), 10)
+		return res, nil
+	}
+	if cost := uint32FromParam(inParams.param); cost != nil {
+		res["path_cost"] = strconv.FormatUint(uint64(*cost), 10)
+		return res, nil
+	}
+	return res, errors.New("cost is required")
+}
+
+var DbToYang_stp_rstp_port_cost_xfmr FieldXfmrDbtoYang = func(inParams XfmrParams) (map[string]interface{}, error) {
+	res := make(map[string]interface{})
+	ifName := rstpIntfNameFromParams(inParams)
+	if ifName == "" {
+		return res, nil
+	}
+	cfgDb, closer, err := resolveStpCfgDb(inParams)
+	if err != nil {
+		return res, err
+	}
+	defer closer()
+	entry, err := getRstpMstPortCfgEntry(cfgDb, ifName)
+	if err != nil {
+		return res, err
+	}
+	if val := entry.Get("path_cost"); val != "" {
+		res["cost"] = parseUint32Default(val, DEFAULT_PATH_COST)
+		return res, nil
+	}
+	portEntry, err := getRstpStpPortCfgEntry(cfgDb, ifName)
+	if err != nil {
+		return res, err
+	}
+	if val := portEntry.Get("path_cost"); val != "" {
+		res["cost"] = parseUint32Default(val, DEFAULT_PATH_COST)
 	}
 	return res, nil
 }
@@ -1592,20 +1890,6 @@ var YangToDb_stp_rstp_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (map[
 var Subscribe_stp_rstp_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSubscInParams) (XfmrSubscOutParams, error) {
 	var result XfmrSubscOutParams
 	result.dbDataMap = make(RedisDbSubscribeMap)
-	if inParams.subscProc == TRANSLATE_EXISTS {
-		result.isVirtualTbl = true
-		return result, nil
-	}
-	if inParams.subscProc == TRANSLATE_SUBSCRIBE {
-		enabled, err := isRstpEnabled(inParams.dbs[db.ConfigDB])
-		if err != nil {
-			return result, err
-		}
-		if !enabled {
-			result.isVirtualTbl = true
-			return result, nil
-		}
-	}
 	result.dbDataMap[db.ConfigDB] = map[string]map[string]map[string]string{
 		STP_MST_TBL:      {STP_MST_GLOBAL_KEY: {"hello_time": "", "max_age": "", "forward_delay": "", "hold_count": ""}},
 		STP_MST_INST_TBL: {mstInstCfgKey(): {"bridge_priority": ""}},
@@ -1614,7 +1898,6 @@ var Subscribe_stp_rstp_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSubscInPara
 		STP_MST_INST_APP_TBL: {mstInstCfgKey(): {"bridge_address": "", "bridge_priority": "", "root_address": "", "root_path_cost": "", "root_port": "", "hold_time": "", "topology_change_count": ""}},
 		STP_MST_PORT_APP_TBL: {mstPortAppKey("*"): {"path_cost": "", "desig_cost": "", "external_cost": "", "role": ""}},
 	}
-	result.isVirtualTbl = false
 	return result, nil
 }
 
@@ -1625,8 +1908,7 @@ var DbToYang_stp_rstp_intf_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) 
 	if stpRoot == nil {
 		return errors.New("stp root is nil")
 	}
-	cfgDb := inParams.dbs[db.ConfigDB]
-	if err := ensureRstpEnabledForGet(stpRoot, cfgDb, inParams.requestUri); err != nil {
+	if err := ensureRstpEnabledForGet(stpRoot, inParams.dbs[db.ConfigDB], inParams.requestUri); err != nil {
 		return err
 	}
 	ygot.BuildEmptyTree(stpRoot)
@@ -1634,7 +1916,15 @@ var DbToYang_stp_rstp_intf_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) 
 	targetUriPath, _, _ := XfmrRemoveXPATHPredicates(inParams.requestUri)
 	pathInfo := NewPathInfo(inParams.uri)
 	ifName := pathInfo.Var("name")
+	if ifName == "" {
+		ifName = rstpIntfNameFromParams(inParams)
+	}
 
+	cfgDb, closer, err := resolveStpCfgDb(inParams)
+	if err != nil {
+		return err
+	}
+	defer closer()
 	appDb := inParams.dbs[db.ApplDB]
 
 	if ifName != "" {
@@ -1683,70 +1973,86 @@ var DbToYang_stp_rstp_intf_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) 
 }
 
 var YangToDb_stp_rstp_intf_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (map[string]map[string]db.Value, error) {
-	return nil, errors.New("RSTP interface configuration is read-only; use /stp/interfaces for edge-port and link-type")
+	res := make(map[string]map[string]db.Value)
+	targetUriPath, _, _ := XfmrRemoveXPATHPredicates(inParams.requestUri)
+	ifName := rstpIntfNameFromParams(inParams)
+	if ifName == "" {
+		return res, nil
+	}
+
+	if inParams.oper == DELETE {
+		fields := make(map[string]string)
+		switch {
+		case strings.HasSuffix(targetUriPath, "/port-priority"):
+			fields["priority"] = DEFAULT_PORT_PRIORITY
+		case strings.HasSuffix(targetUriPath, "/cost"):
+			fields["path_cost"] = ""
+		case targetUriPath == STP_RSTP_INTF_CONFIG:
+			fields["priority"] = DEFAULT_PORT_PRIORITY
+			fields["path_cost"] = ""
+		default:
+			return res, errors.New("DELETE not supported on attribute")
+		}
+		res[STP_MST_PORT_TBL] = map[string]db.Value{
+			mstPortCfgKey(ifName): {Field: fields},
+		}
+		return res, nil
+	}
+
+	if err := requireRstpEnabled(stpCfgDb(inParams)); err != nil {
+		return res, err
+	}
+
+	fields := rstpIntfConfigFieldsFromRequest(inParams, ifName, targetUriPath)
+	if len(fields) == 0 {
+		if rstpIntfConfigUri(targetUriPath) || targetUriPath == STP_RSTP_INTERFACE {
+			return res, errors.New("only port-priority and cost are supported under /stp/rstp/interfaces/interface/config")
+		}
+		return res, nil
+	}
+
+	res[STP_MST_PORT_TBL] = map[string]db.Value{
+		mstPortCfgKey(ifName): {Field: fields},
+	}
+	return res, nil
 }
 
 var Subscribe_stp_rstp_intf_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSubscInParams) (XfmrSubscOutParams, error) {
 	var result XfmrSubscOutParams
 	result.dbDataMap = make(RedisDbSubscribeMap)
-	if inParams.subscProc == TRANSLATE_EXISTS {
-		result.isVirtualTbl = true
-		return result, nil
-	}
-	if inParams.subscProc == TRANSLATE_SUBSCRIBE {
-		enabled, err := isRstpEnabled(inParams.dbs[db.ConfigDB])
-		if err != nil {
-			return result, err
-		}
-		if !enabled {
-			result.isVirtualTbl = true
-			return result, nil
-		}
+	result.dbDataMap[db.ConfigDB] = map[string]map[string]map[string]string{
+		STP_MST_PORT_TBL: {mstPortCfgKey("*"): {"path_cost": "", "priority": ""}},
 	}
 	result.dbDataMap[db.ApplDB] = map[string]map[string]map[string]string{
 		STP_MST_PORT_APP_TBL: {mstPortAppKey("*"): {"*": ""}},
 	}
-	result.isVirtualTbl = false
 	return result, nil
 }
 
 var DbToYangPath_stp_rstp_intf_path_xfmr PathXfmrDbToYangFunc = func(params XfmrDbToYgPathParams) error {
-	if params.tblName != STP_MST_PORT_APP_TBL {
-		return errors.New("wrong APPL_DB table for RSTP interface path xfmr")
+	ifName, err := rstpIntfNameFromTblKey(params)
+	if err != nil {
+		return err
 	}
-	if len(params.tblKeyComp) == 0 {
-		return errors.New("invalid STP_MST_PORT_TABLE key")
-	}
-	parts := strings.SplitN(params.tblKeyComp[0], ":", 2)
-	if len(parts) != 2 {
-		return errors.New("invalid STP_MST_PORT_TABLE key format")
-	}
-	params.ygPathKeys[STP_RSTP_INTERFACE+"/name"] = parts[1]
+	params.ygPathKeys[STP_RSTP_INTERFACE+"/name"] = ifName
 	return nil
 }
 
 var YangToDb_stp_rstp_intf_key_xfmr KeyXfmrYangToDb = func(inParams XfmrParams) (string, error) {
-	ifName := NewPathInfo(inParams.uri).Var("name")
-	if ifName == "" {
-		ifName = NewPathInfo(inParams.requestUri).Var("name")
-	}
+	ifName := rstpIntfNameFromParams(inParams)
 	if ifName == "" {
 		return "", errors.New("interface name is required")
 	}
-	if ifName == "*" {
-		return fmt.Sprintf("%d:*", RSTP_MSTI_ID), nil
+	targetUriPath, _, _ := XfmrRemoveXPATHPredicates(inParams.requestUri)
+	if targetUriPath == "" {
+		targetUriPath, _, _ = XfmrRemoveXPATHPredicates(inParams.uri)
 	}
-	return mstPortAppKey(ifName), nil
+	return rstpIntfDbKey(ifName, targetUriPath), nil
 }
 
 var DbToYang_stp_rstp_intf_key_xfmr KeyXfmrDbToYang = func(inParams XfmrParams) (map[string]interface{}, error) {
 	res := make(map[string]interface{})
-	parts := strings.SplitN(inParams.key, ":", 2)
-	if len(parts) == 2 {
-		res["name"] = parts[1]
-	} else {
-		res["name"] = inParams.key
-	}
+	res["name"] = rstpIntfNameFromDbKey(inParams.key)
 	return res, nil
 }
 
