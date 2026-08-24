@@ -208,10 +208,10 @@ func getNiBgpPeerGroupCfgObj(s *ygot.GoStruct, niName, peerGroup string, createI
 			return nil
 		}
 	}
-	ygot.BuildEmptyTree(pObj)
+	buildNiBgpEmptySubtree(pObj)
 
 	if pgObj, ok := pObj.Bgp.PeerGroups.PeerGroup[peerGroup]; ok && pgObj != nil {
-		ygot.BuildEmptyTree(pgObj)
+		buildNiBgpEmptySubtree(pgObj)
 		return pgObj.Config
 	}
 	if !createIfMissing {
@@ -221,7 +221,7 @@ func getNiBgpPeerGroupCfgObj(s *ygot.GoStruct, niName, peerGroup string, createI
 	if err != nil || pgObj == nil {
 		return nil
 	}
-	ygot.BuildEmptyTree(pgObj)
+	buildNiBgpEmptySubtree(pgObj)
 	return pgObj.Config
 }
 
@@ -282,10 +282,10 @@ func getNiBgpPeerGroupTimersCfgObj(s *ygot.GoStruct, niName, peerGroup string, c
 			return nil
 		}
 	}
-	ygot.BuildEmptyTree(pObj)
+	buildNiBgpEmptySubtree(pObj)
 
 	if pgObj, ok := pObj.Bgp.PeerGroups.PeerGroup[peerGroup]; ok && pgObj != nil {
-		ygot.BuildEmptyTree(pgObj)
+		buildNiBgpEmptySubtree(pgObj)
 		return pgObj.Timers.Config
 	}
 	if !createIfMissing {
@@ -295,7 +295,7 @@ func getNiBgpPeerGroupTimersCfgObj(s *ygot.GoStruct, niName, peerGroup string, c
 	if err != nil || pgObj == nil {
 		return nil
 	}
-	ygot.BuildEmptyTree(pgObj)
+	buildNiBgpEmptySubtree(pgObj)
 	return pgObj.Timers.Config
 }
 
@@ -356,7 +356,7 @@ func getNiBgpPeerGroupAfV4PrefixLimitCfgObj(s *ygot.GoStruct, niName, peerGroup 
 			return nil
 		}
 	}
-	ygot.BuildEmptyTree(pObj)
+	buildNiBgpEmptySubtree(pObj)
 
 	var pgObj *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_PeerGroups_PeerGroup
 	pgObj, ok = pObj.Bgp.PeerGroups.PeerGroup[peerGroup]
@@ -370,7 +370,7 @@ func getNiBgpPeerGroupAfV4PrefixLimitCfgObj(s *ygot.GoStruct, niName, peerGroup 
 			return nil
 		}
 	}
-	ygot.BuildEmptyTree(pgObj)
+	buildNiBgpEmptySubtree(pgObj)
 
 	var afObj *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_PeerGroups_PeerGroup_AfiSafis_AfiSafi
 	afObj, ok = pgObj.AfiSafis.AfiSafi[ocbinds.OpenconfigBgpTypes_AFI_SAFI_TYPE_IPV4_UNICAST]
@@ -384,7 +384,7 @@ func getNiBgpPeerGroupAfV4PrefixLimitCfgObj(s *ygot.GoStruct, niName, peerGroup 
 			return nil
 		}
 	}
-	ygot.BuildEmptyTree(afObj)
+	buildNiBgpEmptySubtree(afObj)
 	return afObj.Ipv4Unicast.PrefixLimit.Config
 }
 
@@ -445,7 +445,7 @@ func getNiBgpPeerGroupAfApplyPolicyCfgObj(s *ygot.GoStruct, niName, peerGroup, a
 			return nil
 		}
 	}
-	ygot.BuildEmptyTree(pObj)
+	buildNiBgpEmptySubtree(pObj)
 
 	var pgObj *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_PeerGroups_PeerGroup
 	pgObj, ok = pObj.Bgp.PeerGroups.PeerGroup[peerGroup]
@@ -459,7 +459,7 @@ func getNiBgpPeerGroupAfApplyPolicyCfgObj(s *ygot.GoStruct, niName, peerGroup, a
 			return nil
 		}
 	}
-	ygot.BuildEmptyTree(pgObj)
+	buildNiBgpEmptySubtree(pgObj)
 
 	afiKey := ocbinds.E_OpenconfigBgpTypes_AFI_SAFI_TYPE(0)
 	switch afiSafi {
@@ -483,7 +483,7 @@ func getNiBgpPeerGroupAfApplyPolicyCfgObj(s *ygot.GoStruct, niName, peerGroup, a
 			return nil
 		}
 	}
-	ygot.BuildEmptyTree(afObj)
+	buildNiBgpEmptySubtree(afObj)
 	return afObj.ApplyPolicy.Config
 }
 
@@ -645,8 +645,13 @@ func parseNiBgpPgExportPolicyFromParam(param interface{}) (string, bool) {
 
 var YangToDb_ni_bgp_pg_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (map[string]map[string]db.Value, error) {
 	res := make(map[string]map[string]db.Value)
+
 	reqInfo, err := parseNiBgpPgRequestUri(inParams.requestUri)
 	if err != nil {
+		if isNiBgpContainerLevelReqUri(inParams.requestUri) {
+			// Container-level dispatch already mapped the whole payload.
+			return res, nil
+		}
 		return res, err
 	}
 
@@ -671,7 +676,22 @@ var YangToDb_ni_bgp_pg_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) 
 
 	if reqInfo.targetPath == niBgpPgTargetCfg {
 		switch reqInfo.targetLeaf {
-		case "", niBgpPgPeerGroupNameLeaf:
+		case "":
+			// A request at the config container itself can carry any mapped
+			// leaf, so map each one the payload actually sets.
+			fields := map[string]string{}
+			if cfgObj := getNiBgpPeerGroupCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.peerGroupName, false); cfgObj != nil {
+				if cfgObj.PeerGroupName != nil {
+					if pg := strings.TrimSpace(*cfgObj.PeerGroupName); pg != "" && pg != reqInfo.peerGroupName {
+						return res, tlerr.InvalidArgsError{Format: fmt.Sprintf("peer-group-name payload (%s) does not match key (%s)", pg, reqInfo.peerGroupName)}
+					}
+				}
+				if cfgObj.PeerAs != nil {
+					fields[niBgpPgAsnFld] = strconv.FormatUint(uint64(*cfgObj.PeerAs), 10)
+				}
+			}
+			return makeNiBgpPgResMap(reqInfo.niName, reqInfo.peerGroupName, fields), nil
+		case niBgpPgPeerGroupNameLeaf:
 			if pg, ok := parseNiBgpPgNameFromParam(inParams.param); ok && pg != reqInfo.peerGroupName {
 				return res, tlerr.InvalidArgsError{Format: fmt.Sprintf("peer-group-name payload (%s) does not match key (%s)", pg, reqInfo.peerGroupName)}
 			}
@@ -733,6 +753,21 @@ var YangToDb_ni_bgp_pg_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) 
 	}
 
 	switch reqInfo.targetLeaf {
+	case "":
+		// A request at the timers config container can carry either timer.
+		fields := map[string]string{}
+		if tmObj := getNiBgpPeerGroupTimersCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.peerGroupName, false); tmObj != nil {
+			if tmObj.KeepaliveInterval != nil {
+				fields[niBgpPgKeepaliveFld] = strconv.FormatUint(uint64(uint16(*tmObj.KeepaliveInterval)), 10)
+			}
+			if tmObj.HoldTime != nil {
+				fields[niBgpPgHoldTimeFld] = strconv.FormatUint(uint64(uint16(*tmObj.HoldTime)), 10)
+			}
+		}
+		if len(fields) == 0 {
+			return res, tlerr.InvalidArgsError{Format: "BGP peer-group timers config payload carries neither hold-time nor keepalive-interval"}
+		}
+		return makeNiBgpPgResMap(reqInfo.niName, reqInfo.peerGroupName, fields), nil
 	case niBgpPgKeepaliveLeaf:
 		keepalive, ok := parseNiBgpPgKeepaliveFromParam(inParams.param)
 		if !ok {
@@ -763,6 +798,10 @@ var YangToDb_ni_bgp_pg_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) 
 var DbToYang_ni_bgp_pg_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) error {
 	reqInfo, err := parseNiBgpPgRequestUri(inParams.requestUri)
 	if err != nil {
+		if isNiBgpContainerLevelReqUri(inParams.requestUri) {
+			// Container-level dispatch already populated the whole subtree.
+			return nil
+		}
 		return err
 	}
 	cfgDb := inParams.dbs[db.ConfigDB]
