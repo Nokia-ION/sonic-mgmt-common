@@ -230,6 +230,20 @@ func Test_openconfig_network_instance_static_route_unmapped_payload_rejected(t *
 		verifyDbResult(rclient, "STATIC_ROUTE|default|172.16.3.0/24", map[string]interface{}{}, false))
 	time.Sleep(1 * time.Second)
 
+	cfgUrl := niStaticRouteProtoUrl + "/static-routes/static[prefix=172.16.3.0/24]/config"
+	cfgInputBodyJSON := `{"prefix":"172.16.3.0/24","set-tag":42}`
+	cfgExpectedErr := tlerr.NotSupportedError{
+		Format: "static route payload carries leaves that have no CONFIG_DB mapping: " +
+			"static-routes/static[172.16.3.0/24]/config/set-tag",
+	}
+	t.Run("PATCH config container rejects unmapped leaf",
+		processSetRequest(cfgUrl, cfgInputBodyJSON, "PATCH", true, cfgExpectedErr))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify STATIC_ROUTE not created after rejected config payload",
+		verifyDbResult(rclient, "STATIC_ROUTE|default|172.16.3.0/24", map[string]interface{}{}, false))
+	time.Sleep(1 * time.Second)
+
 	unloadDB(db.ConfigDB, cleanupTbl)
 }
 
