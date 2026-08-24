@@ -86,7 +86,8 @@ var niStaticRoutesRootReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/stat
 var niStaticRouteInstReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/static-routes/static\[prefix=([^\]]+)\]$`)
 var niStaticRouteKeyLeafReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/static-routes/static\[prefix=([^\]]+)\]/prefix$`)
 var niStaticRouteCfgReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/static-routes/static\[prefix=([^\]]+)\]/config(?:/(prefix))?$`)
-var niStaticRouteNhsRootReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/static-routes/static\[prefix=([^\]]+)\]/next-hops$`)
+var niStaticRouteListReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/static-routes/static$`)
+var niStaticRouteNhsRootReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/static-routes/static\[prefix=([^\]]+)\]/next-hops(?:/next-hop)?$`)
 var niStaticRouteNhInstReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/static-routes/static\[prefix=([^\]]+)\]/next-hops/next-hop\[index=([^\]]+)\]$`)
 var niStaticRouteNhKeyLeafReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/static-routes/static\[prefix=([^\]]+)\]/next-hops/next-hop\[index=([^\]]+)\]/index$`)
 var niStaticRouteNhCfgReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/static-routes/static\[prefix=([^\]]+)\]/next-hops/next-hop\[index=([^\]]+)\]/config(?:/(index|next-hop))?$`)
@@ -215,6 +216,15 @@ func parseNiStaticRouteRequestUri(uri string) (*niStaticRouteReqInfo, error) {
 			protoName:      m[2],
 			prefix:         niStaticRouteUnescapeKey(m[3]),
 			targetPathKind: niStaticRouteTargetRouteInst,
+		}, nil
+	}
+	// A request that names the list but no instance covers every route, and is
+	// mapped and populated the same way as one that names the container.
+	if m := niStaticRouteListReqUriRe.FindStringSubmatch(uri); len(m) >= 3 {
+		return &niStaticRouteReqInfo{
+			niName:         m[1],
+			protoName:      m[2],
+			targetPathKind: niStaticRouteTargetRoutesRoot,
 		}, nil
 	}
 	if m := niStaticRoutesRootReqUriRe.FindStringSubmatch(uri); len(m) >= 3 {
@@ -1220,6 +1230,16 @@ var YangToDb_ni_static_route_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPa
 	case niStaticRouteTargetRouteCfg:
 		if err := validateNiStaticRoutePrefix(reqInfo.prefix); err != nil {
 			return res, err
+		}
+		wrappedRoot, wrapErr := wrapNiStaticRouteRootAsDevice(inParams.ygRoot, reqInfo)
+		if wrapErr != nil {
+			return res, wrapErr
+		}
+		if unmapped := findNiStaticRouteUnmappedPayloadLeaves(wrappedRoot, reqInfo.niName, reqInfo.protoName); len(unmapped) > 0 {
+			return res, tlerr.NotSupportedError{
+				Format: "static route payload carries leaves that have no CONFIG_DB mapping: " + formatOcLeafPathList(unmapped),
+				Path:   inParams.requestUri,
+			}
 		}
 		if err := niStaticRouteCheckPayloadPrefix(inParams, reqInfo); err != nil {
 			return res, err
