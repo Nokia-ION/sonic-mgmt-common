@@ -261,11 +261,13 @@ var niStaticRouteNhFieldOrder = []string{
 	niStaticRouteAdvertiseFld,
 }
 
+// The padding of a next-hop that leaves an attribute unset is the default the
+// STATIC_ROUTE schema gives that attribute. nexthop-vrf has no empty spelling,
+// so a next-hop that leaks into no other VRF names its own.
 var niStaticRouteNhFieldDefault = map[string]string{
-	niStaticRouteNexthopFld:    "",
 	niStaticRouteIfnameFld:     "",
 	niStaticRouteBlackholeFld:  "false",
-	niStaticRouteNexthopVrfFld: "",
+	niStaticRouteNexthopVrfFld: "default",
 	niStaticRouteDistanceFld:   "0",
 	niStaticRouteAdvertiseFld:  "false",
 }
@@ -321,9 +323,11 @@ func niStaticRouteDecodeNextHops(entry db.Value) []map[string]string {
 }
 
 // niStaticRouteEncodeNextHops renders the next-hops back into the comma
-// separated row attributes, keeping every list aligned. A field absent from
-// both the next-hops and the stored row is left out rather than introduced.
-func niStaticRouteEncodeNextHops(entries []map[string]string, existing db.Value) map[string]string {
+// separated row attributes, keeping every list aligned. A field that neither
+// the next-hops nor the stored row carry is left out rather than introduced,
+// but one the stored row carries is always rewritten so that no stale element
+// is left behind at the position of a next-hop that changed.
+func niStaticRouteEncodeNextHops(entries []map[string]string, existing db.Value, prefix string) map[string]string {
 	fields := make(map[string]string)
 	for _, fld := range niStaticRouteNhFieldOrder {
 		carried := false
@@ -333,16 +337,20 @@ func niStaticRouteEncodeNextHops(entries []map[string]string, existing db.Value)
 				break
 			}
 		}
-		if !carried {
-			if _, ok := existing.Field[fld]; !ok {
-				continue
-			}
+		if !carried && strings.TrimSpace(existing.Field[fld]) == "" {
+			continue
+		}
+		padding := niStaticRouteNhFieldDefault[fld]
+		if fld == niStaticRouteNexthopFld {
+			// An interface only next-hop is stored as the unspecified address
+			// of the address family of the prefix.
+			padding = niStaticRouteZeroIp(niStaticRouteIsIpv6Prefix(prefix))
 		}
 		vals := make([]string, len(entries))
 		for i, e := range entries {
 			v := strings.TrimSpace(e[fld])
 			if v == "" {
-				v = niStaticRouteNhFieldDefault[fld]
+				v = padding
 			}
 			vals[i] = v
 		}
@@ -1027,7 +1035,7 @@ func buildNiStaticRouteHierResMap(cfgDb *db.DB, s *ygot.GoStruct, niName, protoN
 
 		fields := map[string]string{}
 		if changed {
-			fields = niStaticRouteEncodeNextHops(entries, existing)
+			fields = niStaticRouteEncodeNextHops(entries, existing, prefix)
 		}
 		if _, ok := res[niStaticRouteTbl]; !ok {
 			res[niStaticRouteTbl] = make(map[string]db.Value)
@@ -1262,7 +1270,7 @@ func niStaticRouteSetNextHop(inParams XfmrParams, reqInfo *niStaticRouteReqInfo)
 	}
 	existing := niStaticRouteEntryOrEmpty(inParams.dbs[db.ConfigDB], reqInfo.niName, reqInfo.prefix)
 	entries := niStaticRouteUpsertNextHop(niStaticRouteDecodeNextHops(existing), reqInfo.index, nh)
-	return makeNiStaticRouteResMap(reqInfo.niName, reqInfo.prefix, niStaticRouteEncodeNextHops(entries, existing)), nil
+	return makeNiStaticRouteResMap(reqInfo.niName, reqInfo.prefix, niStaticRouteEncodeNextHops(entries, existing, reqInfo.prefix)), nil
 }
 
 // niStaticRouteDeleteNextHop removes one next-hop from the comma separated
@@ -1291,7 +1299,7 @@ func niStaticRouteDeleteNextHop(inParams XfmrParams, reqInfo *niStaticRouteReqIn
 		}
 	}
 
-	fields := niStaticRouteEncodeNextHops(kept, existing)
+	fields := niStaticRouteEncodeNextHops(kept, existing, reqInfo.prefix)
 	if inParams.subOpDataMap == nil {
 		return tlerr.InvalidArgsError{Format: "unable to rewrite static route next-hops for DELETE"}
 	}

@@ -452,6 +452,54 @@ func Test_openconfig_network_instance_static_route_next_hop_local_link(t *testin
 	unloadDB(db.ConfigDB, cleanupTbl)
 }
 
+func Test_openconfig_network_instance_static_route_next_hop_merge(t *testing.T) {
+	preReqMap := map[string]interface{}{
+		"STATIC_ROUTE": map[string]interface{}{
+			"default|10.50.0.0/16": map[string]interface{}{
+				"nexthop": "10.1.1.1",
+			},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"STATIC_ROUTE": map[string]interface{}{
+			"default|10.50.0.0/16": "",
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	// A next-hop added to a route that already has one is merged into the
+	// comma separated attributes, and every list the row ends up with holds
+	// one element per next-hop.
+	nhUrl := niStaticRouteProtoUrl + "/static-routes/static[prefix=10.50.0.0/16]/next-hops/next-hop[index=LOCAL_LINK+Ethernet4]"
+	t.Run("PATCH second static route next-hop",
+		processSetRequest(nhUrl+"/config/next-hop", `{"openconfig-network-instance:next-hop":"openconfig-local-routing:LOCAL_LINK"}`,
+			"PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"STATIC_ROUTE": map[string]interface{}{
+			"default|10.50.0.0/16": map[string]interface{}{
+				"nexthop": "10.1.1.1,0.0.0.0",
+				"ifname":  ",Ethernet4",
+			},
+		},
+	}
+	t.Run("Verify merged static route next-hops",
+		verifyDbResult(rclient, "STATIC_ROUTE|default|10.50.0.0/16", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	expectedGetJSON := `{"openconfig-network-instance:next-hops":{"next-hop":[` +
+		`{"config":{"index":"10.1.1.1","next-hop":"10.1.1.1"},"index":"10.1.1.1"},` +
+		`{"config":{"index":"LOCAL_LINK+Ethernet4","next-hop":"openconfig-local-routing:LOCAL_LINK"},` +
+		`"index":"LOCAL_LINK+Ethernet4"}]}}`
+	t.Run("GET merged static route next-hops",
+		processGetRequest(niStaticRouteProtoUrl+"/static-routes/static[prefix=10.50.0.0/16]/next-hops", nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
 func Test_openconfig_network_instance_static_route_next_hop_delete(t *testing.T) {
 	preReqMap := map[string]interface{}{
 		"STATIC_ROUTE": map[string]interface{}{
