@@ -9,21 +9,46 @@ module openconfig-routing-policy-annot {
     import openconfig-routing-policy { prefix oc-rpol; }
     import openconfig-bgp-policy { prefix oc-bgp-pol; }
 
+    // Container-level dispatch entry point. The routing-policy lists have no
+    // dedicated CONFIG_DB table of their own; policies live in
+    // CONFIG_DB:ROUTE_MAP_SET and ROUTE_MAP. Marking them as virtual tables
+    // keeps the translib parent-table existence check from rejecting a request
+    // before the transformer runs, and binding the transformer here lets a
+    // request anchored at routing-policy or any ancestor container be mapped
+    // and populated in one pass.
+    deviation /oc-rpol:routing-policy {
+      deviate add {
+          sonic-ext:virtual-table "true";
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "routing_policy_xfmr";
+      }
+    }
+
+    // The lists themselves are bound to the container dispatch so that a
+    // request for a whole list is answered from CONFIG_DB. Without it, translib
+    // expands the list generically and reports one instance keyed by the
+    // inherited parent key.
     deviation /oc-rpol:routing-policy/oc-rpol:policy-definitions/oc-rpol:policy-definition {
       deviate add {
           sonic-ext:virtual-table "true";
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "routing_policy_xfmr";
       }
     }
 
     deviation /oc-rpol:routing-policy/oc-rpol:policy-definitions/oc-rpol:policy-definition/oc-rpol:statements/oc-rpol:statement {
       deviate add {
           sonic-ext:virtual-table "true";
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "routing_policy_xfmr";
       }
     }
 
     deviation /oc-rpol:routing-policy/oc-rpol:defined-sets/oc-bgp-pol:bgp-defined-sets/oc-bgp-pol:community-sets/oc-bgp-pol:community-set {
       deviate add {
           sonic-ext:virtual-table "true";
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "routing_policy_xfmr";
       }
     }
 
@@ -63,6 +88,63 @@ module openconfig-routing-policy-annot {
     }
 
     deviation /oc-rpol:routing-policy/oc-rpol:defined-sets/oc-bgp-pol:bgp-defined-sets/oc-bgp-pol:community-sets/oc-bgp-pol:community-set/oc-bgp-pol:config/oc-bgp-pol:community-set-name {
+      deviate add {
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "routing_policy_xfmr";
+      }
+    }
+
+    deviation /oc-rpol:routing-policy/oc-rpol:defined-sets/oc-bgp-pol:bgp-defined-sets/oc-bgp-pol:community-sets/oc-bgp-pol:community-set/oc-bgp-pol:config/oc-bgp-pol:community-member {
+      deviate add {
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "routing_policy_xfmr";
+      }
+    }
+
+    deviation /oc-rpol:routing-policy/oc-rpol:defined-sets/oc-bgp-pol:bgp-defined-sets/oc-bgp-pol:community-sets/oc-bgp-pol:community-set/oc-bgp-pol:config/oc-bgp-pol:match-set-options {
+      deviate add {
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "routing_policy_xfmr";
+      }
+    }
+
+    deviation /oc-rpol:routing-policy/oc-rpol:defined-sets/oc-bgp-pol:bgp-defined-sets/oc-bgp-pol:ext-community-sets/oc-bgp-pol:ext-community-set {
+      deviate add {
+          sonic-ext:virtual-table "true";
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "routing_policy_xfmr";
+      }
+    }
+
+    deviation /oc-rpol:routing-policy/oc-rpol:defined-sets/oc-bgp-pol:bgp-defined-sets/oc-bgp-pol:ext-community-sets/oc-bgp-pol:ext-community-set/oc-bgp-pol:ext-community-set-name {
+      deviate add {
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "routing_policy_xfmr";
+      }
+    }
+
+    deviation /oc-rpol:routing-policy/oc-rpol:defined-sets/oc-bgp-pol:bgp-defined-sets/oc-bgp-pol:ext-community-sets/oc-bgp-pol:ext-community-set/oc-bgp-pol:config {
+      deviate add {
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "routing_policy_xfmr";
+      }
+    }
+
+    deviation /oc-rpol:routing-policy/oc-rpol:defined-sets/oc-bgp-pol:bgp-defined-sets/oc-bgp-pol:ext-community-sets/oc-bgp-pol:ext-community-set/oc-bgp-pol:config/oc-bgp-pol:ext-community-set-name {
+      deviate add {
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "routing_policy_xfmr";
+      }
+    }
+
+    deviation /oc-rpol:routing-policy/oc-rpol:defined-sets/oc-bgp-pol:bgp-defined-sets/oc-bgp-pol:ext-community-sets/oc-bgp-pol:ext-community-set/oc-bgp-pol:config/oc-bgp-pol:ext-community-member {
+      deviate add {
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "routing_policy_xfmr";
+      }
+    }
+
+    deviation /oc-rpol:routing-policy/oc-rpol:defined-sets/oc-bgp-pol:bgp-defined-sets/oc-bgp-pol:ext-community-sets/oc-bgp-pol:ext-community-set/oc-bgp-pol:config/oc-bgp-pol:match-set-options {
       deviate add {
           sonic-ext:db-name "CONFIG_DB";
           sonic-ext:subtree-transformer "routing_policy_xfmr";

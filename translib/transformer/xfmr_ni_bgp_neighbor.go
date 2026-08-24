@@ -47,6 +47,7 @@ const (
 var niBgpNbrReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/protocols/protocol\[identifier=BGP\]\[name=bgp\]/bgp/neighbors/neighbor\[neighbor-address=([^\]]+)\]/config(?:/(peer-group|enabled|peer-as))?$`)
 var niBgpNbrAsPathOptReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/protocols/protocol\[identifier=BGP\]\[name=bgp\]/bgp/neighbors/neighbor\[neighbor-address=([^\]]+)\]/as-path-options/config(?:/(allow-own-as))?$`)
 var niBgpNbrAfApplyReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/protocols/protocol\[identifier=BGP\]\[name=bgp\]/bgp/neighbors/neighbor\[neighbor-address=([^\]]+)\]/afi-safis/afi-safi\[afi-safi-name=([^\]]+)\]/apply-policy/config(?:/(import-policy))?$`)
+var niBgpNbrAfCfgReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/protocols/protocol\[identifier=BGP\]\[name=bgp\]/bgp/neighbors/neighbor\[neighbor-address=([^\]]+)\]/afi-safis/afi-safi\[afi-safi-name=([^\]]+)\]/config(?:/(afi-safi-name|enabled))?$`)
 
 type niBgpNbrReqInfo struct {
 	niName       string
@@ -108,8 +109,39 @@ func parseNiBgpNbrRequestUri(uri string) (*niBgpNbrReqInfo, error) {
 			targetPath:   "neighbor-af-apply-policy-config",
 		}, nil
 	}
+	m = niBgpNbrAfCfgReqUriRe.FindStringSubmatch(uri)
+	if len(m) >= 4 {
+		leaf := ""
+		if len(m) >= 5 {
+			leaf = m[4]
+		}
+		afiSafi, ok := normalizeNiBgpNbrAfiSafiName(m[3])
+		if !ok {
+			return nil, tlerr.InvalidArgsError{
+				Format: "unsupported afi-safi-name for network-instance BGP neighbor AFI-SAFI config mapping: " + m[3],
+			}
+		}
+		return &niBgpNbrReqInfo{
+			niName:       m[1],
+			neighborAddr: m[2],
+			afiSafi:      afiSafi,
+			targetLeaf:   leaf,
+			targetPath:   "neighbor-af-config",
+		}, nil
+	}
 	return nil, tlerr.InvalidArgsError{
 		Format: "unsupported path for network-instance BGP neighbor config mapping: " + uri,
+	}
+}
+
+func niBgpNbrAfiSafiEnumFromName(afiSafi string) (ocbinds.E_OpenconfigBgpTypes_AFI_SAFI_TYPE, bool) {
+	switch afiSafi {
+	case niBgpNbrAfiSafiIPv4:
+		return ocbinds.OpenconfigBgpTypes_AFI_SAFI_TYPE_IPV4_UNICAST, true
+	case niBgpNbrAfiSafiIPv6:
+		return ocbinds.OpenconfigBgpTypes_AFI_SAFI_TYPE_IPV6_UNICAST, true
+	default:
+		return ocbinds.OpenconfigBgpTypes_AFI_SAFI_TYPE_UNSET, false
 	}
 }
 
@@ -177,9 +209,9 @@ func getNiBgpNbrAsPathOptionsCfgObj(s *ygot.GoStruct, niName, neighborAddr strin
 		Name:       "bgp",
 	}
 	if pObj, ok := niObj.Protocols.Protocol[wantKey]; ok && pObj != nil {
-		ygot.BuildEmptyTree(pObj)
+		buildNiBgpEmptySubtree(pObj)
 		if nbrObj, ok := pObj.Bgp.Neighbors.Neighbor[neighborAddr]; ok && nbrObj != nil {
-			ygot.BuildEmptyTree(nbrObj)
+			buildNiBgpEmptySubtree(nbrObj)
 			return nbrObj.AsPathOptions.Config
 		}
 		if !createIfMissing {
@@ -189,7 +221,7 @@ func getNiBgpNbrAsPathOptionsCfgObj(s *ygot.GoStruct, niName, neighborAddr strin
 		if err != nil || nbrObj == nil {
 			return nil
 		}
-		ygot.BuildEmptyTree(nbrObj)
+		buildNiBgpEmptySubtree(nbrObj)
 		return nbrObj.AsPathOptions.Config
 	}
 
@@ -200,16 +232,16 @@ func getNiBgpNbrAsPathOptionsCfgObj(s *ygot.GoStruct, niName, neighborAddr strin
 	if err != nil || pObj == nil {
 		return nil
 	}
-	ygot.BuildEmptyTree(pObj)
+	buildNiBgpEmptySubtree(pObj)
 	nbrObj, err := pObj.Bgp.Neighbors.NewNeighbor(neighborAddr)
 	if err != nil || nbrObj == nil {
 		return nil
 	}
-	ygot.BuildEmptyTree(nbrObj)
+	buildNiBgpEmptySubtree(nbrObj)
 	return nbrObj.AsPathOptions.Config
 }
 
-func getNiBgpNbrAfApplyPolicyCfgObj(s *ygot.GoStruct, niName, neighborAddr, afiSafi string, createIfMissing bool) *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Neighbors_Neighbor_AfiSafis_AfiSafi_ApplyPolicy_Config {
+func getNiBgpNbrAfObj(s *ygot.GoStruct, niName, neighborAddr, afiSafi string, createIfMissing bool) *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Neighbors_Neighbor_AfiSafis_AfiSafi {
 	if s == nil || *s == nil {
 		return nil
 	}
@@ -267,7 +299,7 @@ func getNiBgpNbrAfApplyPolicyCfgObj(s *ygot.GoStruct, niName, neighborAddr, afiS
 			return nil
 		}
 	}
-	ygot.BuildEmptyTree(pObj)
+	buildNiBgpEmptySubtree(pObj)
 
 	var nbrObj *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Neighbors_Neighbor
 	nbrObj, ok = pObj.Bgp.Neighbors.Neighbor[neighborAddr]
@@ -281,15 +313,10 @@ func getNiBgpNbrAfApplyPolicyCfgObj(s *ygot.GoStruct, niName, neighborAddr, afiS
 			return nil
 		}
 	}
-	ygot.BuildEmptyTree(nbrObj)
+	buildNiBgpEmptySubtree(nbrObj)
 
-	afiKey := ocbinds.E_OpenconfigBgpTypes_AFI_SAFI_TYPE(0)
-	switch afiSafi {
-	case niBgpNbrAfiSafiIPv4:
-		afiKey = ocbinds.OpenconfigBgpTypes_AFI_SAFI_TYPE_IPV4_UNICAST
-	case niBgpNbrAfiSafiIPv6:
-		afiKey = ocbinds.OpenconfigBgpTypes_AFI_SAFI_TYPE_IPV6_UNICAST
-	default:
+	afiKey, ok2 := niBgpNbrAfiSafiEnumFromName(afiSafi)
+	if !ok2 {
 		return nil
 	}
 
@@ -305,8 +332,24 @@ func getNiBgpNbrAfApplyPolicyCfgObj(s *ygot.GoStruct, niName, neighborAddr, afiS
 			return nil
 		}
 	}
-	ygot.BuildEmptyTree(afObj)
+	buildNiBgpEmptySubtree(afObj)
+	return afObj
+}
+
+func getNiBgpNbrAfApplyPolicyCfgObj(s *ygot.GoStruct, niName, neighborAddr, afiSafi string, createIfMissing bool) *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Neighbors_Neighbor_AfiSafis_AfiSafi_ApplyPolicy_Config {
+	afObj := getNiBgpNbrAfObj(s, niName, neighborAddr, afiSafi, createIfMissing)
+	if afObj == nil || afObj.ApplyPolicy == nil {
+		return nil
+	}
 	return afObj.ApplyPolicy.Config
+}
+
+func getNiBgpNbrAfCfgObj(s *ygot.GoStruct, niName, neighborAddr, afiSafi string, createIfMissing bool) *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Neighbors_Neighbor_AfiSafis_AfiSafi_Config {
+	afObj := getNiBgpNbrAfObj(s, niName, neighborAddr, afiSafi, createIfMissing)
+	if afObj == nil {
+		return nil
+	}
+	return afObj.Config
 }
 
 func getNiBgpNbrCfgObj(s *ygot.GoStruct, niName, neighborAddr string, createIfMissing bool) *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Neighbors_Neighbor_Config {
@@ -357,9 +400,9 @@ func getNiBgpNbrCfgObj(s *ygot.GoStruct, niName, neighborAddr string, createIfMi
 		Name:       "bgp",
 	}
 	if pObj, ok := niObj.Protocols.Protocol[wantKey]; ok && pObj != nil {
-		ygot.BuildEmptyTree(pObj)
+		buildNiBgpEmptySubtree(pObj)
 		if nbrObj, ok := pObj.Bgp.Neighbors.Neighbor[neighborAddr]; ok && nbrObj != nil {
-			ygot.BuildEmptyTree(nbrObj)
+			buildNiBgpEmptySubtree(nbrObj)
 			return nbrObj.Config
 		}
 		if !createIfMissing {
@@ -369,7 +412,7 @@ func getNiBgpNbrCfgObj(s *ygot.GoStruct, niName, neighborAddr string, createIfMi
 		if err != nil || nbrObj == nil {
 			return nil
 		}
-		ygot.BuildEmptyTree(nbrObj)
+		buildNiBgpEmptySubtree(nbrObj)
 		return nbrObj.Config
 	}
 
@@ -385,9 +428,9 @@ func getNiBgpNbrCfgObj(s *ygot.GoStruct, niName, neighborAddr string, createIfMi
 				continue
 			}
 		}
-		ygot.BuildEmptyTree(pObj)
+		buildNiBgpEmptySubtree(pObj)
 		if nbrObj, ok := pObj.Bgp.Neighbors.Neighbor[neighborAddr]; ok && nbrObj != nil {
-			ygot.BuildEmptyTree(nbrObj)
+			buildNiBgpEmptySubtree(nbrObj)
 			return nbrObj.Config
 		}
 		if !createIfMissing {
@@ -397,7 +440,7 @@ func getNiBgpNbrCfgObj(s *ygot.GoStruct, niName, neighborAddr string, createIfMi
 		if err != nil || nbrObj == nil {
 			return nil
 		}
-		ygot.BuildEmptyTree(nbrObj)
+		buildNiBgpEmptySubtree(nbrObj)
 		return nbrObj.Config
 	}
 
@@ -408,12 +451,12 @@ func getNiBgpNbrCfgObj(s *ygot.GoStruct, niName, neighborAddr string, createIfMi
 	if err != nil || pObj == nil {
 		return nil
 	}
-	ygot.BuildEmptyTree(pObj)
+	buildNiBgpEmptySubtree(pObj)
 	nbrObj, err := pObj.Bgp.Neighbors.NewNeighbor(neighborAddr)
 	if err != nil || nbrObj == nil {
 		return nil
 	}
-	ygot.BuildEmptyTree(nbrObj)
+	buildNiBgpEmptySubtree(nbrObj)
 	return nbrObj.Config
 }
 
@@ -599,6 +642,48 @@ func parseNiBgpNbrEnabled(inParams XfmrParams) (*bool, error) {
 		return nil, tlerr.InvalidArgsError{Format: "BGP neighbor enabled is missing in request payload"}
 	}
 	return cfgObj.Enabled, nil
+}
+
+func parseNiBgpNbrAfEnabled(inParams XfmrParams, reqInfo *niBgpNbrReqInfo) (*bool, error) {
+	if enabled, ok := parseNiBgpNbrEnabledFromParam(inParams.param); ok {
+		return enabled, nil
+	}
+
+	cfgObj := getNiBgpNbrAfCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.neighborAddr, reqInfo.afiSafi, false)
+	if cfgObj == nil || cfgObj.Enabled == nil {
+		return nil, tlerr.InvalidArgsError{Format: "BGP neighbor AFI-SAFI enabled is missing in request payload"}
+	}
+	return cfgObj.Enabled, nil
+}
+
+// niBgpNbrAfCfgFields collects the BGP_NEIGHBOR_AF fields for a neighbor AFI-SAFI
+// config request. An AFI-SAFI list entry without an explicit "enabled" leaf still
+// means the address-family is activated for the neighbor, so admin_status is seeded
+// to up in that case; frrcfgd needs it to emit "neighbor <addr> activate".
+func niBgpNbrAfCfgFields(inParams XfmrParams, reqInfo *niBgpNbrReqInfo) (map[string]string, error) {
+	fields := make(map[string]string)
+	switch reqInfo.targetLeaf {
+	case "enabled":
+		enabled, err := parseNiBgpNbrAfEnabled(inParams, reqInfo)
+		if err != nil {
+			return nil, err
+		}
+		fields[niBgpNbrAdminStatus] = niBgpNbrEnabledToAdminStatus(*enabled)
+	case "afi-safi-name":
+		fields[niBgpNbrAdminStatus] = niBgpNbrEnabledToAdminStatus(true)
+	default:
+		if enabled, ok := parseNiBgpNbrEnabledFromParam(inParams.param); ok {
+			fields[niBgpNbrAdminStatus] = niBgpNbrEnabledToAdminStatus(*enabled)
+			break
+		}
+		cfgObj := getNiBgpNbrAfCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.neighborAddr, reqInfo.afiSafi, false)
+		if cfgObj != nil && cfgObj.Enabled != nil {
+			fields[niBgpNbrAdminStatus] = niBgpNbrEnabledToAdminStatus(*cfgObj.Enabled)
+			break
+		}
+		fields[niBgpNbrAdminStatus] = niBgpNbrEnabledToAdminStatus(true)
+	}
+	return fields, nil
 }
 
 func parseNiBgpNbrPeerAsFromParam(param interface{}) (*uint32, bool) {
@@ -892,6 +977,10 @@ var YangToDb_ni_bgp_nbr_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 
 	reqInfo, err := parseNiBgpNbrRequestUri(inParams.requestUri)
 	if err != nil {
+		if isNiBgpContainerLevelReqUri(inParams.requestUri) {
+			// Container-level dispatch already mapped the whole payload.
+			return res, nil
+		}
 		return res, err
 	}
 
@@ -902,6 +991,14 @@ var YangToDb_ni_bgp_nbr_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 				return makeNiBgpNbrAfSingleResMap(reqInfo.niName, reqInfo.neighborAddr, reqInfo.afiSafi, map[string]string{niBgpNbrRouteMapInFld: ""}), nil
 			default:
 				return res, tlerr.NotSupportedError{Format: "DELETE supported only for /neighbors/neighbor/afi-safis/afi-safi/apply-policy/config or /neighbors/neighbor/afi-safis/afi-safi/apply-policy/config/import-policy", Path: inParams.requestUri}
+			}
+		}
+		if reqInfo.targetPath == "neighbor-af-config" {
+			switch reqInfo.targetLeaf {
+			case "", "afi-safi-name", "enabled":
+				return makeNiBgpNbrAfSingleResMap(reqInfo.niName, reqInfo.neighborAddr, reqInfo.afiSafi, map[string]string{niBgpNbrAdminStatus: ""}), nil
+			default:
+				return res, tlerr.NotSupportedError{Format: "DELETE supported only for /neighbors/neighbor/afi-safis/afi-safi/config or /neighbors/neighbor/afi-safis/afi-safi/config/enabled", Path: inParams.requestUri}
 			}
 		}
 		if reqInfo.targetPath == "neighbor-as-path-options-config" {
@@ -938,6 +1035,14 @@ var YangToDb_ni_bgp_nbr_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 		default:
 			return res, tlerr.NotSupportedError{Format: "unsupported leaf under neighbor AFI-SAFI apply-policy config", Path: inParams.requestUri}
 		}
+	}
+
+	if reqInfo.targetPath == "neighbor-af-config" {
+		fields, err := niBgpNbrAfCfgFields(inParams, reqInfo)
+		if err != nil {
+			return res, err
+		}
+		return ensureNiBgpNbrParentRow(makeNiBgpNbrAfSingleResMap(reqInfo.niName, reqInfo.neighborAddr, reqInfo.afiSafi, fields), reqInfo.niName, reqInfo.neighborAddr), nil
 	}
 
 	if reqInfo.targetPath == "neighbor-as-path-options-config" {
@@ -1016,12 +1121,40 @@ var YangToDb_ni_bgp_nbr_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 var DbToYang_ni_bgp_nbr_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) error {
 	reqInfo, err := parseNiBgpNbrRequestUri(inParams.requestUri)
 	if err != nil {
+		if isNiBgpContainerLevelReqUri(inParams.requestUri) {
+			// Container-level dispatch already populated the whole subtree.
+			return nil
+		}
 		return err
 	}
 
 	cfgDb := inParams.dbs[db.ConfigDB]
 	if cfgDb == nil {
 		return tlerr.InvalidArgsError{Format: "ConfigDB nil for network-instance BGP neighbor config"}
+	}
+
+	if reqInfo.targetPath == "neighbor-af-config" {
+		afEntry, afErr := cfgDb.GetEntry(&db.TableSpec{Name: niBgpNbrAfTbl}, db.Key{Comp: []string{reqInfo.niName, reqInfo.neighborAddr, reqInfo.afiSafi}})
+		if afErr != nil {
+			return afErr
+		}
+		afCfgObj := getNiBgpNbrAfCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.neighborAddr, reqInfo.afiSafi, true)
+		if afCfgObj == nil {
+			return tlerr.InvalidArgsError{Format: "Unable to locate BGP neighbor AFI-SAFI config object in YANG tree"}
+		}
+		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == "afi-safi-name" {
+			if afiSafiName, ok := niBgpNbrAfiSafiEnumFromName(reqInfo.afiSafi); ok {
+				afCfgObj.AfiSafiName = afiSafiName
+			}
+		}
+		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == "enabled" {
+			if status, ok := afEntry.Field[niBgpNbrAdminStatus]; ok && strings.TrimSpace(status) != "" {
+				if enabled, ok := niBgpNbrAdminStatusToEnabled(status); ok {
+					afCfgObj.Enabled = enabled
+				}
+			}
+		}
+		return nil
 	}
 
 	entry, err := cfgDb.GetEntry(&db.TableSpec{Name: niBgpNbrTbl}, db.Key{Comp: []string{reqInfo.niName, reqInfo.neighborAddr}})
