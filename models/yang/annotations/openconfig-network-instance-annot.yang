@@ -369,4 +369,48 @@ module openconfig-network-instance-annot {
       }
     }
 
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:static-routes/oc-netinst:static/oc-netinst:next-hops {
+      deviate add {
+          sonic-ext:virtual-table "true";
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "ni_static_route_cfg_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:static-routes/oc-netinst:static/oc-netinst:next-hops/oc-netinst:next-hop {
+      deviate add {
+          sonic-ext:virtual-table "true";
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "ni_static_route_cfg_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:static-routes/oc-netinst:static/oc-netinst:next-hops/oc-netinst:next-hop/oc-netinst:index {
+      deviate add {
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "ni_static_route_cfg_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:static-routes/oc-netinst:static/oc-netinst:next-hops/oc-netinst:next-hop/oc-netinst:config {
+      deviate add {
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "ni_static_route_cfg_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:static-routes/oc-netinst:static/oc-netinst:next-hops/oc-netinst:next-hop/oc-netinst:config/oc-netinst:index {
+      deviate add {
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "ni_static_route_cfg_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:static-routes/oc-netinst:static/oc-netinst:next-hops/oc-netinst:next-hop/oc-netinst:config/oc-netinst:next-hop {
+      deviate add {
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "ni_static_route_cfg_xfmr";
+      }
+    }
+
 }
