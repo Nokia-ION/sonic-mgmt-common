@@ -43,15 +43,33 @@ const (
 	niStaticRouteBlackholeFld  = "blackhole"
 	niStaticRouteNexthopVrfFld = "nexthop-vrf"
 	niStaticRouteDistanceFld   = "distance"
-	niStaticRouteTrackFld      = "track"
-	niStaticRouteTagFld        = "tag"
+	niStaticRouteAdvertiseFld  = "advertise"
 
 	niStaticRouteTargetProtocolRoot = "static-protocol-root"
 	niStaticRouteTargetRoutesRoot   = "static-routes-root"
 	niStaticRouteTargetRouteInst    = "static-route-instance"
 	niStaticRouteTargetRouteCfg     = "static-route-config"
+	niStaticRouteTargetNextHopsRoot = "static-route-next-hops-root"
+	niStaticRouteTargetNextHopInst  = "static-route-next-hop-instance"
+	niStaticRouteTargetNextHopCfg   = "static-route-next-hop-config"
 
-	niStaticRoutePrefixLeaf = "prefix"
+	niStaticRoutePrefixLeaf  = "prefix"
+	niStaticRouteIndexLeaf   = "index"
+	niStaticRouteNextHopLeaf = "next-hop"
+
+	// Next-hop kinds as spelled by the OpenConfig next-hop leaf and, for the
+	// list key, by the index of the next-hop.
+	niStaticRouteDropToken      = "DROP"
+	niStaticRouteLocalLinkToken = "LOCAL_LINK"
+	// niStaticRouteIndexSep separates the next-hop from the interface in an
+	// index such as "10.1.1.1+Ethernet0" or "LOCAL_LINK+Loopback0".
+	niStaticRouteIndexSep = "+"
+	// niStaticRouteNullIfname is the interface CONFIG_DB carries for a
+	// blackhole next-hop.
+	niStaticRouteNullIfname = "Null0"
+
+	niStaticRouteZeroIpv4 = "0.0.0.0"
+	niStaticRouteZeroIpv6 = "::"
 
 	// niStaticRouteMaxTreeDepth bounds the container recursion done while
 	// walking a static route YANG subtree.
@@ -68,11 +86,16 @@ var niStaticRoutesRootReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/stat
 var niStaticRouteInstReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/static-routes/static\[prefix=([^\]]+)\]$`)
 var niStaticRouteKeyLeafReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/static-routes/static\[prefix=([^\]]+)\]/prefix$`)
 var niStaticRouteCfgReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/static-routes/static\[prefix=([^\]]+)\]/config(?:/(prefix))?$`)
+var niStaticRouteNhsRootReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/static-routes/static\[prefix=([^\]]+)\]/next-hops$`)
+var niStaticRouteNhInstReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/static-routes/static\[prefix=([^\]]+)\]/next-hops/next-hop\[index=([^\]]+)\]$`)
+var niStaticRouteNhKeyLeafReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/static-routes/static\[prefix=([^\]]+)\]/next-hops/next-hop\[index=([^\]]+)\]/index$`)
+var niStaticRouteNhCfgReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/static-routes/static\[prefix=([^\]]+)\]/next-hops/next-hop\[index=([^\]]+)\]/config(?:/(index|next-hop))?$`)
 
 type niStaticRouteReqInfo struct {
 	niName         string
 	protoName      string
 	prefix         string
+	index          string
 	targetLeaf     string
 	targetPathKind string
 }
@@ -123,6 +146,47 @@ func validateNiStaticRoutePrefix(prefix string) error {
 }
 
 func parseNiStaticRouteRequestUri(uri string) (*niStaticRouteReqInfo, error) {
+	if m := niStaticRouteNhCfgReqUriRe.FindStringSubmatch(uri); len(m) >= 5 {
+		leaf := ""
+		if len(m) >= 6 {
+			leaf = m[5]
+		}
+		return &niStaticRouteReqInfo{
+			niName:         m[1],
+			protoName:      m[2],
+			prefix:         niStaticRouteUnescapeKey(m[3]),
+			index:          niStaticRouteUnescapeKey(m[4]),
+			targetLeaf:     leaf,
+			targetPathKind: niStaticRouteTargetNextHopCfg,
+		}, nil
+	}
+	if m := niStaticRouteNhKeyLeafReqUriRe.FindStringSubmatch(uri); len(m) >= 5 {
+		return &niStaticRouteReqInfo{
+			niName:         m[1],
+			protoName:      m[2],
+			prefix:         niStaticRouteUnescapeKey(m[3]),
+			index:          niStaticRouteUnescapeKey(m[4]),
+			targetLeaf:     niStaticRouteIndexLeaf,
+			targetPathKind: niStaticRouteTargetNextHopInst,
+		}, nil
+	}
+	if m := niStaticRouteNhInstReqUriRe.FindStringSubmatch(uri); len(m) >= 5 {
+		return &niStaticRouteReqInfo{
+			niName:         m[1],
+			protoName:      m[2],
+			prefix:         niStaticRouteUnescapeKey(m[3]),
+			index:          niStaticRouteUnescapeKey(m[4]),
+			targetPathKind: niStaticRouteTargetNextHopInst,
+		}, nil
+	}
+	if m := niStaticRouteNhsRootReqUriRe.FindStringSubmatch(uri); len(m) >= 4 {
+		return &niStaticRouteReqInfo{
+			niName:         m[1],
+			protoName:      m[2],
+			prefix:         niStaticRouteUnescapeKey(m[3]),
+			targetPathKind: niStaticRouteTargetNextHopsRoot,
+		}, nil
+	}
 	if m := niStaticRouteCfgReqUriRe.FindStringSubmatch(uri); len(m) >= 4 {
 		leaf := ""
 		if len(m) >= 5 {
@@ -177,8 +241,267 @@ func parseNiStaticRouteRequestUri(uri string) (*niStaticRouteReqInfo, error) {
 // static-routes container, that a container-level request can carry. List keys
 // are included because a payload repeats them alongside the data they identify.
 var niStaticRouteMappedPayloadLeaves = map[string]bool{
-	"static/prefix":        true,
-	"static/config/prefix": true,
+	"static/prefix":                             true,
+	"static/config/prefix":                      true,
+	"static/next-hops/next-hop/index":           true,
+	"static/next-hops/next-hop/config/index":    true,
+	"static/next-hops/next-hop/config/next-hop": true,
+}
+
+// STATIC_ROUTE stores one comma separated list per next-hop attribute, and the
+// lists are read position by position. Every list the row carries must
+// therefore hold one element per next-hop, which is what the padding defaults
+// are for.
+var niStaticRouteNhFieldOrder = []string{
+	niStaticRouteNexthopFld,
+	niStaticRouteIfnameFld,
+	niStaticRouteBlackholeFld,
+	niStaticRouteNexthopVrfFld,
+	niStaticRouteDistanceFld,
+	niStaticRouteAdvertiseFld,
+}
+
+var niStaticRouteNhFieldDefault = map[string]string{
+	niStaticRouteNexthopFld:    "",
+	niStaticRouteIfnameFld:     "",
+	niStaticRouteBlackholeFld:  "false",
+	niStaticRouteNexthopVrfFld: "",
+	niStaticRouteDistanceFld:   "0",
+	niStaticRouteAdvertiseFld:  "false",
+}
+
+// niStaticRouteIsIpv6Prefix reports the address family of a validated prefix.
+func niStaticRouteIsIpv6Prefix(prefix string) bool {
+	ip, _, err := net.ParseCIDR(prefix)
+	if err != nil {
+		return false
+	}
+	return ip.To4() == nil
+}
+
+func niStaticRouteZeroIp(isIpv6 bool) string {
+	if isIpv6 {
+		return niStaticRouteZeroIpv6
+	}
+	return niStaticRouteZeroIpv4
+}
+
+func niStaticRouteIsZeroIp(ip string) bool {
+	parsed := net.ParseIP(strings.TrimSpace(ip))
+	return parsed != nil && parsed.IsUnspecified()
+}
+
+// niStaticRouteDecodeNextHops splits the comma separated attributes of a
+// STATIC_ROUTE row into one field map per next-hop.
+func niStaticRouteDecodeNextHops(entry db.Value) []map[string]string {
+	lists := make(map[string][]string)
+	count := 0
+	for _, fld := range niStaticRouteNhFieldOrder {
+		v, ok := entry.Field[fld]
+		if !ok || strings.TrimSpace(v) == "" {
+			continue
+		}
+		parts := strings.Split(v, ",")
+		lists[fld] = parts
+		if len(parts) > count {
+			count = len(parts)
+		}
+	}
+	entries := make([]map[string]string, count)
+	for i := range entries {
+		e := make(map[string]string)
+		for fld, parts := range lists {
+			if i < len(parts) {
+				e[fld] = strings.TrimSpace(parts[i])
+			}
+		}
+		entries[i] = e
+	}
+	return entries
+}
+
+// niStaticRouteEncodeNextHops renders the next-hops back into the comma
+// separated row attributes, keeping every list aligned. A field absent from
+// both the next-hops and the stored row is left out rather than introduced.
+func niStaticRouteEncodeNextHops(entries []map[string]string, existing db.Value) map[string]string {
+	fields := make(map[string]string)
+	for _, fld := range niStaticRouteNhFieldOrder {
+		carried := false
+		for _, e := range entries {
+			if strings.TrimSpace(e[fld]) != "" {
+				carried = true
+				break
+			}
+		}
+		if !carried {
+			if _, ok := existing.Field[fld]; !ok {
+				continue
+			}
+		}
+		vals := make([]string, len(entries))
+		for i, e := range entries {
+			v := strings.TrimSpace(e[fld])
+			if v == "" {
+				v = niStaticRouteNhFieldDefault[fld]
+			}
+			vals[i] = v
+		}
+		fields[fld] = strings.Join(vals, ",")
+	}
+	return fields
+}
+
+// niStaticRouteNhIndex derives the OpenConfig next-hop list key of a stored
+// next-hop: the IP, DROP for a blackhole, or LOCAL_LINK for an interface only
+// next-hop, each suffixed with the interface when the next-hop names one.
+func niStaticRouteNhIndex(e map[string]string) string {
+	nexthop := strings.TrimSpace(e[niStaticRouteNexthopFld])
+	ifname := strings.TrimSpace(e[niStaticRouteIfnameFld])
+	if strings.EqualFold(strings.TrimSpace(e[niStaticRouteBlackholeFld]), "true") || ifname == niStaticRouteNullIfname {
+		return niStaticRouteDropToken
+	}
+	if nexthop == "" || niStaticRouteIsZeroIp(nexthop) {
+		if ifname == "" {
+			return ""
+		}
+		return niStaticRouteLocalLinkToken + niStaticRouteIndexSep + ifname
+	}
+	if ifname == "" {
+		return nexthop
+	}
+	return nexthop + niStaticRouteIndexSep + ifname
+}
+
+// niStaticRouteNhFromIndex builds the CONFIG_DB attributes of one next-hop from
+// its list key. The key carries the whole next-hop, so it is also what a
+// request that names only the key maps to.
+func niStaticRouteNhFromIndex(index, prefix string) (map[string]string, error) {
+	isIpv6 := niStaticRouteIsIpv6Prefix(prefix)
+	idx := strings.TrimSpace(index)
+	if idx == "" {
+		return nil, tlerr.InvalidArgsError{Format: "static route next-hop index is empty"}
+	}
+	if idx == niStaticRouteDropToken {
+		return map[string]string{
+			niStaticRouteNexthopFld:   niStaticRouteZeroIp(isIpv6),
+			niStaticRouteIfnameFld:    niStaticRouteNullIfname,
+			niStaticRouteBlackholeFld: "true",
+		}, nil
+	}
+
+	nhPart := idx
+	ifname := ""
+	if sep := strings.Index(idx, niStaticRouteIndexSep); sep >= 0 {
+		nhPart = strings.TrimSpace(idx[:sep])
+		ifname = strings.TrimSpace(idx[sep+len(niStaticRouteIndexSep):])
+		if ifname == "" {
+			return nil, tlerr.InvalidArgsError{Format: fmt.Sprintf("static route next-hop index %q names no interface", index)}
+		}
+	}
+	if nhPart == niStaticRouteLocalLinkToken {
+		if ifname == "" {
+			return nil, tlerr.InvalidArgsError{
+				Format: fmt.Sprintf("static route next-hop index %q must be %s%s<interface>", index, niStaticRouteLocalLinkToken, niStaticRouteIndexSep),
+			}
+		}
+		return map[string]string{
+			niStaticRouteNexthopFld: niStaticRouteZeroIp(isIpv6),
+			niStaticRouteIfnameFld:  ifname,
+		}, nil
+	}
+	if err := niStaticRouteValidateNhIp(nhPart, isIpv6); err != nil {
+		return nil, err
+	}
+	return map[string]string{
+		niStaticRouteNexthopFld: nhPart,
+		niStaticRouteIfnameFld:  ifname,
+	}, nil
+}
+
+func niStaticRouteValidateNhIp(value string, prefixIsIpv6 bool) error {
+	ip := net.ParseIP(strings.TrimSpace(value))
+	if ip == nil {
+		return tlerr.InvalidArgsError{Format: fmt.Sprintf("invalid static route next-hop address %q", value)}
+	}
+	if (ip.To4() == nil) != prefixIsIpv6 {
+		return tlerr.InvalidArgsError{
+			Format: fmt.Sprintf("static route next-hop address %q does not match the address family of the prefix", value),
+		}
+	}
+	return nil
+}
+
+// niStaticRouteNextHopValue renders the OpenConfig next-hop leaf of a stored
+// next-hop, either an IP or one of the locally defined next-hop identities.
+func niStaticRouteNextHopValue(e map[string]string) string {
+	switch idx := niStaticRouteNhIndex(e); {
+	case idx == "":
+		return ""
+	case idx == niStaticRouteDropToken:
+		return niStaticRouteDropToken
+	case strings.HasPrefix(idx, niStaticRouteLocalLinkToken+niStaticRouteIndexSep):
+		return niStaticRouteLocalLinkToken
+	default:
+		return strings.TrimSpace(e[niStaticRouteNexthopFld])
+	}
+}
+
+// niStaticRouteCheckNextHopValue rejects a next-hop leaf that contradicts the
+// next-hop the list key already identifies.
+func niStaticRouteCheckNextHopValue(nextHop, index string) error {
+	nextHop = strings.TrimSpace(nextHop)
+	if nextHop == "" {
+		return nil
+	}
+	if i := strings.LastIndex(nextHop, ":"); i >= 0 && !strings.Contains(nextHop, "::") && net.ParseIP(nextHop) == nil {
+		// Strip a module qualified identity such as
+		// openconfig-local-routing:DROP.
+		nextHop = nextHop[i+1:]
+	}
+	want := ""
+	switch {
+	case nextHop == niStaticRouteDropToken:
+		want = niStaticRouteDropToken
+	case nextHop == niStaticRouteLocalLinkToken:
+		want = niStaticRouteLocalLinkToken
+	default:
+		want = nextHop
+	}
+
+	idx := strings.TrimSpace(index)
+	idxNh := idx
+	if sep := strings.Index(idx, niStaticRouteIndexSep); sep >= 0 {
+		idxNh = idx[:sep]
+	}
+	if idxNh == want {
+		return nil
+	}
+	return tlerr.InvalidArgsError{
+		Format: fmt.Sprintf("static route next-hop %q in payload does not match next-hop index %q", nextHop, index),
+	}
+}
+
+// niStaticRouteUpsertNextHop merges one next-hop into the next-hops already
+// stored for the route, matched by list key.
+func niStaticRouteUpsertNextHop(entries []map[string]string, index string, nh map[string]string) []map[string]string {
+	for i, e := range entries {
+		if niStaticRouteNhIndex(e) != index {
+			continue
+		}
+		merged := make(map[string]string, len(e))
+		for k, v := range e {
+			merged[k] = v
+		}
+		for k, v := range nh {
+			merged[k] = v
+		}
+		if strings.TrimSpace(nh[niStaticRouteBlackholeFld]) == "" {
+			delete(merged, niStaticRouteBlackholeFld)
+		}
+		entries[i] = merged
+		return entries
+	}
+	return append(entries, nh)
 }
 
 func makeNiStaticRouteResMap(niName, prefix string, fields map[string]string) map[string]map[string]db.Value {
@@ -267,12 +590,66 @@ func wrapNiStaticRouteRootAsDevice(s *ygot.GoStruct, reqInfo *niStaticRouteReqIn
 			pObj.StaticRoutes.Static = make(map[string]*ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_StaticRoutes_Static)
 		}
 		pObj.StaticRoutes.Static[reqInfo.prefix] = root
+	case *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_StaticRoutes_Static_NextHops:
+		rtObj := niStaticRouteEnsureRouteInProtocol(pObj, reqInfo.prefix)
+		if rtObj == nil {
+			return nil, tlerr.InvalidArgsError{Format: "unable to create static route context for static route mapping"}
+		}
+		rtObj.NextHops = root
+	case *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_StaticRoutes_Static_NextHops_NextHop:
+		if reqInfo.index == "" {
+			return nil, tlerr.InvalidArgsError{Format: "static route next-hop index missing in request path"}
+		}
+		rtObj := niStaticRouteEnsureRouteInProtocol(pObj, reqInfo.prefix)
+		if rtObj == nil {
+			return nil, tlerr.InvalidArgsError{Format: "unable to create static route context for static route mapping"}
+		}
+		if rtObj.NextHops == nil {
+			rtObj.NextHops = &ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_StaticRoutes_Static_NextHops{}
+		}
+		if rtObj.NextHops.NextHop == nil {
+			rtObj.NextHops.NextHop = make(map[string]*ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_StaticRoutes_Static_NextHops_NextHop)
+		}
+		rtObj.NextHops.NextHop[reqInfo.index] = root
+	case *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_StaticRoutes_Static_NextHops_NextHop_Config:
+		if reqInfo.index == "" {
+			return nil, tlerr.InvalidArgsError{Format: "static route next-hop index missing in request path"}
+		}
+		rtObj := niStaticRouteEnsureRouteInProtocol(pObj, reqInfo.prefix)
+		if rtObj == nil {
+			return nil, tlerr.InvalidArgsError{Format: "unable to create static route context for static route mapping"}
+		}
+		if rtObj.NextHops == nil {
+			rtObj.NextHops = &ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_StaticRoutes_Static_NextHops{}
+		}
+		nhObj, err := rtObj.NextHops.NewNextHop(reqInfo.index)
+		if err != nil || nhObj == nil {
+			return nil, tlerr.InvalidArgsError{Format: "unable to create static route next-hop context for static route mapping"}
+		}
+		nhObj.Config = root
 	default:
 		return nil, tlerr.InvalidArgsError{Format: "unsupported YANG root type for static route mapping"}
 	}
 
 	var wrappedRoot ygot.GoStruct = devObj
 	return &wrappedRoot, nil
+}
+
+func niStaticRouteEnsureRouteInProtocol(pObj *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol, prefix string) *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_StaticRoutes_Static {
+	if pObj == nil || prefix == "" {
+		return nil
+	}
+	if pObj.StaticRoutes == nil {
+		pObj.StaticRoutes = &ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_StaticRoutes{}
+	}
+	if rtObj, ok := pObj.StaticRoutes.Static[prefix]; ok && rtObj != nil {
+		return rtObj
+	}
+	rtObj, err := pObj.StaticRoutes.NewStatic(prefix)
+	if err != nil {
+		return nil
+	}
+	return rtObj
 }
 
 func getNiStaticRoutesObj(s *ygot.GoStruct, niName, protoName string, createIfMissing bool) *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_StaticRoutes {
@@ -383,6 +760,121 @@ func getNiStaticRouteCfgObj(s *ygot.GoStruct, niName, protoName, prefix string, 
 	return rtObj.Config
 }
 
+func getNiStaticRouteNextHopObj(s *ygot.GoStruct, niName, protoName, prefix, index string, createIfMissing bool) *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_StaticRoutes_Static_NextHops_NextHop {
+	rtObj := getNiStaticRouteObj(s, niName, protoName, prefix, createIfMissing)
+	if rtObj == nil {
+		return nil
+	}
+	if rtObj.NextHops == nil {
+		if !createIfMissing {
+			return nil
+		}
+		rtObj.NextHops = &ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_StaticRoutes_Static_NextHops{}
+	}
+	nhObj, ok := rtObj.NextHops.NextHop[index]
+	if !ok || nhObj == nil {
+		if !createIfMissing {
+			return nil
+		}
+		var err error
+		nhObj, err = rtObj.NextHops.NewNextHop(index)
+		if err != nil || nhObj == nil {
+			return nil
+		}
+	}
+	if createIfMissing && nhObj.Config == nil {
+		nhObj.Config = &ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_StaticRoutes_Static_NextHops_NextHop_Config{}
+	}
+	return nhObj
+}
+
+// niStaticRouteNextHopFromUnion renders the OpenConfig next-hop union of a
+// payload as the string spelling used by the list key.
+func niStaticRouteNextHopFromUnion(v interface{}) (string, bool) {
+	switch val := v.(type) {
+	case nil:
+		return "", false
+	case *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_StaticRoutes_Static_NextHops_NextHop_Config_NextHop_Union_String:
+		if val == nil {
+			return "", false
+		}
+		s := strings.TrimSpace(val.String)
+		return s, s != ""
+	case *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_StaticRoutes_Static_NextHops_NextHop_Config_NextHop_Union_E_OpenconfigLocalRouting_LOCAL_DEFINED_NEXT_HOP:
+		if val == nil {
+			return "", false
+		}
+		return niStaticRouteLocalDefinedNextHopName(val.E_OpenconfigLocalRouting_LOCAL_DEFINED_NEXT_HOP)
+	case ocbinds.E_OpenconfigLocalRouting_LOCAL_DEFINED_NEXT_HOP:
+		return niStaticRouteLocalDefinedNextHopName(val)
+	case string:
+		s := strings.TrimSpace(val)
+		return s, s != ""
+	case *string:
+		if val == nil {
+			return "", false
+		}
+		s := strings.TrimSpace(*val)
+		return s, s != ""
+	}
+	return "", false
+}
+
+func niStaticRouteLocalDefinedNextHopName(v ocbinds.E_OpenconfigLocalRouting_LOCAL_DEFINED_NEXT_HOP) (string, bool) {
+	switch v {
+	case ocbinds.OpenconfigLocalRouting_LOCAL_DEFINED_NEXT_HOP_DROP:
+		return niStaticRouteDropToken, true
+	case ocbinds.OpenconfigLocalRouting_LOCAL_DEFINED_NEXT_HOP_LOCAL_LINK:
+		return niStaticRouteLocalLinkToken, true
+	}
+	return "", false
+}
+
+// niStaticRouteNextHopUnionValue converts a stored next-hop into the union the
+// OpenConfig next-hop leaf holds.
+func niStaticRouteNextHopUnionValue(cfgObj *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_StaticRoutes_Static_NextHops_NextHop_Config, value string) error {
+	if cfgObj == nil || value == "" {
+		return nil
+	}
+	var err error
+	switch value {
+	case niStaticRouteDropToken:
+		cfgObj.NextHop, err = cfgObj.To_OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_StaticRoutes_Static_NextHops_NextHop_Config_NextHop_Union(
+			ocbinds.OpenconfigLocalRouting_LOCAL_DEFINED_NEXT_HOP_DROP)
+	case niStaticRouteLocalLinkToken:
+		cfgObj.NextHop, err = cfgObj.To_OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_StaticRoutes_Static_NextHops_NextHop_Config_NextHop_Union(
+			ocbinds.OpenconfigLocalRouting_LOCAL_DEFINED_NEXT_HOP_LOCAL_LINK)
+	default:
+		cfgObj.NextHop, err = cfgObj.To_OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_StaticRoutes_Static_NextHops_NextHop_Config_NextHop_Union(value)
+	}
+	return err
+}
+
+// niStaticRouteNextHopFromPayload reads the next-hop leaf of a request that
+// targets the next-hop config container or that leaf.
+func niStaticRouteNextHopFromPayload(inParams XfmrParams, ygRoot *ygot.GoStruct, reqInfo *niStaticRouteReqInfo) string {
+	if nh, ok := niStaticRouteNextHopFromUnion(inParams.param); ok {
+		return nh
+	}
+	if rv := reflect.ValueOf(inParams.param); rv.IsValid() && rv.Kind() == reflect.Ptr && !rv.IsNil() {
+		if elem := rv.Elem(); elem.Kind() == reflect.Struct {
+			if fv := elem.FieldByName("NextHop"); fv.IsValid() && fv.CanInterface() {
+				if nh, ok := niStaticRouteNextHopFromUnion(fv.Interface()); ok {
+					return nh
+				}
+			}
+		}
+	}
+	nhObj := getNiStaticRouteNextHopObj(ygRoot, reqInfo.niName, reqInfo.protoName, reqInfo.prefix, reqInfo.index, false)
+	if nhObj == nil || nhObj.Config == nil {
+		return ""
+	}
+	if nh, ok := niStaticRouteNextHopFromUnion(nhObj.Config.NextHop); ok {
+		return nh
+	}
+	return ""
+}
+
 // findNiStaticRouteUnmappedPayloadLeaves returns the payload leaves under the
 // static-routes container that carry a value but have no CONFIG_DB mapping, so
 // that a container-level request is rejected as a whole instead of applying
@@ -474,8 +966,10 @@ func niStaticRouteCheckPayloadPrefix(inParams XfmrParams, reqInfo *niStaticRoute
 }
 
 // buildNiStaticRouteHierResMap maps a whole static-routes payload, letting one
-// container-level request carry several static routes.
-func buildNiStaticRouteHierResMap(s *ygot.GoStruct, niName, protoName string) (map[string]map[string]db.Value, error) {
+// container-level request carry several static routes and next-hops. Next-hops
+// are merged into the ones already stored, because they share the comma
+// separated attributes of a single CONFIG_DB row.
+func buildNiStaticRouteHierResMap(cfgDb *db.DB, s *ygot.GoStruct, niName, protoName string) (map[string]map[string]db.Value, error) {
 	res := make(map[string]map[string]db.Value)
 	srObj := getNiStaticRoutesObj(s, niName, protoName, false)
 	if srObj == nil {
@@ -495,12 +989,70 @@ func buildNiStaticRouteHierResMap(s *ygot.GoStruct, niName, protoName string) (m
 				}
 			}
 		}
+
+		existing := niStaticRouteEntryOrEmpty(cfgDb, niName, prefix)
+		entries := niStaticRouteDecodeNextHops(existing)
+		changed := false
+		if rtObj.NextHops != nil {
+			// The next-hops of a route share one row, so a payload carrying
+			// several of them must map to the same row whatever order the
+			// list entries are held in.
+			for _, index := range sortedNiStaticRouteNhKeys(rtObj.NextHops.NextHop) {
+				nhObj := rtObj.NextHops.NextHop[index]
+				if nhObj == nil {
+					continue
+				}
+				if nhObj.Config != nil && nhObj.Config.Index != nil {
+					if cfgIndex := strings.TrimSpace(*nhObj.Config.Index); cfgIndex != "" && cfgIndex != index {
+						return res, tlerr.InvalidArgsError{
+							Format: fmt.Sprintf("static route next-hop index %q in payload does not match list key %q", cfgIndex, index),
+						}
+					}
+				}
+				if nhObj.Config != nil {
+					if nh, ok := niStaticRouteNextHopFromUnion(nhObj.Config.NextHop); ok {
+						if err := niStaticRouteCheckNextHopValue(nh, index); err != nil {
+							return res, err
+						}
+					}
+				}
+				nh, err := niStaticRouteNhFromIndex(index, prefix)
+				if err != nil {
+					return res, err
+				}
+				entries = niStaticRouteUpsertNextHop(entries, index, nh)
+				changed = true
+			}
+		}
+
+		fields := map[string]string{}
+		if changed {
+			fields = niStaticRouteEncodeNextHops(entries, existing)
+		}
 		if _, ok := res[niStaticRouteTbl]; !ok {
 			res[niStaticRouteTbl] = make(map[string]db.Value)
 		}
-		res[niStaticRouteTbl][niName+"|"+prefix] = db.Value{Field: map[string]string{}}
+		res[niStaticRouteTbl][niName+"|"+prefix] = db.Value{Field: fields}
 	}
 	return res, nil
+}
+
+func sortedNiStaticRouteNhKeys(nhMap map[string]*ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_StaticRoutes_Static_NextHops_NextHop) []string {
+	keys := make([]string, 0, len(nhMap))
+	for k := range nhMap {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func niStaticRouteEntryOrEmpty(cfgDb *db.DB, niName, prefix string) db.Value {
+	if cfgDb != nil {
+		if entry, err := niStaticRouteEntryFromDb(cfgDb, niName, prefix); err == nil {
+			return entry
+		}
+	}
+	return db.Value{Field: map[string]string{}}
 }
 
 // niStaticRoutePrefixesFromDb lists the prefixes configured for one VRF. A key
@@ -547,7 +1099,8 @@ func populateNiStaticRouteHierToYangFromDb(cfgDb *db.DB, ygRoot *ygot.GoStruct, 
 		prefixes = niStaticRoutePrefixesFromDb(cfgDb, niName)
 	}
 	for _, p := range prefixes {
-		if _, err := niStaticRouteEntryFromDb(cfgDb, niName, p); err != nil {
+		entry, err := niStaticRouteEntryFromDb(cfgDb, niName, p)
+		if err != nil {
 			continue
 		}
 		rtObj := getNiStaticRouteObj(ygRoot, niName, protoName, p, true)
@@ -558,6 +1111,35 @@ func populateNiStaticRouteHierToYangFromDb(cfgDb *db.DB, ygRoot *ygot.GoStruct, 
 		rtObj.Prefix = &routePrefix
 		if rtObj.Config != nil {
 			rtObj.Config.Prefix = &routePrefix
+		}
+		if err := populateNiStaticRouteNextHopsToYang(ygRoot, niName, protoName, p, entry, ""); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// populateNiStaticRouteNextHopsToYang fills the next-hop list of one route from
+// its stored comma separated attributes. An empty index populates every
+// next-hop of the route.
+func populateNiStaticRouteNextHopsToYang(ygRoot *ygot.GoStruct, niName, protoName, prefix string, entry db.Value, index string) error {
+	for _, e := range niStaticRouteDecodeNextHops(entry) {
+		nhIndex := niStaticRouteNhIndex(e)
+		if nhIndex == "" || (index != "" && nhIndex != index) {
+			continue
+		}
+		nhObj := getNiStaticRouteNextHopObj(ygRoot, niName, protoName, prefix, nhIndex, true)
+		if nhObj == nil {
+			continue
+		}
+		nhKey := nhIndex
+		nhObj.Index = &nhKey
+		if nhObj.Config == nil {
+			continue
+		}
+		nhObj.Config.Index = &nhKey
+		if err := niStaticRouteNextHopUnionValue(nhObj.Config, niStaticRouteNextHopValue(e)); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -585,12 +1167,19 @@ var YangToDb_ni_static_route_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPa
 		case niStaticRouteTargetRouteInst, niStaticRouteTargetRouteCfg:
 			// prefix is the CONFIG_DB key, so clearing it removes the route.
 			return makeNiStaticRouteResMap(reqInfo.niName, reqInfo.prefix, nil), nil
+		case niStaticRouteTargetNextHopsRoot:
+			return res, tlerr.NotSupportedError{
+				Format: "DELETE is not supported at the next-hops container; delete one next-hop or the static route instead",
+				Path:   inParams.requestUri,
+			}
+		case niStaticRouteTargetNextHopInst, niStaticRouteTargetNextHopCfg:
+			return res, niStaticRouteDeleteNextHop(inParams, reqInfo)
 		}
 		return res, tlerr.NotSupportedError{Format: "unsupported DELETE path under static route mapping", Path: inParams.requestUri}
 	}
 
 	switch reqInfo.targetPathKind {
-	case niStaticRouteTargetProtocolRoot, niStaticRouteTargetRoutesRoot, niStaticRouteTargetRouteInst:
+	case niStaticRouteTargetProtocolRoot, niStaticRouteTargetRoutesRoot, niStaticRouteTargetRouteInst, niStaticRouteTargetNextHopsRoot:
 		wrappedRoot, wrapErr := wrapNiStaticRouteRootAsDevice(inParams.ygRoot, reqInfo)
 		if wrapErr != nil {
 			return res, wrapErr
@@ -601,7 +1190,7 @@ var YangToDb_ni_static_route_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPa
 				Path:   inParams.requestUri,
 			}
 		}
-		res, err = buildNiStaticRouteHierResMap(wrappedRoot, reqInfo.niName, reqInfo.protoName)
+		res, err = buildNiStaticRouteHierResMap(inParams.dbs[db.ConfigDB], wrappedRoot, reqInfo.niName, reqInfo.protoName)
 		if err != nil {
 			return make(map[string]map[string]db.Value), err
 		}
@@ -628,8 +1217,88 @@ var YangToDb_ni_static_route_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPa
 			return res, err
 		}
 		return makeNiStaticRouteResMap(reqInfo.niName, reqInfo.prefix, map[string]string{}), nil
+	case niStaticRouteTargetNextHopInst, niStaticRouteTargetNextHopCfg:
+		return niStaticRouteSetNextHop(inParams, reqInfo)
 	}
 	return res, tlerr.NotSupportedError{Format: "unsupported path for network-instance static route mapping", Path: inParams.requestUri}
+}
+
+// niStaticRouteSetNextHop merges one next-hop into the comma separated
+// attributes of the route it belongs to.
+func niStaticRouteSetNextHop(inParams XfmrParams, reqInfo *niStaticRouteReqInfo) (map[string]map[string]db.Value, error) {
+	res := make(map[string]map[string]db.Value)
+	if err := validateNiStaticRoutePrefix(reqInfo.prefix); err != nil {
+		return res, err
+	}
+	wrappedRoot, wrapErr := wrapNiStaticRouteRootAsDevice(inParams.ygRoot, reqInfo)
+	if wrapErr != nil {
+		return res, wrapErr
+	}
+	if unmapped := findNiStaticRouteUnmappedPayloadLeaves(wrappedRoot, reqInfo.niName, reqInfo.protoName); len(unmapped) > 0 {
+		return res, tlerr.NotSupportedError{
+			Format: "static route next-hop payload carries leaves that have no CONFIG_DB mapping: " + formatOcLeafPathList(unmapped),
+			Path:   inParams.requestUri,
+		}
+	}
+	if reqInfo.targetLeaf != niStaticRouteIndexLeaf {
+		if nh := niStaticRouteNextHopFromPayload(inParams, wrappedRoot, reqInfo); nh != "" {
+			if err := niStaticRouteCheckNextHopValue(nh, reqInfo.index); err != nil {
+				return res, err
+			}
+		}
+	}
+	if nhObj := getNiStaticRouteNextHopObj(wrappedRoot, reqInfo.niName, reqInfo.protoName, reqInfo.prefix, reqInfo.index, false); nhObj != nil &&
+		nhObj.Config != nil && nhObj.Config.Index != nil {
+		if cfgIndex := strings.TrimSpace(*nhObj.Config.Index); cfgIndex != "" && cfgIndex != reqInfo.index {
+			return res, tlerr.InvalidArgsError{
+				Format: fmt.Sprintf("static route next-hop index %q in payload does not match index %q in request path", cfgIndex, reqInfo.index),
+			}
+		}
+	}
+
+	nh, err := niStaticRouteNhFromIndex(reqInfo.index, reqInfo.prefix)
+	if err != nil {
+		return res, err
+	}
+	existing := niStaticRouteEntryOrEmpty(inParams.dbs[db.ConfigDB], reqInfo.niName, reqInfo.prefix)
+	entries := niStaticRouteUpsertNextHop(niStaticRouteDecodeNextHops(existing), reqInfo.index, nh)
+	return makeNiStaticRouteResMap(reqInfo.niName, reqInfo.prefix, niStaticRouteEncodeNextHops(entries, existing)), nil
+}
+
+// niStaticRouteDeleteNextHop removes one next-hop from the comma separated
+// attributes of its route. The next-hops of a route share one CONFIG_DB row, so
+// the remaining ones are rewritten as an update rather than deleted.
+func niStaticRouteDeleteNextHop(inParams XfmrParams, reqInfo *niStaticRouteReqInfo) error {
+	existing := niStaticRouteEntryOrEmpty(inParams.dbs[db.ConfigDB], reqInfo.niName, reqInfo.prefix)
+	entries := niStaticRouteDecodeNextHops(existing)
+
+	kept := make([]map[string]string, 0, len(entries))
+	found := false
+	for _, e := range entries {
+		if niStaticRouteNhIndex(e) == reqInfo.index {
+			found = true
+			continue
+		}
+		kept = append(kept, e)
+	}
+	if !found {
+		return tlerr.NotFoundError{Format: fmt.Sprintf("static route %s has no next-hop %s", reqInfo.prefix, reqInfo.index)}
+	}
+	if len(kept) == 0 {
+		return tlerr.NotSupportedError{
+			Format: "DELETE of the only next-hop is not supported; delete the static route instead",
+			Path:   inParams.requestUri,
+		}
+	}
+
+	fields := niStaticRouteEncodeNextHops(kept, existing)
+	if inParams.subOpDataMap == nil {
+		return tlerr.InvalidArgsError{Format: "unable to rewrite static route next-hops for DELETE"}
+	}
+	updMap := make(RedisDbMap)
+	updMap[db.ConfigDB] = makeNiStaticRouteResMap(reqInfo.niName, reqInfo.prefix, fields)
+	inParams.subOpDataMap[UPDATE] = &updMap
+	return nil
 }
 
 var DbToYang_ni_static_route_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) (err error) {
@@ -673,6 +1342,35 @@ var DbToYang_ni_static_route_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrPa
 		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == niStaticRoutePrefixLeaf {
 			routePrefix := reqInfo.prefix
 			cfgObj.Prefix = &routePrefix
+		}
+		return nil
+	case niStaticRouteTargetNextHopsRoot, niStaticRouteTargetNextHopInst, niStaticRouteTargetNextHopCfg:
+		entry, err := niStaticRouteEntryFromDb(cfgDb, reqInfo.niName, reqInfo.prefix)
+		if err != nil {
+			return err
+		}
+		wrappedRoot, wrapErr := wrapNiStaticRouteRootAsDevice(inParams.ygRoot, reqInfo)
+		if wrapErr != nil {
+			return wrapErr
+		}
+		if err := populateNiStaticRouteNextHopsToYang(wrappedRoot, reqInfo.niName, reqInfo.protoName, reqInfo.prefix, entry, reqInfo.index); err != nil {
+			return err
+		}
+		if reqInfo.index == "" {
+			return nil
+		}
+		nhObj := getNiStaticRouteNextHopObj(wrappedRoot, reqInfo.niName, reqInfo.protoName, reqInfo.prefix, reqInfo.index, false)
+		if nhObj == nil {
+			return tlerr.NotFoundError{Format: fmt.Sprintf("static route %s has no next-hop %s", reqInfo.prefix, reqInfo.index)}
+		}
+		if reqInfo.targetPathKind == niStaticRouteTargetNextHopCfg && nhObj.Config != nil {
+			// A leaf targeted GET reports only the leaf it asked for.
+			switch reqInfo.targetLeaf {
+			case niStaticRouteIndexLeaf:
+				nhObj.Config.NextHop = nil
+			case niStaticRouteNextHopLeaf:
+				nhObj.Config.Index = nil
+			}
 		}
 		return nil
 	}
