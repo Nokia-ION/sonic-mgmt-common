@@ -285,12 +285,15 @@ func findNiBgpUnmappedPayloadLeaves(s *ygot.GoStruct, niName string) []string {
 		return nil
 	}
 	var unmapped []string
-	collectNiBgpUnmappedLeaves(reflect.ValueOf(bgpObj), "", "bgp", 0, &unmapped)
+	collectOcUnmappedPayloadLeaves(reflect.ValueOf(bgpObj), niBgpMappedPayloadLeaves, "", "bgp", 0, &unmapped)
 	sort.Strings(unmapped)
 	return unmapped
 }
 
-func collectNiBgpUnmappedLeaves(v reflect.Value, schemaPath, displayPath string, depth int, unmapped *[]string) {
+// collectOcUnmappedPayloadLeaves walks a payload subtree and reports the leaves
+// that carry a value but are absent from mapped, the set of leaf paths the
+// caller can write to CONFIG_DB.
+func collectOcUnmappedPayloadLeaves(v reflect.Value, mapped map[string]bool, schemaPath, displayPath string, depth int, unmapped *[]string) {
 	if depth >= niBgpMaxTreeDepth {
 		return
 	}
@@ -322,14 +325,14 @@ func collectNiBgpUnmappedLeaves(v reflect.Value, schemaPath, displayPath string,
 				continue
 			}
 			if f.Type().Elem().Kind() == reflect.Struct {
-				collectNiBgpUnmappedLeaves(f, childSchema, childDisplay, depth+1, unmapped)
+				collectOcUnmappedPayloadLeaves(f, mapped, childSchema, childDisplay, depth+1, unmapped)
 				continue
 			}
 		case reflect.Map:
 			iter := f.MapRange()
 			for iter.Next() {
 				keyed := fmt.Sprintf("%s[%s]", childDisplay, niBgpPayloadListKey(iter.Key()))
-				collectNiBgpUnmappedLeaves(iter.Value(), childSchema, keyed, depth+1, unmapped)
+				collectOcUnmappedPayloadLeaves(iter.Value(), mapped, childSchema, keyed, depth+1, unmapped)
 			}
 			continue
 		case reflect.Slice:
@@ -349,7 +352,7 @@ func collectNiBgpUnmappedLeaves(v reflect.Value, schemaPath, displayPath string,
 			continue
 		}
 
-		if !niBgpMappedPayloadLeaves[childSchema] {
+		if !mapped[childSchema] {
 			*unmapped = append(*unmapped, childDisplay)
 		}
 	}
@@ -1583,6 +1586,16 @@ var YangToDb_ni_bgp_global_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPara
 	}()
 	res = make(map[string]map[string]db.Value)
 
+	// The protocol list carries this transformer for every protocol instance,
+	// so requests for the STATIC instance are handed to the static route
+	// mapping instead of being failed as unsupported BGP paths.
+	if handled, staticRes, staticErr := niStaticRouteYangToDbDispatch(inParams); handled {
+		if staticRes == nil {
+			staticRes = make(map[string]map[string]db.Value)
+		}
+		return staticRes, staticErr
+	}
+
 	reqInfo, err := parseNiBgpRequestUri(inParams.requestUri)
 	if err != nil {
 		return res, err
@@ -1754,6 +1767,10 @@ var DbToYang_ni_bgp_global_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrPara
 			err = tlerr.InvalidArgsError{Format: fmt.Sprintf("network-instance BGP transformer panic in GET path: %v", r)}
 		}
 	}()
+
+	if handled, staticErr := niStaticRouteDbToYangDispatch(inParams); handled {
+		return staticErr
+	}
 
 	reqInfo, err := parseNiBgpRequestUri(inParams.requestUri)
 	if err != nil {

@@ -328,4 +328,45 @@ module openconfig-network-instance-annot {
       }
     }
 
+    // Static routes of the STATIC protocol instance are stored in
+    // CONFIG_DB:STATIC_ROUTE|<ni-name>|<prefix>. The protocol list itself is
+    // annotated with the BGP transformer, which hands these requests over to
+    // the static route mapping.
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:static-routes {
+      deviate add {
+          sonic-ext:virtual-table "true";
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "ni_static_route_cfg_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:static-routes/oc-netinst:static {
+      deviate add {
+          sonic-ext:virtual-table "true";
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "ni_static_route_cfg_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:static-routes/oc-netinst:static/oc-netinst:prefix {
+      deviate add {
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "ni_static_route_cfg_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:static-routes/oc-netinst:static/oc-netinst:config {
+      deviate add {
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "ni_static_route_cfg_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:static-routes/oc-netinst:static/oc-netinst:config/oc-netinst:prefix {
+      deviate add {
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "ni_static_route_cfg_xfmr";
+      }
+    }
+
 }
