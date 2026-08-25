@@ -872,6 +872,23 @@ module openconfig-interfaces {
         oc-ext:telemetry-on-change;
       }
 
+      leaf interface-transitions {
+        type oc-yang:counter64;
+        description
+          "The total number of times the interface state (oper-status)
+          has either transitioned to 'UP' state from any other state, or
+          from state 'UP' to any other state.";
+        oc-ext:telemetry-on-change;
+      }
+
+      leaf link-transitions {
+        type oc-yang:counter64;
+        description
+          "Number of times the underlying link state has transitioned
+          to or from 'UP' state before any holdtime or dampening.";
+        oc-ext:telemetry-on-change;
+      }
+
       leaf last-clear {
         type oc-types:timeticks64;
         units nanoseconds;
