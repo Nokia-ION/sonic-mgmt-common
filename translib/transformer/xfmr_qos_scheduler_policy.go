@@ -51,10 +51,29 @@ func isSchedulerOnQueue(intf string) bool {
 func Subscribe_qos_scheduler_policy_xfmr(inParams XfmrSubscInParams) (XfmrSubscOutParams, error) {
 	pathInfo := NewPathInfo(inParams.uri)
 	seq := pathInfo.Var("sequence")
+	name := pathInfo.Var("name")
+
+	/*
+	 * The RFC parent table check resolves a keyed policy against the table
+	 * reported here and fails the request when that key is absent. A policing
+	 * policy lives in POLICER rather than SCHEDULER, so report the table it is
+	 * actually stored in, else GET and DELETE report it missing.
+	 */
+	if name != "" {
+		if policers := qosPolicerKeysForPolicyInDb(inParams.dbs[db.ConfigDB], name, seq); len(policers) > 0 {
+			keys := make(map[string]map[string]string, len(policers))
+			for _, policer := range policers {
+				keys[policer] = map[string]string{}
+			}
+			return XfmrSubscOutParams{
+				dbDataMap: RedisDbSubscribeMap{db.ConfigDB: {qosPolicerTbl: keys}},
+			}, nil
+		}
+	}
+
 	if seq == "" {
 		seq = "*"
 	}
-	name := pathInfo.Var("name")
 	if name == "" {
 		name = "*"
 	}
@@ -116,6 +135,15 @@ func getIntfsBySchedulerPolicyName(spName string, inParams XfmrParams) []string 
 var YangToDb_qos_scheduler_policy_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (map[string]map[string]db.Value, error) {
 	resMap := make(map[string]map[string]db.Value)
 	if inParams.oper == DELETE {
+		/*
+		 * A policing policy is realized as a POLICER attached to the backing
+		 * classifier's rules rather than a SCHEDULER entry, so the default
+		 * no-op below would leave it programmed.
+		 */
+		delPathInfo := NewPathInfo(inParams.uri)
+		if name := delPathInfo.Var("name"); name != "" {
+			return qosSchedPolicyPolicerDelete(inParams, name, delPathInfo.Var("sequence"))
+		}
 		return resMap, nil
 	}
 	log.V(lvl.DEBUG).Infoln("YangToDb_qos_scheduler_policy_xfmr: ", inParams.ygRoot, inParams.uri)
@@ -214,6 +242,18 @@ var YangToDb_qos_scheduler_policy_xfmr SubTreeXfmrYangToDb = func(inParams XfmrP
 			}
 			if schedObj.Inputs == nil || schedObj.Inputs.Input == nil || len(schedObj.Inputs.Input) < 1 {
 				log.V(lvl.DEBUG).Infoln("YangToDb: No Input subtree present for Scheduler obj: ", spName, " seqVal ", seq)
+				continue
+			}
+
+			/*
+			 * A scheduler whose input names a policed classifier is an ingress
+			 * policer rather than an egress queue scheduler, so it belongs in
+			 * POLICER instead of SCHEDULER. See xfmr_qos_policer.go.
+			 */
+			if clsName := qosSchedulerPolicerClassifier(inParams, schedObj); clsName != "" {
+				if err := qosSchedulerToPolicer(inParams, spName, seqVal, clsName, schedObj, resMap); err != nil {
+					return resMap, err
+				}
 				continue
 			}
 
@@ -785,6 +825,31 @@ var DbToYang_qos_scheduler_policy_xfmr SubTreeXfmrDbToYang = func(inParams XfmrP
 			}
 		}
 	}
+
+	/*
+	 * Policing policies are held in POLICER rather than SCHEDULER, so they have
+	 * to be gathered separately. Without this a GET reports them as missing,
+	 * which also makes translib refuse to delete them.
+	 */
+	if qosObj.SchedulerPolicies == nil {
+		qosObj.SchedulerPolicies = &ocbinds.OpenconfigQos_Qos_SchedulerPolicies{}
+	}
+	if _, err := qosFillSchedPoliciesFromPolicer(inParams, qosObj.SchedulerPolicies, spName, sp_seq,
+		qosPolicerReadFlags{
+			policyConfig:  sp_config,
+			policyState:   sp_state,
+			schedConfig:   sched_config,
+			schedState:    sched_state,
+			oneRateConfig: t12c_config,
+			oneRateState:  t12c_state,
+			twoRateConfig: t23c_config,
+			twoRateState:  t23c_state,
+			inputConfig:   input_config,
+			inputState:    input_state,
+		}); err != nil {
+		return err
+	}
+
 	log.V(lvl.DEBUG).Infoln("DbToYang_qos_scheduler_policy_xfmr - Done")
 	return nil
 }

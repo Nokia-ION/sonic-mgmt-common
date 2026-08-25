@@ -109,6 +109,13 @@ module openconfig-qos-annot {
       }
     }
 
+    deviation /oc-qos:qos/oc-qos:interfaces/oc-qos:interface/oc-qos:input/oc-qos:scheduler-policy {
+      deviate add {
+        sonic-ext:table-name "NONE";
+        sonic-ext:subtree-transformer "qos_intf_input_sched_policy_xfmr";
+      }
+    }
+
     deviation /oc-qos:qos/oc-qos:forwarding-groups/oc-qos:forwarding-group {
       deviate add {
           sonic-ext:subtree-transformer "qos_fwdgrp_xfmr";

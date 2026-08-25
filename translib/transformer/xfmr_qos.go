@@ -45,7 +45,7 @@ func TestingQosClearState() {
 	//queueMapMutex.Lock()
 	//defer queueMapMutex.Unlock()
 	ocQueueHwQueueMap = nil
-	buildQueueNameToIdMapFromDb()
+	buildQueueNameToIdMapFromDb(nil)
 }
 
 func parseQueueMapJSONFile() error {
@@ -1775,7 +1775,7 @@ var qos_pre_xfmr PreXfmrFunc = func(inParams XfmrParams) error {
 		if ocQueueHwQueueMap != nil {
 			return nil
 		}
-		return buildQueueNameToIdMapFromDb()
+		return buildQueueNameToIdMapFromDb(inParams.d)
 	}
 	log.V(lvl.DEBUG).Infof("qos_pre_xfmr start : OCToHWQueueMap (%v)", ocQueueHwQueueMap)
 
@@ -1792,12 +1792,19 @@ var qos_pre_xfmr PreXfmrFunc = func(inParams XfmrParams) error {
 	return nil
 }
 
-func buildQueueNameToIdMapFromDb() error {
-	d, err := db.NewDB(getDBOptions(db.ConfigDB))
-	if err != nil {
-		return err
+// buildQueueNameToIdMapFromDb reads the queue name to id map. A caller running
+// inside a request passes that request's ConfigDB handle: translib holds the
+// ConfigDB lock for the duration of a request, so opening a second writable
+// ConfigDB connection here would fail with a resource lock error.
+func buildQueueNameToIdMapFromDb(d *db.DB) error {
+	if d == nil {
+		ownDb, err := db.NewDB(getDBOptions(db.ConfigDB))
+		if err != nil {
+			return err
+		}
+		defer ownDb.DeleteDB()
+		d = ownDb
 	}
-	defer d.DeleteDB()
 
 	queueMapMutex.Lock()
 	defer queueMapMutex.Unlock()

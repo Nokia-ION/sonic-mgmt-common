@@ -11,6 +11,10 @@ module sonic-acl {
 		prefix prt;
 	}
 
+	import sonic-policer {
+		prefix policer;
+	}
+
 	organization
 		"SONiC";
 
@@ -56,12 +60,25 @@ module sonic-acl {
 				}
 
 				leaf type {
-					type enumeration {
-						enum MIRROR;
-						enum MIRRORV6;
-						enum L3;
-						enum L3V6;
-						enum CTRLPLANE;
+					description
+						"Type of the ACL table. The built-in types are
+						enumerated; a table type defined in ACL_TABLE_TYPE is
+						referenced by its name. The built-in types are matched
+						first, so an ACL_TABLE_TYPE must not reuse one of those
+						names.";
+					type union {
+						type enumeration {
+							enum MIRROR;
+							enum MIRRORV6;
+							enum L3;
+							enum L3V6;
+							enum CTRLPLANE;
+						}
+						type string {
+							pattern '[a-zA-Z0-9]{1}([-a-zA-Z0-9_]{1,63})' {
+								error-app-tag acl-table-type-invalid;
+							}
+						}
 					}
 				}
 
@@ -247,6 +264,85 @@ module sonic-acl {
 
 				leaf DSCP { 
 					type inet:dscp;
+				}
+
+				leaf POLICER_ACTION {
+					description
+						"Policer applied to traffic matching this rule. aclorch
+						resolves the name to a policer OID and attaches it with
+						SAI_ACL_ENTRY_ATTR_ACTION_SET_POLICER, so the policer
+						has to exist before the rule is created.
+
+						The table type must list POLICER_ACTION among its
+						ACTIONS. The built-in L3 and L3V6 types allow only
+						PACKET_ACTION and REDIRECT, so policing requires a
+						custom ACL_TABLE_TYPE.";
+					type leafref {
+						path "/policer:sonic-policer/policer:POLICER/policer:POLICER_LIST/policer:name";
+					}
+				}
+			}
+		}
+
+		container ACL_TABLE_TYPE {
+
+			description
+				"User-defined ACL table types. A table type declares which
+				packet fields its tables may match and which actions their
+				rules may carry, which is how matches and actions outside the
+				built-in L3 and L3V6 sets are enabled.";
+
+			list ACL_TABLE_TYPE_LIST {
+
+				description "A custom ACL table type definition";
+				key "ACL_TABLE_TYPE_NAME";
+
+				leaf ACL_TABLE_TYPE_NAME {
+					description
+						"Name of the table type, referenced by ACL_TABLE:type.";
+					type string {
+						pattern '[a-zA-Z0-9]{1}([-a-zA-Z0-9_]{1,63})' {
+							error-app-tag acl-table-type-name-invalid;
+						}
+					}
+				}
+
+				leaf-list MATCHES {
+					description
+						"Packet match fields tables of this type may use, named
+						as the ACL_RULE fields are, e.g. SRC_IP, IP_PROTOCOL,
+						L4_DST_PORT, TCP_FLAGS.";
+					type string;
+					ordered-by user;
+					min-elements 1;
+				}
+
+				leaf-list ACTIONS {
+					description
+						"Actions rules of this type may carry, e.g.
+						PACKET_ACTION, REDIRECT_ACTION, POLICER_ACTION.
+
+						COUNTER must be included. aclorch creates a counter for
+						every rule it adds, and the table is created with
+						SAI_ACL_TABLE_ATTR_ACL_ACTION_TYPE_LIST built from this
+						list, so omitting COUNTER makes the counter creation
+						fail and takes the whole rule with it. The rule then
+						sits in 'Pending creation' while the log reports
+						'createCounter: Failed to create counter', which points
+						at the counter rather than at the missing declaration.";
+					type string;
+					ordered-by user;
+				}
+
+				leaf-list BIND_POINTS {
+					description
+						"Bind point types a table of this type may attach to.";
+					type enumeration {
+						enum PORT;
+						enum PORTCHANNEL;
+					}
+					ordered-by user;
+					min-elements 1;
 				}
 			}
 		}
