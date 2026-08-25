@@ -1,0 +1,177 @@
+module sonic-policer {
+
+	yang-version 1.1;
+
+	namespace "http://github.com/sonic-net/sonic-policer";
+	prefix policer;
+
+	organization
+		"SONiC";
+
+	contact
+		"SONiC";
+
+	description
+		"SONIC POLICER.
+
+		Named traffic policers. A policer becomes effective when something
+		references it; an ACL_RULE referencing one through POLICER_ACTION has
+		aclorch attach it to the ACL entry with
+		SAI_ACL_ENTRY_ATTR_ACTION_SET_POLICER, which meters the matched traffic
+		in hardware.
+
+		The upstream sonic-policer in sonic-yang-models takes meter_type,
+		policer_mode, policer_color_source and policer_packet_action from
+		sonic-types. Those four are inlined here instead of imported, because
+		policer_mode has to drop one of its values (see below) and because a
+		local model that imports an SONICYANG_IMPORTS module has to be listed
+		in SONIC_YANG_DEFERRED_NAMES to be copied in the right order.";
+
+	revision 2026-08-24 {
+		description
+			"Initial revision.";
+	}
+
+	/*
+	 * The enumerations below are spelled in lower case to match sonic-types,
+	 * which is what CVL in sonic-yang-models validates CONFIG_DB against. The
+	 * two schema copies have to agree or a value accepted here is rejected
+	 * there. policerorch itself is case-insensitive: it applies to_upper to
+	 * both field and value before looking them up.
+	 */
+
+	typedef meter_type {
+		description
+			"Unit the committed and peak rates are measured in.";
+		type enumeration {
+			enum packets;
+			enum bytes;
+		}
+	}
+
+	typedef policer_mode {
+		description
+			"Metering algorithm. sr_tcm is single-rate three-colour, tr_tcm is
+			two-rate three-colour.
+
+			sonic-types also defines 'storm' here, which this model
+			deliberately omits. policerorch maps mode values through
+			policer_mode_map, whose only keys are SR_TCM, TR_TCM and
+			STORM_CONTROL, so 'storm' upper-cases to STORM and the map lookup
+			throws. Storm control policers are created internally with the
+			mode hardcoded rather than configured through this field, so
+			omitting the value loses no usable configuration.";
+		type enumeration {
+			enum sr_tcm;
+			enum tr_tcm;
+		}
+	}
+
+	typedef policer_color_source {
+		description
+			"Whether the policer honours the colour a packet arrives with
+			(aware) or ignores it (blind).";
+		type enumeration {
+			enum aware;
+			enum blind;
+		}
+	}
+
+	typedef policer_packet_action {
+		description
+			"Action applied to packets of a given colour.";
+		type enumeration {
+			enum drop;
+			enum forward;
+			enum copy;
+			enum copy_cancel;
+			enum trap;
+			enum log;
+			enum deny;
+			enum transit;
+		}
+	}
+
+	container sonic-policer {
+
+		container POLICER {
+
+			description
+				"Traffic policers with committed and peak rates, burst sizes
+				and per-colour actions.";
+
+			list POLICER_LIST {
+
+				description "A named policer entry.";
+				key "name";
+
+				leaf name {
+					description "Name of the policer.";
+					type string {
+						pattern '[a-zA-Z0-9]{1}([-a-zA-Z0-9_]{1,63})' {
+							error-app-tag policer-name-invalid;
+						}
+					}
+				}
+
+				leaf meter_type {
+					description
+						"Unit cir, cbs, pir and pbs are expressed in.";
+					type meter_type;
+				}
+
+				leaf mode {
+					description "Metering algorithm.";
+					type policer_mode;
+				}
+
+				leaf color {
+					description "Colour-awareness of the policer.";
+					type policer_color_source;
+				}
+
+				leaf cir {
+					description
+						"Committed information rate, in the configured
+						meter_type per second.";
+					type uint64;
+				}
+
+				leaf cbs {
+					description
+						"Committed burst size, in the configured meter_type.";
+					type uint64;
+				}
+
+				leaf pir {
+					description
+						"Peak information rate, in the configured meter_type
+						per second. Applies to TR_TCM.";
+					type uint64;
+				}
+
+				leaf pbs {
+					description
+						"Peak burst size, in the configured meter_type.
+						Applies to TR_TCM.";
+					type uint64;
+				}
+
+				leaf green_packet_action {
+					description "Action for packets metered green.";
+					type policer_packet_action;
+				}
+
+				leaf yellow_packet_action {
+					description "Action for packets metered yellow.";
+					type policer_packet_action;
+				}
+
+				leaf red_packet_action {
+					description "Action for packets metered red.";
+					type policer_packet_action;
+				}
+			}
+		}
+	}
+}

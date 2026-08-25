@@ -25,6 +25,19 @@ func init() {
 }
 
 var Subscribe_qos_dscp_classifier_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSubscInParams) (XfmrSubscOutParams, error) {
+	/*
+	 * The RFC parent table check resolves a keyed classifier against the table
+	 * reported here and fails the request when that key is absent. A policed
+	 * classifier lives in ACL_TABLE rather than DSCP_TO_TC_MAP, so report the
+	 * table it is actually stored in, else GET and DELETE report it missing.
+	 */
+	if name := NewPathInfo(inParams.uri).Var("name"); name != "" {
+		if qosPolicedClassifierInDb(inParams.dbs[db.ConfigDB], name) {
+			return XfmrSubscOutParams{
+				dbDataMap: RedisDbSubscribeMap{db.ConfigDB: {qosAclTableTbl: {name: {}}}},
+			}, nil
+		}
+	}
 	return Subscribe_qos_map_xfmr(inParams, "DSCP_TO_TC_MAP")
 }
 
@@ -35,6 +48,14 @@ var YangToDb_qos_dscp_classifier_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPa
 	log.V(lvl.DEBUG).Info("inParams: ", inParams)
 
 	if inParams.oper == DELETE {
+		/*
+		 * A policed classifier lives in ACL_RULE rather than DSCP_TO_TC_MAP, so
+		 * the map delete below would leave its ACL objects behind.
+		 */
+		delPathInfo := NewPathInfo(inParams.uri)
+		if name := delPathInfo.Var("name"); name != "" && qosClassifierIsPolicing(inParams, name) {
+			return qosClassifierAclDelete(inParams, name, delPathInfo.Var("id"))
+		}
 		if res_map, err := qos_map_delete_xfmr(inParams, "QOS_UMF_CLASSIFIER"); err != nil {
 			return res_map, err
 		}
@@ -68,6 +89,18 @@ var YangToDb_qos_dscp_classifier_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPa
 	if inParams.d == nil {
 		log.V(lvl.ERROR).Info("unable to get configDB")
 		return res_map, tlerr.InternalError{Format: "Database not available"}
+	}
+
+	/*
+	 * A classifier whose terms match on more than a bare DSCP value cannot be
+	 * held in DSCP_TO_TC_MAP. Those are realized as an ingress ACL carrying a
+	 * policer instead; see xfmr_qos_policer.go.
+	 */
+	if qosClassifierIsPolicing(inParams, name) {
+		if err := qosClassifierToAcl(inParams, name, qosObj.Classifiers.Classifier[name], res_map); err != nil {
+			return res_map, err
+		}
+		return res_map, nil
 	}
 
 	/* Fill in the UMF table for bookkeeping classfier type */
@@ -342,6 +375,17 @@ var DbToYang_qos_dscp_classifier_xfmr SubTreeXfmrDbToYang = func(inParams XfmrPa
 			return err
 		}
 	}
+
+	/*
+	 * Policed classifiers are held in ACL_RULE rather than DSCP_TO_TC_MAP, so
+	 * they have to be gathered separately. Without this a GET reports them as
+	 * missing, which also makes translib refuse to delete them.
+	 */
+	acl_added, err := qosFillClassifiersFromAcl(inParams, qosObj.Classifiers, name)
+	if err != nil {
+		return err
+	}
+	map_added += acl_added
 
 	if name != "" && map_added == 0 {
 		log.V(lvl.ERROR).Infof("Resource not found: %v", name)
