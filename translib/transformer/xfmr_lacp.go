@@ -134,6 +134,16 @@ func prepareFallbackTimeoutVal(infoMap map[string]db.Value, ifKey string) *uint1
 	return &uFbtVal
 }
 
+/* lacpMemberCounterField returns the teamd LACP counter from STATE_DB. Legacy teamd
+ * serviceability (tlm_teamd) publishes runner.statistics.*; older paths used
+ * runner.counters.*. Prefer the new keys when present. */
+func lacpMemberCounterField(fields map[string]string, newKey, oldKey string) string {
+	if v, ok := fields[newKey]; ok && v != "" {
+		return v
+	}
+	return fields[oldKey]
+}
+
 func getLacpMemberInfo(inParams XfmrParams, ifKey string, ifMemKey string) (map[string]db.Value, error) {
 	memberInfoMap := make(map[string]db.Value)
 
@@ -143,9 +153,9 @@ func getLacpMemberInfo(inParams XfmrParams, ifKey string, ifMemKey string) (map[
 		"oper-key":        prtInst.Field["runner.actor_lacpdu_info.key"],
 		"partner-id":      prtInst.Field["runner.partner_lacpdu_info.system"],
 		"partner-key":     prtInst.Field["runner.partner_lacpdu_info.key"],
-		"lacp-in-pkts":    prtInst.Field["runner.counters.lacp-in-packets"],
-		"lacp-out-pkts":   prtInst.Field["runner.counters.lacp-out-packets"],
-		"lacp-rx-errors":  prtInst.Field["runner.counters.lacp-rx-errors"],
+		"lacp-in-pkts":    lacpMemberCounterField(prtInst.Field, "runner.statistics.lacpdu_rx_stats", "runner.counters.lacp-in-packets"),
+		"lacp-out-pkts":   lacpMemberCounterField(prtInst.Field, "runner.statistics.lacpdu_tx_stats", "runner.counters.lacp-out-packets"),
+		"lacp-rx-errors":  lacpMemberCounterField(prtInst.Field, "runner.statistics.lacpdu_illegal_pkts", "runner.counters.lacp-rx-errors"),
 		"activity":        "lacp-activity-type:PASSIVE",
 		"timeout":         "lacp-timeout-type:SHORT",
 		"aggregatable":    "false",
