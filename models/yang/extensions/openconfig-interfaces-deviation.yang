@@ -45,14 +45,6 @@ module openconfig-interfaces-deviation {
     deviate not-supported;
   }    
 
-  deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:state/oc-intf:last-change {
-    deviate not-supported;
-  }       
-
-  deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:state/oc-intf:ifindex {
-    deviate not-supported;
-  }   
-
   deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:state/oc-intf:logical {
     deviate not-supported;
   }   
@@ -66,6 +58,10 @@ module openconfig-interfaces-deviation {
   }   
   
   deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:state/oc-intf:counters/oc-intf:carrier-transitions {
+    deviate not-supported;
+  }
+
+  deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:state/oc-intf:counters/oc-intf:in-fcs-errors {
     deviate not-supported;
   }
 
@@ -120,15 +116,33 @@ module openconfig-interfaces-deviation {
     deviate not-supported;
   }
  
-  deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv4/oc-ip:neighbors {
-    deviate not-supported;
-  }
- 
   deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv4/oc-ip:unnumbered {
     deviate not-supported;
   }
- 
-  deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv4/oc-ip:config {
+
+  deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv4/oc-ip:config/oc-ip:enabled {
+    deviate replace {
+      default true;
+    }
+  }
+
+  deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv4/oc-ip:config/oc-ip:mtu {
+    deviate not-supported;
+  }
+
+  deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv4/oc-ip:config/oc-ip:dhcp-client {
+    deviate not-supported;
+  }
+
+  deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv4/oc-ip:state/oc-ip:mtu {
+    deviate not-supported;
+  }
+
+  deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv4/oc-ip:state/oc-ip:dhcp-client {
+    deviate not-supported;
+  }
+
+  deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv4/oc-ip:state/oc-ip:counters {
     deviate not-supported;
   }
  
@@ -144,10 +158,6 @@ module openconfig-interfaces-deviation {
   // can map interface VRRP data through OpenConfig routed-interface paths.
  
   deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv6/oc-ip:router-advertisement {
-    deviate not-supported;
-  }
- 
-  deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv6/oc-ip:neighbors {
     deviate not-supported;
   }
  
