@@ -975,6 +975,18 @@ var YangToDb_qos_get_one_intf_all_q_xfmr SubTreeXfmrYangToDb = func(inParams Xfm
 		return nil, nil
 	}
 
+	/*
+	 * A delete carries no payload to walk, so the egress scheduler-policy
+	 * unbind is driven off the target path instead of the request tree.
+	 */
+	if inParams.oper == DELETE &&
+		strings.HasPrefix(targetUriPath, "/openconfig-qos:qos/interfaces/interface/output/scheduler-policy") {
+		if queueTblMap := qosEgressSchedPolicyDelete(inParams, ifName); len(queueTblMap) > 0 {
+			resMap[qosQueueTbl] = queueTblMap
+		}
+		return resMap, nil
+	}
+
 	/* Check openconfig-qos:qos/interfaces/interface/output is present */
 	qosIntfsObj := getQosIntfRoot(inParams.ygRoot)
 	if qosIntfsObj == nil || qosIntfsObj.Interface == nil {
@@ -1009,6 +1021,11 @@ var YangToDb_qos_get_one_intf_all_q_xfmr SubTreeXfmrYangToDb = func(inParams Xfm
 		if err == nil {
 			resMap["BUFFER_QUEUE"] = bufferQueueTblMap
 		}
+	}
+
+	// Bind the interface to its egress scheduler policy
+	if err := qosApplyEgressSchedPolicy(inParams, ifName, intfObj, resMap); err != nil {
+		return resMap, err
 	}
 
 	log.V(lvl.DEBUG).Infof("YangToDb_qos_get_one_intf_all_q_xfmr: End  %v %v", inParams.d, resMap)

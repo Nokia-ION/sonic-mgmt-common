@@ -6,9 +6,12 @@ import (
 
 	"github.com/Azure/sonic-mgmt-common/translib/db"
 	lvl "github.com/Azure/sonic-mgmt-common/translib/log"
+	"github.com/Azure/sonic-mgmt-common/translib/ocbinds"
 	"github.com/Azure/sonic-mgmt-common/translib/tlerr"
 	log "github.com/golang/glog"
 )
+
+const qosQueueTbl = "QUEUE"
 
 func init() {
 	parseQueueMapJSONFile()
@@ -132,6 +135,236 @@ func doGetIntfSchedulerPolicy(d *db.DB, if_name string) string {
 	}
 
 	return lastPolicy
+}
+
+// qosSchedPolicySchedulers lists the SCHEDULER keys belonging to one policy.
+// The keys are <policy>@<sequence>, so a prefix match alone would also collect
+// a policy whose name merely starts with this one.
+func qosSchedPolicySchedulers(d *db.DB, spName string) []string {
+	if d == nil || spName == "" {
+		return nil
+	}
+	keys, err := d.GetKeysByPattern(&db.TableSpec{Name: "SCHEDULER"}, spName+"@*")
+	if err != nil {
+		log.V(lvl.DEBUG).Infof("qosSchedPolicySchedulers: no keys for %v: %v", spName, err)
+		return nil
+	}
+	var schedKeys []string
+	for _, key := range keys {
+		if len(key.Comp) < 1 {
+			continue
+		}
+		parts := strings.Split(key.Comp[0], "@")
+		if len(parts) != 2 || parts[0] != spName {
+			continue
+		}
+		schedKeys = append(schedKeys, key.Comp[0])
+	}
+	return schedKeys
+}
+
+// qosBindEgressSchedPolicy resolves every scheduler of spName to the queue it
+// drains on ifName and returns the QUEUE rows carrying the binding.
+func qosBindEgressSchedPolicy(inParams XfmrParams, ifName string, spName string) (map[string]db.Value, error) {
+	queueTblMap := make(map[string]db.Value)
+	schedKeys := qosSchedPolicySchedulers(inParams.d, spName)
+	if len(schedKeys) == 0 {
+		return nil, tlerr.NotFoundError{Format: "Scheduler policy " + spName + " not found"}
+	}
+
+	ts := &db.TableSpec{Name: "SCHEDULER"}
+	onQueue := isSchedulerOnQueue(ifName)
+	for _, schedKey := range schedKeys {
+		/*
+		 * The key came from the table a moment ago, so a failure here is not a
+		 * missing scheduler. Skipping it would schedule some queues of the
+		 * interface and silently leave the rest unscheduled.
+		 */
+		schedCfg, err := inParams.d.GetEntry(ts, db.Key{Comp: []string{schedKey}})
+		if err != nil {
+			log.V(tlerr.ErrorSeverity(err)).Infof("qosBindEgressSchedPolicy: unable to read SCHEDULER|%v: %v", schedKey, err)
+			return nil, err
+		}
+		/*
+		 * A policing scheduler meters a classifier rather than draining a
+		 * queue, so it names no queue and has no egress binding.
+		 */
+		queueName, ok := schedCfg.Field["queue"]
+		if !ok {
+			continue
+		}
+		qid, err := getNativeQueueName(ifName, queueName)
+		if err != nil {
+			return nil, err
+		}
+		key := ifName + "|" + qid
+		if _, ok := queueTblMap[key]; !ok {
+			queueTblMap[key] = db.Value{Field: make(map[string]string)}
+		}
+		queueTblMap[key].Field["scheduler"] = schedKey
+		if onQueue {
+			queueTblMap[key].Field[SONIC_SCHEDULER_NODE_KEY] = SCHEDULER_NODE_QUEUE
+		}
+	}
+	if len(queueTblMap) == 0 {
+		return nil, tlerr.InvalidArgsError{Format: "Scheduler policy " + spName + " drains no queue"}
+	}
+	return queueTblMap, nil
+}
+
+// qosStaleEgressQueues lists the QUEUE keys of ifName carrying a scheduler that
+// the binding of spName will not account for, which is what a previous policy
+// left behind. A key in keep is being written by this request, and a queue
+// already naming spName is staying where it is. Passing an empty spName treats
+// every bound queue as stale, which is what an unbind wants.
+func qosStaleEgressQueues(d *db.DB, ifName string, spName string, keep map[string]db.Value) []string {
+	if d == nil {
+		return nil
+	}
+	ts := &db.TableSpec{Name: qosQueueTbl}
+	keys, err := d.GetKeysByPattern(ts, ifName+"|*")
+	if err != nil {
+		log.V(lvl.DEBUG).Infof("qosStaleEgressQueues: no queues for %v: %v", ifName, err)
+		return nil
+	}
+	var stale []string
+	for _, key := range keys {
+		if len(key.Comp) < 2 {
+			continue
+		}
+		qCfg, err := d.GetEntry(ts, key)
+		if err != nil {
+			continue
+		}
+		sched, ok := qCfg.Field["scheduler"]
+		if !ok {
+			continue
+		}
+		if spName != "" && strings.SplitN(sched, "@", 2)[0] == spName {
+			continue
+		}
+		dbKey := key.Comp[0] + "|" + key.Comp[1]
+		if _, ok := keep[dbKey]; ok {
+			continue
+		}
+		stale = append(stale, dbKey)
+	}
+	return stale
+}
+
+// qosStageStaleEgressQueues stages the removal of the bindings a previous policy
+// owned on ifName, so a rebind does not leave the interface attached to both.
+func qosStageStaleEgressQueues(inParams XfmrParams, ifName string, spName string, keep map[string]db.Value) {
+	for _, dbKey := range qosStaleEgressQueues(inParams.d, ifName, spName, keep) {
+		qosStageDelete(inParams, qosQueueTbl, dbKey, qosEgressSchedUnbindVal(ifName))
+	}
+}
+
+// qosEgressSchedUnbindVal is the delete payload for one queue, naming every
+// field the bind owns. It mirrors qosBindEgressSchedPolicy so a platform that
+// schedules on the queue does not keep the node type after an unbind.
+func qosEgressSchedUnbindVal(ifName string) db.Value {
+	val := db.Value{Field: map[string]string{"scheduler": ""}}
+	if isSchedulerOnQueue(ifName) {
+		val.Field[SONIC_SCHEDULER_NODE_KEY] = ""
+	}
+	return val
+}
+
+// qosSchedPolicyInRequest reports whether a scheduler policy is being written by
+// the request in flight.
+func qosSchedPolicyInRequest(inParams XfmrParams, spName string) bool {
+	qosObj := getQosRoot(inParams.ygRoot)
+	if qosObj == nil || qosObj.SchedulerPolicies == nil {
+		return false
+	}
+	_, ok := qosObj.SchedulerPolicies.SchedulerPolicy[spName]
+	return ok
+}
+
+// qosRequestPolicyQueues returns the QUEUE keys of ifName that the
+// scheduler-policy transformer will write from the policy carried by this
+// request, resolving each scheduler input the way that transformer does. It lets
+// a rebind tell the rows about to be rewritten from those a previous policy
+// owned, so the ones being rewritten are not cleared and rewritten in turn.
+func qosRequestPolicyQueues(inParams XfmrParams, ifName string, spName string) map[string]db.Value {
+	keep := make(map[string]db.Value)
+	qosObj := getQosRoot(inParams.ygRoot)
+	if qosObj == nil || qosObj.SchedulerPolicies == nil {
+		return keep
+	}
+	spObj, ok := qosObj.SchedulerPolicies.SchedulerPolicy[spName]
+	if !ok || spObj.Schedulers == nil {
+		return keep
+	}
+	for _, sched := range spObj.Schedulers.Scheduler {
+		if sched == nil || sched.Inputs == nil {
+			continue
+		}
+		for _, input := range sched.Inputs.Input {
+			if input == nil || input.Config == nil || input.Config.Id == nil {
+				continue
+			}
+			qid, err := getNativeQueueName(ifName, *input.Config.Id)
+			if err != nil {
+				continue
+			}
+			keep[ifName+"|"+qid] = db.Value{}
+		}
+	}
+	return keep
+}
+
+// qosApplyEgressSchedPolicy binds an interface to an egress scheduler policy.
+// The scheduler-policy transformer only writes the QUEUE rows for interfaces
+// named in the same request, so binding a port to a policy that already exists
+// is handled here. Rows the previous policy owned are staged for removal so a
+// rebind does not leave the interface attached to both.
+func qosApplyEgressSchedPolicy(inParams XfmrParams, ifName string,
+	intfObj *ocbinds.OpenconfigQos_Qos_Interfaces_Interface,
+	resMap map[string]map[string]db.Value) error {
+
+	if intfObj.Output == nil || intfObj.Output.SchedulerPolicy == nil ||
+		intfObj.Output.SchedulerPolicy.Config == nil ||
+		intfObj.Output.SchedulerPolicy.Config.Name == nil {
+		return nil
+	}
+	spName := *intfObj.Output.SchedulerPolicy.Config.Name
+	if spName == "" {
+		return nil
+	}
+
+	/*
+	 * A policy carried by this same request is bound by the scheduler-policy
+	 * transformer, which already knows the queue of every scheduler it writes.
+	 * Refusing it here for not being in CONFIG_DB yet would reject a combined
+	 * create and bind. The rows a previous policy owned still have to go, and
+	 * they are recognisable without resolving the incoming policy at all: they
+	 * name a different one.
+	 */
+	if qosSchedPolicyInRequest(inParams, spName) {
+		qosStageStaleEgressQueues(inParams, ifName, spName,
+			qosRequestPolicyQueues(inParams, ifName, spName))
+		return nil
+	}
+
+	queueTblMap, err := qosBindEgressSchedPolicy(inParams, ifName, spName)
+	if err != nil {
+		return err
+	}
+	qosStageStaleEgressQueues(inParams, ifName, spName, queueTblMap)
+	qosMergeTable(resMap, qosQueueTbl, queueTblMap)
+	return nil
+}
+
+// qosEgressSchedPolicyDelete unbinds an interface from its egress scheduler
+// policy by clearing the scheduler field from every queue that carries one.
+func qosEgressSchedPolicyDelete(inParams XfmrParams, ifName string) map[string]db.Value {
+	queueTblMap := make(map[string]db.Value)
+	for _, dbKey := range qosStaleEgressQueues(inParams.d, ifName, "", nil) {
+		queueTblMap[dbKey] = qosEgressSchedUnbindVal(ifName)
+	}
+	return queueTblMap
 }
 
 func getCfgIntfSpeedMbps(inParams XfmrParams, intf string) (string, error) {
