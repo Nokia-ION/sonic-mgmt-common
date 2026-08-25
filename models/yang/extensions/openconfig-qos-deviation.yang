@@ -20,7 +20,15 @@ module openconfig-qos-deviation {
   description
     "This module describes a YANG model for openconfig-qos deviations.";
 
-  oc-ext:openconfig-version "0.2.0";
+  oc-ext:openconfig-version "0.3.0";
+
+  revision "2026-08-24" {
+    description
+      "Restore the per interface input scheduler policy. It is the binding point
+      for ingress policing, which is realized by attaching a policer to the ACL
+      backing the referenced classifier.";
+    reference "0.3.0";
+  }
 
   revision "2025-09-23" {
     description
@@ -34,10 +42,6 @@ module openconfig-qos-deviation {
       "Remove interfaces level input subtrees; only the per interface input classifier
       is used (qos/interfaces/interface/input/classifiers).";
     reference "0.1.0";
-  }
-
-  deviation /oc-qos:qos/oc-qos:interfaces/oc-qos:interface/oc-qos:input/oc-qos:scheduler-policy {
-    deviate not-supported;
   }
 
   deviation /oc-qos:qos/oc-qos:interfaces/oc-qos:interface/oc-qos:input/oc-qos:virtual-output-queues {
