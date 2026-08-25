@@ -27,6 +27,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"inet.af/netaddr"
 
@@ -50,6 +51,11 @@ func init() {
 	XlateFuncBind("DbToYang_intf_type_xfmr", DbToYang_intf_type_xfmr)
 	XlateFuncBind("DbToYang_intf_admin_status_xfmr", DbToYang_intf_admin_status_xfmr)
 	XlateFuncBind("DbToYang_intf_oper_status_xfmr", DbToYang_intf_oper_status_xfmr)
+	XlateFuncBind("DbToYang_intf_last_change_xfmr", DbToYang_intf_last_change_xfmr)
+	XlateFuncBind("DbToYang_intf_ifindex_xfmr", DbToYang_intf_ifindex_xfmr)
+	XlateFuncBind("DbToYang_intf_management_xfmr", DbToYang_intf_management_xfmr)
+	XlateFuncBind("DbToYang_intf_cpu_xfmr", DbToYang_intf_cpu_xfmr)
+	XlateFuncBind("DbToYang_intf_eth_mac_address_xfmr", DbToYang_intf_eth_mac_address_xfmr)
 	XlateFuncBind("YangToDb_intf_enabled_xfmr", YangToDb_intf_enabled_xfmr)
 	XlateFuncBind("DbToYang_intf_enabled_xfmr", DbToYang_intf_enabled_xfmr)
 	XlateFuncBind("DbToYang_intf_eth_aggr_id_xfmr", DbToYang_intf_eth_aggr_id_xfmr)
@@ -85,12 +91,25 @@ func init() {
 	XlateFuncBind("DbToYang_subif_index_xfmr", DbToYang_subif_index_xfmr)
 	XlateFuncBind("DbToYangPath_intf_ip_path_xfmr", DbToYangPath_intf_ip_path_xfmr)
 	XlateFuncBind("Subscribe_intf_ip_addr_xfmr", Subscribe_intf_ip_addr_xfmr)
+
+	XlateFuncBind("YangToDb_subintf_ipv4_neigh_key_xfmr", YangToDb_subintf_ipv4_neigh_key_xfmr)
+	XlateFuncBind("DbToYang_subintf_ipv4_neigh_key_xfmr", DbToYang_subintf_ipv4_neigh_key_xfmr)
+	XlateFuncBind("YangToDb_intf_ipv4_neigh_xfmr", YangToDb_intf_ipv4_neigh_xfmr)
+	XlateFuncBind("DbToYang_intf_ipv4_neigh_xfmr", DbToYang_intf_ipv4_neigh_xfmr)
+	XlateFuncBind("Subscribe_intf_ipv4_neigh_xfmr", Subscribe_intf_ipv4_neigh_xfmr)
+	XlateFuncBind("YangToDb_subintf_ipv6_neigh_key_xfmr", YangToDb_subintf_ipv6_neigh_key_xfmr)
+	XlateFuncBind("DbToYang_subintf_ipv6_neigh_key_xfmr", DbToYang_subintf_ipv6_neigh_key_xfmr)
+	XlateFuncBind("YangToDb_intf_ipv6_neigh_xfmr", YangToDb_intf_ipv6_neigh_xfmr)
+	XlateFuncBind("DbToYang_intf_ipv6_neigh_xfmr", DbToYang_intf_ipv6_neigh_xfmr)
+	XlateFuncBind("Subscribe_intf_ipv6_neigh_xfmr", Subscribe_intf_ipv6_neigh_xfmr)
 	XlateFuncBind("Subscribe_routed_vlan_ip_addr_xfmr", Subscribe_routed_vlan_ip_addr_xfmr)
 
 	XlateFuncBind("YangToDb_subintf_ipv6_tbl_key_xfmr", YangToDb_subintf_ipv6_tbl_key_xfmr)
 	XlateFuncBind("DbToYang_subintf_ipv6_tbl_key_xfmr", DbToYang_subintf_ipv6_tbl_key_xfmr)
 	XlateFuncBind("YangToDb_ipv6_enabled_xfmr", YangToDb_ipv6_enabled_xfmr)
 	XlateFuncBind("DbToYang_ipv6_enabled_xfmr", DbToYang_ipv6_enabled_xfmr)
+	XlateFuncBind("YangToDb_ipv4_enabled_xfmr", YangToDb_ipv4_enabled_xfmr)
+	XlateFuncBind("DbToYang_ipv4_enabled_xfmr", DbToYang_ipv4_enabled_xfmr)
 
 	XlateFuncBind("intf_post_xfmr", intf_post_xfmr)
 	XlateFuncBind("intf_pre_xfmr", intf_pre_xfmr)
@@ -111,10 +130,13 @@ func init() {
 }
 
 const (
-	PORT_ADMIN_STATUS = "admin_status"
-	PORT_OPER_STATUS  = "oper_status"
-	PORT_SPEED        = "speed"
-	PORT_AUTONEG      = "autoneg"
+	PORT_ADMIN_STATUS   = "admin_status"
+	PORT_OPER_STATUS    = "oper_status"
+	PORT_LAST_UP_TIME   = "last_up_time"
+	PORT_LAST_DOWN_TIME = "last_down_time"
+	PORT_FLAP_COUNT     = "flap_count"
+	PORT_SPEED          = "speed"
+	PORT_AUTONEG        = "autoneg"
 
 	PORTCHANNEL_INTERFACE_TN = "PORTCHANNEL_INTERFACE"
 	PORTCHANNEL_MEMBER_TN    = "PORTCHANNEL_MEMBER"
@@ -407,11 +429,13 @@ func performIfNameKeyXfmrOp(inParams *XfmrParams, requestUriPath *string, ifName
 						if log.V(3) {
 							log.Infof("allow replace operation for VRRP L3 path")
 						}
+					} else if isNeighborPath(*requestUriPath) {
+						if log.V(3) {
+							log.Infof("allow replace operation for static neighbor path")
+						}
 					} else if strings.Contains(*requestUriPath, "openconfig-storm-control-ext:storm-control") {
 						// Storm-control writes only touch PORT_STORM_CONTROL, never the PORT
 						// table, so they cannot drop the critical attributes this guard protects.
-						// A new entry always arrives as REPLACE because gNMI UPDATE on a
-						// non-existent instance falls back to REPLACE.
 						if log.V(3) {
 							log.Infof("allow replace operation for storm-control path")
 						}
@@ -439,6 +463,24 @@ func isVrrpL3Path(requestUriPath string) bool {
 			strings.Contains(requestUriPath, "/openconfig-vlan:routed-vlan/"))
 	if log.V(4) {
 		log.Infof("isVrrpL3Path: requestUri=%s match=%v", requestUriPath, match)
+	}
+	return match
+}
+
+func isNeighborPath(requestUriPath string) bool {
+	if requestUriPath == "" {
+		return false
+	}
+	if !strings.Contains(requestUriPath, "/subinterfaces/subinterface/") {
+		return false
+	}
+	ipv4Neigh := strings.Contains(requestUriPath, "/ipv4/neighbors") ||
+		strings.Contains(requestUriPath, "openconfig-if-ip:ipv4/neighbors")
+	ipv6Neigh := strings.Contains(requestUriPath, "/ipv6/neighbors") ||
+		strings.Contains(requestUriPath, "openconfig-if-ip:ipv6/neighbors")
+	match := ipv4Neigh || ipv6Neigh
+	if log.V(4) {
+		log.Infof("isNeighborPath: requestUri=%s match=%v", requestUriPath, match)
 	}
 	return match
 }
@@ -643,9 +685,11 @@ var intf_table_xfmr TableXfmrFunc = func(inParams XfmrParams) ([]string, error) 
 		strings.HasPrefix(targetUriPath, "/openconfig-interfaces:interfaces/interface/subinterfaces/subinterface/openconfig-if-ip:ipv6/addresses") ||
 		strings.HasPrefix(targetUriPath, "/openconfig-interfaces:interfaces/interface/subinterfaces/subinterface/ipv6/addresses") {
 		tblList = append(tblList, intTbl.cfgDb.intfTN)
-	} else if inParams.oper == GET && strings.HasPrefix(targetUriXpath, "/openconfig-interfaces:interfaces/interface/subinterfaces/subinterface/ipv4/neighbors") ||
-		strings.HasPrefix(targetUriXpath, "/openconfig-interfaces:interfaces/interface/subinterfaces/subinterface/ipv6/neighbors") {
-		tblList = append(tblList, "NONE")
+	} else if strings.HasPrefix(targetUriPath, "/openconfig-interfaces:interfaces/interface/subinterfaces/subinterface/ipv4/neighbors") ||
+		strings.HasPrefix(targetUriPath, "/openconfig-interfaces:interfaces/interface/subinterfaces/subinterface/openconfig-if-ip:ipv4/neighbors") ||
+		strings.HasPrefix(targetUriPath, "/openconfig-interfaces:interfaces/interface/subinterfaces/subinterface/ipv6/neighbors") ||
+		strings.HasPrefix(targetUriPath, "/openconfig-interfaces:interfaces/interface/subinterfaces/subinterface/openconfig-if-ip:ipv6/neighbors") {
+		tblList = append(tblList, NEIGH_TN)
 	} else if strings.HasPrefix(targetUriPath, "/openconfig-interfaces:interfaces/interface/openconfig-vlan:routed-vlan") ||
 		strings.HasPrefix(targetUriPath, "/openconfig-interfaces:interfaces/interface/routed-vlan") {
 		if IntfTypeVlan == intfType {
@@ -856,6 +900,238 @@ var DbToYang_intf_oper_status_xfmr FieldXfmrDbtoYang = func(inParams XfmrParams)
 		log.Info("Oper status field not found in DB")
 	}
 
+	return result, nil
+}
+
+func recentPortStateChangeNs(lastUpTimeStr, lastDownTimeStr string) (uint64, error) {
+	const layout = "Mon Jan 02 15:04:05 2006"
+	var lastUpTime, lastDownTime time.Time
+	var err error
+	hasUp := lastUpTimeStr != ""
+	hasDown := lastDownTimeStr != ""
+
+	if hasUp {
+		lastUpTime, err = time.ParseInLocation(layout, lastUpTimeStr, time.UTC)
+		if err != nil {
+			return 0, errors.New("Error parsing last_up_time")
+		}
+	}
+	if hasDown {
+		lastDownTime, err = time.ParseInLocation(layout, lastDownTimeStr, time.UTC)
+		if err != nil {
+			return 0, errors.New("Error parsing last_down_time")
+		}
+	}
+	if !hasUp && !hasDown {
+		return 0, errors.New("last-change field not found in DB")
+	}
+
+	recentTime := lastUpTime
+	if hasDown && (!hasUp || lastDownTime.After(lastUpTime)) {
+		recentTime = lastDownTime
+	}
+	return uint64(recentTime.UnixNano()), nil
+}
+
+var DbToYang_intf_last_change_xfmr FieldXfmrDbtoYang = func(inParams XfmrParams) (map[string]interface{}, error) {
+	result := make(map[string]interface{})
+
+	data := (*inParams.dbDataMap)[inParams.curDb]
+
+	intfType, _, ierr := getIntfTypeByName(inParams.key)
+	if intfType == IntfTypeUnset || ierr != nil {
+		return result, errors.New("Invalid interface type")
+	}
+	intTbl := IntfTypeTblMap[intfType]
+
+	tblName, _ := getPortTableNameByDBId(intTbl, inParams.curDb)
+	if _, ok := data[tblName]; !ok {
+		return result, errors.New("table not found : " + tblName)
+	}
+	pTbl := data[tblName]
+	if _, ok := pTbl[inParams.key]; !ok {
+		return result, errors.New("Interface not found : " + inParams.key)
+	}
+	prtInst := pTbl[inParams.key]
+
+	lastChangeNs, err := recentPortStateChangeNs(
+		prtInst.Field[PORT_LAST_UP_TIME],
+		prtInst.Field[PORT_LAST_DOWN_TIME],
+	)
+	if err != nil {
+		log.Info("DbToYang_intf_last_change_xfmr: ", err.Error())
+		return result, err
+	}
+	// ytypes.Unmarshal expects uint64/timeticks64 as decimal string after JSON round-trip.
+	result["last-change"] = strconv.FormatUint(lastChangeNs, 10)
+	return result, nil
+}
+
+var (
+	reSnmpEthernet    = regexp.MustCompile(`^Ethernet(\d+)$`)
+	reSnmpEthernetBP  = regexp.MustCompile(`^Ethernet-BP(\d+)$`)
+	reSnmpVlan        = regexp.MustCompile(`^Vlan(\d+)$`)
+	reSnmpPortChannel = regexp.MustCompile(`^PortChannel(\d+)$`)
+	reSnmpMgmt        = regexp.MustCompile(`^eth(\d+)$`)
+	reSnmpEthernetIB  = regexp.MustCompile(`^Ethernet-IB(\d+)$`)
+	reSnmpEthernetRec = regexp.MustCompile(`^Ethernet-Rec(\d+)$`)
+)
+
+// sonicSnmpOidKey returns the internal SNMP row key used by sonic-snmpagent
+// (same rules as sonic_py_common.port_util.get_index_from_str).
+func sonicSnmpOidKey(ifName string) (uint32, error) {
+	type snmpIdxRule struct {
+		re   *regexp.Regexp
+		base uint32
+	}
+	rules := []snmpIdxRule{
+		{reSnmpEthernet, 1},
+		{reSnmpEthernetBP, 9000},
+		{reSnmpVlan, 2000},
+		{reSnmpPortChannel, 1000},
+		{reSnmpMgmt, 10000},
+		{reSnmpEthernetIB, 11000},
+		{reSnmpEthernetRec, 12000},
+	}
+	for _, rule := range rules {
+		m := rule.re.FindStringSubmatch(ifName)
+		if m == nil {
+			continue
+		}
+		n, err := strconv.ParseUint(m[1], 10, 32)
+		if err != nil {
+			return 0, err
+		}
+		return uint32(n) + rule.base, nil
+	}
+	return 0, fmt.Errorf("unsupported interface name for SNMP ifIndex: %s", ifName)
+}
+
+// sonicSnmpIfIndex returns IF-MIB ifIndex as reported by sonic-snmpagent.
+func sonicSnmpIfIndex(ifName string) (uint32, error) {
+	oidKey, err := sonicSnmpOidKey(ifName)
+	if err != nil {
+		return 0, err
+	}
+	return oidKey - 1, nil
+}
+
+const (
+	deviceMetadataTN  = "DEVICE_METADATA"
+	deviceMetadataKey = "localhost"
+	deviceMetadataMac = "mac"
+	mgmtPortStateTbl  = "MGMT_PORT_TABLE"
+)
+
+// getSystemMacFromDb returns the chassis/system base MAC from CONFIG_DB
+// (DEVICE_METADATA|localhost|mac). The same value is returned for every
+// Ethernet interface state/mac-address GET.
+func getSystemMacFromDb(d *db.DB) (string, error) {
+	if d == nil {
+		return "", errors.New("CONFIG_DB handle not available")
+	}
+	entry, err := d.GetEntry(&db.TableSpec{Name: deviceMetadataTN}, db.Key{Comp: []string{deviceMetadataKey}})
+	if err != nil {
+		return "", err
+	}
+	macStr := strings.TrimSpace(entry.Get(deviceMetadataMac))
+	if macStr == "" {
+		return "", errors.New("system mac not found in DEVICE_METADATA")
+	}
+	hw, err := net.ParseMAC(macStr)
+	if err != nil {
+		return "", fmt.Errorf("invalid system mac in DEVICE_METADATA: %w", err)
+	}
+	return hw.String(), nil
+}
+
+func validateIntfInDb(inParams XfmrParams) error {
+	data := (*inParams.dbDataMap)[inParams.curDb]
+
+	intfType, _, ierr := getIntfTypeByName(inParams.key)
+	if intfType == IntfTypeUnset || ierr != nil {
+		return errors.New("Invalid interface type")
+	}
+	intTbl := IntfTypeTblMap[intfType]
+
+	tblName, _ := getPortTableNameByDBId(intTbl, inParams.curDb)
+	if _, ok := data[tblName]; !ok {
+		return errors.New("table not found : " + tblName)
+	}
+	pTbl := data[tblName]
+	if _, ok := pTbl[inParams.key]; !ok {
+		return errors.New("Interface not found : " + inParams.key)
+	}
+	return nil
+}
+
+var DbToYang_intf_ifindex_xfmr FieldXfmrDbtoYang = func(inParams XfmrParams) (map[string]interface{}, error) {
+	result := make(map[string]interface{})
+
+	if err := validateIntfInDb(inParams); err != nil {
+		log.Info("DbToYang_intf_ifindex_xfmr: ", err.Error())
+		return result, err
+	}
+
+	ifIdx, err := sonicSnmpIfIndex(inParams.key)
+	if err != nil {
+		log.Info("DbToYang_intf_ifindex_xfmr: ", err.Error())
+		return result, err
+	}
+	result["ifindex"] = ifIdx
+	return result, nil
+}
+
+// DbToYang_intf_management_xfmr reports whether an interface is a dedicated
+// out-of-band management port based on STATE_DB MGMT_PORT_TABLE membership.
+var DbToYang_intf_management_xfmr FieldXfmrDbtoYang = func(inParams XfmrParams) (map[string]interface{}, error) {
+	result := make(map[string]interface{})
+	result["management"] = false
+
+	stateDb := inParams.dbs[db.StateDB]
+	if stateDb == nil {
+		log.Info("DbToYang_intf_management_xfmr: STATE_DB not available")
+		return result, nil
+	}
+
+	_, err := stateDb.GetEntry(&db.TableSpec{Name: mgmtPortStateTbl}, db.Key{Comp: []string{inParams.key}})
+	if err == nil {
+		result["management"] = true
+		return result, nil
+	}
+
+	var notExist tlerr.TranslibRedisClientEntryNotExist
+	if errors.As(err, &notExist) {
+		return result, nil
+	}
+
+	log.Info("DbToYang_intf_management_xfmr: ", err.Error())
+	return result, err
+}
+
+// DbToYang_intf_cpu_xfmr reports whether an interface is the system CPU /
+// control-plane interface. SONiC does not model a dedicated CPU interface
+// in OpenConfig, so this is always false.
+var DbToYang_intf_cpu_xfmr FieldXfmrDbtoYang = func(inParams XfmrParams) (map[string]interface{}, error) {
+	result := make(map[string]interface{})
+	result["cpu"] = false
+	return result, nil
+}
+
+var DbToYang_intf_eth_mac_address_xfmr FieldXfmrDbtoYang = func(inParams XfmrParams) (map[string]interface{}, error) {
+	result := make(map[string]interface{})
+
+	if err := validateIntfInDb(inParams); err != nil {
+		log.Info("DbToYang_intf_eth_mac_address_xfmr: ", err.Error())
+		return result, err
+	}
+
+	macAddr, err := getSystemMacFromDb(inParams.dbs[db.ConfigDB])
+	if err != nil {
+		log.Info("DbToYang_intf_eth_mac_address_xfmr: ", err.Error())
+		return result, err
+	}
+	result["mac-address"] = macAddr
 	return result, nil
 }
 
@@ -1549,14 +1825,86 @@ func getCounters(entry *db.Value, attr string, counter_val **uint64) error {
 var portCntList []string = []string{"in-octets", "in-unicast-pkts", "in-broadcast-pkts", "in-multicast-pkts",
 	"in-errors", "in-discards", "in-pkts", "in-fcs-errors", "out-octets", "out-unicast-pkts",
 	"out-broadcast-pkts", "out-multicast-pkts", "out-errors", "out-discards",
-	"out-pkts"}
+	"out-pkts", "carrier-transitions", "interface-transitions", "link-transitions"}
 var etherCntList []string = []string{"in-oversize-frames", "in-undersize-frames", "in-jabber-frames", "in-fragment-frames", "in-distribution/in-frames-128-255-octets"}
 var etherCntInList []string = []string{"in-frames-64-octets", "in-frames-65-127-octets", "in-frames-128-255-octets",
 	"in-frames-256-511-octets", "in-frames-512-1023-octets", "in-frames-1024-1518-octets"}
 var subV4CntList = []string{"in-pkts", "out-pkts"}
 var subV6CntList = []string{"in-discarded-pkts", "out-discarded-pkts", "in-pkts", "out-pkts"}
 
-func getSpecificCounterAttr(targetUriPath string, entry *db.Value, counter interface{}) (bool, error) {
+func applPortTableNameByIntfType(intfType E_InterfaceType) (string, error) {
+	switch intfType {
+	case IntfTypeEthernet:
+		return "PORT_TABLE", nil
+	case IntfTypePortChannel:
+		return "LAG_TABLE", nil
+	default:
+		return "", errors.New("Invalid interface type for carrier-transitions")
+	}
+}
+
+func getPortFlapCount(inParams XfmrParams, ifName string) (uint64, bool, error) {
+	intfType, _, ierr := getIntfTypeByName(ifName)
+	if intfType == IntfTypeUnset || ierr != nil {
+		return 0, false, errors.New("Invalid interface type")
+	}
+	tblName, err := applPortTableNameByIntfType(intfType)
+	if err != nil {
+		return 0, false, err
+	}
+	entry, err := inParams.dbs[db.ApplDB].GetEntry(&db.TableSpec{Name: tblName}, db.Key{Comp: []string{ifName}})
+	if err != nil {
+		return 0, false, err
+	}
+	flapCount, ok := entry.Field[PORT_FLAP_COUNT]
+	if !ok {
+		log.Info("flap_count field not found in DB for ", ifName)
+		return 0, false, nil
+	}
+	val, err := strconv.ParseUint(flapCount, 10, 64)
+	if err != nil {
+		return 0, false, err
+	}
+	return val, true, nil
+}
+
+func populateCarrierTransitions(inParams XfmrParams, counter_val *ocbinds.OpenconfigInterfaces_Interfaces_Interface_State_Counters) error {
+	pathInfo := NewPathInfo(inParams.uri)
+	ifName := pathInfo.Var("name")
+
+	val, ok, err := getPortFlapCount(inParams, ifName)
+	if err != nil || !ok {
+		return err
+	}
+	counter_val.CarrierTransitions = &val
+	return nil
+}
+
+func populateInterfaceTransitions(inParams XfmrParams, counter_val *ocbinds.OpenconfigInterfaces_Interfaces_Interface_State_Counters) error {
+	pathInfo := NewPathInfo(inParams.uri)
+	ifName := pathInfo.Var("name")
+
+	val, ok, err := getPortFlapCount(inParams, ifName)
+	if err != nil || !ok {
+		return err
+	}
+	counter_val.InterfaceTransitions = &val
+	return nil
+}
+
+func populateLinkTransitions(inParams XfmrParams, counter_val *ocbinds.OpenconfigInterfaces_Interfaces_Interface_State_Counters) error {
+	pathInfo := NewPathInfo(inParams.uri)
+	ifName := pathInfo.Var("name")
+
+	val, ok, err := getPortFlapCount(inParams, ifName)
+	if err != nil || !ok {
+		return err
+	}
+	counter_val.LinkTransitions = &val
+	return nil
+}
+
+func getSpecificCounterAttr(inParams XfmrParams, targetUriPath string, entry *db.Value, counter interface{}) (bool, error) {
 
 	var e error
 	var ok bool
@@ -1595,6 +1943,15 @@ func getSpecificCounterAttr(targetUriPath string, entry *db.Value, counter inter
 	}
 
 	switch targetUriPath {
+	case "/openconfig-interfaces:interfaces/interface/state/counters/carrier-transitions":
+		return true, populateCarrierTransitions(inParams, counter_val)
+
+	case "/openconfig-interfaces:interfaces/interface/state/counters/interface-transitions":
+		return true, populateInterfaceTransitions(inParams, counter_val)
+
+	case "/openconfig-interfaces:interfaces/interface/state/counters/link-transitions":
+		return true, populateLinkTransitions(inParams, counter_val)
+
 	case "/openconfig-interfaces:interfaces/interface/state/counters/in-octets":
 		e = getCounters(entry, "SAI_PORT_STAT_IF_IN_OCTETS", &counter_val.InOctets)
 		return true, e
@@ -1614,6 +1971,7 @@ func getSpecificCounterAttr(targetUriPath string, entry *db.Value, counter inter
 	case "/openconfig-interfaces:interfaces/interface/state/counters/in-errors":
 		e = getCounters(entry, "SAI_PORT_STAT_IF_IN_ERRORS", &counter_val.InErrors)
 		return true, e
+
 
 	case "/openconfig-interfaces:interfaces/interface/state/counters/in-discards":
 		e = getCounters(entry, "SAI_PORT_STAT_IF_IN_DISCARDS", &counter_val.InDiscards)
@@ -1944,7 +2302,7 @@ var populatePortCounters PopulateIntfCounters = func(inParams XfmrParams, ifName
 	case "/openconfig-interfaces:interfaces/interface/state/counters":
 		for _, attr := range portCntList {
 			uri := targetUriPath + "/" + attr
-			if ok, err := getSpecificCounterAttr(uri, &CounterData, counter); !ok || err != nil {
+			if ok, err := getSpecificCounterAttr(inParams, uri, &CounterData, counter); !ok || err != nil {
 				log.Info("Get Counter URI failed :", uri)
 				//err = errors.New("Get Counter URI failed")
 			}
@@ -1953,7 +2311,7 @@ var populatePortCounters PopulateIntfCounters = func(inParams XfmrParams, ifName
 		"/openconfig-interfaces:interfaces/interface/openconfig-if-ethernet:ethernet/state/counters":
 		for _, attr := range etherCntList {
 			uri := targetUriPath + "/" + attr
-			if ok, err := getSpecificCounterAttr(uri, &CounterData, counter); !ok || err != nil {
+			if ok, err := getSpecificCounterAttr(inParams, uri, &CounterData, counter); !ok || err != nil {
 				log.Info("Get Ethernet Counter URI failed :", uri)
 				//err = errors.New("Get Ethernet Counter URI failed")
 			}
@@ -1964,7 +2322,7 @@ var populatePortCounters PopulateIntfCounters = func(inParams XfmrParams, ifName
 		"/openconfig-interfaces:interfaces/interface/openconfig-if-ethernet:ethernet/state/counters/openconfig-if-ethernet-ext:in-distribution":
 		for _, attr := range etherCntInList {
 			uri := targetUriPath + "/" + attr
-			if ok, err := getSpecificCounterAttr(uri, &CounterData, counter); !ok || err != nil {
+			if ok, err := getSpecificCounterAttr(inParams, uri, &CounterData, counter); !ok || err != nil {
 				log.Info("Get Ethernet Counter URI failed :", uri)
 			}
 		}
@@ -1985,7 +2343,7 @@ var populatePortCounters PopulateIntfCounters = func(inParams XfmrParams, ifName
 			}
 		}
 	default:
-		_, err = getSpecificCounterAttr(targetUriPath, &CounterData, counter)
+		_, err = getSpecificCounterAttr(inParams, targetUriPath, &CounterData, counter)
 	}
 
 	return err
@@ -4227,6 +4585,38 @@ var DbToYang_ipv6_enabled_xfmr FieldXfmrDbtoYang = func(inParams XfmrParams) (ma
 	if ok && ipv6_status == "enable" {
 		res_map["enabled"] = true
 	}
+	return res_map, nil
+}
+
+// YangToDb_ipv4_enabled_xfmr handles IPv4 config "enabled". IPv4 cannot be disabled on SONiC.
+var YangToDb_ipv4_enabled_xfmr FieldXfmrYangToDb = func(inParams XfmrParams) (map[string]string, error) {
+	res_map := make(map[string]string)
+
+	if inParams.oper == DELETE {
+		return res_map, errors.New("IPv4 cannot be disabled on subinterface")
+	}
+
+	if inParams.param == nil {
+		return nil, nil
+	}
+
+	enabled, ok := inParams.param.(*bool)
+	if !ok {
+		return res_map, errors.New("YangToDb_ipv4_enabled_xfmr: invalid parameter type")
+	}
+
+	if !*enabled {
+		return res_map, errors.New("IPv4 cannot be disabled on subinterface")
+	}
+
+	// enabled=true is the only supported value; no CONFIG_DB field to update.
+	return nil, nil
+}
+
+// DbToYang_ipv4_enabled_xfmr always reports IPv4 as enabled on subinterfaces.
+var DbToYang_ipv4_enabled_xfmr FieldXfmrDbtoYang = func(inParams XfmrParams) (map[string]interface{}, error) {
+	res_map := make(map[string]interface{})
+	res_map["enabled"] = true
 	return res_map, nil
 }
 

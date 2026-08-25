@@ -101,6 +101,37 @@ module openconfig-interfaces-annot {
         }
     }
 
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:state/oc-intf:last-change {
+        deviate add {
+            sonic-ext:field-transformer "intf_last_change_xfmr";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:state/oc-intf:ifindex {
+        deviate add {
+            sonic-ext:field-transformer "intf_ifindex_xfmr";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:state/oc-intf:management {
+        deviate add {
+            sonic-ext:field-transformer "intf_management_xfmr";
+            sonic-ext:db-name "STATE_DB";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:state/oc-intf:cpu {
+        deviate add {
+            sonic-ext:field-transformer "intf_cpu_xfmr";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-eth:ethernet/oc-eth:state/oc-eth:mac-address {
+        deviate add {
+            sonic-ext:field-transformer "intf_eth_mac_address_xfmr";
+        }
+    }
+
     deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:config/oc-intf:enabled {
         deviate add {
             sonic-ext:field-transformer "intf_enabled_xfmr";
@@ -251,6 +282,35 @@ module openconfig-interfaces-annot {
             sonic-ext:key-transformer "subintf_ip_addr_key_xfmr";
         }
     }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv4/oc-ip:neighbors {
+        deviate add {
+            sonic-ext:table-name "NONE";
+            sonic-ext:subtree-transformer "intf_ipv4_neigh_xfmr";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv4/oc-ip:neighbors/oc-ip:neighbor {
+        deviate add {
+            sonic-ext:key-transformer "subintf_ipv4_neigh_key_xfmr";
+            sonic-ext:subtree-transformer "intf_ipv4_neigh_xfmr";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv6/oc-ip:neighbors {
+        deviate add {
+            sonic-ext:table-name "NONE";
+            sonic-ext:subtree-transformer "intf_ipv6_neigh_xfmr";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv6/oc-ip:neighbors/oc-ip:neighbor {
+        deviate add {
+            sonic-ext:key-transformer "subintf_ipv6_neigh_key_xfmr";
+            sonic-ext:subtree-transformer "intf_ipv6_neigh_xfmr";
+        }
+    }
+
     deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv4 {
         deviate add {
             sonic-ext:table-transformer "intf_table_xfmr";
@@ -261,6 +321,18 @@ module openconfig-interfaces-annot {
         deviate add {
             sonic-ext:key-transformer "subintf_ipv6_tbl_key_xfmr";
             sonic-ext:table-transformer "intf_table_xfmr";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv4/oc-ip:config/oc-ip:enabled {
+        deviate add {
+            sonic-ext:field-transformer "ipv4_enabled_xfmr";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv4/oc-ip:state/oc-ip:enabled {
+        deviate add {
+            sonic-ext:field-transformer "ipv4_enabled_xfmr";
         }
     }
     
