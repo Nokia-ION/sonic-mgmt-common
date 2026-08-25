@@ -1972,7 +1972,6 @@ func getSpecificCounterAttr(inParams XfmrParams, targetUriPath string, entry *db
 		e = getCounters(entry, "SAI_PORT_STAT_IF_IN_ERRORS", &counter_val.InErrors)
 		return true, e
 
-
 	case "/openconfig-interfaces:interfaces/interface/state/counters/in-discards":
 		e = getCounters(entry, "SAI_PORT_STAT_IF_IN_DISCARDS", &counter_val.InDiscards)
 		return true, e
