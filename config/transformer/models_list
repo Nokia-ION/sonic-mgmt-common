@@ -54,6 +54,7 @@ openconfig-routing-policy-annot.yang
 openconfig-bgp-policy.yang
 sonic-policer.yang
 sonic-acl.yang
+openconfig-vlan-annot.yang
 gnsi-authz.yang
 gnsi-pathz.yang
 gnsi-certz.yang
