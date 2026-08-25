@@ -162,31 +162,33 @@ var YangToDb_qos_fwdgrp_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (ma
 	tc_uc_mc_queue_map[TcToUcMcQueueKey] = db.Value{Field: make(map[string]string)}
 	tc_uc_mc_queue_dbval := tc_uc_mc_queue_map[TcToUcMcQueueKey]
 
+	if inParams.d == nil {
+		log.V(lvl.ERROR).Info("unable to get configDB")
+		return res_map, tlerr.New("Database not available")
+	}
+
 	queueMapMutex.RLock()
 	defer queueMapMutex.RUnlock()
 	for _, name := range names {
 		fwdGrp, ok := qosObj.ForwardingGroups.ForwardingGroup[name]
-		if !ok {
-			// Forwarding group instance is not present, nothing further to process
-			return res_map, nil
+		if !ok || fwdGrp.Config == nil {
+			// Nothing to write for this group. Another group in the same
+			// request may still carry configuration, so keep going rather than
+			// discarding what has been built so far.
+			continue
 		}
-
 		cfg := fwdGrp.Config
-		if cfg == nil {
-			// Forwarding group configuration is not present, nothing further to process
-			return res_map, nil
-		}
 
-		if inParams.d == nil {
-			log.V(lvl.ERROR).Info("unable to get configDB")
-			return res_map, tlerr.New("Database not available")
+		priority, err := qosFwdGrpPriority(inParams, name, cfg)
+		if err != nil {
+			return res_map, err
 		}
 
 		fgrp_entry[name] = db.Value{Field: make(map[string]string)}
-		fgrp_entry[name].Field["priority"] = strconv.Itoa(int(*cfg.FabricPriority))
+		fgrp_entry[name].Field["priority"] = priority
 		if cfg.OutputQueue != nil && *cfg.OutputQueue != "" {
 			fgrp_entry[name].Field["queue"] = *cfg.OutputQueue
-			err := prepareTcQueueMapDbVal(TcToQueueKey, *cfg.OutputQueue, int(*cfg.FabricPriority), tc_queue_dbval)
+			err := prepareTcQueueMapDbVal(TcToQueueKey, *cfg.OutputQueue, priority, tc_queue_dbval)
 			if err != nil {
 				return nil, err
 			}
@@ -194,7 +196,7 @@ var YangToDb_qos_fwdgrp_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (ma
 
 		if cfg.UnicastOutputQueue != nil && *cfg.UnicastOutputQueue != "" {
 			fgrp_entry[name].Field["ucast_queue"] = *cfg.UnicastOutputQueue
-			err := prepareTcToUcMcQueueMapDbVal("UNICAST", *cfg.UnicastOutputQueue, int(*cfg.FabricPriority), tc_uc_mc_queue_dbval)
+			err := prepareTcToUcMcQueueMapDbVal("UNICAST", *cfg.UnicastOutputQueue, priority, tc_uc_mc_queue_dbval)
 			if err != nil {
 				return nil, err
 			}
@@ -202,11 +204,15 @@ var YangToDb_qos_fwdgrp_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (ma
 
 		if cfg.MulticastOutputQueue != nil && *cfg.MulticastOutputQueue != "" {
 			fgrp_entry[name].Field["mcast_queue"] = *cfg.MulticastOutputQueue
-			err := prepareTcToUcMcQueueMapDbVal("MULTICAST", *cfg.MulticastOutputQueue, int(*cfg.FabricPriority), tc_uc_mc_queue_dbval)
+			err := prepareTcToUcMcQueueMapDbVal("MULTICAST", *cfg.MulticastOutputQueue, priority, tc_uc_mc_queue_dbval)
 			if err != nil {
 				return nil, err
 			}
 		}
+	}
+
+	if len(fgrp_entry) == 0 {
+		return res_map, nil
 	}
 
 	// Apply the appropriate
@@ -275,7 +281,25 @@ func assignMapsToInterfaces(qosObj *ocbinds.OpenconfigQos_Qos, tableKey string, 
 	return qosTblMap
 }
 
-func prepareTcQueueMapDbVal(table_key, qname string, priority int, dbval db.Value) error {
+// qosFwdGrpPriority resolves the traffic class of a forwarding group.
+// fabric-priority is the class number and the key of every queue map entry
+// written for the group, so it is needed even by a request that only changes a
+// queue. It is an optional leaf, so a client may leave it out when updating a
+// group that already has one, and then the recorded class stands.
+func qosFwdGrpPriority(inParams XfmrParams, name string,
+	cfg *ocbinds.OpenconfigQos_Qos_ForwardingGroups_ForwardingGroup_Config) (string, error) {
+
+	if cfg.FabricPriority != nil {
+		return strconv.Itoa(int(*cfg.FabricPriority)), nil
+	}
+	if priority := get_fwd_group_priority(inParams, name); priority != "" {
+		return priority, nil
+	}
+	return "", tlerr.InvalidArgsError{
+		Format: "fabric-priority is required for forwarding group " + name}
+}
+
+func prepareTcQueueMapDbVal(table_key, qname string, priority string, dbval db.Value) error {
 	// Since ACLs are used for CPU queue assignment,
 	// we only need to consider FP ports here
 	dbQueue, ok := ocQueueHwQueueMap[FRONT_PANEL][qname]
@@ -284,11 +308,11 @@ func prepareTcQueueMapDbVal(table_key, qname string, priority int, dbval db.Valu
 		return tlerr.New("Unknown queue " + qname)
 	}
 
-	dbval.Field[strconv.Itoa(priority)] = dbQueue
+	dbval.Field[priority] = dbQueue
 	return nil
 }
 
-func prepareTcToUcMcQueueMapDbVal(prefix, qname string, priority int, dbval db.Value) error {
+func prepareTcToUcMcQueueMapDbVal(prefix, qname string, priority string, dbval db.Value) error {
 	ok := false
 	dbQueue := ""
 	for _, qMapType := range queueTypes {
@@ -301,7 +325,7 @@ func prepareTcToUcMcQueueMapDbVal(prefix, qname string, priority int, dbval db.V
 		log.V(lvl.ERROR).Info("Unknown queue ", qname)
 		return tlerr.New("Unknown queue " + qname)
 	}
-	prefixtc := strings.Join([]string{prefix, strconv.Itoa(priority)}, ":")
+	prefixtc := strings.Join([]string{prefix, priority}, ":")
 	dbval.Field[prefixtc] = dbQueue
 	return nil
 }
