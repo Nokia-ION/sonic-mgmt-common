@@ -1,0 +1,40 @@
+module sonic-serial-console {
+    yang-version 1.1;
+    namespace "http://github.com/Azure/sonic-serial-console";
+    prefix cli-sessions;
+    description "Serial console session policy YANG module for SONiC OS.
+                 Local CVL copy used to validate translib writes to the
+                 SERIAL_CONSOLE table driven by the OpenConfig
+                 /system/console path. The admin_mode type is inlined here to
+                 avoid a build-order dependency on sonic-types.";
+    revision 2023-06-07 {
+        description "First Revision";
+    }
+    container sonic-serial-console {
+        container SERIAL_CONSOLE {
+            description "Serial console session configuration.";
+            container POLICIES {
+                description "Serial console session timeout and security policies.";
+                leaf inactivity_timeout {
+                    description "Serial console inactivity timeout in minutes; 0 disables the timeout.";
+                    type int32 {
+                        range "0..35000";
+                    }
+                    default 15;
+                }
+
+                leaf sysrq_capabilities {
+                    type enumeration {
+                        enum enabled;
+                        enum disabled;
+                    }
+                    description "Enable or disable Linux SysRq key capabilities on the serial console.";
+                    default disabled;
+                }
+        }
+        /* end of container POLICIES */
+        }
+        /* end of container SERIAL_CONSOLE */
+    }
+    /* end of top level container */
+}
