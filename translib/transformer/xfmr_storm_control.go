@@ -164,6 +164,15 @@ var YangToDb_storm_control_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) 
 		return nil, tlerr.InvalidArgs("Interface name is required for storm control")
 	}
 	if err := stormCtrlValidateIntf(ifName); err != nil {
+		// Parent interface delete walks every ethernet subtree xfmr, including
+		// storm-control. LAG and VLAN have no PORT_STORM_CONTROL rows, so treat
+		// that as a no-op rather than failing the PortChannel/VLAN delete.
+		if inParams.oper == DELETE {
+			if _, ok := err.(tlerr.NotSupportedError); ok {
+				log.V(3).Infof("YangToDb_storm_control_xfmr: skip delete on non-physical interface %s", ifName)
+				return resMap, nil
+			}
+		}
 		return nil, err
 	}
 
@@ -258,6 +267,10 @@ var DbToYang_storm_control_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) 
 		return tlerr.InvalidArgs("Interface name is required for storm control")
 	}
 	if err := stormCtrlValidateIntf(ifName); err != nil {
+		if _, ok := err.(tlerr.NotSupportedError); ok {
+			log.V(3).Infof("DbToYang_storm_control_xfmr: skip get on non-physical interface %s", ifName)
+			return nil
+		}
 		return err
 	}
 
