@@ -3751,7 +3751,6 @@ func fillFirmwareInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 
 	compState := comp.State
 	compCfg := comp.Config
-	defaultVal := ""
 
 	if ((pType == AllPaths || pType == AllCompPaths) && statePresent) || pType == StatePaths {
 		// Filling in state values
@@ -3767,8 +3766,8 @@ func fillFirmwareInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 		if firmwareInfo.Description != "" {
 			compState.Description = &firmwareInfo.Description
 		}
-		// State Firmware Version
-		compState.FirmwareVersion = &defaultVal
+		// Firmware-version is optional ("if applicable"). Omit it when State DB
+		// has no value rather than advertising an empty string on the parent.
 		if firmwareInfo.FirmwareVersion != "" {
 			compState.FirmwareVersion = &firmwareInfo.FirmwareVersion
 		}
@@ -3835,10 +3834,13 @@ func fillFirmwareInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 		compState.Type, _ = compState.To_OpenconfigPlatform_Components_Component_State_Type_Union(
 			ocbinds.OpenconfigPlatformTypes_OPENCONFIG_HARDWARE_COMPONENT_CHASSIS)
 	case COMP_STATE_FIRM_VER:
-		if firmwareInfo.FirmwareVersion == "" {
-			return errors.New("firmware_version field not present in State DB")
+		// Direct leaf GET must not fail: translib treats an unfilled leaf as
+		// NotFound. Return "" when chassis has no firmware version.
+		empty := ""
+		compState.FirmwareVersion = &empty
+		if firmwareInfo.FirmwareVersion != "" {
+			compState.FirmwareVersion = &firmwareInfo.FirmwareVersion
 		}
-		compState.FirmwareVersion = &firmwareInfo.FirmwareVersion
 	case COMP_STATE_HW_VER:
 		if firmwareInfo.HardwareVersion == "" {
 			return errors.New("hardware_version field not present in State DB")
