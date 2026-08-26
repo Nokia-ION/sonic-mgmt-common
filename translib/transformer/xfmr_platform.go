@@ -23,9 +23,12 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"unicode/utf8"
 
 	"github.com/Azure/sonic-mgmt-common/translib/db"
@@ -962,6 +965,9 @@ const (
 	CompTypeControllerCard
 	CompTypeLineCard
 	CompTypeSystemEeprom
+	/* A mounted filesystem, named by its mount point (e.g. "/var/log").  Distinct
+	 * from CompTypeStorage, which reads SMART data from STORAGE_INFO. */
+	CompTypeFilesystem
 )
 
 func (ct componentType) String() string {
@@ -1010,6 +1016,8 @@ func (ct componentType) String() string {
 		return "CompTypeLineCard"
 	case CompTypeSystemEeprom:
 		return "CompTypeSystemEeprom"
+	case CompTypeFilesystem:
+		return "CompTypeFilesystem"
 	}
 	return fmt.Sprintf("%s", ct)
 }
@@ -1093,6 +1101,11 @@ func getCompTypeByName(compName string) (componentType, error) {
 		return CompTypePowerSupplyPH, nil
 	case validPSCompName(&compName, PSEQ_PREFIX):
 		return CompTypePowerSupplyPSEQ, nil
+	case strings.HasPrefix(compName, "/"):
+		/* Filesystem components are named by their mount point.  Checked last so
+		 * it cannot shadow any other name shape; whether the name resolves is
+		 * decided by statfs in fillFilesystemInfo. */
+		return CompTypeFilesystem, nil
 	default:
 		return CompTypeInvalid, fmt.Errorf("component name %s did not match with supported types.", compName)
 	}
@@ -1217,6 +1230,14 @@ var Subscribe_pfm_components_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSubsc
 		   go straight to the subtree transformer. */
 		result.isVirtualTbl = true
 		return result, err
+	}
+
+	if strings.HasPrefix(key, "/") {
+		/* Filesystem components come from statfs, so there is no DB row to
+		   validate and nothing to watch for changes. */
+		result.isVirtualTbl = true
+		result.onChange = OnchangeDisable
+		return result, nil
 	}
 
 	if inParams.subscProc == TRANSLATE_EXISTS {
@@ -1880,6 +1901,8 @@ func getSysComponents(pf_cpts *ocbinds.OpenconfigPlatform_Components, targetUriP
 			return fillDiskCarrierInfo(pf_comp, compName, SingularPath, targetUriPath, d)
 		case CompTypeSystemEeprom:
 			return fillSysEepromInfo(pf_comp, compName, SingularPath, targetUriPath, d)
+		case CompTypeFilesystem:
+			return fillFilesystemInfo(pf_comp, compName, subKey)
 		default:
 			return fmt.Errorf("Unhandled Component: %s", compName)
 		}
@@ -1977,6 +2000,9 @@ func compTypeToFuncCall(cType componentType, compName, subKey string, pfComp *oc
 		return fillDiskCarrierInfo(pfComp, compName, pType, targetUriPath, d)
 	case CompTypeSystemEeprom:
 		return fillSysEepromInfo(pfComp, compName, pType, targetUriPath, d)
+	case CompTypeFilesystem:
+		/* The only arm that takes no *db.DB; a filesystem touches no database. */
+		return fillFilesystemInfo(pfComp, compName, subKey)
 	}
 	return errors.New("Invalid component type")
 }
@@ -2601,6 +2627,84 @@ func fillStorageInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 		compState.Removable = String2Bool(&storageInfo.Removable, false)
 	case COMP_STATE_TEMP_CTR, COMP_STATE_TEMP:
 		compTemp.Instant = String2Float(storageInfo.Temperature, 0.0)
+	}
+	return nil
+}
+
+/* Inside the gnmi container a bare statfs("/var/log") reports the container
+ * overlay, not the host partition, so it goes through the read-only host root
+ * bind-mounted at /mnt/host (see rules/docker-gnmi.mk).  The os.Stat guard keeps
+ * host-side runs and images without that mount working. */
+func hostPath(p string) string {
+	/* Clean while the name is still rooted, so a ".." in it resolves against "/"
+	 * and cannot walk back out of the prefix. */
+	p = filepath.Clean(p)
+	if _, err := os.Stat("/mnt/host"); err == nil {
+		return filepath.Join("/mnt/host", p)
+	}
+	return p
+}
+
+/* One statfs call yields every property, so only field selection differs.
+ * Block counts are in Frsize units, and "used" is total minus free, which is
+ * what df reports. */
+var fsPropFields = map[string]func(*syscall.Statfs_t) uint64{
+	"total_blocks":     func(s *syscall.Statfs_t) uint64 { return s.Blocks },
+	"free_blocks":      func(s *syscall.Statfs_t) uint64 { return s.Bfree },
+	"available_blocks": func(s *syscall.Statfs_t) uint64 { return s.Bavail },
+	"total_bytes":      func(s *syscall.Statfs_t) uint64 { return s.Blocks * uint64(s.Frsize) },
+	"free_bytes":       func(s *syscall.Statfs_t) uint64 { return s.Bfree * uint64(s.Frsize) },
+	"available_bytes":  func(s *syscall.Statfs_t) uint64 { return s.Bavail * uint64(s.Frsize) },
+	"used_blocks":      func(s *syscall.Statfs_t) uint64 { return s.Blocks - s.Bfree },
+	"used_bytes":       func(s *syscall.Statfs_t) uint64 { return (s.Blocks - s.Bfree) * uint64(s.Frsize) },
+}
+
+/* Fills the state and properties of a mounted filesystem from statfs(2).  name
+ * is the mount point taken from the request, so no mount point is hardcoded
+ * here.  subKey is the property name, or empty to emit every property. */
+func fillFilesystemInfo(comp *ocbinds.OpenconfigPlatform_Components_Component, name, subKey string) error {
+	/* A name that does not resolve on this platform must yield no component at
+	 * all, rather than a typed one with no properties. */
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(hostPath(name), &st); err != nil {
+		log.V(lvl.DEBUG).Infof("fillFilesystemInfo: statfs on %s failed: %v", name, err)
+		return err
+	}
+
+	/* A named property that does not exist must be reported. */
+	if _, ok := fsPropFields[subKey]; subKey != "" && !ok {
+		return tlerr.NotFound("%s has no property %s", name, subKey)
+	}
+
+	ygot.BuildEmptyTree(comp)
+	compState := comp.State
+	ygot.BuildEmptyTree(compState)
+	compState.Name = &name
+	compState.Type, _ = compState.To_OpenconfigPlatform_Components_Component_State_Type_Union(
+		ocbinds.OpenconfigPlatformTypes_OPENCONFIG_HARDWARE_COMPONENT_STORAGE)
+
+	for propName, field := range fsPropFields {
+		if subKey != "" && propName != subKey {
+			continue
+		}
+		/* The framework pre-creates list entries named in the request URI, so
+		 * look before creating; NewProperty rejects a duplicate key. */
+		prop := comp.Properties.Property[propName]
+		if prop == nil {
+			var err error
+			if prop, err = comp.Properties.NewProperty(propName); err != nil {
+				log.V(lvl.DEBUG).Infof("fillFilesystemInfo: NewProperty(%s) failed: %v", propName, err)
+				continue
+			}
+		}
+		ygot.BuildEmptyTree(prop)
+		value, err := prop.State.To_OpenconfigPlatform_Components_Component_Properties_Property_State_Value_Union(field(&st))
+		if err != nil {
+			log.V(lvl.DEBUG).Infof("fillFilesystemInfo: property %s value conversion failed: %v", propName, err)
+			continue
+		}
+		prop.State.Name = &propName
+		prop.State.Value = value
 	}
 	return nil
 }
