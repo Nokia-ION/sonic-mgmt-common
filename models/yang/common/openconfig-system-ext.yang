@@ -1,0 +1,105 @@
+module openconfig-system-ext {
+
+  yang-version "1";
+
+  // namespace
+  namespace "http://openconfig.net/yang/system-ext";
+
+  prefix "oc-sys-ext";
+
+  // import some basic types
+  import openconfig-system { prefix oc-sys; }
+  import openconfig-inet-types { prefix oc-inet; }
+  import openconfig-extensions { prefix oc-ext; }
+  import gnsi-credentialz { prefix gnsi-credz; }
+
+  // meta
+  organization "OpenConfig working group";
+
+  contact
+    "OpenConfig working group
+    www.openconfig.net";
+
+  description
+    "This module adds vendor extensions to the base openconfig-system
+    model to support management-plane features that are not covered by
+    the upstream model:
+
+      * a DSCP marking value for the SSH management server, and
+      * an idle (inactivity) timeout for the serial console.";
+
+  oc-ext:openconfig-version "0.1.0";
+
+  revision "2026-08-26" {
+    description
+      "Initial revision: SSH server DSCP marking and serial console
+      idle timeout.";
+    reference "0.1.0";
+  }
+
+  oc-ext:regexp-posix;
+  oc-ext:catalog-organization "openconfig";
+  oc-ext:origin "openconfig";
+
+  // extension groupings
+
+  grouping system-ssh-server-dscp-config {
+    description
+      "DSCP marking configuration for SSH management traffic.";
+
+    leaf dscp {
+      type oc-inet:dscp;
+      description
+        "DSCP value (0..63) used to mark packets originated by the SSH
+        management server (control-plane traffic). Equivalent to the
+        EOS 'management ssh / idle-timeout <n> qos dscp <dscp>'
+        setting.";
+    }
+  }
+
+  grouping system-console-timeout-config {
+    description
+      "Idle-timeout configuration for the serial console.";
+
+    leaf timeout {
+      type uint16;
+      units seconds;
+      description
+        "Idle (inactivity) timeout in seconds for serial console
+        sessions. A value of 0 disables the timeout. Equivalent to the
+        EOS 'management console / idle-timeout <minutes>' setting.";
+    }
+  }
+
+  // augment statements
+
+  augment "/oc-sys:system/oc-sys:ssh-server/oc-sys:config" {
+    description
+      "Add DSCP marking to the SSH server configuration.";
+
+    uses system-ssh-server-dscp-config;
+  }
+
+  augment "/oc-sys:system/oc-sys:ssh-server/oc-sys:state" {
+    description
+      "Add DSCP marking to the SSH server operational state.";
+
+    uses system-ssh-server-dscp-config;
+  }
+
+  augment "/oc-sys:system/gnsi-credz:console/gnsi-credz:config" {
+    description
+      "Add an idle timeout to the serial console configuration. The
+      console container itself is defined by gnsi-credentialz; this only
+      adds the timeout leaf.";
+
+    uses system-console-timeout-config;
+  }
+
+  augment "/oc-sys:system/gnsi-credz:console/gnsi-credz:state" {
+    description
+      "Add an idle timeout to the serial console operational state.";
+
+    uses system-console-timeout-config;
+  }
+}
