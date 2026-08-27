@@ -345,6 +345,27 @@ func (app *AclApp) processCommon(d *db.DB, opcode int) error {
 							err = d.SetEntry(app.aclTs, db.Key{Comp: []string{aclKey}}, app.aclTableMap[aclKey])
 						}
 					case REPLACE:
+						// ACL_RULE:aclname is a leafref to ACL_TABLE:aclname and CVL
+						// validates every write as it is added to the transaction, so
+						// the table row has to be written before its rules. An empty
+						// table map carries no table level fields to write; skipping it
+						// avoids ModEntry falling back to deleting the ACL_TABLE row
+						// out from under the rules being created here.
+						if !isAclEntriesSubtree && len(app.aclTableMap[aclKey].Field) > 0 {
+							existingAcl, _ := d.GetEntry(app.aclTs, asKey(aclKey))
+							if existingAcl.IsPopulated() {
+								// Merge instead of overwrite: ports and stage belong
+								// to the interface binding, not to this payload.
+								err = d.ModEntry(app.aclTs, asKey(aclKey), app.aclTableMap[aclKey])
+							} else {
+								// CVL rejects an update against a key that does not
+								// exist yet, so a brand new ACL has to be created.
+								err = d.CreateEntry(app.aclTs, asKey(aclKey), app.aclTableMap[aclKey])
+							}
+							if err != nil {
+								return err
+							}
+						}
 						if *app.ygotTarget == aclSet || isAclEntriesSubtree {
 							err = d.DeleteKeys(app.ruleTs, db.Key{Comp: []string{aclKey + TABLE_SEPARATOR + "RULE_*"}})
 							if err != nil {
@@ -354,9 +375,6 @@ func (app *AclApp) processCommon(d *db.DB, opcode int) error {
 							if err != nil {
 								return err
 							}
-						}
-						if !isAclEntriesSubtree {
-							err = d.ModEntry(app.aclTs, db.Key{Comp: []string{aclKey}}, app.aclTableMap[aclKey])
 						}
 					case UPDATE:
 						if !isAclEntriesSubtree {
