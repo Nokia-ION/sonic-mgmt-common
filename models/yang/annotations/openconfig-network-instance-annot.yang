@@ -431,6 +431,19 @@ module openconfig-network-instance-annot {
       }
     }
 
+    // The AFT container reports the forwarding state fpmsyncd publishes to
+    // APPL_DB. Each list below it is mapped by its own transformer; this one
+    // answers a request on the container itself by fanning out to them, since
+    // the infrastructure stops descending once a subtree transformer claims a
+    // node.
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:afts {
+      deviate add {
+          sonic-ext:virtual-table "true";
+          sonic-ext:db-name "APPL_DB";
+          sonic-ext:subtree-transformer "ni_afts_xfmr";
+      }
+    }
+
     // The AFT next-hop list is the leafref target for the members of every
     // next-hop group, so it is keyed on the next-hop id FRR assigned, which
     // fpmsyncd publishes to APPL_DB. A next-hop reaches APPL_DB either inline
@@ -500,6 +513,138 @@ module openconfig-network-instance-annot {
       deviate add {
           sonic-ext:db-name "APPL_DB";
           sonic-ext:subtree-transformer "ni_afts_next_hops_xfmr";
+      }
+    }
+
+    // The AFT next-hop-group list maps NEXTHOP_GROUP_TABLE, whose Redis key is
+    // the group id FRR assigned. Its members are named by the next-hop ids the
+    // row lists, which are the keys of the next-hop list above.
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:afts/oc-netinst:next-hop-groups {
+      deviate add {
+          sonic-ext:virtual-table "true";
+          sonic-ext:db-name "APPL_DB";
+          sonic-ext:subtree-transformer "ni_afts_next_hop_groups_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:afts/oc-netinst:next-hop-groups/oc-netinst:next-hop-group {
+      deviate add {
+          sonic-ext:virtual-table "true";
+          sonic-ext:db-name "APPL_DB";
+          sonic-ext:subtree-transformer "ni_afts_next_hop_groups_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:afts/oc-netinst:next-hop-groups/oc-netinst:next-hop-group/oc-netinst:id {
+      deviate add {
+          sonic-ext:db-name "APPL_DB";
+          sonic-ext:subtree-transformer "ni_afts_next_hop_groups_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:afts/oc-netinst:next-hop-groups/oc-netinst:next-hop-group/oc-netinst:state {
+      deviate add {
+          sonic-ext:db-name "APPL_DB";
+          sonic-ext:subtree-transformer "ni_afts_next_hop_groups_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:afts/oc-netinst:next-hop-groups/oc-netinst:next-hop-group/oc-netinst:state/oc-netinst:id {
+      deviate add {
+          sonic-ext:db-name "APPL_DB";
+          sonic-ext:subtree-transformer "ni_afts_next_hop_groups_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:afts/oc-netinst:next-hop-groups/oc-netinst:next-hop-group/oc-netinst:next-hops {
+      deviate add {
+          sonic-ext:virtual-table "true";
+          sonic-ext:db-name "APPL_DB";
+          sonic-ext:subtree-transformer "ni_afts_next_hop_groups_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:afts/oc-netinst:next-hop-groups/oc-netinst:next-hop-group/oc-netinst:next-hops/oc-netinst:next-hop {
+      deviate add {
+          sonic-ext:virtual-table "true";
+          sonic-ext:db-name "APPL_DB";
+          sonic-ext:subtree-transformer "ni_afts_next_hop_groups_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:afts/oc-netinst:next-hop-groups/oc-netinst:next-hop-group/oc-netinst:next-hops/oc-netinst:next-hop/oc-netinst:index {
+      deviate add {
+          sonic-ext:db-name "APPL_DB";
+          sonic-ext:subtree-transformer "ni_afts_next_hop_groups_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:afts/oc-netinst:next-hop-groups/oc-netinst:next-hop-group/oc-netinst:next-hops/oc-netinst:next-hop/oc-netinst:state {
+      deviate add {
+          sonic-ext:db-name "APPL_DB";
+          sonic-ext:subtree-transformer "ni_afts_next_hop_groups_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:afts/oc-netinst:next-hop-groups/oc-netinst:next-hop-group/oc-netinst:next-hops/oc-netinst:next-hop/oc-netinst:state/oc-netinst:index {
+      deviate add {
+          sonic-ext:db-name "APPL_DB";
+          sonic-ext:subtree-transformer "ni_afts_next_hop_groups_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:afts/oc-netinst:next-hop-groups/oc-netinst:next-hop-group/oc-netinst:next-hops/oc-netinst:next-hop/oc-netinst:state/oc-netinst:weight {
+      deviate add {
+          sonic-ext:db-name "APPL_DB";
+          sonic-ext:subtree-transformer "ni_afts_next_hop_groups_xfmr";
+      }
+    }
+
+    // The AFT IPv4 unicast entry list maps ROUTE_TABLE, whose Redis key is the
+    // prefix. Only a route FRR resolved through a next-hop group carries a
+    // group id, so state/next-hop-group is absent on a route that references
+    // its single next-hop inline.
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:afts/oc-netinst:ipv4-unicast {
+      deviate add {
+          sonic-ext:virtual-table "true";
+          sonic-ext:db-name "APPL_DB";
+          sonic-ext:subtree-transformer "ni_afts_entries_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:afts/oc-netinst:ipv4-unicast/oc-netinst:ipv4-entry {
+      deviate add {
+          sonic-ext:virtual-table "true";
+          sonic-ext:db-name "APPL_DB";
+          sonic-ext:subtree-transformer "ni_afts_entries_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:afts/oc-netinst:ipv4-unicast/oc-netinst:ipv4-entry/oc-netinst:prefix {
+      deviate add {
+          sonic-ext:db-name "APPL_DB";
+          sonic-ext:subtree-transformer "ni_afts_entries_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:afts/oc-netinst:ipv4-unicast/oc-netinst:ipv4-entry/oc-netinst:state {
+      deviate add {
+          sonic-ext:db-name "APPL_DB";
+          sonic-ext:subtree-transformer "ni_afts_entries_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:afts/oc-netinst:ipv4-unicast/oc-netinst:ipv4-entry/oc-netinst:state/oc-netinst:prefix {
+      deviate add {
+          sonic-ext:db-name "APPL_DB";
+          sonic-ext:subtree-transformer "ni_afts_entries_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:afts/oc-netinst:ipv4-unicast/oc-netinst:ipv4-entry/oc-netinst:state/oc-netinst:next-hop-group {
+      deviate add {
+          sonic-ext:db-name "APPL_DB";
+          sonic-ext:subtree-transformer "ni_afts_entries_xfmr";
       }
     }
 

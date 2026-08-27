@@ -62,6 +62,20 @@ type niAftsNextHop struct {
 	ifName    string
 }
 
+// niAftsGroupMember is one member of a next-hop group. The id is the FRR
+// next-hop id, which is what the top level next-hop list is keyed on and what
+// the member list leafrefs to.
+type niAftsGroupMember struct {
+	id     uint64
+	weight uint64
+}
+
+// niAftsEntry is one entry of an AFT unicast prefix list.
+type niAftsEntry struct {
+	nhGrp    uint64
+	hasNhGrp bool
+}
+
 // getNiAftsObj locates the afts container of a network instance in the YANG
 // tree, creating the ancestors when asked to.
 func getNiAftsObj(s *ygot.GoStruct, niName string, createIfMissing bool) *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Afts {
@@ -144,6 +158,28 @@ func niAftsReportableAddr(s string) string {
 		return ""
 	}
 	return s
+}
+
+// niAftsNormalizePrefix completes a bare host address into the prefix form the
+// AFT entry lists are keyed on and reports the address family. fpmsyncd writes
+// a host route without a mask length, which is not a valid prefix, so a mask
+// covering the single address it names is supplied here.
+func niAftsNormalizePrefix(s string) (prefix string, isV4 bool, ok bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", false, false
+	}
+	if ip, _, err := net.ParseCIDR(s); err == nil {
+		return s, ip.To4() != nil, true
+	}
+	ip := net.ParseIP(s)
+	if ip == nil {
+		return "", false, false
+	}
+	if ip.To4() != nil {
+		return s + "/32", true, true
+	}
+	return s + "/128", false, true
 }
 
 // niAftsRouteKeyPrefix recovers the prefix from a ROUTE_TABLE key and reports
@@ -237,15 +273,103 @@ func niAftsCollectNextHops(d *db.DB) (map[uint64]niAftsNextHop, error) {
 		return nil, err
 	}
 
-	keepDefaultVrf := func(k db.Key) bool {
-		_, ok := niAftsRouteKeyPrefix(k)
-		return ok
-	}
-	if err := niAftsForEachRow(d, niAftsRouteTbl, keepDefaultVrf, func(_ db.Key, v db.Value) {
+	if err := niAftsForEachRow(d, niAftsRouteTbl, niAftsKeepDefaultVrf, func(_ db.Key, v db.Value) {
 		niAftsAddRowNextHops(out, v)
 	}); err != nil {
 		return nil, err
 	}
 
+	return out, nil
+}
+
+// niAftsServesNi reports whether the APPL_DB forwarding state can be attributed
+// to a network instance. Nothing outside the default one can be, so its lists
+// are reported empty rather than failing the request.
+func niAftsServesNi(niName string) bool {
+	return niName == niAftsDefaultNi
+}
+
+// niAftsKeepDefaultVrf selects the ROUTE_TABLE rows this mapping can attribute.
+func niAftsKeepDefaultVrf(k db.Key) bool {
+	_, ok := niAftsRouteKeyPrefix(k)
+	return ok
+}
+
+// niAftsCollectGroups gathers the next-hop groups fpmsyncd has published, keyed
+// by the group id FRR assigned, which the table uses as its Redis key.
+//
+// A group row does not imply multipath. FRR encodes a protocol owned entry as a
+// group whatever its size, and drops the members that are not installed, so a
+// row holding a single member is normal and is reported as such.
+func niAftsCollectGroups(d *db.DB) (map[uint64][]niAftsGroupMember, error) {
+	out := make(map[uint64][]niAftsGroupMember)
+
+	err := niAftsForEachRow(d, niAftsNhGrpTbl, nil, func(k db.Key, v db.Value) {
+		if len(k.Comp) != 1 {
+			return
+		}
+		groupId, ok := niAftsParseId(k.Comp[0])
+		if !ok {
+			return
+		}
+
+		ids := niAftsSplitList(v.Field[niAftsFldNhId])
+		weights := niAftsSplitList(v.Field[niAftsFldWeight])
+
+		// Members are identified by their next-hop id. Without it there is no
+		// value the member list can be keyed on, so the group is reported with
+		// no members rather than with members that cannot be named.
+		members := make([]niAftsGroupMember, 0, len(ids))
+		for i, rawId := range ids {
+			id, ok := niAftsParseId(rawId)
+			if !ok {
+				continue
+			}
+			member := niAftsGroupMember{id: id}
+			// fpmsyncd offsets the kernel weight so the lowest it ever writes
+			// is 1, and omits the field when FRR gave the group no weights, so
+			// a zero here means unweighted rather than a weight of zero.
+			if w, ok := niAftsParseId(niAftsElem(weights, i)); ok {
+				member.weight = w
+			}
+			members = append(members, member)
+		}
+		out[groupId] = members
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// niAftsCollectEntries gathers the forwarding entries of one address family,
+// keyed by prefix.
+func niAftsCollectEntries(d *db.DB, wantV4 bool) (map[string]niAftsEntry, error) {
+	out := make(map[string]niAftsEntry)
+
+	err := niAftsForEachRow(d, niAftsRouteTbl, niAftsKeepDefaultVrf, func(k db.Key, v db.Value) {
+		raw, ok := niAftsRouteKeyPrefix(k)
+		if !ok {
+			return
+		}
+		prefix, isV4, ok := niAftsNormalizePrefix(raw)
+		if !ok || isV4 != wantV4 {
+			return
+		}
+
+		var entry niAftsEntry
+		// Only a route FRR resolved through a group carries this field. A route
+		// with a single next-hop references it inline and has no group id, so
+		// the entry reports its prefix alone rather than a group invented for
+		// it.
+		if groupId, ok := niAftsParseId(v.Field[niAftsFldNhGrp]); ok {
+			entry.nhGrp = groupId
+			entry.hasNhGrp = true
+		}
+		out[prefix] = entry
+	})
+	if err != nil {
+		return nil, err
+	}
 	return out, nil
 }

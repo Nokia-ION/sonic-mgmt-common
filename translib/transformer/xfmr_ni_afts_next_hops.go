@@ -77,36 +77,39 @@ var DbToYang_ni_afts_next_hops_xfmr SubTreeXfmrDbToYang = func(inParams XfmrPara
 	if err != nil {
 		return err
 	}
-	if reqInfo.niName != niAftsDefaultNi {
-		// Nothing in APPL_DB can be attributed to another network instance, so
-		// report an empty list rather than failing the request.
-		return nil
-	}
-
 	appDb := inParams.dbs[db.ApplDB]
 	if appDb == nil {
 		return tlerr.InvalidArgsError{Format: "ApplDB nil for network-instance AFT next-hops"}
 	}
+	return niAftsPopulateNextHops(inParams.ygRoot, reqInfo.niName, appDb, reqInfo.keyed, reqInfo.index)
+}
 
-	nextHops, err := niAftsCollectNextHops(appDb)
+// niAftsPopulateNextHops fills the top level next-hop list, either whole or for
+// one index. It is also called by the afts container mapping.
+func niAftsPopulateNextHops(ygRoot *ygot.GoStruct, niName string, d *db.DB, keyed bool, wantIndex uint64) error {
+	if !niAftsServesNi(niName) {
+		return nil
+	}
+
+	nextHops, err := niAftsCollectNextHops(d)
 	if err != nil {
 		return err
 	}
-	if reqInfo.keyed {
-		nh, ok := nextHops[reqInfo.index]
+	if keyed {
+		nh, ok := nextHops[wantIndex]
 		if !ok {
 			// An unknown index is an empty result rather than an error, so that
 			// a sample subscription on a next-hop that has gone away stays
 			// alive instead of failing.
 			return nil
 		}
-		nextHops = map[uint64]niAftsNextHop{reqInfo.index: nh}
+		nextHops = map[uint64]niAftsNextHop{wantIndex: nh}
 	}
 	if len(nextHops) == 0 {
 		return nil
 	}
 
-	aftsObj := getNiAftsObj(inParams.ygRoot, reqInfo.niName, true)
+	aftsObj := getNiAftsObj(ygRoot, niName, true)
 	if aftsObj == nil {
 		return tlerr.InvalidArgsError{Format: "Unable to locate AFT object in YANG tree"}
 	}
