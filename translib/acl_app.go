@@ -1652,7 +1652,9 @@ func getTransportSrcDestPorts(portVal string, portType string) interface{} {
 
 	portNum, err := strconv.Atoi(portVal)
 	if err != nil && strings.Contains(portVal, "-") {
-		portRange = portVal
+		// CONFIG_DB stores ranges as "<low>-<high>", but the OpenConfig
+		// port-num-range type requires "<low>..<high>".
+		portRange = strings.Replace(portVal, "-", "..", 1)
 	}
 
 	if len(portRange) > 0 {
