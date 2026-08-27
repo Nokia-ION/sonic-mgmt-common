@@ -431,4 +431,76 @@ module openconfig-network-instance-annot {
       }
     }
 
+    // The AFT next-hop list is the leafref target for the members of every
+    // next-hop group, so it is keyed on the next-hop id FRR assigned, which
+    // fpmsyncd publishes to APPL_DB. A next-hop reaches APPL_DB either inline
+    // on a route in ROUTE_TABLE or as a member of a NEXTHOP_GROUP_TABLE row,
+    // so this list is assembled from both tables and is independent of the
+    // next-hop-group mapping.
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:afts/oc-netinst:next-hops {
+      deviate add {
+          sonic-ext:virtual-table "true";
+          sonic-ext:db-name "APPL_DB";
+          sonic-ext:subtree-transformer "ni_afts_next_hops_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:afts/oc-netinst:next-hops/oc-netinst:next-hop {
+      deviate add {
+          sonic-ext:virtual-table "true";
+          sonic-ext:db-name "APPL_DB";
+          sonic-ext:subtree-transformer "ni_afts_next_hops_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:afts/oc-netinst:next-hops/oc-netinst:next-hop/oc-netinst:index {
+      deviate add {
+          sonic-ext:db-name "APPL_DB";
+          sonic-ext:subtree-transformer "ni_afts_next_hops_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:afts/oc-netinst:next-hops/oc-netinst:next-hop/oc-netinst:state {
+      deviate add {
+          sonic-ext:db-name "APPL_DB";
+          sonic-ext:subtree-transformer "ni_afts_next_hops_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:afts/oc-netinst:next-hops/oc-netinst:next-hop/oc-netinst:state/oc-netinst:index {
+      deviate add {
+          sonic-ext:db-name "APPL_DB";
+          sonic-ext:subtree-transformer "ni_afts_next_hops_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:afts/oc-netinst:next-hops/oc-netinst:next-hop/oc-netinst:state/oc-netinst:ip-address {
+      deviate add {
+          sonic-ext:db-name "APPL_DB";
+          sonic-ext:subtree-transformer "ni_afts_next_hops_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:afts/oc-netinst:next-hops/oc-netinst:next-hop/oc-netinst:interface-ref {
+      deviate add {
+          sonic-ext:virtual-table "true";
+          sonic-ext:db-name "APPL_DB";
+          sonic-ext:subtree-transformer "ni_afts_next_hops_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:afts/oc-netinst:next-hops/oc-netinst:next-hop/oc-netinst:interface-ref/oc-netinst:state {
+      deviate add {
+          sonic-ext:db-name "APPL_DB";
+          sonic-ext:subtree-transformer "ni_afts_next_hops_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:afts/oc-netinst:next-hops/oc-netinst:next-hop/oc-netinst:interface-ref/oc-netinst:state/oc-netinst:interface {
+      deviate add {
+          sonic-ext:db-name "APPL_DB";
+          sonic-ext:subtree-transformer "ni_afts_next_hops_xfmr";
+      }
+    }
+
 }
