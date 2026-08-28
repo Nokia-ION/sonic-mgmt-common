@@ -61,6 +61,24 @@ module sonic-syslog {
             /* end of list SYSLOG_SERVER_LIST */
         }
         /* end of container SYSLOG_SERVER */
+
+        container SYSLOG_CONFIG {
+
+            description "Global syslog daemon configuration.";
+
+            container GLOBAL {
+                description "Global syslog settings.";
+
+                leaf src_intf {
+                    type string;
+                    description
+                        "Global source interface (e.g. Loopback0) whose IP address is
+                         used as the source address for remote syslog forwarding.
+                         Equivalent to EOS 'logging source-interface'.";
+                }
+            }
+        }
+        /* end of container SYSLOG_CONFIG */
     }
     /* end of container sonic-syslog */
 }

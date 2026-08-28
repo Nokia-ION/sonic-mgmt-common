@@ -128,6 +128,14 @@ module sonic-system-tacacs {
                     type inet:ip-address;
                     description "Source IP address used for outgoing TACACS+ packets.";
                 }
+
+                leaf src_intf {
+                    type string;
+                    description
+                        "Source interface (e.g. Loopback0) whose IP address is used
+                         for outgoing TACACS+ packets. Equivalent to EOS
+                         'ip tacacs source-interface'.";
+                }
             }
         }
     }

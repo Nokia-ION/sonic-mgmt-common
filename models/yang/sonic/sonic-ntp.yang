@@ -17,6 +17,23 @@ module sonic-ntp {
 
     container sonic-ntp {
 
+        container NTP {
+            description "NTP global configuration container.";
+
+            container global {
+                description "Global NTP client settings.";
+
+                leaf src_intf {
+                    type string;
+                    description
+                        "Source interface (e.g. Loopback0) whose IP address is
+                         used as the source address for generating NTP traffic.
+                         Equivalent to EOS 'ntp local-interface'. Stored as a
+                         scalar to match the chrony backend and init config.";
+                }
+            }
+        }
+
         container NTP_SERVER {
 
             description "NTP Server configuration table.";
