@@ -28,8 +28,14 @@ import (
 //
 // The tacacs/config/source-address leaf is intentionally not mapped: SONiC has
 // no per-server source address for TACACS+ (only a global TACPLUS|global:src_ip).
+//
+// The openconfig-system-ext source-interface leaf on the server-group config is
+// mapped to the global TACPLUS|global:src_intf field (EOS
+// 'ip tacacs source-interface'); SONiC has no per-group source interface.
 const (
 	TACPLUS_SERVER_TABLE_NAME = "TACPLUS_SERVER"
+	TACPLUS_GLOBAL_TABLE_NAME = "TACPLUS"
+	TACPLUS_GLOBAL_KEY        = "global"
 	TACACS_SERVER_GROUPS_PATH = "/openconfig-system:system/aaa/server-groups"
 	TACACS_SERVER_GROUP_PATH  = "/openconfig-system:system/aaa/server-groups/server-group"
 	TACACS_SERVERS_PATH       = "/openconfig-system:system/aaa/server-groups/server-group/servers"
@@ -39,6 +45,8 @@ const (
 	TACACS_DEFAULT_PRIORITY   = "1"
 	tacacsServerGroupKeyField = "name"
 	tacacsServerKeyField      = "address"
+	// Source interface (openconfig-system-ext) maps to the global TACPLUS row.
+	tacacsSrcIntfField = "src_intf"
 )
 
 func init() {
@@ -97,6 +105,38 @@ func buildTacacsServerFields(srv *ocbinds.OpenconfigSystem_System_Aaa_ServerGrou
 	return fields
 }
 
+// uriPathEndsWithLeaf reports whether the last node of a YANG path is the given
+// leaf name, tolerating a module prefix on the final segment. Augmented leaves
+// from a foreign module (e.g. openconfig-system-ext:source-interface) keep their
+// module prefix in the path returned by getYangPathFromUri, so a plain
+// strings.HasSuffix(path, "/source-interface") would not match.
+func uriPathEndsWithLeaf(path, leaf string) bool {
+	seg := path
+	if i := strings.LastIndex(seg, "/"); i >= 0 {
+		seg = seg[i+1:]
+	}
+	if i := strings.LastIndex(seg, ":"); i >= 0 {
+		seg = seg[i+1:]
+	}
+	return seg == leaf
+}
+
+// collectTacacsSourceIntf walks the OpenConfig payload and returns the
+// source-interface (openconfig-system-ext) configured on any TACACS group, if
+// present. It maps to the single global TACPLUS|global:src_intf field.
+func collectTacacsSourceIntf(sysObj *ocbinds.OpenconfigSystem_System) (string, bool) {
+	if sysObj == nil || sysObj.Aaa == nil || sysObj.Aaa.ServerGroups == nil {
+		return "", false
+	}
+	for _, grp := range sysObj.Aaa.ServerGroups.ServerGroup {
+		if !isTacacsGroup(grp) || grp.Config == nil || grp.Config.SourceInterface == nil {
+			continue
+		}
+		return *grp.Config.SourceInterface, true
+	}
+	return "", false
+}
+
 // collectTacacsPayloadServers walks the OpenConfig payload and returns a map of
 // server address -> server object for every TACACS group present.
 func collectTacacsPayloadServers(sysObj *ocbinds.OpenconfigSystem_System) map[string]*ocbinds.OpenconfigSystem_System_Aaa_ServerGroups_ServerGroup_Servers_Server {
@@ -140,27 +180,64 @@ var YangToDb_tacacs_server_groups_xfmr SubTreeXfmrYangToDb = func(inParams XfmrP
 		return nil, tlerr.InternalError{Format: fmt.Sprintf("Failed to get YANG path from URI %s: %v", inParams.uri, err)}
 	}
 
+	// requestUri is the original client path. For a nested leaf DELETE (e.g.
+	// .../server-group[name=TACACS]/config/source-interface) the framework may
+	// invoke this subtree with a higher-level URI (the server-groups subtree
+	// root) rather than the leaf itself, so routing decisions that target a
+	// specific leaf must be based on requestUri, not inParams.uri.
+	reqUriPath, err := getYangPathFromUri(inParams.requestUri)
+	if err != nil {
+		return nil, tlerr.InternalError{Format: fmt.Sprintf("Failed to get YANG path from request URI %s: %v", inParams.requestUri, err)}
+	}
+
 	pathInfo := NewPathInfo(inParams.uri)
 	serverKey := pathInfo.Var(tacacsServerKeyField)
 
 	// Only server-list granularity (and above) is supported for DELETE/REPLACE.
 	isServerListPath := strings.HasPrefix(targetUriPath, TACACS_SERVER_GROUPS_PATH)
-	isConfigOp := strings.HasSuffix(targetUriPath, "/config") ||
-		strings.HasSuffix(targetUriPath, "/address") ||
-		strings.Contains(targetUriPath, "/tacacs")
 
 	if !isServerListPath {
 		return nil, tlerr.NotSupportedError{Format: fmt.Sprintf("Operation %v not supported on path %s", inParams.oper, targetUriPath)}
 	}
 
+	// Handle the openconfig-system-ext source-interface leaf, which maps to the
+	// global TACPLUS|global:src_intf field (not the per-server TACPLUS_SERVER).
+	// Detect it from the client's request path so a leaf DELETE is never
+	// misrouted into the server-clearing logic below (which would otherwise wipe
+	// all TACPLUS_SERVER entries).
+	if uriPathEndsWithLeaf(targetUriPath, "source-interface") ||
+		uriPathEndsWithLeaf(reqUriPath, "source-interface") {
+		if inParams.oper == DELETE {
+			// Field-level delete of just src_intf, leaving other TACPLUS|global
+			// fields (e.g. src_ip) intact.
+			return map[string]map[string]db.Value{
+				TACPLUS_GLOBAL_TABLE_NAME: {TACPLUS_GLOBAL_KEY: db.Value{Field: map[string]string{tacacsSrcIntfField: ""}}},
+			}, nil
+		}
+		if src, ok := collectTacacsSourceIntf(sysObj); ok {
+			return map[string]map[string]db.Value{
+				TACPLUS_GLOBAL_TABLE_NAME: {TACPLUS_GLOBAL_KEY: db.Value{Field: map[string]string{tacacsSrcIntfField: src}}},
+			}, nil
+		}
+		return map[string]map[string]db.Value{}, nil
+	}
+
 	// Handle DELETE
 	if inParams.oper == DELETE {
+		// A "clear all servers" delete is only valid when the client's request
+		// targets the server-groups / server-group / servers scope. Basing this
+		// on requestUri (not inParams.uri) prevents a deeper leaf DELETE that the
+		// framework routes through this subtree from silently wiping every
+		// TACPLUS_SERVER entry.
+		reqClearAllServers := strings.HasSuffix(reqUriPath, "/server-groups") ||
+			strings.HasSuffix(reqUriPath, "/server-group") ||
+			strings.HasSuffix(reqUriPath, "/servers")
 		if serverKey != "" {
 			log.V(lvl.DEBUG).Infof("DELETE single TACACS server: %s", serverKey)
 			tacTableOps[serverKey] = db.Value{}
-		} else if !isConfigOp || strings.HasSuffix(targetUriPath, "/servers") {
+		} else if reqClearAllServers {
 			// DELETE at server-groups / server-group / servers granularity: clear all.
-			log.V(lvl.DEBUG).Infof("DELETE ALL TACACS servers (path=%s)", targetUriPath)
+			log.V(lvl.DEBUG).Infof("DELETE ALL TACACS servers (reqPath=%s)", reqUriPath)
 			keys, err := dbGetKeys(cfgDb, &db.TableSpec{Name: TACPLUS_SERVER_TABLE_NAME})
 			if err != nil {
 				return nil, tlerr.InternalError{Format: fmt.Sprintf("failed to get keys for clear: %v", err)}
@@ -169,7 +246,7 @@ var YangToDb_tacacs_server_groups_xfmr SubTreeXfmrYangToDb = func(inParams XfmrP
 				tacTableOps[key.Comp[0]] = db.Value{}
 			}
 		} else {
-			return nil, tlerr.NotSupportedError{Format: fmt.Sprintf("DELETE not supported on path %s", targetUriPath)}
+			return nil, tlerr.NotSupportedError{Format: fmt.Sprintf("DELETE not supported on path %s", reqUriPath)}
 		}
 		return dbMutations, nil
 	}
@@ -177,6 +254,13 @@ var YangToDb_tacacs_server_groups_xfmr SubTreeXfmrYangToDb = func(inParams XfmrP
 	// Handle UPDATE/REPLACE
 	if inParams.oper == UPDATE || inParams.oper == REPLACE {
 		payloadServers := collectTacacsPayloadServers(sysObj)
+
+		// A group/config-level SET may also carry the source-interface leaf.
+		if src, ok := collectTacacsSourceIntf(sysObj); ok {
+			dbMutations[TACPLUS_GLOBAL_TABLE_NAME] = map[string]db.Value{
+				TACPLUS_GLOBAL_KEY: {Field: map[string]string{tacacsSrcIntfField: src}},
+			}
+		}
 
 		// REPLACE on a single server with no matching payload => delete it.
 		if inParams.oper == REPLACE && serverKey != "" {
@@ -274,6 +358,14 @@ var DbToYang_tacacs_server_groups_xfmr SubTreeXfmrDbToYang = func(inParams XfmrP
 	}
 	serverGroupsObj.ServerGroup[groupName] = groupObj
 
+	// Global source-interface (openconfig-system-ext) from TACPLUS|global.
+	if gEntry, err := dbGetEntry(cfgDb, &db.TableSpec{Name: TACPLUS_GLOBAL_TABLE_NAME}, db.Key{Comp: []string{TACPLUS_GLOBAL_KEY}}); err == nil {
+		if v := gEntry.Get(tacacsSrcIntfField); v != "" {
+			groupObj.Config.SourceInterface = ygot.String(v)
+			groupObj.State.SourceInterface = ygot.String(v)
+		}
+	}
+
 	targetKeys := make(map[string]bool)
 	if serverKey != "" {
 		entry, err := dbGetEntry(cfgDb, &db.TableSpec{Name: TACPLUS_SERVER_TABLE_NAME}, db.Key{Comp: []string{serverKey}})
@@ -348,18 +440,34 @@ var Subscribe_tacacs_server_groups_xfmr = func(inParams XfmrSubscInParams) (Xfmr
 	if keyName == "" {
 		keyName = "*"
 	}
+	groupName := pathInfo.Var(tacacsServerGroupKeyField)
 
-	log.V(lvl.DEBUG).Infof("Subscribe_tacacs_server_groups_xfmr: path=%v key=%v proc=%v", inParams.uri, keyName, inParams.subscProc)
+	log.V(lvl.DEBUG).Infof("Subscribe_tacacs_server_groups_xfmr: path=%v group=%v key=%v proc=%v", inParams.uri, groupName, keyName, inParams.subscProc)
 
-	// Keyed (single-server) requests: bypass the parent-existence check since
-	// there is no named server-group entry in CONFIG_DB backing the group key.
-	if keyName != "*" {
+	// A specific server-group (identified by name) - and anything under it, such
+	// as its config/source-interface (which maps to TACPLUS|global) or its
+	// servers (the flat TACPLUS_SERVER table) - has no CONFIG_DB entry keyed by
+	// the group name. Mark the subtree virtual so the framework's
+	// parent-existence check (verifyParentTblSubtree) does not reject these
+	// requests when no matching CONFIG_DB row exists; the transformer
+	// validates/handles the backing tables itself. Only the whole-list URI
+	// (no group name) maps the real tables below.
+	//
+	// Note: the framework invokes this callback with subscProc==TRANSLATE_SUBSCRIBE
+	// for BOTH the CRUD parent-existence bypass (which needs isVirtualTbl so a
+	// first-time SET to a not-yet-existing group succeeds) and for real
+	// subscriptions, and the two are indistinguishable here. Returning concrete
+	// keys for the named-group path would therefore reintroduce the first-time
+	// SET failure, so ON_CHANGE is not offered for these paths; SAMPLE/periodic
+	// telemetry works via the DbToYang callback.
+	if groupName != "" || keyName != "*" {
 		result.isVirtualTbl = true
 		return result, nil
 	}
 
 	result.dbDataMap[db.ConfigDB] = map[string]map[string]map[string]string{
 		TACPLUS_SERVER_TABLE_NAME: {keyName: {}},
+		TACPLUS_GLOBAL_TABLE_NAME: {TACPLUS_GLOBAL_KEY: {}},
 	}
 
 	return result, nil

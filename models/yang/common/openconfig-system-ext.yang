@@ -9,6 +9,7 @@ module openconfig-system-ext {
 
   // import some basic types
   import openconfig-system { prefix oc-sys; }
+  import openconfig-system-logging { prefix oc-log; }
   import openconfig-inet-types { prefix oc-inet; }
   import openconfig-extensions { prefix oc-ext; }
   import gnsi-credentialz { prefix gnsi-credz; }
@@ -25,10 +26,19 @@ module openconfig-system-ext {
     model to support management-plane features that are not covered by
     the upstream model:
 
-      * a DSCP marking value for the SSH management server, and
-      * an idle (inactivity) timeout for the serial console.";
+      * a DSCP marking value for the SSH management server,
+      * an idle (inactivity) timeout for the serial console, and
+      * a source interface for NTP, TACACS+, and remote syslog
+        management traffic.";
 
-  oc-ext:openconfig-version "0.1.0";
+  oc-ext:openconfig-version "0.2.0";
+
+  revision "2026-08-27" {
+    description
+      "Add a source-interface leaf for NTP, TACACS+, and remote syslog
+      logging (maps to the SONiC src_intf fields).";
+    reference "0.2.0";
+  }
 
   revision "2026-08-26" {
     description
@@ -71,6 +81,22 @@ module openconfig-system-ext {
     }
   }
 
+  grouping system-source-interface-config {
+    description
+      "Source interface used to originate management-plane traffic for
+      a service.";
+
+    leaf source-interface {
+      type string;
+      description
+        "Name of the interface (e.g. Loopback0) whose IP address is
+        used as the source address for packets originated by this
+        service. Equivalent to the EOS 'ntp local-interface <intf>' and
+        'ip tacacs source-interface <intf>' settings; maps to the SONiC
+        src_intf field of the corresponding global table.";
+    }
+  }
+
   // augment statements
 
   augment "/oc-sys:system/oc-sys:ssh-server/oc-sys:config" {
@@ -101,5 +127,58 @@ module openconfig-system-ext {
       "Add an idle timeout to the serial console operational state.";
 
     uses system-console-timeout-config;
+  }
+
+  augment "/oc-sys:system/oc-sys:ntp/oc-sys:config" {
+    description
+      "Add a source interface to the NTP client configuration.";
+
+    uses system-source-interface-config;
+  }
+
+  augment "/oc-sys:system/oc-sys:ntp/oc-sys:state" {
+    description
+      "Add a source interface to the NTP client operational state.";
+
+    uses system-source-interface-config;
+  }
+
+  augment "/oc-sys:system/oc-sys:aaa/oc-sys:server-groups/oc-sys:server-group/oc-sys:config" {
+    description
+      "Add a source interface to the AAA server-group configuration.
+      Only honored for TACACS+ groups, mapping to TACPLUS|global:src_intf.";
+
+    uses system-source-interface-config;
+  }
+
+  augment "/oc-sys:system/oc-sys:aaa/oc-sys:server-groups/oc-sys:server-group/oc-sys:state" {
+    description
+      "Add a source interface to the AAA server-group operational state.";
+
+    uses system-source-interface-config;
+  }
+
+  augment "/oc-sys:system/oc-log:logging" {
+    description
+      "Add a global source interface for remote syslog forwarding.
+      The base openconfig-system-logging model has no global logging
+      config container, so this extension adds config/state containers
+      to hold the source-interface leaf (maps to
+      SYSLOG_CONFIG|GLOBAL:src_intf).";
+
+    container config {
+      description
+        "Global logging configuration extensions.";
+
+      uses system-source-interface-config;
+    }
+
+    container state {
+      config false;
+      description
+        "Global logging operational state extensions.";
+
+      uses system-source-interface-config;
+    }
   }
 }
