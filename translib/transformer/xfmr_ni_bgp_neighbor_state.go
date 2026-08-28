@@ -20,6 +20,7 @@ package transformer
 
 import (
 	"fmt"
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -59,6 +60,18 @@ const (
 	niBgpNbrAppliedLocalAddrFld = "local_address"
 	niBgpNbrAppliedRmtAddrFld   = "remote_address"
 
+	// The per-session counters come from the same scrape as the applied row,
+	// published as BGP_NEIGH_STATS|<network-instance>|<neighbor-address>. They
+	// are a separate table because they change on nearly every scrape while the
+	// applied values sit still, and keeping them apart stops a counter tick
+	// from rewriting the applied row.
+	niBgpNbrStatsTbl = "BGP_NEIGH_STATS"
+
+	niBgpNbrStatsEstTransFld = "established_transitions"
+	niBgpNbrStatsLastEstFld  = "last_established"
+	niBgpNbrStatsUpdRcvdFld  = "updates_received"
+	niBgpNbrStatsUpdSentFld  = "updates_sent"
+
 	niBgpNbrAppliedMetaTbl     = "BGP_NEIGH_APPLIED_META"
 	niBgpNbrAppliedMetaKey     = "global"
 	niBgpNbrAppliedLastSyncFld = "last_sync"
@@ -75,13 +88,33 @@ const (
 	niBgpNbrPeerGrpLeaf      = "peer-group"
 	niBgpNbrLocalAddrLeaf    = "local-address"
 	niBgpNbrRmtAddrLeaf      = "remote-address"
+	niBgpNbrEstTransLeaf     = "established-transitions"
+	niBgpNbrLastEstLeaf      = "last-established"
+	niBgpNbrUpdateLeaf       = "UPDATE"
+
+	niBgpNbrSentDir = "sent"
+	niBgpNbrRcvdDir = "received"
 
 	niBgpNbrStateSubtree     = "state"
 	niBgpNbrTransportSubtree = "transport"
+	niBgpNbrMessagesSubtree  = "messages"
+
+	// last-established is oc-types:timeticks64, which counts nanoseconds since
+	// the epoch, while FRR reports whole seconds. The producer stores what FRR
+	// gave it rather than a scaled value, so the scale factor is applied here.
+	niBgpNbrLastEstNsPerSec = uint64(time.Second / time.Nanosecond)
 )
 
 var niBgpNbrStateReqUriRe = regexp.MustCompile(niBgpNbrStateUriPfx +
-	`/state(?:/(session-state|enabled|neighbor-address|peer-as|peer-group))?$`)
+	`/state(?:/(session-state|enabled|neighbor-address|peer-as|peer-group|established-transitions|last-established))?$`)
+
+// The message counters sit two levels below the state container, split by
+// direction, so they need a pattern of their own rather than another
+// alternative in the state leaf list. Both the messages container and each
+// direction container are matched so that a request anchored at any of them is
+// served the counters below it.
+var niBgpNbrMessagesReqUriRe = regexp.MustCompile(niBgpNbrStateUriPfx +
+	`/state/messages(?:/(sent|received)(?:/(UPDATE))?)?$`)
 
 // The transport state leaves sit in a sibling container of state, so they need
 // their own pattern. Both the transport container and its state container are
@@ -103,11 +136,21 @@ var niBgpNbrAppliedStateLeaves = map[string]bool{
 	niBgpNbrPeerGrpLeaf: true,
 }
 
+// niBgpNbrStatsFldForLeaf maps the leaves of the state container that come from
+// BGP_NEIGH_STATS onto their producer field. The message counters are not
+// listed because they hang below the messages container rather than off the
+// state container directly.
+var niBgpNbrStatsFldForLeaf = map[string]string{
+	niBgpNbrEstTransLeaf: niBgpNbrStatsEstTransFld,
+	niBgpNbrLastEstLeaf:  niBgpNbrStatsLastEstFld,
+}
+
 type niBgpNbrStateReqInfo struct {
 	niName       string
 	neighborAddr string
 	targetLeaf   string // "" for the whole container, else the leaf name
-	subtree      string // niBgpNbrStateSubtree or niBgpNbrTransportSubtree
+	subtree      string // niBgpNbrStateSubtree, niBgpNbrTransportSubtree or niBgpNbrMessagesSubtree
+	direction    string // messages subtree only: "" for both, else niBgpNbrSentDir or niBgpNbrRcvdDir
 }
 
 func init() {
@@ -117,10 +160,19 @@ func init() {
 
 func parseNiBgpNbrStateRequestUri(uri string) (*niBgpNbrStateReqInfo, error) {
 	subtree := niBgpNbrStateSubtree
+	direction := ""
 	m := niBgpNbrStateReqUriRe.FindStringSubmatch(uri)
 	if m == nil {
 		subtree = niBgpNbrTransportSubtree
 		m = niBgpNbrTransportReqUriRe.FindStringSubmatch(uri)
+	}
+	if m == nil {
+		subtree = niBgpNbrMessagesSubtree
+		if m = niBgpNbrMessagesReqUriRe.FindStringSubmatch(uri); m != nil {
+			// The messages pattern carries the direction ahead of the leaf, so
+			// its captures are one wider than the other two.
+			direction, m = m[4], []string{m[0], m[1], m[2], m[3], m[5]}
+		}
 	}
 	if m == nil {
 		return nil, tlerr.NotSupportedError{Format: "unsupported network-instance BGP neighbor state path: " + uri}
@@ -135,6 +187,7 @@ func parseNiBgpNbrStateRequestUri(uri string) (*niBgpNbrStateReqInfo, error) {
 		neighborAddr: m[3],
 		targetLeaf:   m[4],
 		subtree:      subtree,
+		direction:    direction,
 	}, nil
 }
 
@@ -229,6 +282,44 @@ func niBgpNbrAppliedFresh(stateDb *db.DB, niName, neighborAddr string) (db.Value
 		return db.Value{}, false, nil
 	}
 	return niBgpNbrAppliedEntry(stateDb, niName, neighborAddr)
+}
+
+// niBgpNbrStatsFresh returns the counter row for a neighbor. It is gated on the
+// same marker as the applied row because one scrape writes both tables, so a
+// marker that has gone stale has left both behind. Serving counters past that
+// point would report a frozen number as a live one, which is worse here than
+// for the applied values: a client watching for update activity cannot tell a
+// quiet session from a dead producer.
+func niBgpNbrStatsFresh(stateDb *db.DB, niName, neighborAddr string) (db.Value, bool, error) {
+	if !niBgpNbrAppliedIsFresh(stateDb) {
+		return db.Value{}, false, nil
+	}
+	entry, err := stateDb.GetEntry(&db.TableSpec{Name: niBgpNbrStatsTbl}, db.Key{Comp: []string{niName, neighborAddr}})
+	if err != nil {
+		if _, notPresent := err.(tlerr.TranslibRedisClientEntryNotExist); notPresent {
+			return db.Value{}, false, nil
+		}
+		return db.Value{}, false, err
+	}
+	return entry, true, nil
+}
+
+// niBgpNbrStatsUint reads one counter field. An absent field means FRR reported
+// no value, which leaves the leaf unset; a zero is a real count and is
+// reported. A field that is present but not a number is a producer fault rather
+// than a missing value, so it fails the request instead of being dropped.
+func niBgpNbrStatsUint(entry db.Value, field, neighborAddr string) (uint64, bool, error) {
+	raw, ok := niBgpNbrAppliedStr(entry, field)
+	if !ok {
+		return 0, false, nil
+	}
+	val, convErr := strconv.ParseUint(raw, 10, 64)
+	if convErr != nil {
+		return 0, false, tlerr.InvalidArgsError{
+			Format: fmt.Sprintf("unrecognized %s.%s value %q for neighbor %s", niBgpNbrStatsTbl, field, raw, neighborAddr),
+		}
+	}
+	return val, true, nil
 }
 
 // getNiBgpNbrObj locates the neighbor list entry of the BGP protocol instance
@@ -342,6 +433,20 @@ func getNiBgpNbrTransportStateObj(s *ygot.GoStruct, niName, neighborAddr string,
 	return nbrObj.Transport.State
 }
 
+// niBgpNbrLastEstToNanos scales FRR's epoch seconds to the nanoseconds the leaf
+// is defined in. A value large enough to overflow the multiplication is a
+// producer fault, and is reported rather than wrapped into a plausible-looking
+// timestamp.
+func niBgpNbrLastEstToNanos(epochSecs uint64, neighborAddr string) (uint64, error) {
+	if epochSecs > math.MaxUint64/niBgpNbrLastEstNsPerSec {
+		return 0, tlerr.InvalidArgsError{
+			Format: fmt.Sprintf("%s.%s value %d for neighbor %s does not fit a nanosecond timestamp",
+				niBgpNbrStatsTbl, niBgpNbrStatsLastEstFld, epochSecs, neighborAddr),
+		}
+	}
+	return epochSecs * niBgpNbrLastEstNsPerSec, nil
+}
+
 // niBgpNbrAppliedStr returns a trimmed applied field, and whether it carries a
 // value. An empty field is treated as absent, so that a leaf is left unset
 // rather than reported as an empty string.
@@ -394,6 +499,91 @@ func populateNiBgpNbrAppliedStateLeaves(stateObj *ocbinds.OpenconfigNetworkInsta
 	return nil
 }
 
+// populateNiBgpNbrStatsStateLeaves fills the counter leaves that hang off the
+// state container directly. The message counters are filled separately because
+// they sit below the messages container.
+func populateNiBgpNbrStatsStateLeaves(stateObj *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Neighbors_Neighbor_State, entry db.Value, targetLeaf, neighborAddr string) error {
+	wants := func(leaf string) bool { return targetLeaf == "" || targetLeaf == leaf }
+
+	if wants(niBgpNbrEstTransLeaf) {
+		val, ok, err := niBgpNbrStatsUint(entry, niBgpNbrStatsEstTransFld, neighborAddr)
+		if err != nil {
+			return err
+		}
+		if ok {
+			transitions := val
+			stateObj.EstablishedTransitions = &transitions
+		}
+	}
+	if wants(niBgpNbrLastEstLeaf) {
+		val, ok, err := niBgpNbrStatsUint(entry, niBgpNbrStatsLastEstFld, neighborAddr)
+		if err != nil {
+			return err
+		}
+		if ok {
+			// FRR drops this field while the session is down, so the leaf is
+			// absent rather than reporting the last time it came up.
+			nanos, convErr := niBgpNbrLastEstToNanos(val, neighborAddr)
+			if convErr != nil {
+				return convErr
+			}
+			stateObj.LastEstablished = &nanos
+		}
+	}
+	return nil
+}
+
+// populateNiBgpNbrMessageCounters fills the UPDATE counters below the messages
+// container. reqInfo narrows what is filled: a direction limits it to one of the
+// two direction containers, and a target leaf to that counter alone.
+//
+// The state object is looked up only once a counter is known to be present, so
+// that a neighbor whose row carries no message counters is not reported as an
+// empty state container.
+func populateNiBgpNbrMessageCounters(inParams XfmrParams, entry db.Value, reqInfo *niBgpNbrStateReqInfo) error {
+	if reqInfo.targetLeaf != "" && reqInfo.targetLeaf != niBgpNbrUpdateLeaf {
+		return nil
+	}
+
+	sent, hasSent, err := niBgpNbrStatsUint(entry, niBgpNbrStatsUpdSentFld, reqInfo.neighborAddr)
+	if err != nil {
+		return err
+	}
+	rcvd, hasRcvd, err := niBgpNbrStatsUint(entry, niBgpNbrStatsUpdRcvdFld, reqInfo.neighborAddr)
+	if err != nil {
+		return err
+	}
+
+	wantSent := (reqInfo.direction == "" || reqInfo.direction == niBgpNbrSentDir) && hasSent
+	wantRcvd := (reqInfo.direction == "" || reqInfo.direction == niBgpNbrRcvdDir) && hasRcvd
+	if !wantSent && !wantRcvd {
+		return nil
+	}
+
+	stateObj := getNiBgpNbrStateObj(inParams.ygRoot, reqInfo.niName, reqInfo.neighborAddr, true)
+	if stateObj == nil {
+		return tlerr.InvalidArgsError{Format: "Unable to locate BGP neighbor state object in YANG tree"}
+	}
+	if stateObj.Messages == nil {
+		stateObj.Messages = &ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Neighbors_Neighbor_State_Messages{}
+	}
+	if wantSent {
+		if stateObj.Messages.Sent == nil {
+			stateObj.Messages.Sent = &ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Neighbors_Neighbor_State_Messages_Sent{}
+		}
+		updates := sent
+		stateObj.Messages.Sent.UPDATE = &updates
+	}
+	if wantRcvd {
+		if stateObj.Messages.Received == nil {
+			stateObj.Messages.Received = &ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Neighbors_Neighbor_State_Messages_Received{}
+		}
+		updates := rcvd
+		stateObj.Messages.Received.UPDATE = &updates
+	}
+	return nil
+}
+
 var DbToYang_ni_bgp_nbr_state_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) error {
 	reqInfo, err := parseNiBgpNbrStateRequestUri(inParams.requestUri)
 	if err != nil {
@@ -411,10 +601,24 @@ var DbToYang_ni_bgp_nbr_state_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParam
 		return tlerr.InvalidArgsError{Format: "StateDB nil for network-instance BGP neighbor state"}
 	}
 
-	if reqInfo.subtree == niBgpNbrTransportSubtree {
+	switch reqInfo.subtree {
+	case niBgpNbrTransportSubtree:
 		return populateNiBgpNbrTransportStateFromDb(inParams, stateDb, reqInfo)
+	case niBgpNbrMessagesSubtree:
+		return populateNiBgpNbrMessagesFromDb(inParams, stateDb, reqInfo)
 	}
 	return populateNiBgpNbrStateFromDb(inParams, stateDb, reqInfo)
+}
+
+func populateNiBgpNbrMessagesFromDb(inParams XfmrParams, stateDb *db.DB, reqInfo *niBgpNbrStateReqInfo) error {
+	entry, found, err := niBgpNbrStatsFresh(stateDb, reqInfo.niName, reqInfo.neighborAddr)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return nil
+	}
+	return populateNiBgpNbrMessageCounters(inParams, entry, reqInfo)
 }
 
 // populateNiBgpNbrStateFromDb fills the state container. Its leaves come from
@@ -449,7 +653,29 @@ func populateNiBgpNbrStateFromDb(inParams XfmrParams, stateDb *db.DB, reqInfo *n
 		appliedEntry, appliedFound = entry, found
 	}
 
-	if sessionRaw == "" && !appliedFound {
+	var statsEntry db.Value
+	statsFound := false
+	statsFld, statsLeafTargeted := niBgpNbrStatsFldForLeaf[reqInfo.targetLeaf]
+	if reqInfo.targetLeaf == "" || statsLeafTargeted {
+		entry, found, err := niBgpNbrStatsFresh(stateDb, reqInfo.niName, reqInfo.neighborAddr)
+		if err != nil {
+			return err
+		}
+		statsEntry, statsFound = entry, found
+
+		// A request for one counter that FRR is not reporting must not reach
+		// the point of creating the state container. translib fills a targeted
+		// leaf with its type's zero value once the container exists, so a
+		// last-established that the producer omitted because the session has
+		// never come up would be reported as the epoch rather than as absent.
+		if statsFound && statsLeafTargeted {
+			if _, present := niBgpNbrAppliedStr(entry, statsFld); !present {
+				statsFound = false
+			}
+		}
+	}
+
+	if sessionRaw == "" && !appliedFound && !statsFound {
 		return nil
 	}
 
@@ -468,7 +694,19 @@ func populateNiBgpNbrStateFromDb(inParams XfmrParams, stateDb *db.DB, reqInfo *n
 		stateObj.SessionState = sessionState
 	}
 	if appliedFound {
-		return populateNiBgpNbrAppliedStateLeaves(stateObj, appliedEntry, reqInfo.targetLeaf, reqInfo.neighborAddr)
+		if err := populateNiBgpNbrAppliedStateLeaves(stateObj, appliedEntry, reqInfo.targetLeaf, reqInfo.neighborAddr); err != nil {
+			return err
+		}
+	}
+	if statsFound {
+		if err := populateNiBgpNbrStatsStateLeaves(stateObj, statsEntry, reqInfo.targetLeaf, reqInfo.neighborAddr); err != nil {
+			return err
+		}
+		// A request for the whole state container has to reach the counters
+		// below messages as well, since no separate callback runs for them.
+		if reqInfo.targetLeaf == "" {
+			return populateNiBgpNbrMessageCounters(inParams, statsEntry, reqInfo)
+		}
 	}
 	return nil
 }
@@ -523,7 +761,9 @@ var Subscribe_ni_bgp_nbr_state_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSub
 	if niName == "" {
 		niName = "*"
 	}
-	appliedKey := niName + "|" + neighborAddr
+	// BGP_NEIGH_APPLIED and BGP_NEIGH_STATS are both keyed by network instance
+	// and neighbor, unlike NEIGH_STATE_TABLE which is keyed by address alone.
+	nbrKey := niName + "|" + neighborAddr
 
 	result.isVirtualTbl = false
 
@@ -562,21 +802,26 @@ var Subscribe_ni_bgp_nbr_state_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSub
 		return result, nil
 	}
 
-	if strings.Contains(inParams.uri, "/"+niBgpNbrTransportSubtree) {
-		result.dbDataMap = RedisDbSubscribeMap{db.StateDB: {niBgpNbrAppliedTbl: {appliedKey: {}}}}
-	} else {
+	switch {
+	case strings.Contains(inParams.uri, "/"+niBgpNbrTransportSubtree):
+		result.dbDataMap = RedisDbSubscribeMap{db.StateDB: {niBgpNbrAppliedTbl: {nbrKey: {}}}}
+	case strings.Contains(inParams.uri, "/"+niBgpNbrMessagesSubtree):
+		result.dbDataMap = RedisDbSubscribeMap{db.StateDB: {niBgpNbrStatsTbl: {nbrKey: {}}}}
+	default:
 		result.dbDataMap = RedisDbSubscribeMap{db.StateDB: {
 			niBgpNbrStateTbl:   {neighborAddr: {niBgpNbrStateFld: niBgpNbrSessionStateLeaf}},
-			niBgpNbrAppliedTbl: {appliedKey: {}},
+			niBgpNbrAppliedTbl: {nbrKey: {}},
+			niBgpNbrStatsTbl:   {nbrKey: {}},
 		}}
 	}
 
-	// Anything reading BGP_NEIGH_APPLIED is offered sampling only. The producer
-	// rewrites a changed row as a delete followed by a set, so that a field FRR
-	// has stopped reporting disappears instead of going stale; on-change would
-	// turn each of those rewrites into a spurious delete notification. Making
-	// these paths on-change capable is a producer change, replacing the rewrite
-	// with a set plus an explicit delete of the fields that went away.
+	// Anything reading BGP_NEIGH_APPLIED or BGP_NEIGH_STATS is offered sampling
+	// only. The producer rewrites a changed row as a delete followed by a set,
+	// so that a field FRR has stopped reporting disappears instead of going
+	// stale; on-change would turn each of those rewrites into a spurious delete
+	// notification. Making these paths on-change capable is a producer change,
+	// replacing the rewrite with a set plus an explicit delete of the fields
+	// that went away.
 	result.onChange = OnchangeDisable
 	result.nOpts = &notificationOpts{pType: Sample}
 
