@@ -42,6 +42,7 @@ import (
 const niAftsUrl = "/openconfig-network-instance:network-instances/network-instance[name=default]/afts"
 const niAftsNhGrpsUrl = niAftsUrl + "/next-hop-groups"
 const niAftsV4Url = niAftsUrl + "/ipv4-unicast"
+const niAftsV6Url = niAftsUrl + "/ipv6-unicast"
 
 // loadNiAftsNhGrp writes one NEXTHOP_GROUP_TABLE row the way fpmsyncd does: the
 // members are parallel comma separated lists, one element per member, in the
@@ -331,6 +332,120 @@ func Test_openconfig_network_instance_afts_ipv4_entry_address_family_filtered(t 
 	time.Sleep(1 * time.Second)
 
 	unloadNiAftsRoute("fc00:9::32")
+}
+
+// The IPv6 entry list is served by the same mapping as the IPv4 one over the
+// same ROUTE_TABLE rows, so what is asserted here is the family filter and the
+// leaves, not the group resolution the IPv4 cases already cover.
+func Test_openconfig_network_instance_afts_ipv6_entry_next_hop_group(t *testing.T) {
+	loadNiAftsRoute("fc00:60::", map[string]interface{}{
+		"nexthop":    "fc00:9::1",
+		"ifname":     "Ethernet1",
+		"nexthop_id": "220",
+		"protocol":   "0xc4",
+	})
+	loadNiAftsRoute("fc00:61::/64", map[string]interface{}{
+		"nexthop_group": "910",
+		"protocol":      "0xc4",
+	})
+
+	// A route with its next-hop inline carries no group id, so the leaf has to
+	// be absent rather than reported as a group invented for it.
+	url := niAftsV6Url + "/ipv6-entry[prefix=fc00:60::/128]/state"
+	expectedGetJSON := `{"openconfig-network-instance:state":{"prefix":"fc00:60::/128"}}`
+	t.Run("GET AFT ipv6 entry state omits next-hop-group for an inline route",
+		processGetRequest(url, nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	url = niAftsV6Url + "/ipv6-entry[prefix=fc00:61::/64]/state"
+	expectedGetJSON = `{"openconfig-network-instance:state":{"next-hop-group":"910","prefix":"fc00:61::/64"}}`
+	t.Run("GET AFT ipv6 entry state reports next-hop-group for a grouped route",
+		processGetRequest(url, nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	url = niAftsV6Url + "/ipv6-entry[prefix=fc00:61::/64]/state/next-hop-group"
+	expectedGetJSON = `{"openconfig-network-instance:next-hop-group":"910"}`
+	t.Run("GET AFT ipv6 entry state/next-hop-group leaf",
+		processGetRequest(url, nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	url = niAftsV6Url + "/ipv6-entry[prefix=fc00:61::/64]/prefix"
+	expectedGetJSON = `{"openconfig-network-instance:prefix":"fc00:61::/64"}`
+	t.Run("GET AFT ipv6 entry prefix list key",
+		processGetRequest(url, nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	url = niAftsV6Url + "/ipv6-entry[prefix=fc00:61::/64]/state/prefix"
+	t.Run("GET AFT ipv6 entry state/prefix leaf",
+		processGetRequest(url, nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	unloadNiAftsRoute("fc00:60::")
+	unloadNiAftsRoute("fc00:61::/64")
+}
+
+// The APPL_DB key separator is a colon, so an IPv6 key splits across several
+// components and has to be rejoined before it is a prefix at all. A host route
+// is written without a mask length on top of that, so both have to be undone
+// for the list key to be a value the model accepts.
+func Test_openconfig_network_instance_afts_ipv6_entry_host_route_mask_completed(t *testing.T) {
+	loadNiAftsRoute("fc00:62::42", map[string]interface{}{
+		"nexthop":    "::",
+		"ifname":     "Loopback0",
+		"nexthop_id": "221",
+		"protocol":   "kernel",
+	})
+
+	url := niAftsV6Url + "/ipv6-entry[prefix=fc00:62::42/128]/prefix"
+	expectedGetJSON := `{"openconfig-network-instance:prefix":"fc00:62::42/128"}`
+	t.Run("GET AFT ipv6 host route reports a full length prefix",
+		processGetRequest(url, nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	url = niAftsV6Url + "/ipv6-entry[prefix=fc00:62::42/128]/state"
+	expectedGetJSON = `{"openconfig-network-instance:state":{"prefix":"fc00:62::42/128"}}`
+	t.Run("GET AFT ipv6 host route state mirrors the completed prefix",
+		processGetRequest(url, nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	unloadNiAftsRoute("fc00:62::42")
+}
+
+// The converse of the IPv4 filter case: one table holds both families, so an
+// IPv4 route must not surface in the IPv6 list either.
+func Test_openconfig_network_instance_afts_ipv6_entry_address_family_filtered(t *testing.T) {
+	loadNiAftsRoute("20.80.0.0/16", map[string]interface{}{
+		"nexthop":    "10.9.9.1",
+		"ifname":     "Ethernet1",
+		"nexthop_id": "222",
+		"protocol":   "0xc4",
+	})
+
+	url := niAftsV6Url + "/ipv6-entry[prefix=20.80.0.0/16]/state"
+	t.Run("GET AFT ipv6 entry does not report an IPv4 route",
+		processGetRequest(url, nil, emptyJson, false))
+	time.Sleep(1 * time.Second)
+
+	unloadNiAftsRoute("20.80.0.0/16")
+}
+
+// A VRF scoped IPv6 key rejoins into something that is not a prefix, the same
+// way an IPv4 one does, and belongs to a network instance this mapping cannot
+// attribute.
+func Test_openconfig_network_instance_afts_ipv6_vrf_scoped_route_excluded(t *testing.T) {
+	loadNiAftsRoute("Vrf1:fc00:63::/64", map[string]interface{}{
+		"nexthop":    "fc00:9::2",
+		"ifname":     "Ethernet8",
+		"nexthop_id": "223",
+		"protocol":   "0xc4",
+	})
+
+	url := niAftsV6Url + "/ipv6-entry[prefix=fc00:63::/64]/state"
+	t.Run("GET AFT ipv6 entry excludes a VRF scoped ROUTE_TABLE row",
+		processGetRequest(url, nil, emptyJson, false))
+	time.Sleep(1 * time.Second)
+
+	unloadNiAftsRoute("Vrf1:fc00:63::/64")
 }
 
 // A prefix with no route behind it is an empty result rather than an error, so
