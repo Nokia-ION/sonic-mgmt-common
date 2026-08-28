@@ -7,6 +7,7 @@ module openconfig-system-annot {
 
     import openconfig-system { prefix oc-sys; }
     import openconfig-system-logging { prefix oc-log; }
+    import openconfig-system-ext { prefix oc-sys-ext; }
     import sonic-extensions {prefix sonic-ext; }
     import openconfig-system-grpc { prefix oc-sys-grpc; }
     import gnsi-pathz { prefix gnsi-pathz; }
@@ -91,12 +92,6 @@ module openconfig-system-annot {
         }
     }
 
-    deviation /oc-sys:system/oc-sys:ntp/oc-sys:config/oc-sys:enabled {
-        deviate add {
-            sonic-ext:field-name "ntp_enabled";
-        }
-    }
-
     deviation /oc-sys:system/oc-sys:ntp/oc-sys:state/oc-sys:enabled {
         deviate add {
             sonic-ext:field-name "ntp_enabled";
@@ -107,15 +102,34 @@ module openconfig-system-annot {
         deviate not-supported;
     }
 
-    deviation /oc-sys:system/oc-sys:ntp/oc-sys:config/oc-sys:enable-ntp-auth {
+    deviation /oc-sys:system/oc-sys:ntp/oc-sys:state/oc-sys:enable-ntp-auth {
         deviate add {
             sonic-ext:field-name "auth_enabled";
         }
     }
 
-    deviation /oc-sys:system/oc-sys:ntp/oc-sys:state/oc-sys:enable-ntp-auth {
+    /* NTP global config (source-interface, openconfig-system-ext) is handled by
+       a subtree transformer that maps to NTP|global. */
+    deviation /oc-sys:system/oc-sys:ntp/oc-sys:config {
         deviate add {
-            sonic-ext:field-name "auth_enabled";
+            sonic-ext:subtree-transformer "ntp_config_xfmr";
+        }
+    }
+
+    /* NTP operational-state source-interface mirrors the config value. Bind the
+       state container to NTP|global explicitly (the base oc-system state leaves
+       have no working SONiC mapping on this platform) so source-interface is
+       returned on GET from the same src_intf field the config path writes. */
+    deviation /oc-sys:system/oc-sys:ntp/oc-sys:state {
+        deviate add {
+            sonic-ext:table-name "NTP";
+            sonic-ext:key-name "global";
+        }
+    }
+
+    deviation /oc-sys:system/oc-sys:ntp/oc-sys:state/oc-sys-ext:source-interface {
+        deviate add {
+            sonic-ext:field-name "src_intf";
         }
     }
 
@@ -161,6 +175,30 @@ module openconfig-system-annot {
     deviation /oc-sys:system/oc-log:logging/oc-log:remote-servers/oc-log:remote-server/oc-log:state/oc-log:host {
       deviate add {
           sonic-ext:field-transformer "syslog_server_ip_fld_xfmr";
+      }
+    }
+
+    /* Global logging source-interface (openconfig-system-ext) is handled by a
+       subtree transformer that maps to SYSLOG_CONFIG|GLOBAL:src_intf. */
+    deviation /oc-sys:system/oc-log:logging/oc-sys-ext:config {
+      deviate add {
+        sonic-ext:subtree-transformer "logging_config_xfmr";
+      }
+    }
+
+    /* Global logging operational-state extensions live in a dedicated ext
+       container with no base-model backing, so bind it to SYSLOG_CONFIG|GLOBAL
+       explicitly. source-interface then mirrors the configured src_intf. */
+    deviation /oc-sys:system/oc-log:logging/oc-sys-ext:state {
+      deviate add {
+        sonic-ext:table-name "SYSLOG_CONFIG";
+        sonic-ext:key-name "GLOBAL";
+      }
+    }
+
+    deviation /oc-sys:system/oc-log:logging/oc-sys-ext:state/oc-sys-ext:source-interface {
+      deviate add {
+        sonic-ext:field-name "src_intf";
       }
     }
 }
