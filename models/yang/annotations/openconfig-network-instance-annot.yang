@@ -201,6 +201,70 @@ module openconfig-network-instance-annot {
       }
     }
 
+    // The remaining state leaves report the neighbor configuration as FRR
+    // applied it, from BGP_NEIGH_APPLIED. They are served by the same
+    // transformer as session-state because they share the state container, and
+    // translib stops descending once a subtree transformer claims a node.
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:bgp/oc-netinst:neighbors/oc-netinst:neighbor/oc-netinst:state/oc-netinst:enabled {
+      deviate add {
+          sonic-ext:db-name "STATE_DB";
+          sonic-ext:subtree-transformer "ni_bgp_nbr_state_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:bgp/oc-netinst:neighbors/oc-netinst:neighbor/oc-netinst:state/oc-netinst:neighbor-address {
+      deviate add {
+          sonic-ext:db-name "STATE_DB";
+          sonic-ext:subtree-transformer "ni_bgp_nbr_state_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:bgp/oc-netinst:neighbors/oc-netinst:neighbor/oc-netinst:state/oc-netinst:peer-as {
+      deviate add {
+          sonic-ext:db-name "STATE_DB";
+          sonic-ext:subtree-transformer "ni_bgp_nbr_state_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:bgp/oc-netinst:neighbors/oc-netinst:neighbor/oc-netinst:state/oc-netinst:peer-group {
+      deviate add {
+          sonic-ext:db-name "STATE_DB";
+          sonic-ext:subtree-transformer "ni_bgp_nbr_state_xfmr";
+      }
+    }
+
+    // The applied transport addresses come from the same row, so the transport
+    // subtree is annotated onto the same transformer. Without an annotation
+    // here the nearest annotated ancestor is the neighbor list, whose dispatch
+    // maps CONFIG_DB only and would report nothing for these leaves.
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:bgp/oc-netinst:neighbors/oc-netinst:neighbor/oc-netinst:transport {
+      deviate add {
+          sonic-ext:db-name "STATE_DB";
+          sonic-ext:subtree-transformer "ni_bgp_nbr_state_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:bgp/oc-netinst:neighbors/oc-netinst:neighbor/oc-netinst:transport/oc-netinst:state {
+      deviate add {
+          sonic-ext:db-name "STATE_DB";
+          sonic-ext:subtree-transformer "ni_bgp_nbr_state_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:bgp/oc-netinst:neighbors/oc-netinst:neighbor/oc-netinst:transport/oc-netinst:state/oc-netinst:local-address {
+      deviate add {
+          sonic-ext:db-name "STATE_DB";
+          sonic-ext:subtree-transformer "ni_bgp_nbr_state_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:bgp/oc-netinst:neighbors/oc-netinst:neighbor/oc-netinst:transport/oc-netinst:state/oc-netinst:remote-address {
+      deviate add {
+          sonic-ext:db-name "STATE_DB";
+          sonic-ext:subtree-transformer "ni_bgp_nbr_state_xfmr";
+      }
+    }
+
     deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:bgp/oc-netinst:neighbors/oc-netinst:neighbor/oc-netinst:as-path-options/oc-netinst:config {
       deviate add {
           sonic-ext:db-name "CONFIG_DB";
