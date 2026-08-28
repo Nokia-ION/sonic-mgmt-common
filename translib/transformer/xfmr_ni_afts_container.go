@@ -55,7 +55,14 @@ var DbToYang_ni_afts_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) error 
 	if err := niAftsPopulateNextHopGroups(inParams.ygRoot, niName, appDb, niAftsGroupFilter{}); err != nil {
 		return err
 	}
-	return niAftsPopulateEntries(inParams.ygRoot, niName, appDb, true, false, "")
+	// Both entry lists are filled, because the container covers every family it
+	// has children for. Asking for one only would drop every IPv6 route from a
+	// request on the container while a request anchored on the ipv6-unicast list
+	// itself still reported them.
+	if err := niAftsPopulateEntries(inParams.ygRoot, niName, appDb, true, false, ""); err != nil {
+		return err
+	}
+	return niAftsPopulateEntries(inParams.ygRoot, niName, appDb, false, false, "")
 }
 
 var Subscribe_ni_afts_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSubscInParams) (XfmrSubscOutParams, error) {
