@@ -712,4 +712,51 @@ module openconfig-network-instance-annot {
       }
     }
 
+    // ROUTE_TABLE holds both address families in one table, so the IPv6 entry
+    // list is served by the same transformer as the IPv4 one and differs only
+    // in the family it filters the rows on.
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:afts/oc-netinst:ipv6-unicast {
+      deviate add {
+          sonic-ext:virtual-table "true";
+          sonic-ext:db-name "APPL_DB";
+          sonic-ext:subtree-transformer "ni_afts_entries_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:afts/oc-netinst:ipv6-unicast/oc-netinst:ipv6-entry {
+      deviate add {
+          sonic-ext:virtual-table "true";
+          sonic-ext:db-name "APPL_DB";
+          sonic-ext:subtree-transformer "ni_afts_entries_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:afts/oc-netinst:ipv6-unicast/oc-netinst:ipv6-entry/oc-netinst:prefix {
+      deviate add {
+          sonic-ext:db-name "APPL_DB";
+          sonic-ext:subtree-transformer "ni_afts_entries_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:afts/oc-netinst:ipv6-unicast/oc-netinst:ipv6-entry/oc-netinst:state {
+      deviate add {
+          sonic-ext:db-name "APPL_DB";
+          sonic-ext:subtree-transformer "ni_afts_entries_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:afts/oc-netinst:ipv6-unicast/oc-netinst:ipv6-entry/oc-netinst:state/oc-netinst:prefix {
+      deviate add {
+          sonic-ext:db-name "APPL_DB";
+          sonic-ext:subtree-transformer "ni_afts_entries_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:afts/oc-netinst:ipv6-unicast/oc-netinst:ipv6-entry/oc-netinst:state/oc-netinst:next-hop-group {
+      deviate add {
+          sonic-ext:db-name "APPL_DB";
+          sonic-ext:subtree-transformer "ni_afts_entries_xfmr";
+      }
+    }
+
 }
