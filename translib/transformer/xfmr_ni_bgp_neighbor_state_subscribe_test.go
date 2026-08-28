@@ -52,6 +52,7 @@ func TestSubscribe_ni_bgp_nbr_state_paths(t *testing.T) {
 		wantPType    NotificationType
 		wantStateKey string // NEIGH_STATE_TABLE key, "" when the table must be absent
 		wantApplKey  string // BGP_NEIGH_APPLIED key, "" when the table must be absent
+		wantStatsKey string // BGP_NEIGH_STATS key, "" when the table must be absent
 	}{
 		// The Phase 1 guarantee. An on-change subscription on session-state
 		// reads NEIGH_STATE_TABLE alone, and must not also watch
@@ -82,6 +83,7 @@ func TestSubscribe_ni_bgp_nbr_state_paths(t *testing.T) {
 			wantPType:    Sample,
 			wantStateKey: "11.0.0.155",
 			wantApplKey:  "default|11.0.0.155",
+			wantStatsKey: "default|11.0.0.155",
 		},
 		{
 			name:         "applied state leaf is sampled",
@@ -91,6 +93,43 @@ func TestSubscribe_ni_bgp_nbr_state_paths(t *testing.T) {
 			wantPType:    Sample,
 			wantStateKey: "11.0.0.155",
 			wantApplKey:  "default|11.0.0.155",
+			wantStatsKey: "default|11.0.0.155",
+		},
+		{
+			name:         "counter state leaf is sampled",
+			uri:          niBgpNbrSubscNbrUrl + "/state",
+			requestURI:   niBgpNbrSubscNbrUrl + "/state/established-transitions",
+			wantOnChange: OnchangeDisable,
+			wantPType:    Sample,
+			wantStateKey: "11.0.0.155",
+			wantApplKey:  "default|11.0.0.155",
+			wantStatsKey: "default|11.0.0.155",
+		},
+		// The message counters read BGP_NEIGH_STATS alone, so they register
+		// neither of the other two tables.
+		{
+			name:         "messages container is sampled from the stats table only",
+			uri:          niBgpNbrSubscNbrUrl + "/state/messages",
+			requestURI:   niBgpNbrSubscNbrUrl + "/state/messages",
+			wantOnChange: OnchangeDisable,
+			wantPType:    Sample,
+			wantStatsKey: "default|11.0.0.155",
+		},
+		{
+			name:         "messages direction container is sampled",
+			uri:          niBgpNbrSubscNbrUrl + "/state/messages/sent",
+			requestURI:   niBgpNbrSubscNbrUrl + "/state/messages/sent",
+			wantOnChange: OnchangeDisable,
+			wantPType:    Sample,
+			wantStatsKey: "default|11.0.0.155",
+		},
+		{
+			name:         "messages UPDATE leaf is sampled",
+			uri:          niBgpNbrSubscNbrUrl + "/state/messages/received",
+			requestURI:   niBgpNbrSubscNbrUrl + "/state/messages/received/UPDATE",
+			wantOnChange: OnchangeDisable,
+			wantPType:    Sample,
+			wantStatsKey: "default|11.0.0.155",
 		},
 		// transport reads the applied table only, so it never registers
 		// NEIGH_STATE_TABLE.
@@ -120,6 +159,7 @@ func TestSubscribe_ni_bgp_nbr_state_paths(t *testing.T) {
 			wantPType:    Sample,
 			wantStateKey: "11.0.0.155",
 			wantApplKey:  "default|11.0.0.155",
+			wantStatsKey: "default|11.0.0.155",
 		},
 		// verifyParentTblSubtree reaches this callback with requestURI unset
 		// and an untrimmed uri, so the leaf has to be read from uri there.
@@ -180,6 +220,15 @@ func TestSubscribe_ni_bgp_nbr_state_paths(t *testing.T) {
 			} else if _, ok := applTbl[tc.wantApplKey]; !ok {
 				t.Fatalf("missing %s[%s]: %v", niBgpNbrAppliedTbl, tc.wantApplKey, out.dbDataMap)
 			}
+
+			statsTbl, hasStatsTbl := out.dbDataMap[db.StateDB][niBgpNbrStatsTbl]
+			if tc.wantStatsKey == "" {
+				if hasStatsTbl {
+					t.Fatalf("unexpected %s mapping: %v", niBgpNbrStatsTbl, out.dbDataMap)
+				}
+			} else if _, ok := statsTbl[tc.wantStatsKey]; !ok {
+				t.Fatalf("missing %s[%s]: %v", niBgpNbrStatsTbl, tc.wantStatsKey, out.dbDataMap)
+			}
 		})
 	}
 }
@@ -201,6 +250,20 @@ func TestSubscribe_ni_bgp_nbr_state_applied_key_carries_network_instance(t *test
 	}
 	if _, ok := out.dbDataMap[db.StateDB][niBgpNbrAppliedTbl]["Vrf1|11.0.0.155"]; !ok {
 		t.Fatalf("missing %s[Vrf1|11.0.0.155]: %v", niBgpNbrAppliedTbl, out.dbDataMap)
+	}
+
+	// BGP_NEIGH_STATS is keyed the same way, and the messages subtree is the
+	// only path that reads it on its own.
+	out, err = Subscribe_ni_bgp_nbr_state_xfmr(XfmrSubscInParams{
+		uri:        vrfNbrUrl + "/state/messages/sent",
+		requestURI: vrfNbrUrl + "/state/messages/sent/UPDATE",
+		subscProc:  TRANSLATE_SUBSCRIBE,
+	})
+	if err != nil {
+		t.Fatalf("Subscribe_ni_bgp_nbr_state_xfmr failed: %v", err)
+	}
+	if _, ok := out.dbDataMap[db.StateDB][niBgpNbrStatsTbl]["Vrf1|11.0.0.155"]; !ok {
+		t.Fatalf("missing %s[Vrf1|11.0.0.155]: %v", niBgpNbrStatsTbl, out.dbDataMap)
 	}
 }
 

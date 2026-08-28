@@ -233,6 +233,63 @@ module openconfig-network-instance-annot {
       }
     }
 
+    // The per-session counters come from BGP_NEIGH_STATS, written by the same
+    // bgpmon scrape that fills BGP_NEIGH_APPLIED. They are annotated onto the
+    // same transformer for the same reason as the applied leaves: they share
+    // the state container, which the transformer already claims.
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:bgp/oc-netinst:neighbors/oc-netinst:neighbor/oc-netinst:state/oc-netinst:established-transitions {
+      deviate add {
+          sonic-ext:db-name "STATE_DB";
+          sonic-ext:subtree-transformer "ni_bgp_nbr_state_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:bgp/oc-netinst:neighbors/oc-netinst:neighbor/oc-netinst:state/oc-netinst:last-established {
+      deviate add {
+          sonic-ext:db-name "STATE_DB";
+          sonic-ext:subtree-transformer "ni_bgp_nbr_state_xfmr";
+      }
+    }
+
+    // The message counters sit below their own container rather than off the
+    // state container, so each level is annotated. Only the UPDATE counters are
+    // mapped; the NOTIFICATION counters and the last-notification leaves are
+    // left unannotated, since bgpmon does not publish them.
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:bgp/oc-netinst:neighbors/oc-netinst:neighbor/oc-netinst:state/oc-netinst:messages {
+      deviate add {
+          sonic-ext:db-name "STATE_DB";
+          sonic-ext:subtree-transformer "ni_bgp_nbr_state_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:bgp/oc-netinst:neighbors/oc-netinst:neighbor/oc-netinst:state/oc-netinst:messages/oc-netinst:sent {
+      deviate add {
+          sonic-ext:db-name "STATE_DB";
+          sonic-ext:subtree-transformer "ni_bgp_nbr_state_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:bgp/oc-netinst:neighbors/oc-netinst:neighbor/oc-netinst:state/oc-netinst:messages/oc-netinst:sent/oc-netinst:UPDATE {
+      deviate add {
+          sonic-ext:db-name "STATE_DB";
+          sonic-ext:subtree-transformer "ni_bgp_nbr_state_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:bgp/oc-netinst:neighbors/oc-netinst:neighbor/oc-netinst:state/oc-netinst:messages/oc-netinst:received {
+      deviate add {
+          sonic-ext:db-name "STATE_DB";
+          sonic-ext:subtree-transformer "ni_bgp_nbr_state_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:bgp/oc-netinst:neighbors/oc-netinst:neighbor/oc-netinst:state/oc-netinst:messages/oc-netinst:received/oc-netinst:UPDATE {
+      deviate add {
+          sonic-ext:db-name "STATE_DB";
+          sonic-ext:subtree-transformer "ni_bgp_nbr_state_xfmr";
+      }
+    }
+
     // The applied transport addresses come from the same row, so the transport
     // subtree is annotated onto the same transformer. Without an annotation
     // here the nearest annotated ancestor is the neighbor list, whose dispatch

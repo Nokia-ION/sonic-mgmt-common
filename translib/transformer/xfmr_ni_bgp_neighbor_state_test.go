@@ -426,3 +426,224 @@ func Test_openconfig_network_instance_bgp_neighbor_applied_invalid_values_reject
 	time.Sleep(1 * time.Second)
 	unloadNiBgpNbrApplied("11.0.0.155")
 }
+
+const niBgpNbrMessagesUrl = niBgpNbrStateUrl + "/messages"
+
+// niBgpNbrStatsRow is the counter row bgpmon publishes for the lab peer, with
+// every mapped field present. last_established carries FRR's epoch in seconds,
+// which is what FRR reports; the leaf is defined in nanoseconds.
+func niBgpNbrStatsRow() map[string]interface{} {
+	return map[string]interface{}{
+		"established_transitions": "3",
+		"last_established":        "1756400000",
+		"updates_received":        "87",
+		"updates_sent":            "120",
+	}
+}
+
+// loadNiBgpNbrStats writes one counter row along with a current marker. The
+// counters are gated on the same marker as the applied row, because a single
+// vtysh scrape fills both tables.
+func loadNiBgpNbrStats(neighborAddr string, fields map[string]interface{}) {
+	loadNiBgpNbrAppliedMarker(time.Now().Unix())
+	loadDB(db.StateDB, map[string]interface{}{
+		"BGP_NEIGH_STATS": map[string]interface{}{
+			niBgpNbrAppliedNi + "|" + neighborAddr: fields,
+		},
+	})
+	time.Sleep(1 * time.Second)
+}
+
+func unloadNiBgpNbrStats(neighborAddr string) {
+	unloadDB(db.StateDB, map[string]interface{}{
+		"BGP_NEIGH_STATS": map[string]interface{}{
+			niBgpNbrAppliedNi + "|" + neighborAddr: "",
+		},
+		"BGP_NEIGH_APPLIED_META": map[string]interface{}{"global": ""},
+	})
+}
+
+func Test_openconfig_network_instance_bgp_neighbor_stats_state_leaves(t *testing.T) {
+	unloadNiBgpNbrState("11.0.0.155")
+	loadNiBgpNbrStats("11.0.0.155", niBgpNbrStatsRow())
+
+	// Both counters are uint64, which RFC7951 encodes as a JSON string. The
+	// uint32 peer-as above is a bare number, so the quoting is not incidental.
+	t.Run("GET BGP neighbor established-transitions leaf",
+		processGetRequest(niBgpNbrStateUrl+"/established-transitions", nil,
+			`{"openconfig-network-instance:established-transitions":"3"}`, false))
+	time.Sleep(1 * time.Second)
+
+	// The producer stores FRR's 1756400000 seconds unscaled, so this also
+	// checks the conversion rather than just the plumbing.
+	t.Run("GET BGP neighbor last-established leaf scaled to nanoseconds",
+		processGetRequest(niBgpNbrStateUrl+"/last-established", nil,
+			`{"openconfig-network-instance:last-established":"1756400000000000000"}`, false))
+	time.Sleep(1 * time.Second)
+
+	unloadNiBgpNbrStats("11.0.0.155")
+}
+
+// The message counters are reached at four different depths, and each one is
+// annotated separately. A missing annotation at any level would leave that
+// request to the BGP container dispatch, which maps CONFIG_DB and would report
+// nothing.
+func Test_openconfig_network_instance_bgp_neighbor_stats_message_counters(t *testing.T) {
+	unloadNiBgpNbrState("11.0.0.155")
+	loadNiBgpNbrStats("11.0.0.155", niBgpNbrStatsRow())
+
+	t.Run("GET BGP neighbor messages sent UPDATE leaf",
+		processGetRequest(niBgpNbrMessagesUrl+"/sent/UPDATE", nil,
+			`{"openconfig-network-instance:UPDATE":"120"}`, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET BGP neighbor messages received UPDATE leaf",
+		processGetRequest(niBgpNbrMessagesUrl+"/received/UPDATE", nil,
+			`{"openconfig-network-instance:UPDATE":"87"}`, false))
+	time.Sleep(1 * time.Second)
+
+	// A direction container must report its own counter only, not its sibling's.
+	t.Run("GET BGP neighbor messages sent container",
+		processGetRequest(niBgpNbrMessagesUrl+"/sent", nil,
+			`{"openconfig-network-instance:sent":{"UPDATE":"120"}}`, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET BGP neighbor messages received container",
+		processGetRequest(niBgpNbrMessagesUrl+"/received", nil,
+			`{"openconfig-network-instance:received":{"UPDATE":"87"}}`, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET BGP neighbor messages container",
+		processGetRequest(niBgpNbrMessagesUrl, nil,
+			`{"openconfig-network-instance:messages":{"sent":{"UPDATE":"120"},`+
+				`"received":{"UPDATE":"87"}}}`, false))
+	time.Sleep(1 * time.Second)
+
+	unloadNiBgpNbrStats("11.0.0.155")
+}
+
+// The state container is now filled from three independent tables. A request
+// for the container has to reach the counters below messages as well, since no
+// separate callback runs for them.
+func Test_openconfig_network_instance_bgp_neighbor_state_container_with_counters(t *testing.T) {
+	loadNiBgpNbrState("11.0.0.155", "Established")
+	loadNiBgpNbrApplied("11.0.0.155", niBgpNbrAppliedRow())
+	loadNiBgpNbrStats("11.0.0.155", niBgpNbrStatsRow())
+
+	expectedGetJSON := `{"openconfig-network-instance:state":{"session-state":"ESTABLISHED",` +
+		`"enabled":true,"neighbor-address":"11.0.0.155","peer-as":65300,"peer-group":"PG1",` +
+		`"established-transitions":"3","last-established":"1756400000000000000",` +
+		`"messages":{"sent":{"UPDATE":"120"},"received":{"UPDATE":"87"}}}}`
+	t.Run("GET BGP neighbor state container across all three tables",
+		processGetRequest(niBgpNbrStateUrl, nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	unloadNiBgpNbrStats("11.0.0.155")
+	unloadNiBgpNbrApplied("11.0.0.155")
+	unloadNiBgpNbrState("11.0.0.155")
+}
+
+// bgpmon omits a counter FRR does not report, which is what lets an absent leaf
+// mean "FRR has no value here". FRR drops bgpTimerUpEstablishedEpoch as soon as
+// the session leaves Established, and reports no messageStats at all for a peer
+// that has never opened one.
+func Test_openconfig_network_instance_bgp_neighbor_stats_absent_fields(t *testing.T) {
+	unloadNiBgpNbrState("11.0.0.155")
+	loadNiBgpNbrStats("11.0.0.155", map[string]interface{}{
+		"established_transitions": "0",
+	})
+
+	// Zero is a real count and must not be confused with an absent field: a
+	// peer that has never come up reports zero transitions, not none.
+	t.Run("GET BGP neighbor established-transitions of zero",
+		processGetRequest(niBgpNbrStateUrl+"/established-transitions", nil,
+			`{"openconfig-network-instance:established-transitions":"0"}`, false))
+	time.Sleep(1 * time.Second)
+
+	// A targeted node the transformer populates nothing for is refused rather
+	// than answered empty. That is what makes the absence meaningful: before
+	// the transformer learned to leave the state container alone here, translib
+	// filled the leaf with its type's zero value and reported a session that
+	// has never come up as having come up at the epoch.
+	expNotFound := tlerr.NotFoundError{Format: "Resource not found"}
+	t.Run("GET BGP neighbor last-established with the session down",
+		processGetRequest(niBgpNbrStateUrl+"/last-established", nil, "", true, expNotFound))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET BGP neighbor messages container with no counters published",
+		processGetRequest(niBgpNbrMessagesUrl, nil, "", true, expNotFound))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET BGP neighbor state container with only one counter published",
+		processGetRequest(niBgpNbrStateUrl, nil,
+			`{"openconfig-network-instance:state":{"established-transitions":"0"}}`, false))
+	time.Sleep(1 * time.Second)
+
+	unloadNiBgpNbrStats("11.0.0.155")
+}
+
+// Counters left behind by a producer that has stopped are not reported. A
+// client watching update activity cannot otherwise tell a quiet session from a
+// dead producer, since both leave the number unchanged.
+func Test_openconfig_network_instance_bgp_neighbor_stats_stale_marker_suppressed(t *testing.T) {
+	loadNiBgpNbrState("11.0.0.155", "Established")
+	loadNiBgpNbrStats("11.0.0.155", niBgpNbrStatsRow())
+	// Older than four of bgpmon's fifteen second poll intervals.
+	loadNiBgpNbrAppliedMarker(time.Now().Unix() - 300)
+	time.Sleep(1 * time.Second)
+
+	expNotFound := tlerr.NotFoundError{Format: "Resource not found"}
+	t.Run("GET BGP neighbor established-transitions with a stale freshness marker",
+		processGetRequest(niBgpNbrStateUrl+"/established-transitions", nil, "", true, expNotFound))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET BGP neighbor messages container with a stale freshness marker",
+		processGetRequest(niBgpNbrMessagesUrl, nil, "", true, expNotFound))
+	time.Sleep(1 * time.Second)
+
+	// Suppression is scoped to the tables behind the marker. session-state
+	// comes from a different table filled by a different scrape.
+	t.Run("GET BGP neighbor state container with a stale freshness marker",
+		processGetRequest(niBgpNbrStateUrl, nil,
+			`{"openconfig-network-instance:state":{"session-state":"ESTABLISHED"}}`, false))
+	time.Sleep(1 * time.Second)
+
+	unloadNiBgpNbrStats("11.0.0.155")
+	unloadNiBgpNbrState("11.0.0.155")
+}
+
+// A counter value the producer should never publish is rejected rather than
+// reported as a plausible number, the same treatment the applied leaves give an
+// unparseable value.
+func Test_openconfig_network_instance_bgp_neighbor_stats_invalid_values_rejected(t *testing.T) {
+	unloadNiBgpNbrState("11.0.0.155")
+
+	loadNiBgpNbrStats("11.0.0.155", map[string]interface{}{"established_transitions": "many"})
+	expErr := tlerr.InvalidArgsError{
+		Format: "unrecognized BGP_NEIGH_STATS.established_transitions value \"many\" for neighbor 11.0.0.155",
+	}
+	t.Run("GET BGP neighbor established-transitions with an unparseable counter",
+		processGetRequest(niBgpNbrStateUrl+"/established-transitions", nil, "", true, expErr))
+	time.Sleep(1 * time.Second)
+	unloadNiBgpNbrStats("11.0.0.155")
+
+	loadNiBgpNbrStats("11.0.0.155", map[string]interface{}{"updates_sent": "lots"})
+	expErr = tlerr.InvalidArgsError{
+		Format: "unrecognized BGP_NEIGH_STATS.updates_sent value \"lots\" for neighbor 11.0.0.155",
+	}
+	t.Run("GET BGP neighbor messages sent UPDATE with an unparseable counter",
+		processGetRequest(niBgpNbrMessagesUrl+"/sent/UPDATE", nil, "", true, expErr))
+	time.Sleep(1 * time.Second)
+	unloadNiBgpNbrStats("11.0.0.155")
+
+	// An epoch this large would wrap when scaled to nanoseconds. Reporting the
+	// wrapped value would give a timestamp that looks entirely reasonable.
+	loadNiBgpNbrStats("11.0.0.155", map[string]interface{}{"last_established": "18446744074"})
+	expErr = tlerr.InvalidArgsError{
+		Format: "BGP_NEIGH_STATS.last_established value 18446744074 for neighbor 11.0.0.155 does not fit a nanosecond timestamp",
+	}
+	t.Run("GET BGP neighbor last-established with an epoch that overflows nanoseconds",
+		processGetRequest(niBgpNbrStateUrl+"/last-established", nil, "", true, expErr))
+	time.Sleep(1 * time.Second)
+	unloadNiBgpNbrStats("11.0.0.155")
+}
