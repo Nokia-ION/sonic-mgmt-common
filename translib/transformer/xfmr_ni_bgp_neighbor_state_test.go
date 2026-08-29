@@ -120,8 +120,11 @@ func Test_openconfig_network_instance_bgp_neighbor_state_absent(t *testing.T) {
 	unloadNiBgpNbrState("11.0.0.155")
 	time.Sleep(1 * time.Second)
 
+	// A request naming one leaf that nothing populated is answered as NotFound,
+	// unlike a container request, which is answered as empty.
 	t.Run("GET BGP neighbor session-state with no state published",
-		processGetRequest(niBgpNbrStateUrl+"/session-state", nil, `{}`, false))
+		processGetRequest(niBgpNbrStateUrl+"/session-state", nil, "", true,
+			tlerr.NotFoundError{Format: "Resource not found"}))
 	time.Sleep(1 * time.Second)
 }
 
@@ -257,12 +260,15 @@ func Test_openconfig_network_instance_bgp_neighbor_applied_absent_fields(t *test
 		"remote_address":   "11.0.0.155",
 	})
 
+	// A peer in no peer group has no peer_group field, and reporting the empty
+	// string instead would name a group that does not exist.
+	notFound := tlerr.NotFoundError{Format: "Resource not found"}
 	t.Run("GET BGP neighbor applied peer-group for a peer in no group",
-		processGetRequest(niBgpNbrStateUrl+"/peer-group", nil, `{}`, false))
+		processGetRequest(niBgpNbrStateUrl+"/peer-group", nil, "", true, notFound))
 	time.Sleep(1 * time.Second)
 
 	t.Run("GET BGP neighbor applied local-address when FRR bound none",
-		processGetRequest(niBgpNbrTransportUrl+"/state/local-address", nil, `{}`, false))
+		processGetRequest(niBgpNbrTransportUrl+"/state/local-address", nil, "", true, notFound))
 	time.Sleep(1 * time.Second)
 
 	expectedGetJSON := `{"openconfig-network-instance:state":` +
@@ -339,7 +345,8 @@ func Test_openconfig_network_instance_bgp_neighbor_applied_stale_marker_suppress
 	time.Sleep(1 * time.Second)
 
 	t.Run("GET BGP neighbor applied enabled with a stale freshness marker",
-		processGetRequest(niBgpNbrStateUrl+"/enabled", nil, `{}`, false))
+		processGetRequest(niBgpNbrStateUrl+"/enabled", nil, "", true,
+			tlerr.NotFoundError{Format: "Resource not found"}))
 	time.Sleep(1 * time.Second)
 
 	t.Run("GET BGP neighbor applied transport state with a stale freshness marker",
@@ -366,7 +373,8 @@ func Test_openconfig_network_instance_bgp_neighbor_applied_unusable_marker_suppr
 	unloadNiBgpNbrAppliedMarker()
 	time.Sleep(1 * time.Second)
 	t.Run("GET BGP neighbor applied enabled with no freshness marker",
-		processGetRequest(niBgpNbrStateUrl+"/enabled", nil, `{}`, false))
+		processGetRequest(niBgpNbrStateUrl+"/enabled", nil, "", true,
+			tlerr.NotFoundError{Format: "Resource not found"}))
 	time.Sleep(1 * time.Second)
 
 	t.Run("GET BGP neighbor state container with no freshness marker",
@@ -380,7 +388,8 @@ func Test_openconfig_network_instance_bgp_neighbor_applied_unusable_marker_suppr
 	})
 	time.Sleep(1 * time.Second)
 	t.Run("GET BGP neighbor applied enabled with an unparseable freshness marker",
-		processGetRequest(niBgpNbrStateUrl+"/enabled", nil, `{}`, false))
+		processGetRequest(niBgpNbrStateUrl+"/enabled", nil, "", true,
+			tlerr.NotFoundError{Format: "Resource not found"}))
 	time.Sleep(1 * time.Second)
 
 	unloadNiBgpNbrApplied("11.0.0.155")
@@ -570,8 +579,10 @@ func Test_openconfig_network_instance_bgp_neighbor_stats_absent_fields(t *testin
 		processGetRequest(niBgpNbrStateUrl+"/last-established", nil, "", true, expNotFound))
 	time.Sleep(1 * time.Second)
 
+	// A container that nothing populated is answered as empty, unlike a request
+	// naming one leaf, which is answered as NotFound.
 	t.Run("GET BGP neighbor messages container with no counters published",
-		processGetRequest(niBgpNbrMessagesUrl, nil, "", true, expNotFound))
+		processGetRequest(niBgpNbrMessagesUrl, nil, "{}", false))
 	time.Sleep(1 * time.Second)
 
 	t.Run("GET BGP neighbor state container with only one counter published",
@@ -598,7 +609,7 @@ func Test_openconfig_network_instance_bgp_neighbor_stats_stale_marker_suppressed
 	time.Sleep(1 * time.Second)
 
 	t.Run("GET BGP neighbor messages container with a stale freshness marker",
-		processGetRequest(niBgpNbrMessagesUrl, nil, "", true, expNotFound))
+		processGetRequest(niBgpNbrMessagesUrl, nil, "{}", false))
 	time.Sleep(1 * time.Second)
 
 	// Suppression is scoped to the tables behind the marker. session-state
