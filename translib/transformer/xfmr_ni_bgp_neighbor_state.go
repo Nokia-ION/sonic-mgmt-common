@@ -127,13 +127,15 @@ const niBgpNbrStateUriPfx = `^/openconfig-network-instance:network-instances/net
 	`/protocols/protocol\[identifier=(?:[-A-Za-z0-9_.]+:)?BGP\]\[name=([^\]]+)\]` +
 	`/bgp/neighbors/neighbor\[neighbor-address=([^\]]+)\]`
 
-// niBgpNbrAppliedStateLeaves are the leaves of the state container that come
-// from BGP_NEIGH_APPLIED rather than from NEIGH_STATE_TABLE.
-var niBgpNbrAppliedStateLeaves = map[string]bool{
-	niBgpNbrEnabledLeaf: true,
-	niBgpNbrNbrAddrLeaf: true,
-	niBgpNbrPeerAsLeaf:  true,
-	niBgpNbrPeerGrpLeaf: true,
+// niBgpNbrAppliedFldForLeaf maps the leaves of the state container that come
+// from BGP_NEIGH_APPLIED, rather than from NEIGH_STATE_TABLE, onto their
+// producer field. The transport leaves are not listed because they hang below
+// the transport container rather than off the state container.
+var niBgpNbrAppliedFldForLeaf = map[string]string{
+	niBgpNbrEnabledLeaf: niBgpNbrAppliedEnabledFld,
+	niBgpNbrNbrAddrLeaf: niBgpNbrAppliedNbrAddrFld,
+	niBgpNbrPeerAsLeaf:  niBgpNbrAppliedPeerAsFld,
+	niBgpNbrPeerGrpLeaf: niBgpNbrAppliedPeerGrpFld,
 }
 
 // niBgpNbrStatsFldForLeaf maps the leaves of the state container that come from
@@ -645,12 +647,25 @@ func populateNiBgpNbrStateFromDb(inParams XfmrParams, stateDb *db.DB, reqInfo *n
 
 	var appliedEntry db.Value
 	appliedFound := false
-	if reqInfo.targetLeaf == "" || niBgpNbrAppliedStateLeaves[reqInfo.targetLeaf] {
+	appliedFld, appliedLeafTargeted := niBgpNbrAppliedFldForLeaf[reqInfo.targetLeaf]
+	if reqInfo.targetLeaf == "" || appliedLeafTargeted {
 		entry, found, err := niBgpNbrAppliedFresh(stateDb, reqInfo.niName, reqInfo.neighborAddr)
 		if err != nil {
 			return err
 		}
 		appliedEntry, appliedFound = entry, found
+
+		// A request for one applied leaf that FRR is not reporting must not
+		// reach the point of creating the state container, for the same reason
+		// as the counters below: translib fills a targeted leaf with its type's
+		// zero value once the container exists, so a peer-group that the
+		// producer omitted because the peer is in no group would be reported as
+		// the empty string rather than as absent.
+		if appliedFound && appliedLeafTargeted {
+			if _, present := niBgpNbrAppliedStr(entry, appliedFld); !present {
+				appliedFound = false
+			}
+		}
 	}
 
 	var statsEntry db.Value
