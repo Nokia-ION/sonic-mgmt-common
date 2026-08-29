@@ -72,6 +72,44 @@ func Test_AclApp_SingleAclOperations(t *testing.T) {
 	t.Run("Verify_One_Acl_Delete", processGetRequest(url, "", true))
 }
 
+// processGetContentRequest issues a GET with the content query parameter, which
+// is how a gNMI Get of type CONFIG/STATE/OPERATIONAL reaches an app.
+func processGetContentRequest(url, content, expectedRespJson string, errorCase bool) func(*testing.T) {
+	return func(t *testing.T) {
+		req := GetRequest{Path: url, QueryParams: QueryParameters{Content: content}}
+		verifyGet(t, req, expectedRespJson, errorCase)
+	}
+}
+
+func Test_AclApp_GetContentFilter(t *testing.T) {
+	aclUrl := "/openconfig-acl:acl/acl-sets/acl-set[name=MyACL5][type=ACL_IPV4]"
+	ruleUrl := aclUrl + "/acl-entries/acl-entry[sequence-id=8]"
+
+	t.Run("Create_One_Acl_Without_Rule", processSetRequest(aclUrl, oneAclCreateJsonRequest, "POST", false))
+	t.Run("Get_All_Unchanged", processGetRequest(aclUrl, oneAclCreateJsonResponse, false))
+	t.Run("Get_State", processGetContentRequest(aclUrl,
+		QueryParametersContentState, oneAclCreateJsonStateResponse, false))
+	t.Run("Get_Config", processGetContentRequest(aclUrl,
+		QueryParametersContentConfig, oneAclCreateJsonConfigResponse, false))
+	t.Run("Get_State_On_Config_Path", processGetContentRequest(aclUrl+"/config",
+		QueryParametersContentState, "", true))
+	t.Run("Get_Config_On_State_Path", processGetContentRequest(aclUrl+"/state",
+		QueryParametersContentConfig, "", true))
+
+	t.Run("Create_One_Rule", processSetRequest(ruleUrl, requestOneRulePostJson, "POST", false))
+	// Rule counters are the only operational data of an ACL; every other state
+	// leaf mirrors a config leaf.
+	t.Run("Get_Operational", processGetContentRequest(aclUrl,
+		QueryParametersContentOperational, oneAclRuleJsonOperationalResponse, false))
+	t.Run("Get_Operational_Counter", processGetContentRequest(ruleUrl+"/state/matched-packets",
+		QueryParametersContentOperational, ruleMatchedPacketsJsonResponse, false))
+	t.Run("Get_Operational_On_State_Leaf", processGetContentRequest(aclUrl+"/state/description",
+		QueryParametersContentOperational, "", true))
+
+	t.Run("Delete_One_Acl", processDeleteRequest(aclUrl))
+	t.Run("Verify_One_Acl_Delete", processGetRequest(aclUrl, "", true))
+}
+
 func Test_AclApp_SingleRuleOperations(t *testing.T) {
 	aclUrl := "/openconfig-acl:acl/acl-sets/acl-set[name=MyACL5][type=ACL_IPV4]"
 	ruleUrl := "/openconfig-acl:acl/acl-sets/acl-set[name=MyACL5][type=ACL_IPV4]/acl-entries/acl-entry[sequence-id=8]"
@@ -503,6 +541,10 @@ var oneAclCreateWithRulesJsonResponse string = "{\"openconfig-acl:acl-set\":[{\"
 
 var oneAclCreateJsonRequest string = "{\"config\": {\"name\": \"MyACL5\",\"type\": \"ACL_IPV4\",\"description\": \"Description for MyACL5\"}}"
 var oneAclCreateJsonResponse string = "{\"openconfig-acl:acl-set\":[{\"config\":{\"description\":\"Description for MyACL5\",\"name\":\"MyACL5\",\"type\":\"openconfig-acl:ACL_IPV4\"},\"name\":\"MyACL5\",\"state\":{\"description\":\"Description for MyACL5\",\"name\":\"MyACL5\",\"type\":\"openconfig-acl:ACL_IPV4\"},\"type\":\"openconfig-acl:ACL_IPV4\"}]}"
+var oneAclCreateJsonStateResponse string = "{\"openconfig-acl:acl-set\":[{\"name\":\"MyACL5\",\"state\":{\"description\":\"Description for MyACL5\",\"name\":\"MyACL5\",\"type\":\"openconfig-acl:ACL_IPV4\"},\"type\":\"openconfig-acl:ACL_IPV4\"}]}"
+var oneAclCreateJsonConfigResponse string = "{\"openconfig-acl:acl-set\":[{\"config\":{\"description\":\"Description for MyACL5\",\"name\":\"MyACL5\",\"type\":\"openconfig-acl:ACL_IPV4\"},\"name\":\"MyACL5\",\"type\":\"openconfig-acl:ACL_IPV4\"}]}"
+var oneAclRuleJsonOperationalResponse string = "{\"openconfig-acl:acl-set\":[{\"acl-entries\":{\"acl-entry\":[{\"sequence-id\":8,\"state\":{\"matched-octets\":\"0\",\"matched-packets\":\"0\"}}]},\"name\":\"MyACL5\",\"type\":\"openconfig-acl:ACL_IPV4\"}]}"
+var ruleMatchedPacketsJsonResponse string = "{\"openconfig-acl:matched-packets\":\"0\"}"
 
 var aclDescrUpdateJson string = "{\"openconfig-acl:description\":\"Verifying ACL Description Update\"}"
 

@@ -249,3 +249,230 @@ func asKey(parts ...string) db.Key {
 func createEmptyDbValue(fieldName string) db.Value {
 	return db.Value{Field: map[string]string{fieldName: ""}}
 }
+
+// Content query parameter (gNMI Get data type) handling for the apps that fill
+// the ygot tree by themselves, i.e. do not go through the transformer. The node
+// classification below mirrors the transformer implementation in
+// translib/transformer/xlate_prune.go, so that a Get of a given data type
+// behaves the same way for transformer and non-transformer paths.
+
+const ocContentMismatchErr = "Bad Request - requested content type doesn't match content type of terminal node uri."
+
+type ocContentType uint8
+
+const (
+	ocContentAll ocContentType = iota
+	ocContentConfig
+	ocContentNonConfig
+	ocContentOperational
+)
+
+func toOCContentType(content string) ocContentType {
+	switch strings.ToLower(strings.TrimSpace(content)) {
+	case QueryParametersContentConfig:
+		return ocContentConfig
+	case QueryParametersContentNonConfig, QueryParametersContentState:
+		return ocContentNonConfig
+	case QueryParametersContentOperational:
+		return ocContentOperational
+	default:
+		return ocContentAll
+	}
+}
+
+// filterGetContent removes the nodes not matching the requested content type
+// from the ygot tree filled by an app. Returns an error if the target node of
+// the request itself does not match the requested content type.
+func filterGetContent(pathTemplate, content string, ygotRoot *ygot.GoStruct) error {
+	ct := toOCContentType(content)
+	if ct == ocContentAll {
+		return nil
+	}
+	if ocContentMismatch(pathTemplate, ct) {
+		return tlerr.InvalidArgsError{Format: ocContentMismatchErr}
+	}
+	if ygotRoot != nil && *ygotRoot != nil {
+		pruneOCContent(*ygotRoot, ct)
+	}
+	return nil
+}
+
+// ocContentMismatch checks if the target node of a request path is filtered
+// out by the content type - e.g. a config node for a STATE request.
+func ocContentMismatch(pathTemplate string, ct ocContentType) bool {
+	entry := ocEntryForPathTemplate(pathTemplate)
+	return entry != nil && !ocEntryMatchesContent(entry, ct)
+}
+
+// ocEntryForPathTemplate resolves the yang entry for a PathInfo template, like
+// "/openconfig-acl:acl/acl-sets/acl-set{}{}/config/description".
+func ocEntryForPathTemplate(pathTemplate string) *yang.Entry {
+	entry := ocbinds.SchemaTree["Device"]
+	for _, seg := range strings.Split(pathTemplate, "/") {
+		name := ocYangName(seg)
+		if len(name) == 0 {
+			continue
+		}
+		if entry == nil {
+			return nil
+		}
+		entry = entry.Dir[name]
+	}
+	return entry
+}
+
+// ocYangName strips the module prefix and the key placeholders of a path
+// template segment - e.g. "openconfig-acl:acl-set{}{}" becomes "acl-set".
+func ocYangName(seg string) string {
+	if i := strings.LastIndex(seg, ":"); i >= 0 {
+		seg = seg[i+1:]
+	}
+	for strings.HasSuffix(seg, "{}") {
+		seg = strings.TrimSuffix(seg, "{}")
+	}
+	return seg
+}
+
+func ocEntryMatchesContent(entry *yang.Entry, ct ocContentType) bool {
+	switch ct {
+	case ocContentConfig:
+		return !entry.ReadOnly()
+	case ocContentNonConfig:
+		return isOCStateEntry(entry)
+	case ocContentOperational:
+		return isOCOperationalEntry(entry)
+	}
+	return true
+}
+
+func isOCStateEntry(entry *yang.Entry) bool {
+	if entry.ReadOnly() {
+		return true
+	}
+	// Writable terminal nodes and the "config" containers are config data.
+	if entry.IsLeaf() || entry.IsLeafList() {
+		return false
+	}
+	if entry.IsContainer() && entry.Name == "config" {
+		return false
+	}
+	// Writable container/list can still hold state data below it.
+	return true
+}
+
+func isOCOperationalEntry(entry *yang.Entry) bool {
+	if !isOCStateEntry(entry) {
+		return false
+	}
+	if !entry.IsLeaf() && !entry.IsLeafList() {
+		return true
+	}
+	// A state leaf mirroring a config leaf is not operational data.
+	cfg := entry.Find("../../config/" + entry.Name)
+	if cfg == nil || cfg.ReadOnly() {
+		return true
+	}
+	return !cfg.IsLeaf() && !cfg.IsLeafList()
+}
+
+func pruneOCContent(root ygot.GoStruct, ct ocContentType) {
+	v := reflect.ValueOf(root)
+	if v.Kind() != reflect.Ptr || v.IsNil() {
+		return
+	}
+	pruneOCStruct(v.Elem(), ocbinds.SchemaTree[v.Type().Elem().Name()], ct)
+}
+
+// pruneOCStruct removes the fields of a ygot struct that do not match the
+// content type. Returns true if the struct still holds any data other than the
+// keys of the list it belongs to.
+func pruneOCStruct(v reflect.Value, entry *yang.Entry, ct ocContentType) bool {
+	if entry == nil {
+		return !v.IsZero() // no schema info; keep the subtree as is
+	}
+	keys := ocListKeys(entry)
+	hasData := false
+	t := v.Type()
+	for i := 0; i < v.NumField(); i++ {
+		fv := v.Field(i)
+		if !fv.CanSet() || fv.IsZero() {
+			continue
+		}
+		name := ocYangName(t.Field(i).Tag.Get("path"))
+		child := entry.Dir[name]
+		if child == nil {
+			hasData = true // not a yang node; e.g. annotation field
+			continue
+		}
+		// List keys are always retained, but do not make the entry non-empty
+		// by themselves.
+		if keys[name] {
+			continue
+		}
+		if !ocEntryMatchesContent(child, ct) {
+			fv.Set(reflect.Zero(fv.Type()))
+			continue
+		}
+		if pruneOCSubtree(fv, child, ct) {
+			hasData = true
+		}
+	}
+	return hasData
+}
+
+// pruneOCSubtree prunes a non-zero struct field and clears it if nothing is
+// left in it after the pruning. Returns true if the field still has data.
+func pruneOCSubtree(fv reflect.Value, entry *yang.Entry, ct ocContentType) bool {
+	if entry.IsLeaf() || entry.IsLeafList() {
+		return true
+	}
+	switch fv.Kind() {
+	case reflect.Ptr: // container or list instance
+		if fv.IsNil() {
+			return false
+		}
+		if sv := fv.Elem(); sv.Kind() == reflect.Struct {
+			if pruneOCStruct(sv, entry, ct) {
+				return true
+			}
+			if fv.CanSet() { // not settable when it is a map value
+				fv.Set(reflect.Zero(fv.Type()))
+			}
+			return false
+		}
+	case reflect.Map: // keyed list
+		for _, k := range fv.MapKeys() {
+			if !pruneOCSubtree(fv.MapIndex(k), entry, ct) {
+				fv.SetMapIndex(k, reflect.Value{})
+			}
+		}
+		if fv.Len() == 0 {
+			fv.Set(reflect.Zero(fv.Type()))
+			return false
+		}
+	case reflect.Slice: // unkeyed list
+		kept := reflect.MakeSlice(fv.Type(), 0, fv.Len())
+		for i := 0; i < fv.Len(); i++ {
+			if pruneOCSubtree(fv.Index(i), entry, ct) {
+				kept = reflect.Append(kept, fv.Index(i))
+			}
+		}
+		if kept.Len() == 0 {
+			fv.Set(reflect.Zero(fv.Type()))
+			return false
+		}
+		fv.Set(kept)
+	}
+	return true
+}
+
+func ocListKeys(entry *yang.Entry) map[string]bool {
+	if len(entry.Key) == 0 {
+		return nil
+	}
+	keys := make(map[string]bool)
+	for _, k := range strings.Fields(entry.Key) {
+		keys[k] = true
+	}
+	return keys
+}

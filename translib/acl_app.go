@@ -127,6 +127,7 @@ type AclApp struct {
 	pathInfo   *PathInfo
 	ygotRoot   *ygot.GoStruct
 	ygotTarget *interface{}
+	appOptions
 
 	aclTs  *db.TableSpec
 	ruleTs *db.TableSpec
@@ -158,7 +159,7 @@ func init() {
 func (app *AclApp) initialize(data appData) {
 	log.Info("initialize:acl:path =", data.path)
 	pathInfo := NewPathInfo(data.path)
-	*app = AclApp{pathInfo: pathInfo, ygotRoot: data.ygotRoot, ygotTarget: data.ygotTarget}
+	*app = AclApp{pathInfo: pathInfo, ygotRoot: data.ygotRoot, ygotTarget: data.ygotTarget, appOptions: data.appOptions}
 
 	app.aclTs = &db.TableSpec{Name: ACL_TABLE}
 	app.ruleTs = &db.TableSpec{Name: RULE_TABLE}
@@ -247,6 +248,10 @@ func (app *AclApp) processGet(dbs [db.MaxDB]*db.DB, fmtType TranslibFmtType) (Ge
 	configDb := dbs[db.ConfigDB]
 	err = app.processCommon(configDb, GET)
 	if err != nil {
+		return GetResponse{Payload: payload, ErrSrc: AppErr}, err
+	}
+
+	if err = filterGetContent(app.pathInfo.Template, app.content, app.ygotRoot); err != nil {
 		return GetResponse{Payload: payload, ErrSrc: AppErr}, err
 	}
 
