@@ -618,49 +618,20 @@ func isRstpRootBridge(appEntry db.Value) bool {
 	return bridgeAddr != "" && bridgeAddr == rootAddr
 }
 
-func computeRstpRootCostFromPort(portEntry db.Value) (uint32, bool) {
-	if !portEntry.IsPopulated() {
-		return 0, false
-	}
-	pathCost := parseUint32Default(portEntry.Get("path_cost"), "0")
-	extCost := parseUint32Default(portEntry.Get("external_cost"), "0")
-	if extCost > 0 || pathCost > 0 {
-		return extCost + pathCost, true
-	}
-	desigCost := parseUint32Default(portEntry.Get("desig_cost"), "0")
-	if desigCost > 0 || pathCost > 0 {
-		return desigCost + pathCost, true
-	}
-	return 0, false
-}
-
-func resolveRstpRootCost(appDb *db.DB, appEntry db.Value) (uint32, bool) {
+func resolveRstpRootCost(appEntry db.Value) (uint32, bool) {
 	if isRstpRootBridge(appEntry) {
 		return 0, true
 	}
 
-	rootPathCostVal := appEntry.Get("root_path_cost")
-	if rootPathCostVal != "" {
-		cost := parseUint32Default(rootPathCostVal, "0")
-		if cost > 0 {
-			return cost, true
-		}
+	regionalCostVal := appEntry.Get("regional_root_cost")
+	extCostVal := appEntry.Get("root_path_cost")
+	if regionalCostVal == "" && extCostVal == "" {
+		return 0, false
 	}
 
-	rootPortName := strings.TrimSpace(appEntry.Get("root_port"))
-	if rootPortName != "" && !strings.EqualFold(rootPortName, "Root") {
-		portEntry, err := getApplProducerStateEntry(appDb, STP_MST_PORT_APP_TBL, mstPortAppKey(rootPortName))
-		if err == nil {
-			if cost, ok := computeRstpRootCostFromPort(portEntry); ok && cost > 0 {
-				return cost, true
-			}
-		}
-	}
-
-	if rootPathCostVal != "" {
-		return parseUint32Default(rootPathCostVal, "0"), true
-	}
-	return 0, false
+	intCost := parseUint32Default(regionalCostVal, "0")
+	extCost := parseUint32Default(extCostVal, "0")
+	return intCost + extCost, true
 }
 
 func mapPortRoleToOc(role string) ocbinds.E_OpenconfigSpanningTreeTypes_STP_PORT_ROLE {
@@ -723,7 +694,7 @@ func fillRstpStateFromDb(state *ocbinds.OpenconfigSpanningTree_Stp_Rstp_State, c
 		state.BridgePriority != nil {
 		state.DesignatedRootPriority = state.BridgePriority
 	}
-	if cost, ok := resolveRstpRootCost(appDb, appEntry); ok {
+	if cost, ok := resolveRstpRootCost(appEntry); ok {
 		state.RootCost = &cost
 	}
 	// BuildEmptyTree may pre-init optional leaves to zero.
@@ -1895,7 +1866,7 @@ var Subscribe_stp_rstp_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSubscInPara
 		STP_MST_INST_TBL: {mstInstCfgKey(): {"bridge_priority": ""}},
 	}
 	result.dbDataMap[db.ApplDB] = map[string]map[string]map[string]string{
-		STP_MST_INST_APP_TBL: {mstInstCfgKey(): {"bridge_address": "", "bridge_priority": "", "root_address": "", "root_path_cost": "", "root_port": "", "hold_time": "", "topology_change_count": ""}},
+		STP_MST_INST_APP_TBL: {mstInstCfgKey(): {"bridge_address": "", "bridge_priority": "", "root_address": "", "root_path_cost": "", "regional_root_cost": "", "root_port": "", "hold_time": "", "topology_change_count": ""}},
 		STP_MST_PORT_APP_TBL: {mstPortAppKey("*"): {"path_cost": "", "desig_cost": "", "external_cost": "", "role": ""}},
 	}
 	return result, nil
