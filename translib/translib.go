@@ -80,6 +80,14 @@ type SetResponse struct {
 	Err    error
 }
 
+const (
+	QueryParametersContentAll         string = "all"
+	QueryParametersContentConfig      string = "config"
+	QueryParametersContentNonConfig   string = "nonconfig"
+	QueryParametersContentOperational string = "operational"
+	QueryParametersContentState       string = "state"
+)
+
 type QueryParameters struct {
 	Depth   uint     // range 1 to 65535, default is <U+0093>0<U+0094> i.e. all
 	Content string   // all, config, non-config(REST)/state(GNMI), operational(GNMI only)
