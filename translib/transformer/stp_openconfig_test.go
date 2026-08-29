@@ -70,12 +70,13 @@ func stpMstInstAppPrereq() map[string]interface{} {
 	return map[string]interface{}{
 		"STP_MST_INST_TABLE": map[string]interface{}{
 			"0": map[string]interface{}{
-				"bridge_address":  "8000.781f.7cfc.cf17",
-				"bridge_priority": "0",
-				"root_address":    "0000.781f.7cfc.cf17",
-				"root_path_cost":  "600",
-				"root_port":       stpTestIfName,
-				"hold_time":       "1",
+				"bridge_address":     "8000.781f.7cfc.cf17",
+				"bridge_priority":    "0",
+				"root_address":       "0000.781f.7cfc.cf17",
+				"root_path_cost":     "600",
+				"regional_root_cost": "400",
+				"root_port":          stpTestIfName,
+				"hold_time":          "1",
 			},
 		},
 		"STP_MST_PORT_TABLE": map[string]interface{}{
