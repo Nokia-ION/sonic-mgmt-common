@@ -157,10 +157,15 @@ module openconfig-system-annot {
         }
     }
 
+    deviation /oc-sys:system/oc-log:logging/oc-log:remote-servers {
+      deviate add {
+        sonic-ext:subtree-transformer "remote_servers_list_xfmr";
+      }
+    }
+
     deviation /oc-sys:system/oc-log:logging/oc-log:remote-servers/oc-log:remote-server {
       deviate add {
-        /* TODO(b/185940239): Remove State DB mapping after config/host path is supported by backend. */
-        sonic-ext:db-name "STATE_DB";
+        sonic-ext:db-name "CONFIG_DB";
         sonic-ext:table-name "SYSLOG_SERVER";
         sonic-ext:path-transformer "remote_server_path_xfmr";
       }
@@ -169,6 +174,42 @@ module openconfig-system-annot {
     deviation /oc-sys:system/oc-log:logging/oc-log:remote-servers/oc-log:remote-server/oc-log:config {
       deviate add {
           sonic-ext:db-name "CONFIG_DB";
+      }
+    }
+
+    deviation /oc-sys:system/oc-log:logging/oc-log:remote-servers/oc-log:remote-server/oc-log:config/oc-log:remote-port {
+      deviate add {
+        sonic-ext:field-name "port";
+      }
+    }
+
+    deviation /oc-sys:system/oc-log:logging/oc-log:remote-servers/oc-log:remote-server/oc-log:state/oc-log:remote-port {
+      deviate add {
+        sonic-ext:field-name "port";
+      }
+    }
+
+    deviation /oc-sys:system/oc-log:logging/oc-log:remote-servers/oc-log:remote-server/oc-log:config/oc-log:transport-security {
+      deviate add {
+        sonic-ext:field-name "transport_security";
+      }
+    }
+
+    deviation /oc-sys:system/oc-log:logging/oc-log:remote-servers/oc-log:remote-server/oc-log:state/oc-log:transport-security {
+      deviate add {
+        sonic-ext:field-name "transport_security";
+      }
+    }
+
+    deviation /oc-sys:system/oc-log:logging/oc-log:remote-servers/oc-log:remote-server/oc-log:config/oc-log:tls-profile-id {
+      deviate add {
+        sonic-ext:field-name "tls_profile_id";
+      }
+    }
+
+    deviation /oc-sys:system/oc-log:logging/oc-log:remote-servers/oc-log:remote-server/oc-log:state/oc-log:tls-profile-id {
+      deviate add {
+        sonic-ext:field-name "tls_profile_id";
       }
     }
 

@@ -11,8 +11,21 @@ module sonic-syslog {
 
     description "Syslog YANG Module for SONiC OS: remote syslog logging";
 
+    revision 2026-08-21 {
+        description "Add protocol tls and align tls_profile_id with Certz host copies.";
+    }
+
     revision 2022-04-18 {
         description "Initial revision.";
+    }
+
+    typedef rsyslog-protocol {
+        description "The protocol to send logs to a remote server";
+        type enumeration {
+            enum tcp;
+            enum udp;
+            enum tls;
+        }
     }
 
     container sonic-syslog {
@@ -32,8 +45,13 @@ module sonic-syslog {
                 }
 
                 leaf port {
-                    description "Syslog server UDP port";
+                    description "Syslog server UDP or TLS port";
                     type inet:port-number;
+                }
+
+                leaf protocol {
+                    description "The protocol to send logs to remote server";
+                    type rsyslog-protocol;
                 }
 
                 leaf transport_security {
@@ -42,19 +60,27 @@ module sonic-syslog {
                 }
 
                 leaf tls_profile_id {
-                    description "TLS profile ID for syslog encryption";
-                    type string;
+                    description
+                        "gNSI Certz SSL profile id. Host PEMs live under
+                         /etc/sonic/rsyslog-certs/<id>/. Required when TLS is enabled.";
+                    type string {
+                        pattern '[A-Za-z0-9._-]+';
+                    }
                 }
 
                 leaf applied_transport_security {
+                    description "STATE_DB: whether TLS omfwd was actually applied for this server";
                     type boolean;
                 }
 
                 leaf failure_reason {
+                    description "STATE_DB: why TLS was not applied, if applicable";
                     type enumeration {
                       enum NONE;
+                      enum NO_PROFILE;
                       enum NO_CERTIFICATE;
                       enum INVALID_CERTIFICATE;
+                      enum RSYSLOG_APPLY_FAILED;
                     }
                 }
             }
