@@ -143,6 +143,7 @@ const (
 	PORTCHANNEL_TN           = "PORTCHANNEL"
 	LAG_TABLE_TN             = "LAG_TABLE"
 	LAG_MEMBER_TABLE_TN      = "LAG_MEMBER_TABLE"
+	LOOPBACK_INTERFACE_TN    = "LOOPBACK_INTERFACE"
 	DEFAULT_MTU              = "9100"
 
 	INTF_TABLE_TN     = "INTF_TABLE"
@@ -158,6 +159,7 @@ const (
 	PORTCHANNEL = "PortChannel"
 	VLAN        = "Vlan"
 	CPU         = "CPU"
+	LOOPBACK    = "Loopback"
 )
 
 const (
@@ -214,6 +216,11 @@ var IntfTypeTblMap = map[E_InterfaceType]IntfTblData{
 		stateDb:     TblData{portTN: "PORT_TABLE", keySep: PIPE},
 		CountersHdl: CounterData{OIDTN: "COUNTERS_PORT_NAME_MAP", CountersTN: "COUNTERS", PopulateCounters: populatePortCounters},
 	},
+	IntfTypeLoopback: IntfTblData{
+		cfgDb:   TblData{intfTN: LOOPBACK_INTERFACE_TN, keySep: PIPE},
+		appDb:   TblData{intfTN: INTF_TABLE_TN, keySep: COLON},
+		stateDb: TblData{intfTN: "INTERFACE_TABLE", keySep: PIPE},
+	},
 }
 
 var dbIdToTblMap = map[db.DBNum][]string{
@@ -246,6 +253,7 @@ const (
 	IntfTypePortChannel E_InterfaceType = 2
 	IntfTypeVlan        E_InterfaceType = 3
 	IntfTypeCpu         E_InterfaceType = 4
+	IntfTypeLoopback    E_InterfaceType = 5
 )
 
 type E_InterfaceSubType int64
@@ -265,6 +273,8 @@ func getIntfTypeByName(name string) (E_InterfaceType, E_InterfaceSubType, error)
 		return IntfTypeVlan, IntfSubTypeUnset, err
 	} else if strings.HasPrefix(name, CPU) {
 		return IntfTypeCpu, IntfSubTypeUnset, err
+	} else if strings.HasPrefix(name, LOOPBACK) {
+		return IntfTypeLoopback, IntfSubTypeUnset, err
 	} else {
 		err = errors.New("Interface name prefix not matched with supported types")
 		return IntfTypeUnset, IntfSubTypeUnset, err
@@ -275,6 +285,7 @@ const (
 	ocIanaTypeEthernet = "iana-if-type:ethernetCsmacd"
 	ocIanaTypeLag      = "iana-if-type:ieee8023adLag"
 	ocIanaTypeVlan     = "iana-if-type:l3ipvlan"
+	ocIanaTypeLoopback = "iana-if-type:softwareLoopback"
 )
 
 func ocIanaTypeFromIntfType(t E_InterfaceType) (string, error) {
@@ -285,6 +296,8 @@ func ocIanaTypeFromIntfType(t E_InterfaceType) (string, error) {
 		return ocIanaTypeLag, nil
 	case IntfTypeVlan:
 		return ocIanaTypeVlan, nil
+	case IntfTypeLoopback:
+		return ocIanaTypeLoopback, nil
 	default:
 		return "", errors.New("unsupported interface type")
 	}
@@ -646,7 +659,11 @@ var intf_table_xfmr TableXfmrFunc = func(inParams XfmrParams) ([]string, error) 
 		return tblList, tlerr.NotSupportedError{AppTag: "invalid-value", Path: "", Format: errStr}
 
 	} else if strings.HasPrefix(targetUriPath, "/openconfig-interfaces:interfaces/interface/config") {
-		tblList = append(tblList, intTbl.cfgDb.portTN)
+		if intfType == IntfTypeLoopback {
+			tblList = append(tblList, intTbl.cfgDb.intfTN)
+		} else {
+			tblList = append(tblList, intTbl.cfgDb.portTN)
+		}
 
 	} else if intfType != IntfTypeEthernet &&
 		strings.HasPrefix(targetUriPath, "/openconfig-interfaces:interfaces/interface/openconfig-if-ethernet:ethernet") {
@@ -665,7 +682,11 @@ var intf_table_xfmr TableXfmrFunc = func(inParams XfmrParams) ([]string, error) 
 	} else if strings.HasPrefix(targetUriPath, "/openconfig-interfaces:interfaces/interface/state") ||
 		strings.HasPrefix(targetUriPath, "/openconfig-interfaces:interfaces/interface/ethernet/state") ||
 		strings.HasPrefix(targetUriPath, "/openconfig-interfaces:interfaces/interface/openconfig-if-ethernet:ethernet/state") {
-		tblList = append(tblList, intTbl.appDb.portTN)
+		if intfType == IntfTypeLoopback {
+			tblList = append(tblList, intTbl.appDb.intfTN)
+		} else {
+			tblList = append(tblList, intTbl.appDb.portTN)
+		}
 	} else if strings.HasPrefix(targetUriPath, "/openconfig-interfaces:interfaces/interface/subinterfaces/subinterface/ipv4/addresses/address/config") ||
 		strings.HasPrefix(targetUriPath, "/openconfig-interfaces:interfaces/interface/subinterfaces/subinterface/openconfig-if-ip:ipv4/addresses/address/config") ||
 		strings.HasPrefix(targetUriPath, "/openconfig-interfaces:interfaces/interface/subinterfaces/subinterface/openconfig-if-ip:ipv6/addresses/address/config") ||
@@ -720,10 +741,18 @@ var intf_table_xfmr TableXfmrFunc = func(inParams XfmrParams) ([]string, error) 
 			tblList = append(tblList, intTbl.cfgDb.portTN)
 		}
 	} else if targetUriPath == "/openconfig-interfaces:interfaces/interface" {
-		tblList = append(tblList, intTbl.cfgDb.portTN)
+		if intfType == IntfTypeLoopback {
+			tblList = append(tblList, intTbl.cfgDb.intfTN)
+		} else {
+			tblList = append(tblList, intTbl.cfgDb.portTN)
+		}
 	} else if strings.HasPrefix(targetUriPath, "/openconfig-interfaces:interfaces/interface") {
 		if inParams.oper != DELETE {
-			tblList = append(tblList, intTbl.cfgDb.portTN)
+			if intfType == IntfTypeLoopback {
+				tblList = append(tblList, intTbl.cfgDb.intfTN)
+			} else {
+				tblList = append(tblList, intTbl.cfgDb.portTN)
+			}
 		}
 	} else {
 		err = errors.New("Invalid URI")
@@ -2526,12 +2555,14 @@ var intf_subintfs_table_xfmr TableXfmrFunc = func(inParams XfmrParams) ([]string
 		log.Info("intf_subintfs_table_xfmr - Subinterface get operation ")
 	} else {
 		if idx == "0" {
-			if inParams.dbDataMap != nil {
-				(*inParams.dbDataMap)[db.ConfigDB]["SUBINTF_TBL"] = make(map[string]db.Value)
-				(*inParams.dbDataMap)[db.ConfigDB]["SUBINTF_TBL"]["0"] = db.Value{Field: make(map[string]string)}
-				(*inParams.dbDataMap)[db.ConfigDB]["SUBINTF_TBL"]["0"].Field["NULL"] = "NULL"
+			if inParams.oper == GET || inParams.oper == DELETE {
+				if inParams.dbDataMap != nil {
+					(*inParams.dbDataMap)[db.ConfigDB]["SUBINTF_TBL"] = make(map[string]db.Value)
+					(*inParams.dbDataMap)[db.ConfigDB]["SUBINTF_TBL"]["0"] = db.Value{Field: make(map[string]string)}
+					(*inParams.dbDataMap)[db.ConfigDB]["SUBINTF_TBL"]["0"].Field["NULL"] = "NULL"
+				}
+				tblList = append(tblList, "SUBINTF_TBL")
 			}
-			tblList = append(tblList, "SUBINTF_TBL")
 		} else if idx != "0" {
 			err_str := "Subinterfaces not supported"
 			return tblList, tlerr.NotSupported(err_str)
@@ -2916,7 +2947,7 @@ func handleIntfIPGetByTargetURI(inParams XfmrParams, targetUriPath string, ifNam
 	}
 	intTbl := IntfTypeTblMap[intfType]
 
-	if len(ipAddr) > 0 {
+	if len(ipAddr) > 0 && ipAddr != "*" {
 		// Check if the given IP is configured on interface
 		keyPattern := ifName + ":" + ipStr + "/*"
 		ipKeys, err := inParams.dbs[db.ApplDB].GetKeysByPattern(&db.TableSpec{Name: intTbl.appDb.intfTN}, keyPattern)
@@ -3151,7 +3182,7 @@ var DbToYang_intf_ip_addr_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) e
 			return nil
 		}
 
-		intfTypeList := [2]E_InterfaceType{IntfTypeEthernet, IntfTypePortChannel}
+		intfTypeList := [3]E_InterfaceType{IntfTypeEthernet, IntfTypePortChannel, IntfTypeLoopback}
 
 		// Get IP from all configDb table interfaces
 		for i := 0; i < len(intfTypeList); i++ {
@@ -3554,7 +3585,7 @@ func getIntfIpByName(dbCl *db.DB, tblName string, ifName string, ipv4 bool, ipv6
 				(validIPv6(ipB.String()) && (!ipv6)) {
 				continue
 			}
-			if ip != "" {
+			if ip != "" && ip != "*" {
 				ipB_exp, _ := getNormalizedIpStr(ipB.String())
 				ip_exp, _ := getNormalizedIpStr(ip)
 				if ipB_exp != ip_exp {
@@ -3940,13 +3971,71 @@ var Subscribe_intf_ip_addr_xfmr = func(inParams XfmrSubscInParams) (XfmrSubscOut
 
 		if strings.HasPrefix(targetUriPath, "/openconfig-if-ip:ipv4") {
 			targetUriPath = targetUriPath[len("/openconfig-if-ip:ipv4/addresses"):]
-		} else {
+		} else if strings.HasPrefix(targetUriPath, "/ipv4") {
+			targetUriPath = targetUriPath[len("/ipv4/addresses"):]
+		} else if strings.HasPrefix(targetUriPath, "/openconfig-if-ip:ipv6") {
 			targetUriPath = targetUriPath[len("/openconfig-if-ip:ipv6/addresses"):]
+		} else {
+			targetUriPath = targetUriPath[len("/ipv6/addresses"):]
 		}
 
 		if targetUriPath == "" || targetUriPath == "/address" {
-			result.isVirtualTbl = true
-			log.Info("Subscribe_intf_ip_addr_xfmr:- result.isVirtualTbl: ", result.isVirtualTbl)
+			ipKey := pathInfo.Var("ip")
+			if ipKey == "" {
+				ipKey = "*"
+			}
+			// Concrete list key: use virtual table so DbToYang reads CONFIG_DB + APPL_DB once.
+			if ipKey != "*" {
+				result.isVirtualTbl = true
+				log.Info("Subscribe_intf_ip_addr_xfmr:- result.isVirtualTbl: ", result.isVirtualTbl)
+				return result, err
+			}
+			// Wildcard list key (ip=* or subscribe to whole addresses list):
+			// register CONFIG_DB + APPL_DB watches using Redis key patterns.
+			result.onChange = OnchangeEnable
+			result.nOpts = &notificationOpts{pType: OnChange}
+			result.isVirtualTbl = false
+			result.needCache = true
+			ifKey := pathInfo.StringVar("name", "*")
+			idx := pathInfo.Var("index")
+			if idx != "" && idx != "0" {
+				err_str := "Subinterfaces not supported"
+				return result, tlerr.NotSupported(err_str)
+			}
+			cfgKey := ifKey + "|" + ipKey
+			stateKey := ifKey + ":" + ipKey
+			stateKeyMeta := map[string]string{KEY_COMP_CNT: "2", DEL_AS_UPDATE: "true"}
+			tableName := ""
+			appTableName := ""
+			if ifKey != "" && ifKey != "*" {
+				intfType, _, _ := getIntfTypeByName(ifKey)
+				if intfType != IntfTypeUnset {
+					intTbl := IntfTypeTblMap[intfType]
+					tableName = intTbl.cfgDb.intfTN
+					appTableName = intTbl.appDb.intfTN
+				}
+			}
+			if tableName != "" && appTableName != "" {
+				result.dbDataMap = RedisDbSubscribeMap{
+					db.ConfigDB: {tableName: {cfgKey: {}}},
+					db.ApplDB:   {appTableName: {stateKey: stateKeyMeta}},
+				}
+			} else if isRoutedVlan {
+				result.dbDataMap = RedisDbSubscribeMap{
+					db.ConfigDB: {VLAN_INTERFACE_TN: {cfgKey: {}}},
+					db.ApplDB:   {INTF_TABLE_TN: {stateKey: stateKeyMeta}},
+				}
+			} else {
+				result.dbDataMap = RedisDbSubscribeMap{
+					db.ConfigDB: {
+						"INTERFACE":              {cfgKey: {}},
+						PORTCHANNEL_INTERFACE_TN: {cfgKey: {}},
+						LOOPBACK_INTERFACE_TN:    {cfgKey: {}},
+					},
+					db.ApplDB: {INTF_TABLE_TN: {stateKey: stateKeyMeta}},
+				}
+			}
+			log.Infof("Subscribe_intf_ip_addr_xfmr:- wildcard address dbDataMap: %v", result.dbDataMap)
 			return result, err
 		}
 
@@ -4002,7 +4091,8 @@ var Subscribe_intf_ip_addr_xfmr = func(inParams XfmrSubscInParams) (XfmrSubscOut
 					result.dbDataMap = RedisDbSubscribeMap{db.ConfigDB: {"VLAN_INTERFACE": {keyName: {}}}}
 				} else {
 					result.dbDataMap = RedisDbSubscribeMap{db.ConfigDB: {"INTERFACE": {keyName: {}},
-						"PORTCHANNEL_INTERFACE": {keyName: {}}}}
+						"PORTCHANNEL_INTERFACE": {keyName: {}},
+						LOOPBACK_INTERFACE_TN:   {keyName: {}}}}
 				}
 			}
 		} else if targetUriPath == addressStatePath {
