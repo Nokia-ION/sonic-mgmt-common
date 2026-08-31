@@ -54,6 +54,21 @@ const (
 	// fpmsyncd flattens the members of a group into parallel comma separated
 	// lists, one element per member, in the same order across every field.
 	niAftsListDelim = ","
+
+	// Node names the AFT paths are built from. A notification path is assembled
+	// from the elements of the path the subscription carries, so the paths a
+	// path transformer answers with are derived from those names rather than
+	// written out, which keeps them in step with whatever module prefixes the
+	// request used.
+	niAftsNiListNode      = "network-instance"
+	niAftsIpv4UnicastNode = "ipv4-unicast"
+	niAftsIpv6UnicastNode = "ipv6-unicast"
+	niAftsIpv4EntryNode   = "ipv4-entry"
+	niAftsIpv6EntryNode   = "ipv6-entry"
+	niAftsStateNode       = "state"
+
+	// The one entry leaf that is fed by a row field rather than by the key.
+	niAftsNhGrpLeaf = "next-hop-group"
 )
 
 // niAftsNextHop is one entry of the top level AFT next-hop list.
@@ -197,6 +212,27 @@ func niAftsRouteKeyPrefix(k db.Key) (string, bool) {
 	}
 	if ip := net.ParseIP(joined); ip != nil {
 		return joined, true
+	}
+	return "", false
+}
+
+// niAftsSchemaPathUpto truncates a schema path just after the named node, and
+// reports whether the path names it at all. The infrastructure looks a yang key
+// up under the path of the list that holds it, so a path transformer has to
+// answer with a prefix of the path it was given; comparing on the node name
+// alone lets a module qualified element match the node it names.
+func niAftsSchemaPathUpto(schemaPath string, node string) (string, bool) {
+	var b strings.Builder
+	for _, elem := range strings.Split(strings.TrimPrefix(schemaPath, "/"), "/") {
+		b.WriteString("/")
+		b.WriteString(elem)
+		name := elem
+		if i := strings.Index(name, ":"); i >= 0 {
+			name = name[i+1:]
+		}
+		if name == node {
+			return b.String(), true
+		}
 	}
 	return "", false
 }
