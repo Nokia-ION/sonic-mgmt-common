@@ -260,6 +260,20 @@ func (ne *notificationEvent) getDdupKey(keyGroupComps []int) string {
 	return strings.Join(uniq, "|")
 }
 
+// keyMatchesPattern reports whether a notification key falls under a registered
+// key pattern.
+//
+// db.Key.Matches() compares component by component and so rejects a key whose
+// component count differs from the pattern's. An all key pattern is meant to
+// match every key of its table, including one that the db key separator splits
+// into more components than the pattern has, such as an IPv6 prefix in an
+// APPL_DB table. Testing it separately is what db_subscribe_sa.go does too;
+// without it such notifications are dropped, and only the keys that carry the
+// separator are affected.
+func keyMatchesPattern(key, pattern db.Key) bool {
+	return pattern.IsAllKeyPattern() || key.Matches(pattern)
+}
+
 // process translates db notification into SubscribeResponse and
 // pushes to the caller.
 func (ne *notificationEvent) process() {
@@ -282,7 +296,7 @@ func (ne *notificationEvent) process() {
 	// Find all key patterns that match current key
 	for _, nInfos := range ne.nGrup.nInfos {
 		keyPattern := *nInfos[0].key
-		if !ne.key.Matches(keyPattern) {
+		if !keyMatchesPattern(*ne.key, keyPattern) {
 			continue
 		}
 
