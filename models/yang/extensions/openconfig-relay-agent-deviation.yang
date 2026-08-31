@@ -1,0 +1,76 @@
+module openconfig-relay-agent-deviation {
+
+    yang-version "1";
+
+    namespace "http://openconfig.net/yang/relay-agent/deviation/extension";
+    prefix "oc-relay-dev";
+
+    import openconfig-relay-agent { prefix oc-relay; }
+    import openconfig-extensions { prefix oc-ext; }
+
+    organization "SONiC";
+    contact "SONiC";
+    description
+        "Deviations for openconfig-relay-agent. Only DHCPv4 and DHCPv6
+         per-interface id, enable, and helper-address are supported.";
+
+    oc-ext:openconfig-version "0.1.0";
+
+    revision 2026-08-28 {
+        description "Add DHCPv4 per-interface relay deviations.";
+        reference "0.1.0";
+    }
+
+    revision 2026-08-27 {
+        description "Initial DHCPv6-only deviations.";
+        reference "0.1.0";
+    }
+
+    deviation /oc-relay:relay-agent/oc-relay:dhcp/oc-relay:config {
+        deviate not-supported;
+    }
+
+    deviation /oc-relay:relay-agent/oc-relay:dhcp/oc-relay:state {
+        deviate not-supported;
+    }
+
+    deviation /oc-relay:relay-agent/oc-relay:dhcp/oc-relay:agent-information-option {
+        deviate not-supported;
+    }
+
+    deviation /oc-relay:relay-agent/oc-relay:dhcp/oc-relay:interfaces/oc-relay:interface/oc-relay:interface-ref {
+        deviate not-supported;
+    }
+
+    deviation /oc-relay:relay-agent/oc-relay:dhcp/oc-relay:interfaces/oc-relay:interface/oc-relay:agent-information-option {
+        deviate not-supported;
+    }
+
+    deviation /oc-relay:relay-agent/oc-relay:dhcp/oc-relay:interfaces/oc-relay:interface/oc-relay:state/oc-relay:counters {
+        deviate not-supported;
+    }
+
+    deviation /oc-relay:relay-agent/oc-relay:dhcpv6/oc-relay:config {
+        deviate not-supported;
+    }
+
+    deviation /oc-relay:relay-agent/oc-relay:dhcpv6/oc-relay:state {
+        deviate not-supported;
+    }
+
+    deviation /oc-relay:relay-agent/oc-relay:dhcpv6/oc-relay:options {
+        deviate not-supported;
+    }
+
+    deviation /oc-relay:relay-agent/oc-relay:dhcpv6/oc-relay:interfaces/oc-relay:interface/oc-relay:interface-ref {
+        deviate not-supported;
+    }
+
+    deviation /oc-relay:relay-agent/oc-relay:dhcpv6/oc-relay:interfaces/oc-relay:interface/oc-relay:options {
+        deviate not-supported;
+    }
+
+    deviation /oc-relay:relay-agent/oc-relay:dhcpv6/oc-relay:interfaces/oc-relay:interface/oc-relay:state/oc-relay:counters {
+        deviate not-supported;
+    }
+}
