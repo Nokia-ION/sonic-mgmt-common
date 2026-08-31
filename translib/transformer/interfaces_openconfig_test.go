@@ -546,7 +546,7 @@ func Test_openconfig_routed_vlan_ipv4_vrrp_get(t *testing.T) {
 			"Vlan100|25": map[string]interface{}{
 				"vid":          "25",
 				"vip@":         "50.0.0.254/24",
-				"pre_empt":     "true",
+				"preempt":      "true",
 				"priority":     "100",
 				"adv_interval": "1",
 			},
@@ -586,7 +586,7 @@ func Test_openconfig_routed_vlan_ipv4_vrrp_tracking_get(t *testing.T) {
 			"Vlan100|25": map[string]interface{}{
 				"vid":          "25",
 				"vip@":         "50.0.0.254/24",
-				"pre_empt":     "true",
+				"preempt":      "true",
 				"priority":     "100",
 				"adv_interval": "1",
 			},
@@ -634,7 +634,7 @@ func Test_openconfig_routed_vlan_ipv6_vrrp_get(t *testing.T) {
 			"Vlan100|25": map[string]interface{}{
 				"vid":                "25",
 				"vip@":               "2001:db8::ff/64",
-				"pre_empt":           "true",
+				"preempt":            "true",
 				"priority":           "120",
 				"adv_interval":       "2",
 				"virtual_link_local": "fe80::abcd",
@@ -683,7 +683,7 @@ func Test_openconfig_routed_vlan_ipv4_vrrp_patch(t *testing.T) {
 			"Vlan100|25": map[string]interface{}{
 				"vid":           "25",
 				"vip@":          "50.0.0.254/24",
-				"pre_empt":      "true",
+				"preempt":       "true",
 				"priority":      "100",
 				"adv_interval":  "1",
 				"preempt_delay": "0",
@@ -740,7 +740,7 @@ func Test_openconfig_routed_vlan_ipv6_vrrp_patch(t *testing.T) {
 			"Vlan100|29": map[string]interface{}{
 				"vid":                "29",
 				"vip@":               "2001:db8::ff/64",
-				"pre_empt":           "true",
+				"preempt":            "true",
 				"priority":           "120",
 				"adv_interval":       "2",
 				"preempt_delay":      "0",
@@ -796,7 +796,7 @@ func Test_openconfig_subinterface_ipv4_vrrp_get(t *testing.T) {
 			"Ethernet0|19": map[string]interface{}{
 				"vid":          "19",
 				"vip@":         "10.0.0.254/24",
-				"pre_empt":     "true",
+				"preempt":      "true",
 				"priority":     "110",
 				"adv_interval": "1",
 			},
@@ -838,7 +838,7 @@ func Test_openconfig_subinterface_ipv6_vrrp_get(t *testing.T) {
 			"Ethernet0|29": map[string]interface{}{
 				"vid":                "29",
 				"vip@":               "2001:db8::ff/64",
-				"pre_empt":           "true",
+				"preempt":            "true",
 				"priority":           "120",
 				"adv_interval":       "2",
 				"virtual_link_local": "fe80::abcd",
@@ -881,7 +881,7 @@ func Test_openconfig_portchannel_subinterface_vrrp_get(t *testing.T) {
 			"PortChannel001|19": map[string]interface{}{
 				"vid":          "19",
 				"vip@":         "10.0.0.254/24",
-				"pre_empt":     "true",
+				"preempt":      "true",
 				"priority":     "110",
 				"adv_interval": "1",
 			},
@@ -909,7 +909,7 @@ func Test_openconfig_portchannel_subinterface_vrrp_get(t *testing.T) {
 			"PortChannel001|29": map[string]interface{}{
 				"vid":                "29",
 				"vip@":               "2001:db8::ff/64",
-				"pre_empt":           "true",
+				"preempt":            "true",
 				"priority":           "120",
 				"adv_interval":       "2",
 				"virtual_link_local": "fe80::abcd",
@@ -958,7 +958,7 @@ func Test_openconfig_subinterface_ipv4_vrrp_patch(t *testing.T) {
 			"Ethernet0|19": map[string]interface{}{
 				"vid":           "19",
 				"vip@":          "10.0.0.254/24",
-				"pre_empt":      "true",
+				"preempt":       "true",
 				"priority":      "110",
 				"adv_interval":  "1",
 				"preempt_delay": "0",
@@ -1009,7 +1009,7 @@ func Test_openconfig_subinterface_ipv6_vrrp_patch(t *testing.T) {
 			"Ethernet0|29": map[string]interface{}{
 				"vid":                "29",
 				"vip@":               "2001:db8::ff/64",
-				"pre_empt":           "true",
+				"preempt":            "true",
 				"priority":           "120",
 				"adv_interval":       "2",
 				"preempt_delay":      "0",
@@ -1059,7 +1059,7 @@ func Test_openconfig_subinterface_ipv4_vrrp_delete_leaf_defaults(t *testing.T) {
 			"Ethernet0|19": map[string]interface{}{
 				"vid":           "19",
 				"vip@":          "10.0.0.254/24",
-				"pre_empt":      "false",
+				"preempt":       "false",
 				"priority":      "110",
 				"adv_interval":  "2",
 				"preempt_delay": "9",
@@ -1092,7 +1092,7 @@ func Test_openconfig_subinterface_ipv6_vrrp_delete_leaf_defaults(t *testing.T) {
 			"Ethernet0|29": map[string]interface{}{
 				"vid":                "29",
 				"vip@":               "2001:db8::ff/64",
-				"pre_empt":           "false",
+				"preempt":            "false",
 				"priority":           "120",
 				"adv_interval":       "3",
 				"preempt_delay":      "7",
@@ -1126,7 +1126,7 @@ func Test_openconfig_subinterface_ipv4_vrrp_patch_config_container(t *testing.T)
 			"Ethernet0|19": map[string]interface{}{
 				"vid":           "19",
 				"vip@":          "10.0.0.254/24",
-				"pre_empt":      "true",
+				"preempt":       "true",
 				"priority":      "110",
 				"adv_interval":  "1",
 				"preempt_delay": "0",
@@ -1160,7 +1160,7 @@ func Test_openconfig_subinterface_ipv6_vrrp_patch_tracking_config_container(t *t
 			"Ethernet0|29": map[string]interface{}{
 				"vid":                "29",
 				"vip@":               "2001:db8::ff/64",
-				"pre_empt":           "true",
+				"preempt":            "true",
 				"priority":           "120",
 				"adv_interval":       "2",
 				"preempt_delay":      "0",
