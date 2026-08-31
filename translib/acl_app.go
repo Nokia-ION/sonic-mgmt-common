@@ -54,6 +54,14 @@ const (
 	OC_ACL_APP_MODULE_NAME   = "/openconfig-acl:acl"
 	OC_ACL_YANG_PATH_PREFIX  = "/device/acl"
 
+	// Rule counters are published by the flex counter service in COUNTERS_DB.
+	// ACL_COUNTER_RULE_MAP maps "<acl table>:<rule>" to the counter object id,
+	// whose packet and byte counts live in the COUNTERS table.
+	ACL_COUNTER_RULE_MAP     = "ACL_COUNTER_RULE_MAP"
+	COUNTERS_TABLE           = "COUNTERS"
+	ACL_COUNTER_ATTR_PACKETS = "SAI_ACL_COUNTER_ATTR_PACKETS"
+	ACL_COUNTER_ATTR_BYTES   = "SAI_ACL_COUNTER_ATTR_BYTES"
+
 	MIN_PRIORITY = 1
 	MAX_PRIORITY = 65536
 )
@@ -134,6 +142,11 @@ type AclApp struct {
 
 	aclTableMap  map[string]db.Value
 	ruleTableMap map[string]map[string]db.Value
+
+	// Counters are read outside the ConfigDB handle passed to processCommon.
+	countersDb  *db.DB
+	counterOids db.Value
+	oidsRead    bool
 }
 
 func init() {
@@ -246,6 +259,7 @@ func (app *AclApp) processGet(dbs [db.MaxDB]*db.DB, fmtType TranslibFmtType) (Ge
 	var payload []byte
 
 	configDb := dbs[db.ConfigDB]
+	app.countersDb = dbs[db.CountersDB]
 	err = app.processCommon(configDb, GET)
 	if err != nil {
 		return GetResponse{Payload: payload, ErrSrc: AppErr}, err
@@ -643,15 +657,57 @@ func (app *AclApp) convertInternalToOCAcl(aclName string, aclSets *ocbinds.Openc
 func (app *AclApp) convertInternalToOCAclRule(aclName string, aclType ocbinds.E_OpenconfigAcl_ACL_TYPE, seqId int64, aclSet *ocbinds.OpenconfigAcl_Acl_AclSets_AclSet, entrySet *ocbinds.OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry) {
 	if seqId != -1 {
 		ruleName := "RULE_" + strconv.FormatInt(int64(seqId), 10)
-		app.convertInternalToOCAclRuleProperties(app.ruleTableMap[aclName][ruleName], aclType, nil, entrySet)
+		app.convertInternalToOCAclRuleProperties(aclName, ruleName, app.ruleTableMap[aclName][ruleName], aclType, nil, entrySet)
 	} else {
 		for ruleName := range app.ruleTableMap[aclName] {
-			app.convertInternalToOCAclRuleProperties(app.ruleTableMap[aclName][ruleName], aclType, aclSet, nil)
+			app.convertInternalToOCAclRuleProperties(aclName, ruleName, app.ruleTableMap[aclName][ruleName], aclType, aclSet, nil)
 		}
 	}
 }
 
-func (app *AclApp) convertInternalToOCAclRuleProperties(ruleData db.Value, aclType ocbinds.E_OpenconfigAcl_ACL_TYPE, aclSet *ocbinds.OpenconfigAcl_Acl_AclSets_AclSet, entrySet *ocbinds.OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry) {
+// aclRuleCounters returns the packet and byte counts of a rule from COUNTERS_DB.
+// Counters are published by the flex counter service only while ACL polling is
+// enabled ("counterpoll acl enable"); they read as zero otherwise, which is what
+// the CLI reports as "N/A". The reason for a zero is logged for diagnosis.
+func (app *AclApp) aclRuleCounters(aclKey, ruleKey string) (pkts uint64, octets uint64) {
+	if app.countersDb == nil {
+		log.V(2).Infof("aclRuleCounters: no counters db handle for %s:%s", aclKey, ruleKey)
+		return 0, 0
+	}
+
+	// The whole map is fetched once per request; a rule tree can hold thousands
+	// of rules, and every one of them would otherwise re-read it.
+	if !app.oidsRead {
+		oids, err := app.countersDb.GetMapAll(&db.TableSpec{Name: ACL_COUNTER_RULE_MAP})
+		if err != nil {
+			log.V(2).Infof("aclRuleCounters: %s unavailable; err=%v", ACL_COUNTER_RULE_MAP, err)
+		}
+		app.counterOids = oids
+		app.oidsRead = true
+	}
+
+	oid := app.counterOids.Get(aclKey + ":" + ruleKey)
+	if len(oid) == 0 {
+		log.V(2).Infof("aclRuleCounters: no counter oid for %s:%s", aclKey, ruleKey)
+		return 0, 0
+	}
+
+	entry, err := app.countersDb.GetEntry(&db.TableSpec{Name: COUNTERS_TABLE}, asKey(oid))
+	if err != nil {
+		log.V(2).Infof("aclRuleCounters: no counters for oid %s; err=%v", oid, err)
+		return 0, 0
+	}
+
+	pkts, pErr := strconv.ParseUint(entry.Get(ACL_COUNTER_ATTR_PACKETS), 10, 64)
+	octets, oErr := strconv.ParseUint(entry.Get(ACL_COUNTER_ATTR_BYTES), 10, 64)
+	if pErr != nil || oErr != nil {
+		log.V(2).Infof("aclRuleCounters: oid %s counters unreadable; pkts=%v octets=%v", oid, pErr, oErr)
+	}
+
+	return pkts, octets
+}
+
+func (app *AclApp) convertInternalToOCAclRuleProperties(aclName string, ruleName string, ruleData db.Value, aclType ocbinds.E_OpenconfigAcl_ACL_TYPE, aclSet *ocbinds.OpenconfigAcl_Acl_AclSets_AclSet, entrySet *ocbinds.OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry) {
 	priority, _ := strconv.ParseInt(ruleData.Get("PRIORITY"), 10, 32)
 	seqId := uint32(MAX_PRIORITY - priority)
 	//ruleDescr := ruleData.Get("RULE_DESCRIPTION")
@@ -669,10 +725,9 @@ func (app *AclApp) convertInternalToOCAclRuleProperties(ruleData db.Value, aclTy
 	entrySet.State.SequenceId = &seqId
 	//entrySet.State.Description = &ruleDescr
 
-	var num uint64
-	num = 0
-	entrySet.State.MatchedOctets = &num
-	entrySet.State.MatchedPackets = &num
+	pkts, octets := app.aclRuleCounters(aclName, ruleName)
+	entrySet.State.MatchedPackets = &pkts
+	entrySet.State.MatchedOctets = &octets
 
 	ygot.BuildEmptyTree(entrySet.Transport)
 	ygot.BuildEmptyTree(entrySet.Actions)
@@ -775,13 +830,12 @@ func (app *AclApp) convertInternalToOCAclRuleProperties(ruleData db.Value, aclTy
 	}
 }
 
-func convertInternalToOCAclRuleBinding(d *db.DB, priority uint32, seqId int64, direction string, aclSet ygot.GoStruct, entrySet ygot.GoStruct) {
+func (app *AclApp) convertInternalToOCAclRuleBinding(aclKey string, ruleKey string, priority uint32, seqId int64, direction string, aclSet ygot.GoStruct, entrySet ygot.GoStruct) {
 	if seqId == -1 {
 		seqId = int64(MAX_PRIORITY - priority)
 	}
 
-	var num uint64
-	num = 0
+	pkts, octets := app.aclRuleCounters(aclKey, ruleKey)
 	var ruleId uint32 = uint32(seqId)
 
 	if direction == "INGRESS" {
@@ -798,8 +852,8 @@ func convertInternalToOCAclRuleBinding(d *db.DB, priority uint32, seqId int64, d
 		if ingressEntrySet != nil {
 			ygot.BuildEmptyTree(ingressEntrySet)
 			ingressEntrySet.State.SequenceId = &ruleId
-			ingressEntrySet.State.MatchedPackets = &num
-			ingressEntrySet.State.MatchedOctets = &num
+			ingressEntrySet.State.MatchedPackets = &pkts
+			ingressEntrySet.State.MatchedOctets = &octets
 		}
 	} else if direction == "EGRESS" {
 		var egressEntrySet *ocbinds.OpenconfigAcl_Acl_Interfaces_Interface_EgressAclSets_EgressAclSet_AclEntries_AclEntry
@@ -815,8 +869,8 @@ func convertInternalToOCAclRuleBinding(d *db.DB, priority uint32, seqId int64, d
 		if egressEntrySet != nil {
 			ygot.BuildEmptyTree(egressEntrySet)
 			egressEntrySet.State.SequenceId = &ruleId
-			egressEntrySet.State.MatchedPackets = &num
-			egressEntrySet.State.MatchedOctets = &num
+			egressEntrySet.State.MatchedPackets = &pkts
+			egressEntrySet.State.MatchedOctets = &octets
 		}
 	}
 }
@@ -840,14 +894,14 @@ func (app *AclApp) convertInternalToOCAclBinding(d *db.DB, aclName string, intfI
 			// Rulekey has two keys, first aclkey and second rulename
 			if rulekey.Get(0) == aclName && rulekey.Get(1) != "DEFAULT_RULE" {
 				seqId, _ := strconv.Atoi(strings.Replace(rulekey.Get(1), "RULE_", "", 1))
-				convertInternalToOCAclRuleBinding(d, 0, int64(seqId), direction, intfAclSet, nil)
+				app.convertInternalToOCAclRuleBinding(aclName, rulekey.Get(1), 0, int64(seqId), direction, intfAclSet, nil)
 			}
 		}
 	} else {
 		for ruleName := range app.ruleTableMap[aclName] {
 			if ruleName != "DEFAULT_RULE" {
 				seqId, _ := strconv.Atoi(strings.Replace(ruleName, "RULE_", "", 1))
-				convertInternalToOCAclRuleBinding(d, 0, int64(seqId), direction, intfAclSet, nil)
+				app.convertInternalToOCAclRuleBinding(aclName, ruleName, 0, int64(seqId), direction, intfAclSet, nil)
 			}
 		}
 	}
@@ -913,7 +967,7 @@ func (app *AclApp) getAclBindingInfoForInterfaceData(d *db.DB, intfData *ocbinds
 						if err != nil {
 							return err
 						}
-						convertInternalToOCAclRuleBinding(d, 0, int64(seqId), direction, nil, entrySet)
+						app.convertInternalToOCAclRuleBinding(aclKey, rulekey, 0, int64(seqId), direction, nil, entrySet)
 					}
 				} else {
 					ygot.BuildEmptyTree(ingressAclSet)
@@ -941,7 +995,7 @@ func (app *AclApp) getAclBindingInfoForInterfaceData(d *db.DB, intfData *ocbinds
 						if err != nil {
 							return err
 						}
-						convertInternalToOCAclRuleBinding(d, 0, int64(seqId), direction, nil, entrySet)
+						app.convertInternalToOCAclRuleBinding(aclKey, rulekey, 0, int64(seqId), direction, nil, entrySet)
 					}
 				} else {
 					ygot.BuildEmptyTree(egressAclSet)
@@ -1797,9 +1851,16 @@ func convertSonicAclTypeToOC(aclType string) (ocbinds.E_OpenconfigAcl_ACL_TYPE, 
 }
 
 func getAclKeyStrFromOCKey(aclname string, acltype ocbinds.E_OpenconfigAcl_ACL_TYPE) string {
-	aclN := strings.Replace(strings.Replace(aclname, " ", "_", -1), "-", "_", -1)
 	aclT := acltype.ΛMap()["E_OpenconfigAcl_ACL_TYPE"][int64(acltype)].Name
-	return aclN + "_" + aclT
+	return getAclKeyStr(aclname, aclT)
+}
+
+// getAclKeyStr builds the ACL_TABLE key for an acl-set name and its OC type name.
+// SONiC table names carry neither spaces nor dashes, so both are substituted the
+// same way on every path that reaches the db, reads and subscriptions included.
+func getAclKeyStr(aclName string, aclType string) string {
+	aclN := strings.Replace(strings.Replace(aclName, " ", "_", -1), "-", "_", -1)
+	return aclN + "_" + aclType
 }
 
 /*
@@ -1839,7 +1900,7 @@ func (app *AclApp) translateSubscribeAclSet(nb *notificationInfoBuilder) error {
 	aclType := nb.pathInfo.StringVar("type", "*")
 
 	nb.New().PathKey("name", aclName).PathKey("type", aclType)
-	nb.Table(db.ConfigDB, ACL_TABLE).Key(aclName + "_" + aclType)
+	nb.Table(db.ConfigDB, ACL_TABLE).Key(getAclKeyStr(aclName, aclType))
 	if nb.SetFieldPrefix("config") {
 		nb.Field("description", ACL_DESCRIPTION)
 	}
@@ -1856,7 +1917,7 @@ func (app *AclApp) translateSubscribeAclEntry(nb *notificationInfoBuilder) error
 	ruleSeq := nb.pathInfo.StringVar("sequence-id", "*")
 
 	nb.New().PathKey("sequence-id", ruleSeq)
-	nb.Table(db.ConfigDB, RULE_TABLE).Key(aclName+"_"+aclType, "RULE_"+ruleSeq)
+	nb.Table(db.ConfigDB, RULE_TABLE).Key(getAclKeyStr(aclName, aclType), "RULE_"+ruleSeq)
 
 	ipAclFieldSetter := func(prefix string) {
 		if nb.SetFieldPrefix(prefix) {
