@@ -67,6 +67,13 @@ const (
 	niAftsIpv6EntryNode   = "ipv6-entry"
 	niAftsStateNode       = "state"
 
+	// The next-hop-group list and the member list below it. The member list is
+	// named so that a path reaching it can be recognised and refused, since its
+	// key is not recoverable from a notification key.
+	niAftsNhGrpNode        = "next-hop-group"
+	niAftsNhGrpMembersNode = "next-hops"
+	niAftsNhGrpMemberNode  = "next-hop"
+
 	// The one entry leaf that is fed by a row field rather than by the key.
 	niAftsNhGrpLeaf = "next-hop-group"
 )
