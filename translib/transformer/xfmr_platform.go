@@ -1241,7 +1241,7 @@ var Subscribe_pfm_components_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSubsc
 	}
 
 	if inParams.subscProc == TRANSLATE_EXISTS {
-		return translateExists(inParams, key)
+		return translateExists(inParams, key, targetUriPath)
 	}
 	if inParams.subscProc == TRANSLATE_SUBSCRIBE {
 		return translateSubscribe(inParams, key, targetUriPath)
@@ -1286,7 +1286,7 @@ func compTypesForSubscriptionUri(uri string) []componentType {
 }
 
 /* Helper for the main subscribe transformer handling the TRANSLATE_EXISTS case. */
-func translateExists(inParams XfmrSubscInParams, key string) (XfmrSubscOutParams, error) {
+func translateExists(inParams XfmrSubscInParams, key, targetUriPath string) (XfmrSubscOutParams, error) {
 	var result XfmrSubscOutParams
 	dbNum := db.StateDB
 	d := inParams.dbs[dbNum]
@@ -1301,6 +1301,17 @@ func translateExists(inParams XfmrSubscInParams, key string) (XfmrSubscOutParams
 	if compType == CompTypeInvalid {
 		return result, nil
 	}
+
+	/* Validate existence against the table the property actually reads. */
+	if isPropertiesPath(targetUriPath) {
+		propName := propNameFromSubscribeUri(inParams.uri, inParams.requestURI)
+		if propTable, _, ok := propSubscribeInfo(propName, compType); ok {
+			result.dbDataMap = RedisDbSubscribeMap{db.StateDB: {propTable: {key: {}}}}
+			log.V(lvl.DEBUG).Infof("+++ translateExists property %s: %v %v %v +++", propName, db.StateDB, propTable, key)
+			return result, nil
+		}
+	}
+
 	tblInfo, ok := compTblMap[compType]
 	if !ok {
 		return result, errors.New("table not found.")
@@ -1429,6 +1440,29 @@ func translateSubscribe(inParams XfmrSubscInParams, key, targetUriPath string) (
 				tblKey = "*"
 			} else {
 				tblKey = platform.InterfaceNameFromPort(key)
+			}
+		}
+
+		/* Watch the table and field the property reads, so that a change to the
+		 * value produces an update. */
+		if isPropertiesPath(targetUriPath) {
+			propName := propNameFromSubscribeUri(inParams.uri, inParams.requestURI)
+			propTable, propFields, ok := propSubscribeInfo(propName, cType)
+			if !ok || !propOnChangeSupported(targetUriPath) {
+				/* No single property to watch, so refuse on-change and leave
+				 * SAMPLE to the default handling below. */
+				result.onChange = OnchangeDisable
+			} else {
+				if result.dbDataMap[db.StateDB] == nil {
+					result.dbDataMap[db.StateDB] = make(map[string]map[string]map[string]string)
+				}
+				if result.dbDataMap[db.StateDB][propTable] == nil {
+					result.dbDataMap[db.StateDB][propTable] = make(map[string]map[string]string)
+				}
+				result.dbDataMap[db.StateDB][propTable][tblKey] = propFields
+				log.V(lvl.DEBUG).Infof("+++ translateSubscribe property %s: %v %v %v %v +++",
+					propName, db.StateDB, propTable, tblKey, propFields)
+				continue
 			}
 		}
 
@@ -1786,6 +1820,11 @@ func getSysComponents(pf_cpts *ocbinds.OpenconfigPlatform_Components, targetUriP
 			return fmt.Errorf("invalid input component name: %s", compName)
 		}
 		ygot.BuildEmptyTree(pf_comp)
+		/* properties is a sibling of state and is not filled by the switch below.
+		 * Filesystem components serve their own. */
+		if isPropertiesPath(targetUriPath) && compType != CompTypeFilesystem {
+			return fillProperties(pf_comp, compName, compType, subKey, dbs)
+		}
 		switch compType {
 		case CompTypePsu:
 			ygot.BuildEmptyTree(pf_comp.PowerSupply)
@@ -1964,6 +2003,13 @@ func compTypeToFuncCall(cType componentType, compName, subKey string, pfComp *oc
 	d := dbs[db.StateDB]
 	cfgdb := dbs[db.ConfigDB]
 	ygot.BuildEmptyTree(pfComp)
+	/* A whole-component GET includes properties.  Having none is normal, so the
+	 * error is not fatal. */
+	if pType == AllPaths && cType != CompTypeFilesystem {
+		if err := fillProperties(pfComp, compName, cType, subKey, dbs); err != nil {
+			log.V(lvl.DEBUG).Infof("compTypeToFuncCall: properties for %s: %v", compName, err)
+		}
+	}
 	switch cType {
 	case CompTypeStorage:
 		return fillStorageInfo(pfComp, compName, pType, targetUriPath, d)
