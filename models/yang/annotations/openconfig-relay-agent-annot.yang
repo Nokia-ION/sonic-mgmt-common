@@ -1,0 +1,60 @@
+module openconfig-relay-agent-annot {
+
+    yang-version "1";
+
+    namespace "http://openconfig.net/yang/annotation/oc-relay-agent-annot";
+    prefix "oc-relay-annot";
+
+    import openconfig-relay-agent { prefix oc-relay; }
+    import sonic-extensions { prefix sonic-ext; }
+
+    organization "SONiC";
+    contact "SONiC";
+    description
+        "OpenConfig relay-agent annotations for DHCPv4/DHCPv6 interface config.
+         Maps /relay-agent/dhcp(v4|v6)/interfaces/interface/config to CONFIG_DB.";
+
+    revision 2026-08-28 {
+        description
+            "Add DHCPv4 relay-agent interface subtree transformer.";
+    }
+
+    revision 2026-08-27 {
+        description
+            "Add DHCPv6 relay-agent interface subtree transformer.";
+    }
+
+    deviation /oc-relay:relay-agent/oc-relay:dhcp {
+        deviate add {
+            sonic-ext:db-name "CONFIG_DB";
+            sonic-ext:table-name "VLAN";
+            sonic-ext:subtree-transformer "dhcpv4_relay_agent_xfmr";
+        }
+    }
+
+    deviation /oc-relay:relay-agent/oc-relay:dhcp/oc-relay:interfaces {
+        deviate add {
+            sonic-ext:db-name "CONFIG_DB";
+            sonic-ext:table-name "VLAN";
+            sonic-ext:subtree-transformer "dhcpv4_relay_agent_xfmr";
+            sonic-ext:path-transformer "dhcpv4_relay_agent_intf_path_xfmr";
+        }
+    }
+
+    deviation /oc-relay:relay-agent/oc-relay:dhcpv6 {
+        deviate add {
+            sonic-ext:db-name "CONFIG_DB";
+            sonic-ext:table-name "DHCP_RELAY";
+            sonic-ext:subtree-transformer "dhcpv6_relay_agent_xfmr";
+        }
+    }
+
+    deviation /oc-relay:relay-agent/oc-relay:dhcpv6/oc-relay:interfaces {
+        deviate add {
+            sonic-ext:db-name "CONFIG_DB";
+            sonic-ext:table-name "DHCP_RELAY";
+            sonic-ext:subtree-transformer "dhcpv6_relay_agent_xfmr";
+            sonic-ext:path-transformer "dhcpv6_relay_agent_intf_path_xfmr";
+        }
+    }
+}
