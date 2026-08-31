@@ -49,6 +49,56 @@ func closeAllTestDB() error {
 	return nil
 }
 
+func Test_keyMatchesPattern(t *testing.T) {
+	tests := []struct {
+		name    string
+		key     []string
+		pattern []string
+		want    bool
+	}{{
+		name:    "all key pattern takes a single component key",
+		key:     []string{"10.50.0.0/16"},
+		pattern: []string{"*"},
+		want:    true,
+	}, {
+		// A ROUTE_TABLE key for an IPv6 prefix, split by the APPL_DB separator.
+		name:    "all key pattern takes a key the separator split up",
+		key:     []string{"fc00", "50", "", "/64"},
+		pattern: []string{"*"},
+		want:    true,
+	}, {
+		name:    "all key pattern takes a multi component key",
+		key:     []string{"Ethernet0", "1.1.1.1/24"},
+		pattern: []string{"*"},
+		want:    true,
+	}, {
+		name:    "component wildcard still requires the same component count",
+		key:     []string{"fc00", "50", "", "/64"},
+		pattern: []string{"*", "*"},
+		want:    false,
+	}, {
+		name:    "component pattern matches component for component",
+		key:     []string{"Vlan10", "1.1.1.1/24"},
+		pattern: []string{"Vlan*", "*"},
+		want:    true,
+	}, {
+		name:    "non matching component is refused",
+		key:     []string{"Ethernet0", "1.1.1.1/24"},
+		pattern: []string{"Vlan*", "*"},
+		want:    false,
+	}}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := keyMatchesPattern(db.Key{Comp: tc.key}, db.Key{Comp: tc.pattern})
+			if got != tc.want {
+				t.Errorf("key %v against pattern %v = %v, want %v",
+					tc.key, tc.pattern, got, tc.want)
+			}
+		})
+	}
+}
+
 func Test_isEmptyStruct_EmptyObj(t *testing.T) {
 	v := &ocbinds.OpenconfigAcl_Acl_AclSets_AclSet{}
 	if !isEmptyYgotStruct(v) {
