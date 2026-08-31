@@ -36,15 +36,18 @@ const (
 	VRRP6_TBL                  = "VRRP6"
 	VRRP_TRACK_TBL             = "VRRP_TRACK"
 	VRRP6_TRACK_TBL            = "VRRP6_TRACK"
+	VRRP_STATE_TBL             = "VRRP_STATE_TABLE"
+	VRRP6_STATE_TBL            = "VRRP6_STATE_TABLE"
 	VRRP_FIELD_VRID            = "vrid"
 	VRRP_FIELD_VIP             = "vip@"
 	VRRP_FIELD_PRIORITY        = "priority"
-	VRRP_FIELD_PREEMPT         = "pre_empt"
+	VRRP_FIELD_PREEMPT         = "preempt"
 	VRRP_FIELD_PREEMPT_DELAY   = "preempt_delay"
 	VRRP_FIELD_ACCEPT_MODE     = "accept_mode"
 	VRRP_FIELD_ADV_INTERVAL    = "adv_interval"
 	VRRP_FIELD_VIRTUAL_LLA     = "virtual_link_local"
 	VRRP_FIELD_TRACK_PRIO_INCR = "priority_increment"
+	VRRP_STATE_FIELD_EFF_PRIORITY = "effective_priority"
 )
 
 type vrrpGroupData struct {
@@ -58,6 +61,8 @@ type vrrpGroupData struct {
 	virtualLinkLocal   string
 	trackInterfaces    []string
 	priorityDecrement  uint8
+	currentPriority    uint8
+	hasCurrentPriority bool
 }
 
 func init() {
@@ -242,22 +247,30 @@ func subscribeVrrp(inParams XfmrSubscInParams, isIPv6 bool) (XfmrSubscOutParams,
 	}
 
 	tbl := VRRP_TBL
+	stateTbl := VRRP_STATE_TBL
 	if isIPv6 {
 		tbl = VRRP6_TBL
+		stateTbl = VRRP6_STATE_TBL
 	}
 	key := ifName + "|" + vrid
 
 	// For RFC parent-table checks in GET/CRUD flows, provide concrete table/key mapping.
 	// For subscription flows, wildcard key still allows expansion downstream.
+	// current-priority to be watched for failover cases
 	result.dbDataMap = RedisDbSubscribeMap{
 		db.ConfigDB: {
 			tbl: {
 				key: {},
 			},
 		},
+		db.StateDB: {
+			stateTbl: {
+				key: {},
+			},
+		},
 	}
 
-	log.Warningf("VRRP_TRACE subscribeVrrp: subscProc=%v uri=%s table=%s key=%s isIPv6=%v", inParams.subscProc, inParams.uri, tbl, key, isIPv6)
+	log.Warningf("VRRP_TRACE subscribeVrrp: subscProc=%v uri=%s table=%s stateTable=%s key=%s isIPv6=%v", inParams.subscProc, inParams.uri, tbl, stateTbl, key, isIPv6)
 	return result, nil
 }
 
@@ -840,7 +853,7 @@ func mapRoutedVlanIPv4VrrpGroupToDbFields(
 			fields[VRRP_FIELD_PRIORITY] = strconv.Itoa(int(*grpObj.Config.Priority))
 		}
 		if grpObj.Config.Preempt != nil {
-			fields[VRRP_FIELD_PREEMPT] = strconv.FormatBool(*grpObj.Config.Preempt)
+			fields[VRRP_FIELD_PREEMPT] = boolToAdminMode(*grpObj.Config.Preempt)
 		}
 		if grpObj.Config.PreemptDelay != nil {
 			fields[VRRP_FIELD_PREEMPT_DELAY] = strconv.Itoa(int(*grpObj.Config.PreemptDelay))
@@ -852,7 +865,7 @@ func mapRoutedVlanIPv4VrrpGroupToDbFields(
 			fields[VRRP_FIELD_ADV_INTERVAL] = strconv.Itoa(centiToSec(*grpObj.Config.AdvertisementInterval))
 		}
 		if len(grpObj.Config.VirtualAddress) > 0 {
-			fields[VRRP_FIELD_VIP] = strings.Join(grpObj.Config.VirtualAddress, ",")
+			fields[VRRP_FIELD_VIP] = strings.Join(normalizeVirtualAddressesList(grpObj.Config.VirtualAddress, false), ",")
 		}
 	}
 	trackMap := mapRoutedVlanIPv4TrackToDb(ifName, vrid, grpObj.InterfaceTracking, cfgDb, vrrpTrackTbl)
@@ -877,7 +890,7 @@ func mapRoutedVlanIPv6VrrpGroupToDbFields(
 			fields[VRRP_FIELD_PRIORITY] = strconv.Itoa(int(*grpObj.Config.Priority))
 		}
 		if grpObj.Config.Preempt != nil {
-			fields[VRRP_FIELD_PREEMPT] = strconv.FormatBool(*grpObj.Config.Preempt)
+			fields[VRRP_FIELD_PREEMPT] = boolToAdminMode(*grpObj.Config.Preempt)
 		}
 		if grpObj.Config.PreemptDelay != nil {
 			fields[VRRP_FIELD_PREEMPT_DELAY] = strconv.Itoa(int(*grpObj.Config.PreemptDelay))
@@ -889,7 +902,7 @@ func mapRoutedVlanIPv6VrrpGroupToDbFields(
 			fields[VRRP_FIELD_ADV_INTERVAL] = strconv.Itoa(centiToSec(*grpObj.Config.AdvertisementInterval))
 		}
 		if len(grpObj.Config.VirtualAddress) > 0 {
-			fields[VRRP_FIELD_VIP] = strings.Join(grpObj.Config.VirtualAddress, ",")
+			fields[VRRP_FIELD_VIP] = strings.Join(normalizeVirtualAddressesList(grpObj.Config.VirtualAddress, true), ",")
 		}
 		if grpObj.Config.VirtualLinkLocal != nil {
 			if vll, ok := normalizeVirtualLinkLocal(*grpObj.Config.VirtualLinkLocal); ok {
@@ -919,7 +932,7 @@ func mapSubIntfIPv4VrrpGroupToDbFields(
 			fields[VRRP_FIELD_PRIORITY] = strconv.Itoa(int(*grpObj.Config.Priority))
 		}
 		if grpObj.Config.Preempt != nil {
-			fields[VRRP_FIELD_PREEMPT] = strconv.FormatBool(*grpObj.Config.Preempt)
+			fields[VRRP_FIELD_PREEMPT] = boolToAdminMode(*grpObj.Config.Preempt)
 		}
 		if grpObj.Config.PreemptDelay != nil {
 			fields[VRRP_FIELD_PREEMPT_DELAY] = strconv.Itoa(int(*grpObj.Config.PreemptDelay))
@@ -931,7 +944,7 @@ func mapSubIntfIPv4VrrpGroupToDbFields(
 			fields[VRRP_FIELD_ADV_INTERVAL] = strconv.Itoa(centiToSec(*grpObj.Config.AdvertisementInterval))
 		}
 		if len(grpObj.Config.VirtualAddress) > 0 {
-			fields[VRRP_FIELD_VIP] = strings.Join(grpObj.Config.VirtualAddress, ",")
+			fields[VRRP_FIELD_VIP] = strings.Join(normalizeVirtualAddressesList(grpObj.Config.VirtualAddress, false), ",")
 		}
 	}
 	trackMap := mapSubIntfTrackToDb(ifName, vrid, grpObj.InterfaceTracking, cfgDb, vrrpTrackTbl)
@@ -956,7 +969,7 @@ func mapSubIntfIPv6VrrpGroupToDbFields(
 			fields[VRRP_FIELD_PRIORITY] = strconv.Itoa(int(*grpObj.Config.Priority))
 		}
 		if grpObj.Config.Preempt != nil {
-			fields[VRRP_FIELD_PREEMPT] = strconv.FormatBool(*grpObj.Config.Preempt)
+			fields[VRRP_FIELD_PREEMPT] = boolToAdminMode(*grpObj.Config.Preempt)
 		}
 		if grpObj.Config.PreemptDelay != nil {
 			fields[VRRP_FIELD_PREEMPT_DELAY] = strconv.Itoa(int(*grpObj.Config.PreemptDelay))
@@ -968,7 +981,7 @@ func mapSubIntfIPv6VrrpGroupToDbFields(
 			fields[VRRP_FIELD_ADV_INTERVAL] = strconv.Itoa(centiToSec(*grpObj.Config.AdvertisementInterval))
 		}
 		if len(grpObj.Config.VirtualAddress) > 0 {
-			fields[VRRP_FIELD_VIP] = strings.Join(grpObj.Config.VirtualAddress, ",")
+			fields[VRRP_FIELD_VIP] = strings.Join(normalizeVirtualAddressesList(grpObj.Config.VirtualAddress, true), ",")
 		}
 		if grpObj.Config.VirtualLinkLocal != nil {
 			if vll, ok := normalizeVirtualLinkLocal(*grpObj.Config.VirtualLinkLocal); ok {
@@ -1245,9 +1258,11 @@ func dbToYangVrrp(inParams XfmrParams, isIPv6 bool) error {
 
 	vrrpTbl := VRRP_TBL
 	vrrpTrackTbl := VRRP_TRACK_TBL
+	vrrpStateTbl := VRRP_STATE_TBL
 	if isIPv6 {
 		vrrpTbl = VRRP6_TBL
 		vrrpTrackTbl = VRRP6_TRACK_TBL
+		vrrpStateTbl = VRRP6_STATE_TBL
 	}
 
 	vrrpData, err := getIntfVrrpData(cfgDb, ifName, targetVrid, vrrpTbl, isIPv6)
@@ -1256,6 +1271,10 @@ func dbToYangVrrp(inParams XfmrParams, isIPv6 bool) error {
 	}
 
 	if err = mergeIntfVrrpTrackingData(cfgDb, ifName, targetVrid, vrrpTrackTbl, vrrpData); err != nil {
+		return err
+	}
+
+	if err = mergeIntfVrrpStateData(inParams.dbs[db.StateDB], ifName, targetVrid, vrrpStateTbl, vrrpData); err != nil {
 		return err
 	}
 
@@ -1292,9 +1311,11 @@ func dbToYangSubIntfVrrp(inParams XfmrParams, isIPv6 bool) error {
 
 	vrrpTbl := VRRP_TBL
 	vrrpTrackTbl := VRRP_TRACK_TBL
+	vrrpStateTbl := VRRP_STATE_TBL
 	if isIPv6 {
 		vrrpTbl = VRRP6_TBL
 		vrrpTrackTbl = VRRP6_TRACK_TBL
+		vrrpStateTbl = VRRP6_STATE_TBL
 	}
 
 	vrrpData, err := getIntfVrrpData(cfgDb, ifName, targetVrid, vrrpTbl, isIPv6)
@@ -1303,6 +1324,10 @@ func dbToYangSubIntfVrrp(inParams XfmrParams, isIPv6 bool) error {
 	}
 
 	if err = mergeIntfVrrpTrackingData(cfgDb, ifName, targetVrid, vrrpTrackTbl, vrrpData); err != nil {
+		return err
+	}
+
+	if err = mergeIntfVrrpStateData(inParams.dbs[db.StateDB], ifName, targetVrid, vrrpStateTbl, vrrpData); err != nil {
 		return err
 	}
 
@@ -1478,7 +1503,7 @@ func buildVrrpLeafSetMap(
 		if !ok {
 			return 0, fields, trackEntries, false
 		}
-		fields[VRRP_FIELD_PREEMPT] = strconv.FormatBool(val)
+		fields[VRRP_FIELD_PREEMPT] = boolToAdminMode(val)
 		return vrid, fields, trackEntries, true
 	case strings.HasSuffix(normPath, "/vrrp-group/config/preempt-delay"):
 		val, ok := toUint64Param(param)
@@ -1506,7 +1531,11 @@ func buildVrrpLeafSetMap(
 		if !ok {
 			return 0, fields, trackEntries, false
 		}
-		fields[VRRP_FIELD_VIP] = strings.Join(addrs, ",")
+		normAddrs := normalizeVirtualAddressesList(addrs, isIPv6)
+		if len(normAddrs) == 0 {
+			return 0, fields, trackEntries, false
+		}
+		fields[VRRP_FIELD_VIP] = strings.Join(normAddrs, ",")
 		return vrid, fields, trackEntries, true
 	case strings.HasSuffix(normPath, "/vrrp-group/config/virtual-link-local"):
 		if !isIPv6 {
@@ -1902,7 +1931,10 @@ func populateRoutedVlanVrrpGroup(grpObj *ocbinds.OpenconfigInterfaces_Interfaces
 	grpObj.State.PreemptDelay = &grp.preemptDelay
 	grpObj.State.AcceptMode = &grp.acceptMode
 	grpObj.State.AdvertisementInterval = &grp.advertisementCenti
-	grpObj.State.CurrentPriority = &grp.priority
+	// Left unset when vrrpd's value is unavailable; see mergeIntfVrrpStateData.
+	if grp.hasCurrentPriority {
+		grpObj.State.CurrentPriority = &grp.currentPriority
+	}
 	grpObj.State.VirtualAddress = append(grpObj.State.VirtualAddress[:0], grp.virtualAddresses...)
 
 	grpObj.Config.PreemptDelay = &grp.preemptDelay
@@ -1937,7 +1969,10 @@ func populateRoutedVlanIPv6VrrpGroup(grpObj *ocbinds.OpenconfigInterfaces_Interf
 	grpObj.State.PreemptDelay = &grp.preemptDelay
 	grpObj.State.AcceptMode = &grp.acceptMode
 	grpObj.State.AdvertisementInterval = &grp.advertisementCenti
-	grpObj.State.CurrentPriority = &grp.priority
+	// Left unset when vrrpd's value is unavailable; see mergeIntfVrrpStateData.
+	if grp.hasCurrentPriority {
+		grpObj.State.CurrentPriority = &grp.currentPriority
+	}
 	grpObj.State.VirtualAddress = append(grpObj.State.VirtualAddress[:0], grp.virtualAddresses...)
 
 	if grp.virtualLinkLocal != "" {
@@ -1972,7 +2007,10 @@ func populateSubIntfIPv4VrrpGroup(grpObj *ocbinds.OpenconfigInterfaces_Interface
 	grpObj.State.PreemptDelay = &grp.preemptDelay
 	grpObj.State.AcceptMode = &grp.acceptMode
 	grpObj.State.AdvertisementInterval = &grp.advertisementCenti
-	grpObj.State.CurrentPriority = &grp.priority
+	// Left unset when vrrpd's value is unavailable; see mergeIntfVrrpStateData.
+	if grp.hasCurrentPriority {
+		grpObj.State.CurrentPriority = &grp.currentPriority
+	}
 	grpObj.State.VirtualAddress = append(grpObj.State.VirtualAddress[:0], grp.virtualAddresses...)
 
 	grpObj.Config.PreemptDelay = &grp.preemptDelay
@@ -2007,7 +2045,10 @@ func populateSubIntfIPv6VrrpGroup(grpObj *ocbinds.OpenconfigInterfaces_Interface
 	grpObj.State.PreemptDelay = &grp.preemptDelay
 	grpObj.State.AcceptMode = &grp.acceptMode
 	grpObj.State.AdvertisementInterval = &grp.advertisementCenti
-	grpObj.State.CurrentPriority = &grp.priority
+	// Left unset when vrrpd's value is unavailable; see mergeIntfVrrpStateData.
+	if grp.hasCurrentPriority {
+		grpObj.State.CurrentPriority = &grp.currentPriority
+	}
 	grpObj.State.VirtualAddress = append(grpObj.State.VirtualAddress[:0], grp.virtualAddresses...)
 
 	if grp.virtualLinkLocal != "" {
@@ -2050,9 +2091,9 @@ func getIntfVrrpData(cfgDb *db.DB, ifName string, targetVrid string, vrrpTbl str
 
 		data[vrid] = vrrpGroupData{
 			vrid:               vrid,
-			virtualAddresses:   parseVirtualAddresses(getVrrpVip(entry)),
+			virtualAddresses:   parseVirtualAddresses(getVrrpVip(entry), isIPv6),
 			priority:           parseUint8(entry.Get(VRRP_FIELD_PRIORITY), 100),
-			preempt:            parseBool(entry.Get(VRRP_FIELD_PREEMPT), true),
+			preempt:            getVrrpPreempt(entry),
 			preemptDelay:       parseUint16(entry.Get(VRRP_FIELD_PREEMPT_DELAY), 0),
 			acceptMode:         parseBool(entry.Get(VRRP_FIELD_ACCEPT_MODE), false),
 			advertisementCenti: uint16(parseUint8(entry.Get(VRRP_FIELD_ADV_INTERVAL), 1)) * 100,
@@ -2114,6 +2155,68 @@ func mergeIntfVrrpTrackingData(cfgDb *db.DB, ifName string, targetVrid string, t
 	return nil
 }
 
+// mergeIntfVrrpStateData overlays the operational state that frrcfgd publishes
+// from FRR vrrpd onto the CONFIG_DB-derived groups.
+//
+// read current-priority when hasCurrentPriority is set. else its invalid current-prio
+func mergeIntfVrrpStateData(stateDb *db.DB, ifName string, targetVrid string, stateTbl string, vrrpData map[uint8]vrrpGroupData) error {
+	if stateDb == nil {
+		return nil
+	}
+
+	ts := db.TableSpec{Name: stateTbl}
+	keyPattern := ifName + "|*"
+	if targetVrid != "" {
+		keyPattern = ifName + "|" + targetVrid
+	}
+
+	keys, err := stateDb.GetKeysByPattern(&ts, keyPattern)
+	if err != nil {
+		// The table is absent until the producer publishes for the first time.
+		return nil
+	}
+
+	for _, key := range keys {
+		keyComp := key.Comp
+		if len(keyComp) < 2 {
+			continue
+		}
+
+		vrid, err := strconv.ParseUint(keyComp[1], 10, 8)
+		if err != nil {
+			continue
+		}
+		// vrrpd can know about groups CONFIG_DB does not, e.g. mid-delete.
+		// The configured set decides what the model exposes.
+		grp, ok := vrrpData[uint8(vrid)]
+		if !ok {
+			continue
+		}
+
+		entry, err := stateDb.GetEntry(&ts, key)
+		if err != nil {
+			continue
+		}
+
+		prioStr := strings.TrimSpace(entry.Get(VRRP_STATE_FIELD_EFF_PRIORITY))
+		if prioStr == "" {
+			continue
+		}
+		prio, err := strconv.ParseUint(prioStr, 10, 8)
+		if err != nil {
+			log.Warningf("VRRP_TRACE mergeIntfVrrpStateData: table=%s key=%v has unusable %s=%q",
+				stateTbl, keyComp, VRRP_STATE_FIELD_EFF_PRIORITY, prioStr)
+			continue
+		}
+
+		grp.currentPriority = uint8(prio)
+		grp.hasCurrentPriority = true
+		vrrpData[uint8(vrid)] = grp
+	}
+
+	return nil
+}
+
 func getVrrpVrid(entry db.Value, dbKey db.Key) (uint8, bool) {
 	vridStr := entry.Get(VRRP_FIELD_VRID)
 	if vridStr == "" {
@@ -2141,7 +2244,15 @@ func getVrrpVip(entry db.Value) string {
 	return entry.Get("vip")
 }
 
-func parseVirtualAddresses(vipList string) []string {
+func getVrrpPreempt(entry db.Value) bool {
+	val := strings.TrimSpace(entry.Get(VRRP_FIELD_PREEMPT))
+	if val == "" {
+		return true
+	}
+	return parseBool(val, true)
+}
+
+func parseVirtualAddresses(vipList string, isIPv6 bool) []string {
 	if vipList == "" {
 		return []string{}
 	}
@@ -2149,17 +2260,50 @@ func parseVirtualAddresses(vipList string) []string {
 	parts := strings.Split(vipList, ",")
 	addrs := make([]string, 0, len(parts))
 	for _, part := range parts {
-		vip := strings.TrimSpace(part)
-		if vip == "" {
-			continue
+		if vip, ok := normalizeVirtualAddress(part, isIPv6); ok {
+			addrs = append(addrs, vip)
 		}
-		if slashIdx := strings.IndexByte(vip, '/'); slashIdx > 0 {
-			vip = vip[:slashIdx]
-		}
-		addrs = append(addrs, vip)
 	}
 
-	return addrs
+	return uniqueStringsInOrder(addrs)
+}
+
+func normalizeVirtualAddressesList(addrs []string, isIPv6 bool) []string {
+	if len(addrs) == 0 {
+		return []string{}
+	}
+
+	out := make([]string, 0, len(addrs))
+	for _, addr := range addrs {
+		if vip, ok := normalizeVirtualAddress(addr, isIPv6); ok {
+			out = append(out, vip)
+		}
+	}
+	return uniqueStringsInOrder(out)
+}
+
+func normalizeVirtualAddress(vip string, isIPv6 bool) (string, bool) {
+	vip = strings.TrimSpace(vip)
+	if vip == "" {
+		return "", false
+	}
+	if slashIdx := strings.IndexByte(vip, '/'); slashIdx > 0 {
+		vip = vip[:slashIdx]
+	}
+	ip := net.ParseIP(vip)
+	if ip == nil {
+		return "", false
+	}
+	if isIPv6 {
+		if ip.To4() != nil {
+			return "", false
+		}
+		return vip, true
+	}
+	if ip.To4() == nil {
+		return "", false
+	}
+	return vip, true
 }
 
 func uniqueStrings(list []string) []string {
@@ -2174,6 +2318,22 @@ func uniqueStrings(list []string) []string {
 		}
 		out = append(out, item)
 		prev = item
+	}
+	return out
+}
+
+func uniqueStringsInOrder(list []string) []string {
+	if len(list) < 2 {
+		return list
+	}
+	out := make([]string, 0, len(list))
+	seen := make(map[string]bool, len(list))
+	for _, item := range list {
+		if item == "" || seen[item] {
+			continue
+		}
+		seen[item] = true
+		out = append(out, item)
 	}
 	return out
 }
@@ -2235,4 +2395,11 @@ func parseBool(val string, def bool) bool {
 	default:
 		return def
 	}
+}
+
+func boolToAdminMode(val bool) string {
+	if val {
+		return "enabled"
+	}
+	return "disabled"
 }
