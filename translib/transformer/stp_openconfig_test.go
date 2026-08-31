@@ -112,6 +112,11 @@ func stpEnableRstpExpected() map[string]interface{} {
 				"priority":              "128",
 			},
 		},
+		"STP_MST_PORT": map[string]interface{}{
+			"0|" + stpTestIfName: map[string]interface{}{
+				"priority": "128",
+			},
+		},
 	}
 }
 
@@ -124,16 +129,14 @@ func stpEnableRstpCleanup() map[string]interface{} {
 	}
 }
 
-func verifyStpMstPortNotCreatedOnEnable(t *testing.T) {
+func verifyStpMstPortCreatedOnEnable(t *testing.T) {
 	t.Helper()
-	key := "STP_MST_PORT|0|" + stpTestIfName
-	exists, err := rclient.Exists(context.Background(), key).Result()
-	if err != nil {
-		t.Fatalf("redis EXISTS failed for %s: %v", key, err)
+	expected := map[string]interface{}{
+		"STP_MST_PORT": map[string]interface{}{
+			"0|" + stpTestIfName: map[string]interface{}{"priority": "128"},
+		},
 	}
-	if exists != 0 {
-		t.Fatalf("expected %s to be absent so stpd can auto-derive path cost", key)
-	}
+	verifyDbResult(rclient, "STP_MST_PORT|0|"+stpTestIfName, expected, false)(t)
 }
 
 func Test_set_rstp_enabled_protocol(t *testing.T) {
@@ -147,7 +150,7 @@ func Test_set_rstp_enabled_protocol(t *testing.T) {
 	t.Run("enable RSTP via enabled-protocol", processSetRequest(url, body, "POST", false, nil))
 	time.Sleep(1 * time.Second)
 	t.Run("verify MST mode and MSTI 0 defaults", verifyDbResult(rclient, "STP|GLOBAL", expected, false))
-	t.Run("verify STP_MST_PORT not created on enable", verifyStpMstPortNotCreatedOnEnable)
+	t.Run("verify STP_MST_PORT created on enable", verifyStpMstPortCreatedOnEnable)
 	unloadDB(db.ConfigDB, cleanup)
 }
 
@@ -163,7 +166,7 @@ func Test_set_rstp_enabled_protocol_cold_start_update(t *testing.T) {
 	t.Run("enable RSTP via UPDATE on cold start", processSetRequest(url, body, "PATCH", false, nil))
 	time.Sleep(1 * time.Second)
 	t.Run("verify MST mode and MSTI 0 defaults after cold-start UPDATE", verifyDbResult(rclient, "STP|GLOBAL", expected, false))
-	t.Run("verify STP_MST_PORT not created on enable", verifyStpMstPortNotCreatedOnEnable)
+	t.Run("verify STP_MST_PORT created on enable", verifyStpMstPortCreatedOnEnable)
 	unloadDB(db.ConfigDB, cleanup)
 }
 
@@ -178,7 +181,7 @@ func Test_set_rstp_enabled_protocol_patch(t *testing.T) {
 	t.Run("enable RSTP via PATCH on global config", processSetRequest(url, body, "PATCH", false, nil))
 	time.Sleep(1 * time.Second)
 	t.Run("verify MST mode and MSTI 0 defaults after PATCH", verifyDbResult(rclient, "STP|GLOBAL", expected, false))
-	t.Run("verify STP_MST_PORT not created on enable", verifyStpMstPortNotCreatedOnEnable)
+	t.Run("verify STP_MST_PORT created on enable", verifyStpMstPortCreatedOnEnable)
 	unloadDB(db.ConfigDB, cleanup)
 }
 
