@@ -97,6 +97,9 @@ const (
 	PSEQ_PREFIX         = "power_sequencer"
 	FAN_TRAY_PREFIX     = "FanTray"
 	FAN_TRAY_SUFFIX     = "_fan_drawer"
+	/* Fan drawer name form, anchored on a trailing index so it cannot claim
+	 * another component type whose name merely begins with "drawer". */
+	FAN_DRAWER_PATTERN = "(?i)^drawer[1-9][0-9]*$"
 
 	/** Transceiver status values **/
 	SFP_STATUS_REMOVED  = "0"
@@ -1837,10 +1840,10 @@ func getSysComponents(pf_cpts *ocbinds.OpenconfigPlatform_Components, targetUriP
 			default:
 				fillPsuInfo(pf_comp, compName, false, true, targetUriPath, d)
 			}
-		case CompTypeFan:
-			fillFanInfo(pf_comp, compName, targetUriPath, d, CompTypeFan)
-		case CompTypeFanTray:
-			fillFanInfo(pf_comp, compName, targetUriPath, d, CompTypeFan)
+		case CompTypeFan, CompTypeFanTray:
+			/* The type argument selects the FAN or FAN_TRAY identity that
+			 * state/type reports. */
+			fillFanInfo(pf_comp, compName, targetUriPath, d, compType)
 		case CompTypeStorage:
 			ygot.BuildEmptyTree(pf_comp.Storage)
 			ygot.BuildEmptyTree(pf_comp.Storage.State)
@@ -2349,6 +2352,8 @@ func validFanTrayName(name string) bool {
 	if strings.HasPrefix(name, FAN_TRAY_PREFIX) {
 		return true
 	} else if strings.HasSuffix(name, FAN_TRAY_SUFFIX) {
+		return true
+	} else if validDrawer, _ := regexp.MatchString(FAN_DRAWER_PATTERN, name); validDrawer {
 		return true
 	} else {
 		return false

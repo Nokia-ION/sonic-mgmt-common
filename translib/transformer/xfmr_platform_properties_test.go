@@ -10,10 +10,11 @@ import (
 	"github.com/openconfig/ygot/ygot"
 )
 
-// Every row must name a component type, a transceiver DOM table and a getter.
+// Every row must name a component type, a getter, and the table it reads: either
+// one table for all of its types, or one per type, never both.
 func TestPropTblShape(t *testing.T) {
-	if got := len(propTbl); got != 21 {
-		t.Errorf("propTbl has %d rows, want 21", got)
+	if got := len(propTbl); got != 28 {
+		t.Errorf("propTbl has %d rows, want 28", got)
 	}
 	for name, desc := range propTbl {
 		if len(desc.types) == 0 {
@@ -22,13 +23,14 @@ func TestPropTblShape(t *testing.T) {
 		if desc.get == nil {
 			t.Errorf("property %q has no getter", name)
 		}
-		switch desc.table {
-		case TRANSCEIVER_DOM_THRESHOLD, TRANSCEIVER_DOM:
-		default:
-			t.Errorf("property %q reads table %q, want a transceiver DOM table", name, desc.table)
+		if (desc.table == "") == (desc.tables == nil) {
+			t.Errorf("property %q names table %q and tables %v, want exactly one",
+				name, desc.table, desc.tables)
 		}
-		if !desc.appliesTo(CompTypeXcvr) {
-			t.Errorf("property %q does not apply to CompTypeXcvr", name)
+		for _, cType := range desc.types {
+			if desc.tables != nil && desc.tables[cType] == "" {
+				t.Errorf("property %q applies to %v but names no table for it", name, cType)
+			}
 		}
 	}
 }
@@ -70,6 +72,8 @@ func TestIsPropertiesPath(t *testing.T) {
 // its Redis field name to the value leaf. Both are required for on-change to
 // fire; an empty field map makes the framework drop every notification.
 func TestPropSubscribeInfo(t *testing.T) {
+	// A value derived from more than one field watches all of them.
+	fruFields := map[string]string{"presence": PROP_VALUE_LEAF, "status": PROP_VALUE_LEAF}
 	cases := []struct {
 		prop       string
 		cType      componentType
@@ -99,6 +103,54 @@ func TestPropSubscribeInfo(t *testing.T) {
 		// The whole properties container names no property.
 		prop:  "",
 		cType: CompTypeXcvr,
+	}, {
+		// operStatus reads a different table on each type it applies to.
+		prop:       "operStatus",
+		cType:      CompTypePsu,
+		wantTable:  PSU_TBL,
+		wantFields: fruFields,
+		wantOk:     true,
+	}, {
+		prop:       "operStatus",
+		cType:      CompTypeFan,
+		wantTable:  FAN_TBL,
+		wantFields: fruFields,
+		wantOk:     true,
+	}, {
+		prop:       "operStatus",
+		cType:      CompTypeFanTray,
+		wantTable:  FAN_TRAY_TBL,
+		wantFields: fruFields,
+		wantOk:     true,
+	}, {
+		prop:  "operStatus",
+		cType: CompTypeXcvr,
+	}, {
+		prop:       "outputPower",
+		cType:      CompTypePsu,
+		wantTable:  PSU_TBL,
+		wantFields: map[string]string{"power": PROP_VALUE_LEAF},
+		wantOk:     true,
+	}, {
+		prop:  "outputPower",
+		cType: CompTypeFan,
+	}, {
+		// hwStatus and active each watch only the one field they serve.
+		prop:       "hwStatus",
+		cType:      CompTypeFanTray,
+		wantTable:  FAN_TRAY_TBL,
+		wantFields: map[string]string{"presence": PROP_VALUE_LEAF},
+		wantOk:     true,
+	}, {
+		prop:       "active",
+		cType:      CompTypePsu,
+		wantTable:  PSU_TBL,
+		wantFields: map[string]string{"status": PROP_VALUE_LEAF},
+		wantOk:     true,
+	}, {
+		// A name with no descriptor row cannot be subscribed at all.
+		prop:  "redundancyProtocol",
+		cType: CompTypePsu,
 	}}
 
 	for _, c := range cases {
@@ -110,20 +162,30 @@ func TestPropSubscribeInfo(t *testing.T) {
 	}
 }
 
-// Every property must name the field it reads, or its subscription stays silent.
+// Every property must name the fields it reads, on every component type it
+// applies to, or its subscription stays silent.
 func TestPropTblEveryPropertyNamesItsField(t *testing.T) {
 	for name, desc := range propTbl {
-		if desc.field == "" {
+		want := desc.subFields
+		if len(want) == 0 {
+			want = []string{desc.field}
+		}
+		if want[0] == "" {
 			t.Errorf("property %q names no Redis field", name)
 			continue
 		}
-		_, fields, ok := propSubscribeInfo(name, CompTypeXcvr)
-		if !ok {
-			t.Errorf("property %q cannot be subscribed on CompTypeXcvr", name)
-			continue
-		}
-		if got := fields[desc.field]; got != PROP_VALUE_LEAF {
-			t.Errorf("property %q maps field %q to %q, want %q", name, desc.field, got, PROP_VALUE_LEAF)
+		for _, cType := range desc.types {
+			_, fields, ok := propSubscribeInfo(name, cType)
+			if !ok {
+				t.Errorf("property %q cannot be subscribed on %v", name, cType)
+				continue
+			}
+			for _, f := range want {
+				if got := fields[f]; got != PROP_VALUE_LEAF {
+					t.Errorf("property %q on %v maps field %q to %q, want %q",
+						name, cType, f, got, PROP_VALUE_LEAF)
+				}
+			}
 		}
 	}
 }
@@ -225,14 +287,14 @@ func TestSetProperty(t *testing.T) {
 	desc := propDescriptor{
 		types: []componentType{CompTypeXcvr},
 		table: TRANSCEIVER_DOM,
-		get: func(compName string, dbs [db.MaxDB]*db.DB) (interface{}, error) {
+		get: func(compName string, cType componentType, dbs [db.MaxDB]*db.DB) (interface{}, error) {
 			return 3.301, nil
 		},
 	}
 
 	var dbs [db.MaxDB]*db.DB
 	comp := &ocbinds.OpenconfigPlatform_Components_Component{}
-	if err := setProperty(comp, "Ethernet48", "laser-module-voltage", desc, dbs); err != nil {
+	if err := setProperty(comp, "Ethernet48", CompTypeXcvr, "laser-module-voltage", desc, dbs); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -259,7 +321,7 @@ func TestSetPropertyIntoPreCreatedEntry(t *testing.T) {
 	desc := propDescriptor{
 		types: []componentType{CompTypeXcvr},
 		table: TRANSCEIVER_DOM,
-		get: func(compName string, dbs [db.MaxDB]*db.DB) (interface{}, error) {
+		get: func(compName string, cType componentType, dbs [db.MaxDB]*db.DB) (interface{}, error) {
 			return 3.301, nil
 		},
 	}
@@ -271,7 +333,7 @@ func TestSetPropertyIntoPreCreatedEntry(t *testing.T) {
 		t.Fatalf("pre-creating the property failed: %v", err)
 	}
 
-	if err := setProperty(comp, "Ethernet48", "laser-module-voltage", desc, dbs); err != nil {
+	if err := setProperty(comp, "Ethernet48", CompTypeXcvr, "laser-module-voltage", desc, dbs); err != nil {
 		t.Fatalf("setProperty into a pre-created entry failed: %v", err)
 	}
 	if got := len(comp.Properties.Property); got != 1 {
@@ -288,14 +350,14 @@ func TestSetPropertyGetterFailure(t *testing.T) {
 	desc := propDescriptor{
 		types: []componentType{CompTypeXcvr},
 		table: TRANSCEIVER_DOM,
-		get: func(compName string, dbs [db.MaxDB]*db.DB) (interface{}, error) {
+		get: func(compName string, cType componentType, dbs [db.MaxDB]*db.DB) (interface{}, error) {
 			return nil, tlerr.NotFound("%s has no row", compName)
 		},
 	}
 
 	var dbs [db.MaxDB]*db.DB
 	comp := &ocbinds.OpenconfigPlatform_Components_Component{}
-	if err := setProperty(comp, "Ethernet0", "laser-module-voltage", desc, dbs); err == nil {
+	if err := setProperty(comp, "Ethernet0", CompTypeXcvr, "laser-module-voltage", desc, dbs); err == nil {
 		t.Fatal("setProperty returned nil error when the getter failed")
 	}
 	if comp.Properties != nil {
@@ -307,7 +369,213 @@ func TestSetPropertyGetterFailure(t *testing.T) {
 func TestXcvrFloatWithoutDb(t *testing.T) {
 	var dbs [db.MaxDB]*db.DB
 	desc := domThreshold("temphighalarm")
-	if _, err := desc.get("Ethernet48", dbs); err == nil {
+	if _, err := desc.get("Ethernet48", CompTypeXcvr, dbs); err == nil {
 		t.Fatal("the DOM getter returned nil error with no STATE_DB client")
+	}
+}
+
+// The SONiC boolean spelling differs by table: PSU_INFO lowercase, FAN_INFO and
+// FAN_DRAWER_INFO Python-capitalized.  Both must read as the same bool.
+func TestParseFruBool(t *testing.T) {
+	cases := map[string]bool{
+		"true": true, "True": true, "TRUE": true, " true ": true,
+		"false": false, "False": false, "N/A": false, "": false,
+	}
+	for in, want := range cases {
+		if got := parseFruBool(in); got != want {
+			t.Errorf("parseFruBool(%q) == %v, want %v", in, got, want)
+		}
+	}
+}
+
+// A whole-component GET on a PSU emits its electrical readings and operStatus,
+// and omits the input-side properties whose fields read N/A.
+func TestFillPropertiesPsu(t *testing.T) {
+	d, err := db.NewDB(getDBOptions(db.StateDB))
+	if err != nil {
+		t.Fatal("NewDB failed")
+	}
+	defer d.DeleteDB()
+
+	seedPsuInfoEntry(t, d, "PSU2", map[string]string{
+		"presence":      "true",
+		"status":        "true",
+		"voltage":       "12.062",
+		"current":       "36.875",
+		"power":         "475.5",
+		"input_voltage": "N/A",
+		"input_current": "N/A",
+	})
+	var dbs [db.MaxDB]*db.DB
+	dbs[db.StateDB] = d
+
+	comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+	ygot.BuildEmptyTree(comp)
+	if err := fillProperties(comp, "PSU2", CompTypePsu, "", dbs); err != nil {
+		t.Fatalf("fillProperties() unexpected error: %v", err)
+	}
+
+	want := map[string]interface{}{
+		"outputPower":         float64(475.5),
+		"outputVoltageSensor": float64(12.062),
+		"operStatus":          "ACTIVE",
+	}
+	for name, raw := range want {
+		prop, ok := comp.Properties.Property[name]
+		if !ok {
+			t.Errorf("property %q missing", name)
+			continue
+		}
+		wantUnion, err := prop.State.To_OpenconfigPlatform_Components_Component_Properties_Property_State_Value_Union(raw)
+		if err != nil {
+			t.Fatalf("building union for %q: %v", name, err)
+		}
+		if !reflect.DeepEqual(prop.State.Value, wantUnion) {
+			t.Errorf("%s value == %v, want %v", name, prop.State.Value, wantUnion)
+		}
+	}
+	for _, name := range []string{"inputPower", "inputVoltageSensor"} {
+		if _, ok := comp.Properties.Property[name]; ok {
+			t.Errorf("property %q present, want absent (N/A backend)", name)
+		}
+	}
+}
+
+// operStatus reuses the native oper-status derivation across all three FRU types.
+func TestFillPropertiesOperStatus(t *testing.T) {
+	d, err := db.NewDB(getDBOptions(db.StateDB))
+	if err != nil {
+		t.Fatal("NewDB failed")
+	}
+	defer d.DeleteDB()
+	var dbs [db.MaxDB]*db.DB
+	dbs[db.StateDB] = d
+
+	cases := []struct {
+		name     string
+		cType    componentType
+		presence string
+		status   string
+		want     string
+	}{
+		{"Fan1", CompTypeFan, "True", "True", "ACTIVE"},
+		{"Fan2", CompTypeFan, "True", "False", "INACTIVE"},
+		{"Fan3", CompTypeFan, "False", "False", "DISABLED"},
+		{"PSU2", CompTypePsu, "true", "true", "ACTIVE"},
+		{"PSU1", CompTypePsu, "true", "false", "INACTIVE"},
+		{"drawer1", CompTypeFanTray, "True", "True", "ACTIVE"},
+		{"drawer2", CompTypeFanTray, "False", "False", "DISABLED"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			fields := map[string]string{"presence": c.presence, "status": c.status}
+			switch c.cType {
+			case CompTypePsu:
+				seedPsuInfoEntry(t, d, c.name, fields)
+			case CompTypeFanTray:
+				seedFanDrawerInfoEntry(t, d, c.name, fields)
+			default:
+				seedFanInfoEntry(t, d, c.name, fields)
+			}
+			comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+			ygot.BuildEmptyTree(comp)
+			if err := fillProperties(comp, c.name, c.cType, "operStatus", dbs); err != nil {
+				t.Fatalf("fillProperties() unexpected error: %v", err)
+			}
+			prop := comp.Properties.Property["operStatus"]
+			if prop == nil || prop.State == nil {
+				t.Fatalf("operStatus not populated")
+			}
+			wantUnion, err := prop.State.To_OpenconfigPlatform_Components_Component_Properties_Property_State_Value_Union(c.want)
+			if err != nil {
+				t.Fatalf("building union: %v", err)
+			}
+			if !reflect.DeepEqual(prop.State.Value, wantUnion) {
+				t.Errorf("operStatus == %v, want %v", prop.State.Value, wantUnion)
+			}
+		})
+	}
+}
+
+// hwStatus and active serve the two bits operStatus combines, as booleans rather
+// than as the oper-status enum.
+func TestFillPropertiesFruBool(t *testing.T) {
+	d, err := db.NewDB(getDBOptions(db.StateDB))
+	if err != nil {
+		t.Fatal("NewDB failed")
+	}
+	defer d.DeleteDB()
+	var dbs [db.MaxDB]*db.DB
+	dbs[db.StateDB] = d
+
+	seedFanDrawerInfoEntry(t, d, "drawer3", map[string]string{"presence": "True", "status": "False"})
+
+	comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+	ygot.BuildEmptyTree(comp)
+	if err := fillProperties(comp, "drawer3", CompTypeFanTray, "", dbs); err != nil {
+		t.Fatalf("fillProperties() unexpected error: %v", err)
+	}
+
+	want := map[string]interface{}{
+		"hwStatus":   true,
+		"active":     false,
+		"operStatus": "INACTIVE",
+	}
+	for name, raw := range want {
+		prop, ok := comp.Properties.Property[name]
+		if !ok {
+			t.Errorf("property %q missing", name)
+			continue
+		}
+		wantUnion, err := prop.State.To_OpenconfigPlatform_Components_Component_Properties_Property_State_Value_Union(raw)
+		if err != nil {
+			t.Fatalf("building union for %q: %v", name, err)
+		}
+		if !reflect.DeepEqual(prop.State.Value, wantUnion) {
+			t.Errorf("%s value == %v, want %v", name, prop.State.Value, wantUnion)
+		}
+	}
+}
+
+// A FRU with no row at all reports NotFound for each of its status properties
+// rather than defaulting them to false.
+func TestFillPropertiesFruBoolNoRow(t *testing.T) {
+	d, err := db.NewDB(getDBOptions(db.StateDB))
+	if err != nil {
+		t.Fatal("NewDB failed")
+	}
+	defer d.DeleteDB()
+	var dbs [db.MaxDB]*db.DB
+	dbs[db.StateDB] = d
+
+	comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+	for _, name := range []string{"hwStatus", "active", "operStatus"} {
+		if err := fillProperties(comp, "drawer9", CompTypeFanTray, name, dbs); err == nil {
+			t.Errorf("fillProperties(%q) on an absent drawer returned nil error", name)
+		}
+	}
+	if comp.Properties != nil {
+		t.Errorf("fillProperties populated the component despite failing: %v", comp)
+	}
+}
+
+// A property with no descriptor row must be NotFound, not an empty component.
+func TestFillPropertiesOmittedNotFound(t *testing.T) {
+	d, err := db.NewDB(getDBOptions(db.StateDB))
+	if err != nil {
+		t.Fatal("NewDB failed")
+	}
+	defer d.DeleteDB()
+	seedPsuInfoEntry(t, d, "PSU2", map[string]string{"presence": "true", "status": "true"})
+	var dbs [db.MaxDB]*db.DB
+	dbs[db.StateDB] = d
+
+	comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+	ygot.BuildEmptyTree(comp)
+	for _, name := range []string{"redundancyProtocol", "adminStatus", "slotType", "routedAddr"} {
+		err := fillProperties(comp, "PSU2", CompTypePsu, name, dbs)
+		if _, ok := err.(tlerr.NotFoundError); !ok {
+			t.Errorf("fillProperties(%q) returned %T (%v), want tlerr.NotFoundError", name, err, err)
+		}
 	}
 }
