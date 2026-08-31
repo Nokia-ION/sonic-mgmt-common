@@ -110,6 +110,86 @@ func Test_AclApp_GetContentFilter(t *testing.T) {
 	t.Run("Verify_One_Acl_Delete", processGetRequest(aclUrl, "", true))
 }
 
+func getCountersDb() *db.DB {
+	countersDb, _ := db.NewDB(getDBOptions(db.CountersDB))
+	return countersDb
+}
+
+// seedAclRuleCounters publishes counters for a rule the way the flex counter
+// service does: an ACL_COUNTER_RULE_MAP entry pointing at a COUNTERS row.
+func seedAclRuleCounters(t *testing.T, aclKey, ruleKey, oid, pkts, octets string) {
+	t.Helper()
+
+	d := getCountersDb()
+	if d == nil {
+		t.Fatal("Failed to connect to counters db")
+	}
+
+	mapTs := &db.TableSpec{Name: ACL_COUNTER_RULE_MAP}
+	cntTs := &db.TableSpec{Name: COUNTERS_TABLE}
+	t.Cleanup(func() {
+		d.DeleteMapAll(mapTs)
+		d.DeleteEntry(cntTs, asKey(oid))
+		d.DeleteDB()
+	})
+
+	if err := d.SetMap(mapTs, aclKey+":"+ruleKey, oid); err != nil {
+		t.Fatalf("Failed to write %s; err=%v", ACL_COUNTER_RULE_MAP, err)
+	}
+	counters := db.Value{Field: map[string]string{
+		ACL_COUNTER_ATTR_PACKETS: pkts,
+		ACL_COUNTER_ATTR_BYTES:   octets,
+	}}
+	if err := d.SetEntry(cntTs, asKey(oid), counters); err != nil {
+		t.Fatalf("Failed to write counters of %s; err=%v", oid, err)
+	}
+}
+
+func Test_AclApp_RuleCounters(t *testing.T) {
+	aclUrl := "/openconfig-acl:acl/acl-sets/acl-set[name=MyACL5][type=ACL_IPV4]"
+	ruleUrl := aclUrl + "/acl-entries/acl-entry[sequence-id=8]"
+
+	t.Run("Create_One_Acl_Without_Rule", processSetRequest(aclUrl, oneAclCreateJsonRequest, "POST", false))
+	t.Run("Create_One_Rule", processSetRequest(ruleUrl, requestOneRulePostJson, "POST", false))
+
+	// Counters read as zero while ACL flex counter polling is disabled.
+	t.Run("Get_Counter_Without_Polling", processGetRequest(ruleUrl+"/state/matched-packets",
+		ruleMatchedPacketsJsonResponse, false))
+
+	seedAclRuleCounters(t, "MyACL5_ACL_IPV4", "RULE_8", "oid:0x9000000000aca", "42", "4200")
+
+	t.Run("Get_Matched_Packets", processGetRequest(ruleUrl+"/state/matched-packets",
+		`{"openconfig-acl:matched-packets":"42"}`, false))
+	t.Run("Get_Matched_Octets", processGetRequest(ruleUrl+"/state/matched-octets",
+		`{"openconfig-acl:matched-octets":"4200"}`, false))
+	t.Run("Get_Operational_Counters", processGetContentRequest(ruleUrl+"/state",
+		QueryParametersContentOperational,
+		`{"openconfig-acl:state":{"matched-octets":"4200","matched-packets":"42"}}`, false))
+
+	t.Run("Delete_One_Acl", processDeleteRequest(aclUrl))
+}
+
+func TestGetAclKeyStr(t *testing.T) {
+	tests := []struct {
+		aclName string
+		aclType string
+		want    string
+	}{
+		{aclName: "MyACL1", aclType: "ACL_IPV4", want: "MyACL1_ACL_IPV4"},
+		{aclName: "ACL-12-IPV4", aclType: "ACL_IPV4", want: "ACL_12_IPV4_ACL_IPV4"},
+		{aclName: "My ACL", aclType: "ACL_IPV6", want: "My_ACL_ACL_IPV6"},
+		{aclName: "*", aclType: "*", want: "*_*"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.aclName, func(t *testing.T) {
+			if got := getAclKeyStr(tt.aclName, tt.aclType); got != tt.want {
+				t.Errorf("getAclKeyStr(%q, %q) = %q; want %q", tt.aclName, tt.aclType, got, tt.want)
+			}
+		})
+	}
+}
+
 func Test_AclApp_SingleRuleOperations(t *testing.T) {
 	aclUrl := "/openconfig-acl:acl/acl-sets/acl-set[name=MyACL5][type=ACL_IPV4]"
 	ruleUrl := "/openconfig-acl:acl/acl-sets/acl-set[name=MyACL5][type=ACL_IPV4]/acl-entries/acl-entry[sequence-id=8]"
@@ -431,6 +511,18 @@ func Test_AclApp_Subscribe(t *testing.T) {
 		tv.VerifyCount(1, 1)
 		tv.VerifyTarget(aclListPath, aclTableNInfo("*", "*", ""))
 		tv.VerifyChild(ruleListPath, ruleTableNInfo("*", "*", "*", ""))
+	})
+
+	// A dash cannot appear in a SONiC table name, so a subscription has to watch
+	// the same substituted key that a Get or a Set of this acl-set writes to,
+	// while the notification keeps reporting the requested name.
+	t.Run("acl_name_with_dash", func(t *testing.T) {
+		aPath := "/openconfig-acl:acl/acl-sets/acl-set[name=ACL-12-IPV4][type=ACL_IPV4]"
+		tv := testTranslateSubscribe(t, aPath)
+		tv.VerifyCount(1, 1)
+		tv.VerifyTarget(aPath, aclTableNInfo("ACL_12_IPV4", "ACL_IPV4", ""))
+		tv.VerifyChild(aPath+"/acl-entries/acl-entry[sequence-id=*]",
+			ruleTableNInfo("ACL_12_IPV4", "ACL_IPV4", "*", ""))
 	})
 
 	for _, k := range []string{"*,*", "TEST1,*", "*,ACL_IPV4", "TEST2,ACL_IPV6"} {
