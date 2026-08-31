@@ -583,6 +583,53 @@ func TestGetSysComponentsFanWildcard(t *testing.T) {
 	}
 }
 
+// A targeted GET on state/type takes a different path through getSysComponents
+// than a whole-component GET, and must report the same identity on both.
+func TestGetSysComponentsFanTrayStateType(t *testing.T) {
+	d, err := db.NewDB(getDBOptions(db.StateDB))
+	if err != nil {
+		t.Fatal("NewDB failed")
+	}
+	defer d.DeleteDB()
+	seedFanDrawerInfoEntry(t, d, "drawer1", map[string]string{"presence": "True", "status": "True"})
+	seedFanInfoEntry(t, d, "Fan1", map[string]string{"presence": "True", "status": "True"})
+
+	cases := []struct {
+		name string
+		want interface{}
+	}{
+		{"drawer1", ocbinds.OpenconfigPlatformTypes_OPENCONFIG_HARDWARE_COMPONENT_FAN_TRAY},
+		{"Fan1", ocbinds.OpenconfigPlatformTypes_OPENCONFIG_HARDWARE_COMPONENT_FAN},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			device := &ocbinds.Device{}
+			ygot.BuildEmptyTree(device)
+			if _, err := device.Components.NewComponent(c.name); err != nil {
+				t.Fatalf("creating the component failed: %v", err)
+			}
+
+			var inParams XfmrParams
+			inParams.dbs[db.StateDB] = d
+			if err := getSysComponents(device.Components, COMP_STATE_TYPE, inParams, c.name, ""); err != nil {
+				t.Fatalf("getSysComponents(%q) returned error: %v", c.name, err)
+			}
+
+			comp := device.Components.Component[c.name]
+			if comp == nil || comp.State == nil || comp.State.Type == nil {
+				t.Fatalf("state/type not populated for %s", c.name)
+			}
+			want, err := comp.State.To_OpenconfigPlatform_Components_Component_State_Type_Union(c.want)
+			if err != nil {
+				t.Fatalf("building the expected type union: %v", err)
+			}
+			if !reflect.DeepEqual(comp.State.Type, want) {
+				t.Errorf("state/type == %v, want %v", comp.State.Type, want)
+			}
+		})
+	}
+}
+
 func ieeeFloat32FromBinary(b ocbinds.Binary) (float32, bool) {
 	if len(b) != 4 {
 		return 0, false
@@ -958,5 +1005,51 @@ func TestSubscribe_pfm_components_filesystem(t *testing.T) {
 				t.Errorf("expected no DB subscriptions, got %v", out.dbDataMap)
 			}
 		})
+	}
+}
+
+func seedPsuInfoEntry(t *testing.T, d *db.DB, name string, fields map[string]string) {
+	t.Helper()
+	if err := d.SetEntry(&db.TableSpec{Name: PSU_TBL}, db.Key{Comp: []string{name}}, db.Value{Field: fields}); err != nil {
+		t.Fatalf("failed to seed PSU_INFO for %s: %v", name, err)
+	}
+}
+
+func seedFanDrawerInfoEntry(t *testing.T, d *db.DB, name string, fields map[string]string) {
+	t.Helper()
+	if err := d.SetEntry(&db.TableSpec{Name: FAN_TRAY_TBL}, db.Key{Comp: []string{name}}, db.Value{Field: fields}); err != nil {
+		t.Fatalf("failed to seed FAN_DRAWER_INFO for %s: %v", name, err)
+	}
+}
+
+// A fan drawer is named either drawerN or in one of the FanTray forms.  All of
+// them must type as a fan tray, while a name that merely begins with "drawer"
+// must not.
+func TestValidFanTrayName(t *testing.T) {
+	cases := map[string]bool{
+		"drawer1": true, "drawer4": true, "drawer10": true,
+		"FanTray1": true, "1_fan_drawer": true,
+		"drawer": false, "drawer0": false, "drawer1a": false,
+		"drawer_disk_carrier": false, "Fan1": false, "": false,
+	}
+	for in, want := range cases {
+		if got := validFanTrayName(in); got != want {
+			t.Errorf("validFanTrayName(%q) == %v, want %v", in, got, want)
+		}
+	}
+}
+
+// A fan drawer must resolve to CompTypeFanTray, or every leaf on it is served as
+// an unknown component.
+func TestGetCompTypeByNameFanDrawer(t *testing.T) {
+	for _, name := range []string{"drawer1", "drawer4", "FanTray1"} {
+		got, err := getCompTypeByName(name)
+		if err != nil {
+			t.Errorf("getCompTypeByName(%q) failed: %v", name, err)
+			continue
+		}
+		if got != CompTypeFanTray {
+			t.Errorf("getCompTypeByName(%q) == %v, want CompTypeFanTray", name, got)
+		}
 	}
 }
