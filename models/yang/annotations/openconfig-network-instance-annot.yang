@@ -768,11 +768,15 @@ module openconfig-network-instance-annot {
       }
     }
 
+    // The path transformer turns the ROUTE_TABLE key a keyspace notification
+    // carries back into the path of the entry it changed, which is what lets
+    // this list be subscribed on change. It is inherited by the nodes below.
     deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:afts/oc-netinst:ipv4-unicast/oc-netinst:ipv4-entry {
       deviate add {
           sonic-ext:virtual-table "true";
           sonic-ext:db-name "APPL_DB";
           sonic-ext:subtree-transformer "ni_afts_entries_xfmr";
+          sonic-ext:path-transformer "ni_afts_entries_path_xfmr";
       }
     }
 
@@ -820,6 +824,7 @@ module openconfig-network-instance-annot {
           sonic-ext:virtual-table "true";
           sonic-ext:db-name "APPL_DB";
           sonic-ext:subtree-transformer "ni_afts_entries_xfmr";
+          sonic-ext:path-transformer "ni_afts_entries_path_xfmr";
       }
     }
 
