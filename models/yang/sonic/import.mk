@@ -42,6 +42,12 @@ SONICYANG_IMPORTS += sonic-loopback-interface.yang
 # Static route OC mapping uses CONFIG_DB:STATIC_ROUTE|<vrf>|<prefix>.
 SONICYANG_IMPORTS += sonic-static-route.yang
 
+# DHCPv6 relay OC mapping uses CONFIG_DB:DHCP_RELAY|<vlan>.
+SONICYANG_IMPORTS += sonic-dhcpv6-relay.yang
+
+# DHCPv4 relay OC mapping uses CONFIG_DB:DHCPV4_RELAY|<vlan> or VLAN|<vlan>.
+SONICYANG_IMPORTS += sonic-dhcpv4-relay.yang
+
 ##
 # Local sonic yangs that import modules from SONICYANG_IMPORTS must be copied
 # after those imports are synced into build/yang/sonic.
