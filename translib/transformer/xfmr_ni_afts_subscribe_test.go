@@ -465,6 +465,457 @@ func TestSubscribe_ni_afts_container_registers_both_tables(t *testing.T) {
 	}
 }
 
+// The one parse serves both the retrieval and the subscription: the filter
+// narrows what a GET reports, while the depth flags decide whether a
+// subscription can be served on change. A path naming one group or one member
+// that came back unkeyed would report the whole list instead.
+func Test_parseNiAftsNextHopGroupsRequestUri(t *testing.T) {
+	grps := niAftsSubscUrl + "/next-hop-groups"
+	grp := grps + "/next-hop-group[id=901]"
+	tests := []struct {
+		name        string
+		uri         string
+		wantNi      string
+		wantId      uint64
+		wantKeyed   bool
+		wantMember  uint64
+		wantMbrKeyd bool
+		atGroupList bool
+		atMembers   bool
+		wantErr     bool
+	}{
+		{
+			name:   "next-hop-groups container",
+			uri:    grps,
+			wantNi: niAftsDefaultNi,
+		},
+		{
+			name:        "group list unkeyed",
+			uri:         grps + "/next-hop-group",
+			wantNi:      niAftsDefaultNi,
+			atGroupList: true,
+		},
+		{
+			// A wildcard asks for the whole list, same as an absent predicate.
+			name:        "group list wildcard key",
+			uri:         grps + "/next-hop-group[id=*]",
+			wantNi:      niAftsDefaultNi,
+			atGroupList: true,
+		},
+		{
+			name:        "group keyed",
+			uri:         grp,
+			wantNi:      niAftsDefaultNi,
+			wantId:      901,
+			wantKeyed:   true,
+			atGroupList: true,
+		},
+		{
+			name:        "leaf under the group state",
+			uri:         grp + "/state/id",
+			wantNi:      niAftsDefaultNi,
+			wantId:      901,
+			wantKeyed:   true,
+			atGroupList: true,
+		},
+		{
+			name:        "member container",
+			uri:         grp + "/next-hops",
+			wantNi:      niAftsDefaultNi,
+			wantId:      901,
+			wantKeyed:   true,
+			atGroupList: true,
+			atMembers:   true,
+		},
+		{
+			name:        "member keyed",
+			uri:         grp + "/next-hops/next-hop[index=202]",
+			wantNi:      niAftsDefaultNi,
+			wantId:      901,
+			wantKeyed:   true,
+			wantMember:  202,
+			wantMbrKeyd: true,
+			atGroupList: true,
+			atMembers:   true,
+		},
+		{
+			name:        "leaf under a keyed member",
+			uri:         grp + "/next-hops/next-hop[index=202]/state/weight",
+			wantNi:      niAftsDefaultNi,
+			wantId:      901,
+			wantKeyed:   true,
+			wantMember:  202,
+			wantMbrKeyd: true,
+			atGroupList: true,
+			atMembers:   true,
+		},
+		{
+			name:        "member wildcard under a wildcard group",
+			uri:         grps + "/next-hop-group[id=*]/next-hops/next-hop[index=*]/state/weight",
+			wantNi:      niAftsDefaultNi,
+			atGroupList: true,
+			atMembers:   true,
+		},
+		{
+			name:        "keyed member under a wildcard group",
+			uri:         grps + "/next-hop-group[id=*]/next-hops/next-hop[index=202]",
+			wantNi:      niAftsDefaultNi,
+			wantMember:  202,
+			wantMbrKeyd: true,
+			atGroupList: true,
+			atMembers:   true,
+		},
+		{
+			// The network instance is read off the path, since a group is only
+			// attributed to the default one.
+			name:        "non default network instance",
+			uri:         "/openconfig-network-instance:network-instances/network-instance[name=Vrf1]/afts/next-hop-groups/next-hop-group",
+			wantNi:      "Vrf1",
+			atGroupList: true,
+		},
+		{
+			name:    "non numeric group id",
+			uri:     grps + "/next-hop-group[id=not-an-id]",
+			wantErr: true,
+		},
+		{
+			name:    "non numeric member index",
+			uri:     grp + "/next-hops/next-hop[index=not-an-id]",
+			wantErr: true,
+		},
+		{
+			name:    "path outside the subtree",
+			uri:     niAftsSubscUrl + "/ipv4-unicast/ipv4-entry",
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseNiAftsNextHopGroupsRequestUri(tc.uri)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected an error, got %+v", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseNiAftsNextHopGroupsRequestUri failed: %v", err)
+			}
+			if got.niName != tc.wantNi {
+				t.Errorf("niName = %q, want %q", got.niName, tc.wantNi)
+			}
+			if got.filter.keyed != tc.wantKeyed || got.filter.id != tc.wantId {
+				t.Errorf("group filter = {id:%d keyed:%v}, want {id:%d keyed:%v}",
+					got.filter.id, got.filter.keyed, tc.wantId, tc.wantKeyed)
+			}
+			if got.filter.memberKeyed != tc.wantMbrKeyd || got.filter.member != tc.wantMember {
+				t.Errorf("member filter = {member:%d keyed:%v}, want {member:%d keyed:%v}",
+					got.filter.member, got.filter.memberKeyed, tc.wantMember, tc.wantMbrKeyd)
+			}
+			if got.atGroupList != tc.atGroupList {
+				t.Errorf("atGroupList = %v, want %v", got.atGroupList, tc.atGroupList)
+			}
+			if got.atMembers != tc.atMembers {
+				t.Errorf("atMembers = %v, want %v", got.atMembers, tc.atMembers)
+			}
+		})
+	}
+}
+
+// The next-hop-group id is the NEXTHOP_GROUP_TABLE key, so a keyspace event
+// names the group and the group level leaves can be served on change. The member
+// list below is keyed on a next-hop id held inside a comma separated field value,
+// which a notification cannot be decomposed into, so a request reaching the
+// members has to keep sampling: accepting on-change there would report none of
+// the member changes it was asked for.
+func TestSubscribe_ni_afts_next_hop_groups_paths(t *testing.T) {
+	grps := niAftsSubscUrl + "/next-hop-groups"
+	grp := grps + "/next-hop-group[id=901]"
+	tests := []struct {
+		name     string
+		uri      string
+		onChange bool
+	}{
+		{
+			// Above the group list, so a notification on it names no group.
+			name: "next-hop-groups container",
+			uri:  grps,
+		},
+		{
+			name:     "group list unkeyed",
+			uri:      grps + "/next-hop-group",
+			onChange: true,
+		},
+		{
+			name:     "group list wildcard key",
+			uri:      grps + "/next-hop-group[id=*]",
+			onChange: true,
+		},
+		{
+			name:     "group keyed",
+			uri:      grp,
+			onChange: true,
+		},
+		{
+			name:     "group id leaf",
+			uri:      grp + "/id",
+			onChange: true,
+		},
+		{
+			name:     "group state container",
+			uri:      grp + "/state",
+			onChange: true,
+		},
+		{
+			name:     "group state/id leaf",
+			uri:      grp + "/state/id",
+			onChange: true,
+		},
+		{
+			name: "member container",
+			uri:  grp + "/next-hops",
+		},
+		{
+			name: "member keyed",
+			uri:  grp + "/next-hops/next-hop[index=202]",
+		},
+		{
+			name: "member state/weight leaf",
+			uri:  grp + "/next-hops/next-hop[index=202]/state/weight",
+		},
+		{
+			name: "member wildcard under a wildcard group",
+			uri:  grps + "/next-hop-group[id=*]/next-hops/next-hop[index=*]/state/weight",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := Subscribe_ni_afts_next_hop_groups_xfmr(XfmrSubscInParams{
+				uri:        tc.uri,
+				requestURI: tc.uri,
+				subscProc:  TRANSLATE_SUBSCRIBE,
+			})
+			if err != nil {
+				t.Fatalf("Subscribe_ni_afts_next_hop_groups_xfmr failed: %v", err)
+			}
+			if out.isVirtualTbl {
+				t.Fatalf("expected a non-virtual subscribe mapping, got map %v", out.dbDataMap)
+			}
+			wantOnChange, wantPType := OnchangeDisable, Sample
+			if tc.onChange {
+				wantOnChange, wantPType = OnchangeEnable, OnChange
+			}
+			if out.onChange != wantOnChange {
+				t.Fatalf("onChange=%v, want %v", out.onChange, wantOnChange)
+			}
+			if out.nOpts == nil {
+				t.Fatalf("nOpts not set, so the preferred type would default to on-change")
+			}
+			if out.nOpts.pType != wantPType {
+				t.Fatalf("pType=%v, want %v", out.nOpts.pType, wantPType)
+			}
+			keys := out.dbDataMap[db.ApplDB][niAftsNhGrpTbl]
+			fields, ok := keys["*"]
+			if !ok {
+				t.Fatalf("missing %s[*]: %v", niAftsNhGrpTbl, out.dbDataMap)
+			}
+			// A NEXTHOP_GROUP_TABLE key is a bare id and so is one component,
+			// but the watch is still registered as an all key pattern.
+			if len(keys) != 1 {
+				t.Errorf("expected a single key pattern, got %v", keys)
+			}
+			// id and state/id are both the list key, which the addition and
+			// removal of the row carries on its own, and the fields the row does
+			// hold describe members that are not served on change.
+			if len(fields) != 0 {
+				t.Errorf("expected no field mapped to a leaf, got %v", fields)
+			}
+		})
+	}
+}
+
+// A request on a leaf reaches the callback with the leaf trimmed off uri, so
+// reading the depth from uri rather than requestURI would put a group level leaf
+// on sampling and, worse, give the member subtree an on-change subscription that
+// reports nothing.
+func TestSubscribe_ni_afts_next_hop_groups_leaf_request_depth(t *testing.T) {
+	grp := niAftsSubscUrl + "/next-hop-groups/next-hop-group[id=901]"
+	tests := []struct {
+		name       string
+		uri        string
+		requestURI string
+		onChange   bool
+	}{
+		{
+			name:       "request on state/id, anchored on state",
+			uri:        grp + "/state",
+			requestURI: grp + "/state/id",
+			onChange:   true,
+		},
+		{
+			name:       "request on a member state/weight, anchored on its state",
+			uri:        grp + "/next-hops/next-hop[index=202]/state",
+			requestURI: grp + "/next-hops/next-hop[index=202]/state/weight",
+		},
+		{
+			// The CRUD parent-table check arrives with requestURI unset.
+			name:     "requestURI unset falls back to uri",
+			uri:      grp,
+			onChange: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := Subscribe_ni_afts_next_hop_groups_xfmr(XfmrSubscInParams{
+				uri:        tc.uri,
+				requestURI: tc.requestURI,
+				subscProc:  TRANSLATE_SUBSCRIBE,
+			})
+			if err != nil {
+				t.Fatalf("Subscribe_ni_afts_next_hop_groups_xfmr failed: %v", err)
+			}
+			wantOnChange, wantPType := OnchangeDisable, Sample
+			if tc.onChange {
+				wantOnChange, wantPType = OnchangeEnable, OnChange
+			}
+			if out.onChange != wantOnChange || out.nOpts == nil || out.nOpts.pType != wantPType {
+				t.Fatalf("onChange=%v nOpts=%v, want %v/%v",
+					out.onChange, out.nOpts, wantOnChange, wantPType)
+			}
+		})
+	}
+}
+
+// The path transformer is what makes the group level on-change subscription
+// usable: it turns the NEXTHOP_GROUP_TABLE key into the id the group list is
+// keyed on. A key it cannot own, and a path whose key it cannot supply, have to
+// be refused rather than half answered, since a path left with an unresolved key
+// would be reported against whichever group the infrastructure filled in.
+func TestDbToYangPath_ni_afts_next_hop_groups(t *testing.T) {
+	const niList = "/openconfig-network-instance:network-instances/network-instance"
+	grpList := niList + "/afts/next-hop-groups/next-hop-group"
+	memberList := grpList + "/next-hops/next-hop"
+
+	tests := []struct {
+		name       string
+		schemaPath string
+		tblName    string
+		keyComp    []string
+		wantId     string // empty means no id key is expected
+		wantErr    bool
+	}{
+		{
+			name:       "group id",
+			schemaPath: grpList,
+			keyComp:    []string{"901"},
+			wantId:     "901",
+		},
+		{
+			name:       "state under the group",
+			schemaPath: grpList + "/state",
+			keyComp:    []string{"901"},
+			wantId:     "901",
+		},
+		{
+			name:       "leaf under the group state",
+			schemaPath: grpList + "/state/id",
+			keyComp:    []string{"904"},
+			wantId:     "904",
+		},
+		{
+			// Above the group list, so there is no id key to fill, but the
+			// network instance is still named.
+			name:       "next-hop-groups container names no id",
+			schemaPath: niList + "/afts/next-hop-groups",
+			keyComp:    []string{"901"},
+		},
+		{
+			// The key names the group a member belongs to, never the member.
+			name:       "member list is refused",
+			schemaPath: memberList,
+			keyComp:    []string{"901"},
+			wantErr:    true,
+		},
+		{
+			name:       "leaf under a member is refused",
+			schemaPath: memberList + "/state/weight",
+			keyComp:    []string{"901"},
+			wantErr:    true,
+		},
+		{
+			name:       "non numeric key is refused",
+			schemaPath: grpList,
+			keyComp:    []string{"not-an-id"},
+			wantErr:    true,
+		},
+		{
+			name:       "empty key is refused",
+			schemaPath: grpList,
+			keyComp:    []string{},
+			wantErr:    true,
+		},
+		{
+			// NEXTHOP_GROUP_TABLE is not VRF scoped, so a key carrying more than
+			// the id is not a group row.
+			name:       "multi component key is refused",
+			schemaPath: grpList,
+			keyComp:    []string{"Vrf1", "901"},
+			wantErr:    true,
+		},
+		{
+			name:       "notification from another table is refused",
+			schemaPath: grpList,
+			tblName:    niAftsRouteTbl,
+			keyComp:    []string{"901"},
+			wantErr:    true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tblName := tc.tblName
+			if tblName == "" {
+				tblName = niAftsNhGrpTbl
+			}
+			keys := make(map[string]string)
+			err := DbToYangPath_ni_afts_next_hop_groups_path_xfmr(XfmrDbToYgPathParams{
+				ygSchemaPath: tc.schemaPath,
+				tblName:      tblName,
+				tblKeyComp:   tc.keyComp,
+				ygPathKeys:   keys,
+			})
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected an error, got keys %v", keys)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("DbToYangPath_ni_afts_next_hop_groups_path_xfmr failed: %v", err)
+			}
+			if got := keys[niList+"/name"]; got != niAftsDefaultNi {
+				t.Errorf("network instance key = %q, want %q", got, niAftsDefaultNi)
+			}
+			got, ok := keys[grpList+"/id"]
+			if tc.wantId == "" {
+				if ok {
+					t.Errorf("id key = %q, want none", got)
+				}
+				return
+			}
+			if !ok {
+				t.Fatalf("no id key under %q, got %v", grpList, keys)
+			}
+			if got != tc.wantId {
+				t.Errorf("id key = %q, want %q", got, tc.wantId)
+			}
+		})
+	}
+}
+
 // Only the subscribe translation maps these tables. The other processing modes
 // share the callback and must be told the subtree owns no table of its own.
 func TestSubscribe_ni_afts_entries_non_translate_is_virtual(t *testing.T) {

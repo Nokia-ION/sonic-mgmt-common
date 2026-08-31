@@ -21,6 +21,7 @@ package transformer
 import (
 	"fmt"
 	"regexp"
+	"strings"
 
 	"github.com/Azure/sonic-mgmt-common/translib/db"
 	"github.com/Azure/sonic-mgmt-common/translib/ocbinds"
@@ -34,11 +35,15 @@ import (
 // A member predicate is picked out as well as the group one, so that a request
 // naming one member reports that member alone rather than every member of its
 // group.
+// The part of the path below next-hop-groups is captured whole as well, so that
+// how deep a request reaches can be told apart from which group it names: the
+// group id is the Redis key and can be recovered from a notification, while a
+// member index cannot, so the two depths are not served the same way.
 var niAftsNextHopGroupsUriRe = regexp.MustCompile(
 	`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]` +
 		`/afts/next-hop-groups` +
-		`(?:/next-hop-group(?:\[id=([^\]]+)\])?` +
-		`(?:/next-hops/next-hop\[index=([^\]]+)\](?:/.*)?|/.*)?)?$`)
+		`((?:/next-hop-group(?:\[id=([^\]]+)\])?` +
+		`(?:/next-hops/next-hop\[index=([^\]]+)\](?:/.*)?|/.*)?)?)$`)
 
 // niAftsGroupFilter narrows what is reported to the group, and the member,
 // named by a request. A zero value asks for everything.
@@ -53,11 +58,17 @@ type niAftsGroupFilter struct {
 type niAftsNextHopGroupsReqInfo struct {
 	niName string
 	filter niAftsGroupFilter
+
+	// atGroupList records whether the path names the next-hop-group list, and
+	// atMembers whether it reaches the member list under it.
+	atGroupList bool
+	atMembers   bool
 }
 
 func init() {
 	XlateFuncBind("DbToYang_ni_afts_next_hop_groups_xfmr", DbToYang_ni_afts_next_hop_groups_xfmr)
 	XlateFuncBind("Subscribe_ni_afts_next_hop_groups_xfmr", Subscribe_ni_afts_next_hop_groups_xfmr)
+	XlateFuncBind("DbToYangPath_ni_afts_next_hop_groups_path_xfmr", DbToYangPath_ni_afts_next_hop_groups_path_xfmr)
 }
 
 func parseNiAftsNextHopGroupsRequestUri(uri string) (*niAftsNextHopGroupsReqInfo, error) {
@@ -66,25 +77,29 @@ func parseNiAftsNextHopGroupsRequestUri(uri string) (*niAftsNextHopGroupsReqInfo
 		return nil, tlerr.NotSupportedError{Format: "unsupported network-instance AFT next-hop-groups path: " + uri}
 	}
 
-	reqInfo := &niAftsNextHopGroupsReqInfo{niName: m[1]}
+	reqInfo := &niAftsNextHopGroupsReqInfo{
+		niName:      m[1],
+		atGroupList: strings.HasPrefix(m[2], "/"+niAftsNhGrpNode),
+		atMembers:   strings.Contains(m[2], "/"+niAftsNhGrpMembersNode),
+	}
 	// An absent predicate asks for the whole list, which is how it is retrieved;
 	// a wildcard is normalized the same way for the subscription paths that
 	// carry one.
-	if m[2] != "" && m[2] != "*" {
-		id, ok := niAftsParseId(m[2])
+	if m[3] != "" && m[3] != "*" {
+		id, ok := niAftsParseId(m[3])
 		if !ok {
 			return nil, tlerr.InvalidArgsError{
-				Format: fmt.Sprintf("invalid AFT next-hop-group id %q; expected an unsigned integer", m[2]),
+				Format: fmt.Sprintf("invalid AFT next-hop-group id %q; expected an unsigned integer", m[3]),
 			}
 		}
 		reqInfo.filter.id = id
 		reqInfo.filter.keyed = true
 	}
-	if m[3] != "" && m[3] != "*" {
-		member, ok := niAftsParseId(m[3])
+	if m[4] != "" && m[4] != "*" {
+		member, ok := niAftsParseId(m[4])
 		if !ok {
 			return nil, tlerr.InvalidArgsError{
-				Format: fmt.Sprintf("invalid AFT next-hop-group member index %q; expected an unsigned integer", m[3]),
+				Format: fmt.Sprintf("invalid AFT next-hop-group member index %q; expected an unsigned integer", m[4]),
 			}
 		}
 		reqInfo.filter.member = member
@@ -198,6 +213,53 @@ func niAftsPopulateNextHopGroups(ygRoot *ygot.GoStruct, niName string, d *db.DB,
 	return nil
 }
 
+// DbToYangPath_ni_afts_next_hop_groups_path_xfmr turns the NEXTHOP_GROUP_TABLE
+// key a keyspace notification carries into the path of the group it changed.
+// The key is the group id FRR assigned, which is the list key, so the group is
+// named by the notification itself and there is no model lookup to make.
+//
+// NEXTHOP_GROUP_TABLE is not VRF scoped, since FRR allocates group ids from one
+// global space, so every row belongs to the default network instance.
+var DbToYangPath_ni_afts_next_hop_groups_path_xfmr PathXfmrDbToYangFunc = func(params XfmrDbToYgPathParams) error {
+	if params.tblName != niAftsNhGrpTbl {
+		return fmt.Errorf("AFT next-hop-group path transformer called for table %q, expected %q",
+			params.tblName, niAftsNhGrpTbl)
+	}
+
+	// The id is the whole key. A key of any other shape is not a group row, so
+	// it is refused rather than guessed at.
+	if len(params.tblKeyComp) != 1 {
+		return fmt.Errorf("AFT next-hop-group notification key %v does not name a group id",
+			params.tblKeyComp)
+	}
+	id := strings.TrimSpace(params.tblKeyComp[0])
+	if _, ok := niAftsParseId(id); !ok {
+		return fmt.Errorf("AFT next-hop-group notification key %q is not a group id", id)
+	}
+
+	// A member is keyed on a next-hop id held inside a comma separated field
+	// value, so the key names the group a member belongs to but not the member.
+	// Answering with the group alone would leave the member key unresolved, so
+	// the notification is refused instead.
+	if _, ok := niAftsSchemaPathUpto(params.ygSchemaPath, niAftsNhGrpMemberNode); ok {
+		return fmt.Errorf("AFT next-hop-group member index is not recoverable from the "+
+			"notification key for path %q", params.ygSchemaPath)
+	}
+
+	niPath, ok := niAftsSchemaPathUpto(params.ygSchemaPath, niAftsNiListNode)
+	if !ok {
+		return fmt.Errorf("AFT next-hop-group path %q does not name the network instance list",
+			params.ygSchemaPath)
+	}
+	params.ygPathKeys[niPath+"/name"] = niAftsDefaultNi
+
+	if grpPath, ok := niAftsSchemaPathUpto(params.ygSchemaPath, niAftsNhGrpNode); ok {
+		params.ygPathKeys[grpPath+"/id"] = id
+	}
+
+	return nil
+}
+
 var Subscribe_ni_afts_next_hop_groups_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSubscInParams) (XfmrSubscOutParams, error) {
 	var result XfmrSubscOutParams
 
@@ -206,16 +268,39 @@ var Subscribe_ni_afts_next_hop_groups_xfmr SubTreeXfmrSubscribe = func(inParams 
 		return result, nil
 	}
 
+	// No field is mapped to a leaf: id and state/id are both the list key, which
+	// the addition and removal of the row carries on its own. The fields the row
+	// does hold describe the members, and those are not served on change.
 	result.dbDataMap = RedisDbSubscribeMap{db.ApplDB: {
 		niAftsNhGrpTbl: {"*": {}},
 	}}
 	result.isVirtualTbl = false
 
-	// The group id is the Redis key, but the member list below it is keyed on a
-	// next-hop id carried in a field value, and the table has no SONiC YANG
-	// model for the infrastructure to convert a notification key back into a
-	// YANG path. Offer sampling rather than an on-change subscription that
-	// would only fail on its first notification.
+	// Which node was asked for, as opposed to which one the callback is anchored
+	// on, survives only in requestURI: the subscribe path trims a trailing leaf
+	// off uri. The CRUD parent-table check reaches this callback with requestURI
+	// unset and an untrimmed uri, hence the fallback.
+	reqUri := inParams.requestURI
+	if reqUri == "" {
+		reqUri = inParams.uri
+	}
+
+	// The group id is the Redis key, so a keyspace event names the group and the
+	// group level leaves can be served on change.
+	//
+	// The member list below is keyed on a next-hop id carried inside a comma
+	// separated field value, where a single field change stands for any number
+	// of members appearing, going away or being reweighted. The notification
+	// mapping reports one leaf per changed field and cannot decompose that, so a
+	// request reaching the members keeps sampling: an on-change subscription
+	// there would be accepted and then report none of it.
+	if reqInfo, err := parseNiAftsNextHopGroupsRequestUri(reqUri); err == nil &&
+		reqInfo.atGroupList && !reqInfo.atMembers {
+		result.onChange = OnchangeEnable
+		result.nOpts = &notificationOpts{pType: OnChange}
+		return result, nil
+	}
+
 	result.onChange = OnchangeDisable
 	result.nOpts = &notificationOpts{pType: Sample}
 

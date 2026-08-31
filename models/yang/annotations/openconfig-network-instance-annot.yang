@@ -683,11 +683,17 @@ module openconfig-network-instance-annot {
       }
     }
 
+    // The path transformer turns the NEXTHOP_GROUP_TABLE key a keyspace
+    // notification carries back into the path of the group it changed, which is
+    // what lets the group level leaves be subscribed on change. It is inherited
+    // by the nodes below, and refuses a path that reaches the member list, whose
+    // key is held in a field value rather than in the Redis key.
     deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:afts/oc-netinst:next-hop-groups/oc-netinst:next-hop-group {
       deviate add {
           sonic-ext:virtual-table "true";
           sonic-ext:db-name "APPL_DB";
           sonic-ext:subtree-transformer "ni_afts_next_hop_groups_xfmr";
+          sonic-ext:path-transformer "ni_afts_next_hop_groups_path_xfmr";
       }
     }
 
