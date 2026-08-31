@@ -269,13 +269,16 @@ func populateMstPortEntries(cfgDb *db.DB, res map[string]map[string]db.Value) er
 		portMap = make(map[string]db.Value)
 		res[STP_PORT_TBL] = portMap
 	}
-	// Do not create STP_MST_PORT here. stpmgr treats a missing instance
-	// path_cost as 0 (explicit) rather than -1 (auto), which zeros the
-	// operational cost instead of deriving it from port speed. Instance
-	// rows are created only when /rstp/interfaces/interface/config SET
-	// writes cost or port-priority.
+	mstPortMap := res[STP_MST_PORT_TBL]
+	if mstPortMap == nil {
+		mstPortMap = make(map[string]db.Value)
+		res[STP_MST_PORT_TBL] = mstPortMap
+	}
 	for _, ifName := range intfs {
 		portMap[ifName] = db.Value{Field: defaultStpPortBootstrapFields()}
+		mstPortMap[mstPortCfgKey(ifName)] = db.Value{
+			Field: map[string]string{"priority": DEFAULT_PORT_PRIORITY},
+		}
 	}
 	return nil
 }
