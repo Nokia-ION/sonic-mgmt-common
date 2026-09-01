@@ -297,6 +297,176 @@ func TestDbToYang_TACACS_Servers(t *testing.T) {
 	})
 }
 
+// buildTacacsGlobalPayload constructs a Device with a single TACACS
+// server-group carrying the openconfig-system-ext global leaves.
+func buildTacacsGlobalPayload(srcIntf *string, dscp *uint8) *ocbinds.Device {
+	d := buildTacacsPayload("", nil, nil, nil)
+	g := d.System.Aaa.ServerGroups.ServerGroup[TACACS_DEFAULT_GROUP_NAME]
+	g.Config.SourceInterface = srcIntf
+	g.Config.Dscp = dscp
+	return d
+}
+
+func TestYangToDb_TACACS_Dscp(t *testing.T) {
+	const groupCfg = "/openconfig-system:system/aaa/server-groups/server-group[name=TACACS]/config"
+
+	originalDbGetKeys := dbGetKeys
+	originalDbGetEntry := dbGetEntry
+	defer func() {
+		dbGetKeys = originalDbGetKeys
+		dbGetEntry = originalDbGetEntry
+	}()
+	dbGetKeys = func(d *db.DB, table *db.TableSpec) ([]db.Key, error) { return nil, nil }
+	dbGetEntry = func(d *db.DB, table *db.TableSpec, key db.Key) (db.Value, error) {
+		return db.Value{}, tlerr.NotFoundError{Format: "not found"}
+	}
+
+	tests := []struct {
+		name    string
+		op      Operation
+		uri     string
+		reqUri  string
+		ygRoot  func() *ocbinds.Device
+		wantMap map[string]map[string]db.Value
+	}{
+		{
+			name:   "Leaf: UPDATE dscp writes the global row",
+			op:     UPDATE,
+			uri:    groupCfg + "/openconfig-system-ext:dscp",
+			reqUri: groupCfg + "/openconfig-system-ext:dscp",
+			ygRoot: func() *ocbinds.Device { return buildTacacsGlobalPayload(nil, ygot.Uint8(32)) },
+			wantMap: map[string]map[string]db.Value{
+				TACPLUS_GLOBAL_TABLE_NAME: {
+					TACPLUS_GLOBAL_KEY: {Field: map[string]string{tacacsDscpField: "32"}},
+				},
+			},
+		},
+		{
+			name:   "Leaf: DELETE dscp clears only that field",
+			op:     DELETE,
+			uri:    groupCfg + "/openconfig-system-ext:dscp",
+			reqUri: groupCfg + "/openconfig-system-ext:dscp",
+			ygRoot: func() *ocbinds.Device { return &ocbinds.Device{} },
+			wantMap: map[string]map[string]db.Value{
+				TACPLUS_GLOBAL_TABLE_NAME: {
+					TACPLUS_GLOBAL_KEY: {Field: map[string]string{tacacsDscpField: ""}},
+				},
+			},
+		},
+		{
+			name:   "Container: UPDATE config carrying dscp and source-interface",
+			op:     UPDATE,
+			uri:    groupCfg,
+			reqUri: groupCfg,
+			ygRoot: func() *ocbinds.Device {
+				return buildTacacsGlobalPayload(ygot.String("Loopback0"), ygot.Uint8(48))
+			},
+			wantMap: map[string]map[string]db.Value{
+				TACPLUS_SERVER_TABLE_NAME: {},
+				TACPLUS_GLOBAL_TABLE_NAME: {
+					TACPLUS_GLOBAL_KEY: {Field: map[string]string{
+						tacacsSrcIntfField: "Loopback0",
+						tacacsDscpField:    "48",
+					}},
+				},
+			},
+		},
+		{
+			name:    "Leaf: UPDATE dscp with no value in payload is a no-op",
+			op:      UPDATE,
+			uri:     groupCfg + "/openconfig-system-ext:dscp",
+			reqUri:  groupCfg + "/openconfig-system-ext:dscp",
+			ygRoot:  func() *ocbinds.Device { return buildTacacsGlobalPayload(nil, nil) },
+			wantMap: map[string]map[string]db.Value{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ygRoot := ygot.GoStruct(tt.ygRoot())
+			inParams := XfmrParams{
+				dbs:          [db.MaxDB]*db.DB{db.ConfigDB: &db.DB{}},
+				ygRoot:       &ygRoot,
+				oper:         tt.op,
+				uri:          tt.uri,
+				requestUri:   tt.reqUri,
+				subOpDataMap: make(map[Operation]*map[db.DBNum]map[string]map[string]db.Value),
+			}
+
+			gotMap, err := YangToDb_tacacs_server_groups_xfmr(inParams)
+			if err != nil {
+				t.Fatalf("YangToDb_tacacs_server_groups_xfmr() error = %v", err)
+			}
+			if !reflect.DeepEqual(gotMap, tt.wantMap) {
+				t.Errorf("gotMap = %v, wantMap = %v", gotMap, tt.wantMap)
+			}
+		})
+	}
+}
+
+func TestDbToYang_TACACS_Dscp(t *testing.T) {
+	globalEntry := db.Value{Field: map[string]string{
+		tacacsSrcIntfField: "Loopback0",
+		tacacsDscpField:    "32",
+	}}
+
+	originalDbGetKeys := dbGetKeys
+	originalDbGetEntry := dbGetEntry
+	defer func() {
+		dbGetKeys = originalDbGetKeys
+		dbGetEntry = originalDbGetEntry
+	}()
+	dbGetKeys = func(d *db.DB, table *db.TableSpec) ([]db.Key, error) { return nil, nil }
+	dbGetEntry = func(d *db.DB, table *db.TableSpec, key db.Key) (db.Value, error) {
+		if table.Name == TACPLUS_GLOBAL_TABLE_NAME && key.Comp[0] == TACPLUS_GLOBAL_KEY {
+			return globalEntry, nil
+		}
+		return db.Value{}, tlerr.NotFoundError{Format: "not found"}
+	}
+
+	dbs := [db.MaxDB]*db.DB{db.ConfigDB: &db.DB{}}
+
+	t.Run("Reports dscp in config and state", func(t *testing.T) {
+		device := &ocbinds.Device{}
+		var ygRoot ygot.GoStruct = device
+		params := XfmrParams{dbs: dbs, ygRoot: &ygRoot, uri: "/openconfig-system:system/aaa/server-groups"}
+
+		if err := DbToYang_tacacs_server_groups_xfmr(params); err != nil {
+			t.Fatalf("DbToYang failed: %v", err)
+		}
+		grp := device.System.Aaa.ServerGroups.ServerGroup[TACACS_DEFAULT_GROUP_NAME]
+		if grp == nil {
+			t.Fatalf("Expected default TACACS server-group")
+		}
+		if grp.Config.Dscp == nil || *grp.Config.Dscp != 32 {
+			t.Errorf("Config dscp = %v, want 32", grp.Config.Dscp)
+		}
+		if grp.State.Dscp == nil || *grp.State.Dscp != 32 {
+			t.Errorf("State dscp = %v, want 32", grp.State.Dscp)
+		}
+	})
+
+	for _, bad := range []string{"bogus", "64", "-1"} {
+		t.Run("Skips an invalid dscp "+bad, func(t *testing.T) {
+			saved := globalEntry
+			globalEntry = db.Value{Field: map[string]string{tacacsDscpField: bad}}
+			defer func() { globalEntry = saved }()
+
+			device := &ocbinds.Device{}
+			var ygRoot ygot.GoStruct = device
+			params := XfmrParams{dbs: dbs, ygRoot: &ygRoot, uri: "/openconfig-system:system/aaa/server-groups"}
+
+			if err := DbToYang_tacacs_server_groups_xfmr(params); err != nil {
+				t.Fatalf("DbToYang failed: %v", err)
+			}
+			grp := device.System.Aaa.ServerGroups.ServerGroup[TACACS_DEFAULT_GROUP_NAME]
+			if grp.Config.Dscp != nil {
+				t.Errorf("Config dscp = %v, want nil for value %q", *grp.Config.Dscp, bad)
+			}
+		})
+	}
+}
+
 func TestSubscribe_TACACS_Servers(t *testing.T) {
 	t.Run("Subscribe Specific", func(t *testing.T) {
 		out, err := Subscribe_tacacs_server_groups_xfmr(XfmrSubscInParams{uri: "/openconfig-system:system/aaa/server-groups/server-group[name=TACACS]/servers/server[address=10.1.1.1]"})
