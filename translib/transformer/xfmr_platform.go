@@ -49,6 +49,7 @@ const (
 	TRANSCEIVER_STATUS_SW = "TRANSCEIVER_STATUS_SW"
 	TRANSCEIVER_CONTROL   = "TRANSCEIVER_CONTROL"
 	TRANSCEIVER_DOM       = "TRANSCEIVER_DOM_SENSOR"
+	TRANSCEIVER_FIRMWARE  = "TRANSCEIVER_FIRMWARE_INFO"
 	FPGA_TBL              = "FPGA_INFO"
 	PORT_TBL              = "PORT_TABLE"
 	BREAKOUT_TBL          = "BREAKOUT_CFG"
@@ -259,6 +260,7 @@ type PSUInfo struct {
 	Enabled           bool
 	Input_Current     ocbinds.Binary
 	Input_Voltage     ocbinds.Binary
+	Hardware_Version  string
 	Manufacturer      string
 	Model_Name        string
 	Output_Current    ocbinds.Binary
@@ -315,6 +317,7 @@ type XcvrInfo struct {
 	SerialNo          string
 	HardwareRev       string
 	Type              string
+	ActiveFirmwareVer string
 	LatestFirmwareVer string
 	ForceLowPower     string
 }
@@ -910,6 +913,16 @@ func trimXcvrMfgDate(s string) string {
 
 func test_if_available(s string) bool {
 	return ((s != "") && (s != "N/A") && (s != "n/a"))
+}
+
+/* First value that test_if_available accepts, or "". */
+func firstAvailable(vals ...string) string {
+	for _, v := range vals {
+		if test_if_available(v) {
+			return v
+		}
+	}
+	return ""
 }
 
 func keyInDbTable(tableName, key string, d *db.DB) bool {
@@ -2154,6 +2167,7 @@ func getPsuInfoFromDb(name string, d *db.DB) (PSUInfo, error) {
 	psuInfo.Parent = entityParent(name, psuEntry.Get("parent"), d)
 	psuInfo.Location = entityLocation(name, psuEntry.Get("location"), d)
 	psuInfo.Model_Name = convertUTF8EndcodedString(psuEntry.Get("model"))
+	psuInfo.Hardware_Version = convertUTF8EndcodedString(psuEntry.Get("revision"))
 	psuInfo.Manufacturer = convertUTF8EndcodedString(psuEntry.Get("mfr_id"))
 	psuInfo.Part_Number = convertUTF8EndcodedString(psuEntry.Get("part-no"))
 	psuInfo.Serial_Number = convertUTF8EndcodedString(psuEntry.Get("serial"))
@@ -2237,6 +2251,9 @@ func fillPsuInfo(psuCom *ocbinds.OpenconfigPlatform_Components_Component,
 			psuEepromState.Description = &psuInfo.Model_Name
 			psuEepromState.PartNo = &psuInfo.Model_Name
 		}
+		if test_if_available(psuInfo.Hardware_Version) {
+			psuEepromState.HardwareVersion = &psuInfo.Hardware_Version
+		}
 		if psuInfo.Manufacturer != "" {
 			psuEepromState.MfgName = &psuInfo.Manufacturer
 		}
@@ -2278,6 +2295,10 @@ func fillPsuInfo(psuCom *ocbinds.OpenconfigPlatform_Components_Component,
 	case COMP_STATE_MODEL_NAME:
 		if psuInfo.Model_Name != "" {
 			psuEepromState.ModelName = &psuInfo.Model_Name
+		}
+	case COMP_STATE_HW_VER:
+		if test_if_available(psuInfo.Hardware_Version) {
+			psuEepromState.HardwareVersion = &psuInfo.Hardware_Version
 		}
 	case COMP_STATE_MFG_NAME:
 		if psuInfo.Manufacturer != "" {
@@ -2909,6 +2930,12 @@ func getXcvrInfoFromDb(name string, d *db.DB) (XcvrInfo, error) {
 	xcvrInfo.Type = xcvrEntry.Get("type")
 	xcvrInfo.LatestFirmwareVer = xcvrEntry.Get("latest_fw_rev")
 
+	/* Only CMIS modules report a firmware version, so a missing row is normal and
+	 * must not fail the rest of the module's inventory. */
+	if fwEntry, fwErr := d.GetEntry(&db.TableSpec{Name: TRANSCEIVER_FIRMWARE}, db.Key{Comp: []string{name}}); fwErr == nil {
+		xcvrInfo.ActiveFirmwareVer = fwEntry.Get("active_firmware")
+	}
+
 	xcvrDOMEntry, err := d.GetEntry(&db.TableSpec{Name: TRANSCEIVER_DOM}, db.Key{Comp: []string{name}})
 	if err != nil {
 		xcvrInfo.Presence = false
@@ -3225,11 +3252,16 @@ func fillXcvrInfo(xcvrCom *ocbinds.OpenconfigPlatform_Components_Component,
 		}
 		if xcvrInfo.HardwareRev != "" {
 			xcvrEEPROMState.HardwareVersion = &xcvrInfo.HardwareRev
-			// Using the 'hardware_rev' field to also populate the firmware-version path.
-			xcvrEEPROMState.FirmwareVersion = &xcvrInfo.HardwareRev
+		}
+		if test_if_available(xcvrInfo.ActiveFirmwareVer) {
+			xcvrEEPROMState.FirmwareVersion = &xcvrInfo.ActiveFirmwareVer
 		}
 		if xcvrInfo.MfgDate != "" {
 			xcvrEEPROMState.MfgDate = &xcvrInfo.MfgDate
+		}
+		/* The module identifier string doubles as the component description. */
+		if test_if_available(xcvrInfo.Type) {
+			xcvrEEPROMState.Description = &xcvrInfo.Type
 		}
 		/* Not present */
 		if xcvrInfo.Presence {
@@ -3326,10 +3358,13 @@ func fillXcvrInfo(xcvrCom *ocbinds.OpenconfigPlatform_Components_Component,
 		if xcvrInfo.HardwareRev != "" {
 			xcvrEEPROMState.HardwareVersion = &xcvrInfo.HardwareRev
 		}
-	// Using the 'hardware_rev' field to also populate the firmware-version path.
 	case COMP_STATE_FIRM_VER:
-		if xcvrInfo.HardwareRev != "" {
-			xcvrEEPROMState.FirmwareVersion = &xcvrInfo.HardwareRev
+		if test_if_available(xcvrInfo.ActiveFirmwareVer) {
+			xcvrEEPROMState.FirmwareVersion = &xcvrInfo.ActiveFirmwareVer
+		}
+	case COMP_STATE_DESCR:
+		if test_if_available(xcvrInfo.Type) {
+			xcvrEEPROMState.Description = &xcvrInfo.Type
 		}
 	case COMP_STATE_MFG_DATE:
 		if xcvrInfo.MfgDate != "" {
@@ -3727,17 +3762,20 @@ func getFirmwareInfoFromDb(name string, d *db.DB, tblName string) (FirmwareInfo,
 	if firmwareEntry.Get("alarm_status") == "true" {
 		firmwareInfo.AlarmStatus = true
 	}
-	firmwareInfo.Description = firmwareEntry.Get("description")
+	/* The tables this reads do not agree on field names, so each leaf takes
+	 * whichever spelling is present. */
+	model := firmwareEntry.Get("model")
+	firmwareInfo.Description = firstAvailable(firmwareEntry.Get("description"), model)
 	firmwareInfo.Name = firmwareEntry.Get("name")
 
 	firmwareInfo.FirmwareVersion = firmwareEntry.Get("firmware-version")
-	firmwareInfo.HardwareVersion = firmwareEntry.Get("hardware-version")
+	firmwareInfo.HardwareVersion = firstAvailable(firmwareEntry.Get("hardware-version"), firmwareEntry.Get("revision"))
 	firmwareInfo.MfgDate = firmwareEntry.Get("manufacture_date")
 	firmwareInfo.OperStatus = firmwareEntry.Get("oper-status")
-	firmwareInfo.PartNo = firmwareEntry.Get("part-no")
+	firmwareInfo.PartNo = firstAvailable(firmwareEntry.Get("part-no"), model)
 	firmwareInfo.SerialNo = firmwareEntry.Get("serial")
 	firmwareInfo.QualifiedName = firmwareEntry.Get("fully-qualified-name")
-	firmwareInfo.ModelName = firmwareEntry.Get("product_name")
+	firmwareInfo.ModelName = firstAvailable(firmwareEntry.Get("product_name"), model)
 	firmwareInfo.BaseMac = firmwareEntry.Get("base_mac_addr")
 	firmwareInfo.MacPoolSize = firmwareEntry.Get("mac_addr_num")
 	firmwareInfo.CpuType = firmwareEntry.Get("cpu-type")
@@ -4374,6 +4412,9 @@ func fillPcieInfo(pcieComp *ocbinds.OpenconfigPlatform_Components_Component,
 
 	if targetUriPath == COMP || targetUriPath == COMP_ST || targetUriPath == COMP_STATE_PARENT {
 		pcieComp.State.Parent = &pcieParent
+	}
+	if targetUriPath == COMP || targetUriPath == COMP_ST || targetUriPath == COMP_STATE_NAME {
+		pcieComp.State.Name = &name
 	}
 
 	// Updating the tree directly to avoid string case matches for each individual pcie path.
