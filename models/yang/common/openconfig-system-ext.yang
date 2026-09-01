@@ -27,11 +27,19 @@ module openconfig-system-ext {
     the upstream model:
 
       * a DSCP marking value for the SSH management server,
+      * a DSCP marking value for TACACS+ client traffic,
       * an idle (inactivity) timeout for the serial console, and
       * a source interface for NTP, TACACS+, and remote syslog
         management traffic.";
 
-  oc-ext:openconfig-version "0.2.0";
+  oc-ext:openconfig-version "0.3.0";
+
+  revision "2026-09-01" {
+    description
+      "Add a dscp leaf to the AAA server-group config, used to mark
+      TACACS+ client traffic (maps to TACPLUS|global:dscp).";
+    reference "0.3.0";
+  }
 
   revision "2026-08-27" {
     description
@@ -78,6 +86,21 @@ module openconfig-system-ext {
         "Idle (inactivity) timeout in seconds for serial console
         sessions. A value of 0 disables the timeout. Equivalent to the
         EOS 'management console / idle-timeout <minutes>' setting.";
+    }
+  }
+
+  grouping system-aaa-server-group-dscp-config {
+    description
+      "DSCP marking configuration for AAA client traffic.";
+
+    leaf dscp {
+      type oc-inet:dscp;
+      description
+        "DSCP value (0..63) used to mark packets originated by the
+        AAA client towards the servers of this group. Only honored for
+        TACACS+ groups, where it is equivalent to the EOS
+        'tacacs-server qos dscp <dscp>' setting and maps to the SONiC
+        TACPLUS|global:dscp field.";
     }
   }
 
@@ -145,17 +168,21 @@ module openconfig-system-ext {
 
   augment "/oc-sys:system/oc-sys:aaa/oc-sys:server-groups/oc-sys:server-group/oc-sys:config" {
     description
-      "Add a source interface to the AAA server-group configuration.
-      Only honored for TACACS+ groups, mapping to TACPLUS|global:src_intf.";
+      "Add a source interface and a DSCP marking value to the AAA
+      server-group configuration. Only honored for TACACS+ groups,
+      mapping to TACPLUS|global:src_intf and TACPLUS|global:dscp.";
 
     uses system-source-interface-config;
+    uses system-aaa-server-group-dscp-config;
   }
 
   augment "/oc-sys:system/oc-sys:aaa/oc-sys:server-groups/oc-sys:server-group/oc-sys:state" {
     description
-      "Add a source interface to the AAA server-group operational state.";
+      "Add a source interface and a DSCP marking value to the AAA
+      server-group operational state.";
 
     uses system-source-interface-config;
+    uses system-aaa-server-group-dscp-config;
   }
 
   augment "/oc-sys:system/oc-log:logging" {

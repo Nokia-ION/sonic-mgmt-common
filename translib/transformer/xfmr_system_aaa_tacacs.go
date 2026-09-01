@@ -29,9 +29,10 @@ import (
 // The tacacs/config/source-address leaf is intentionally not mapped: SONiC has
 // no per-server source address for TACACS+ (only a global TACPLUS|global:src_ip).
 //
-// The openconfig-system-ext source-interface leaf on the server-group config is
-// mapped to the global TACPLUS|global:src_intf field (EOS
-// 'ip tacacs source-interface'); SONiC has no per-group source interface.
+// The openconfig-system-ext source-interface and dscp leaves on the server-group
+// config are mapped to the global TACPLUS|global:src_intf and TACPLUS|global:dscp
+// fields (EOS 'ip tacacs source-interface' and 'tacacs-server qos dscp'); SONiC
+// has neither per-group setting.
 const (
 	TACPLUS_SERVER_TABLE_NAME = "TACPLUS_SERVER"
 	TACPLUS_GLOBAL_TABLE_NAME = "TACPLUS"
@@ -45,8 +46,9 @@ const (
 	TACACS_DEFAULT_PRIORITY   = "1"
 	tacacsServerGroupKeyField = "name"
 	tacacsServerKeyField      = "address"
-	// Source interface (openconfig-system-ext) maps to the global TACPLUS row.
+	// Source interface and DSCP (openconfig-system-ext) map to the global TACPLUS row.
 	tacacsSrcIntfField = "src_intf"
+	tacacsDscpField    = "dscp"
 )
 
 func init() {
@@ -137,6 +139,22 @@ func collectTacacsSourceIntf(sysObj *ocbinds.OpenconfigSystem_System) (string, b
 	return "", false
 }
 
+// collectTacacsDscp walks the OpenConfig payload and returns the dscp
+// (openconfig-system-ext) configured on any TACACS group, if present. It maps to
+// the single global TACPLUS|global:dscp field.
+func collectTacacsDscp(sysObj *ocbinds.OpenconfigSystem_System) (string, bool) {
+	if sysObj == nil || sysObj.Aaa == nil || sysObj.Aaa.ServerGroups == nil {
+		return "", false
+	}
+	for _, grp := range sysObj.Aaa.ServerGroups.ServerGroup {
+		if !isTacacsGroup(grp) || grp.Config == nil || grp.Config.Dscp == nil {
+			continue
+		}
+		return strconv.FormatUint(uint64(*grp.Config.Dscp), 10), true
+	}
+	return "", false
+}
+
 // collectTacacsPayloadServers walks the OpenConfig payload and returns a map of
 // server address -> server object for every TACACS group present.
 func collectTacacsPayloadServers(sysObj *ocbinds.OpenconfigSystem_System) map[string]*ocbinds.OpenconfigSystem_System_Aaa_ServerGroups_ServerGroup_Servers_Server {
@@ -200,23 +218,32 @@ var YangToDb_tacacs_server_groups_xfmr SubTreeXfmrYangToDb = func(inParams XfmrP
 		return nil, tlerr.NotSupportedError{Format: fmt.Sprintf("Operation %v not supported on path %s", inParams.oper, targetUriPath)}
 	}
 
-	// Handle the openconfig-system-ext source-interface leaf, which maps to the
-	// global TACPLUS|global:src_intf field (not the per-server TACPLUS_SERVER).
-	// Detect it from the client's request path so a leaf DELETE is never
+	// Handle the openconfig-system-ext source-interface and dscp leaves, which map
+	// to the global TACPLUS|global row (not the per-server TACPLUS_SERVER).
+	// Detect them from the client's request path so a leaf DELETE is never
 	// misrouted into the server-clearing logic below (which would otherwise wipe
 	// all TACPLUS_SERVER entries).
-	if uriPathEndsWithLeaf(targetUriPath, "source-interface") ||
-		uriPathEndsWithLeaf(reqUriPath, "source-interface") {
+	for _, gl := range []struct {
+		leaf    string
+		field   string
+		collect func(*ocbinds.OpenconfigSystem_System) (string, bool)
+	}{
+		{"source-interface", tacacsSrcIntfField, collectTacacsSourceIntf},
+		{"dscp", tacacsDscpField, collectTacacsDscp},
+	} {
+		if !uriPathEndsWithLeaf(targetUriPath, gl.leaf) && !uriPathEndsWithLeaf(reqUriPath, gl.leaf) {
+			continue
+		}
 		if inParams.oper == DELETE {
-			// Field-level delete of just src_intf, leaving other TACPLUS|global
-			// fields (e.g. src_ip) intact.
+			// Field-level delete of just this leaf, leaving the other
+			// TACPLUS|global fields (e.g. src_ip) intact.
 			return map[string]map[string]db.Value{
-				TACPLUS_GLOBAL_TABLE_NAME: {TACPLUS_GLOBAL_KEY: db.Value{Field: map[string]string{tacacsSrcIntfField: ""}}},
+				TACPLUS_GLOBAL_TABLE_NAME: {TACPLUS_GLOBAL_KEY: db.Value{Field: map[string]string{gl.field: ""}}},
 			}, nil
 		}
-		if src, ok := collectTacacsSourceIntf(sysObj); ok {
+		if val, ok := gl.collect(sysObj); ok {
 			return map[string]map[string]db.Value{
-				TACPLUS_GLOBAL_TABLE_NAME: {TACPLUS_GLOBAL_KEY: db.Value{Field: map[string]string{tacacsSrcIntfField: src}}},
+				TACPLUS_GLOBAL_TABLE_NAME: {TACPLUS_GLOBAL_KEY: db.Value{Field: map[string]string{gl.field: val}}},
 			}, nil
 		}
 		return map[string]map[string]db.Value{}, nil
@@ -255,10 +282,18 @@ var YangToDb_tacacs_server_groups_xfmr SubTreeXfmrYangToDb = func(inParams XfmrP
 	if inParams.oper == UPDATE || inParams.oper == REPLACE {
 		payloadServers := collectTacacsPayloadServers(sysObj)
 
-		// A group/config-level SET may also carry the source-interface leaf.
+		// A group/config-level SET may also carry the global source-interface
+		// and/or dscp leaves.
+		globalFields := make(map[string]string)
 		if src, ok := collectTacacsSourceIntf(sysObj); ok {
+			globalFields[tacacsSrcIntfField] = src
+		}
+		if dscp, ok := collectTacacsDscp(sysObj); ok {
+			globalFields[tacacsDscpField] = dscp
+		}
+		if len(globalFields) > 0 {
 			dbMutations[TACPLUS_GLOBAL_TABLE_NAME] = map[string]db.Value{
-				TACPLUS_GLOBAL_KEY: {Field: map[string]string{tacacsSrcIntfField: src}},
+				TACPLUS_GLOBAL_KEY: {Field: globalFields},
 			}
 		}
 
@@ -358,11 +393,21 @@ var DbToYang_tacacs_server_groups_xfmr SubTreeXfmrDbToYang = func(inParams XfmrP
 	}
 	serverGroupsObj.ServerGroup[groupName] = groupObj
 
-	// Global source-interface (openconfig-system-ext) from TACPLUS|global.
+	// Global source-interface and dscp (openconfig-system-ext) from TACPLUS|global.
 	if gEntry, err := dbGetEntry(cfgDb, &db.TableSpec{Name: TACPLUS_GLOBAL_TABLE_NAME}, db.Key{Comp: []string{TACPLUS_GLOBAL_KEY}}); err == nil {
 		if v := gEntry.Get(tacacsSrcIntfField); v != "" {
 			groupObj.Config.SourceInterface = ygot.String(v)
 			groupObj.State.SourceInterface = ygot.String(v)
+		}
+		if v := gEntry.Get(tacacsDscpField); v != "" {
+			// Skip a value the DB should not hold rather than reporting one
+			// that openconfig-inet-types:dscp would reject.
+			if num, e := strconv.ParseUint(v, 10, 8); e == nil && num <= 63 {
+				groupObj.Config.Dscp = ygot.Uint8(uint8(num))
+				groupObj.State.Dscp = ygot.Uint8(uint8(num))
+			} else {
+				log.Warningf("TACPLUS|global:%s is not a valid DSCP (%q), skipping", tacacsDscpField, v)
+			}
 		}
 	}
 
