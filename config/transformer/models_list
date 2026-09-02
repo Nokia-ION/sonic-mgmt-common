@@ -18,6 +18,9 @@ openconfig-system.yang
 openconfig-system-grpc-ext.yang
 openconfig-system-ext.yang
 openconfig-system-annot.yang
+openconfig-system-controlplane.yang
+sonic-system-controlplane-ext.yang
+sonic-control-plane-acl.yang
 sonic-ntp.yang
 sonic-dns.yang
 sonic-system-tacacs.yang

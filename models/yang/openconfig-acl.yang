@@ -511,10 +511,10 @@ module openconfig-acl {
 
     leaf sequence-id {
       type leafref {
-        path "/acl/acl-sets/" +
-          "acl-set[name=current()/../../../../set-name]" +
-          "[type=current()/../../../../type]/" +
-          "acl-entries/acl-entry/sequence-id";
+        path "/oc-acl:acl/oc-acl:acl-sets/" +
+          "oc-acl:acl-set[oc-acl:name=current()/../../../../set-name]" +
+          "[oc-acl:type=current()/../../../../type]/" +
+          "oc-acl:acl-entries/oc-acl:acl-entry/oc-acl:sequence-id";
       }
       description
         "Reference to an entry in the ACL set applied to an

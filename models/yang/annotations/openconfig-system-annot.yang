@@ -12,6 +12,8 @@ module openconfig-system-annot {
     import openconfig-system-grpc { prefix oc-sys-grpc; }
     import gnsi-pathz { prefix gnsi-pathz; }
     import gnsi-credentialz { prefix gnsi-credz; }
+    import openconfig-system-controlplane { prefix oc-sys-copp; }
+    import sonic-system-controlplane-ext { prefix sonic-sys-cp-ext; }
 
     deviation /oc-sys:system/oc-sys:ssh-server/oc-sys:state {
       deviate add {
@@ -290,6 +292,50 @@ module openconfig-system-annot {
     deviation /oc-sys:system/oc-log:logging/oc-sys-ext:state/oc-sys-ext:source-interface {
       deviate add {
         sonic-ext:field-name "src_intf";
+      }
+    }
+
+    /*
+     * Control-plane traffic filtering in hardware.
+     *
+     * A control-plane ACL set is the same object as the ACL set of the same
+     * name and type in the OpenConfig ACL model, so it maps to the same
+     * CONFIG_DB ACL_TABLE entry that /openconfig-acl:acl creates. Binding an
+     * ACL set to the control plane therefore does not create a new table; it
+     * adds the 'stage' and 'ports' fields that make aclorch program the
+     * already-configured rules into the ASIC.
+     *
+     * The ACL_TABLE key is composed the same way acl_app.go composes it
+     * (getAclKeyStrFromOCKey): the set name with spaces and hyphens replaced
+     * by underscores, an underscore, then the OpenConfig type name, for
+     * example restrict_mgmt_ACL_IPV4. Both producers must agree on the key or
+     * the binding lands on a different row than the rules.
+     *
+     * These deviations belong in this file rather than alongside the
+     * control-plane model because annotToDbMapBuild derives the module
+     * prefix of the annotated xpath from the annotation file name, so an
+     * annotation of a node under /oc-sys:system is only applied when it is
+     * declared in openconfig-system-annot.
+     */
+
+    /*
+     * The whole acl-set list is handled by one subtree transformer rather than
+     * by per-leaf mappings.
+     *
+     * ACL_TABLE holds the stage and the ports of a binding in the same entry
+     * that /openconfig-acl:acl owns, and its 'ports' field is shared with the
+     * /openconfig-acl:acl/interfaces bindings. Withdrawing a control-plane
+     * binding therefore has to remove only the ports that binding contributed
+     * and may drop the stage only once none are left. Per-leaf mappings decide
+     * those two fields independently and in an unspecified order, and a
+     * field-name mapping of bind-interfaces onto 'ports' let a delete of the
+     * list instance clear the field outright, unbinding interfaces the ACL
+     * model had bound. Deciding both in one place is what makes the
+     * withdrawal correct.
+     */
+    deviation /oc-sys:system/oc-sys-copp:control-plane-traffic/oc-sys-copp:ingress/oc-sys-copp:acl/oc-sys-copp:acl-set {
+      deviate add {
+        sonic-ext:subtree-transformer "cp_acl_xfmr";
       }
     }
 }

@@ -1,0 +1,88 @@
+module sonic-system-controlplane-ext {
+
+    yang-version "1";
+
+    namespace "http://github.com/sonic-net/sonic-buildimage/yang/sonic-system-controlplane-ext";
+
+    prefix "sonic-sys-cp-ext";
+
+    import openconfig-system {
+        prefix oc-sys;
+    }
+
+    import openconfig-system-controlplane {
+        prefix oc-sys-copp;
+    }
+
+    organization
+      "SONiC";
+
+    contact
+      "https://github.com/sonic-net/sonic-buildimage";
+
+    description
+      "SONiC augmentation of openconfig-system-controlplane.
+
+      openconfig-system-controlplane models a control-plane ACL as a
+      system-wide property, on the assumption that the platform is able to
+      attach an ACL to the internal CPU-facing interface. SAI as consumed by
+      this build exposes no CPU or control-plane ACL bind point: aclorch
+      resolves ACL bind points through PortsOrch and can only attach an ACL
+      table to front-panel ports or LAGs. A control-plane ACL is therefore
+      realised as an ingress ACL on the port(s) through which management
+      traffic reaches the CPU, which for an inband-management deployment is
+      the dedicated management front-panel port.
+
+      This module adds the leaf-list needed to name those ports. It carries no
+      other deviation: every other path under /system/control-plane-traffic is
+      the standard OpenConfig path.
+
+      A listed port is filtered in its entirety, not only its CPU-bound
+      traffic. Listing a port that also carries transit traffic subjects that
+      traffic to the ACL as well, including to any terminal deny entry, so the
+      ports named here should carry management traffic only. Where that cannot
+      be guaranteed, qualify each ACL entry with the destination address of
+      the switch so that transit traffic does not match.";
+
+    revision 2026-08-24 {
+        description
+          "Initial revision.";
+    }
+
+    grouping system-controlplane-acl-bind-config {
+        description
+          "SONiC bind points for a control-plane ACL.";
+
+        leaf-list bind-interfaces {
+            type string;
+            description
+              "Interfaces on which this ACL is installed as an ingress ACL in
+              order to filter control-plane traffic. Each value is a SONiC
+              interface name, either a front-panel port (Ethernet0) or a port
+              channel (PortChannel1).
+
+              The values populate the 'ports' field of the corresponding
+              CONFIG_DB ACL_TABLE entry, which aclorch programs into the ASIC.
+              An ACL set with no bind-interfaces is not programmed into
+              hardware and filters nothing.";
+        }
+    }
+
+    augment "/oc-sys:system/oc-sys-copp:control-plane-traffic/" +
+            "oc-sys-copp:ingress/oc-sys-copp:acl/oc-sys-copp:acl-set/" +
+            "oc-sys-copp:config" {
+        description
+          "SONiC bind points for the ingress control-plane ACL.";
+
+        uses system-controlplane-acl-bind-config;
+    }
+
+    augment "/oc-sys:system/oc-sys-copp:control-plane-traffic/" +
+            "oc-sys-copp:ingress/oc-sys-copp:acl/oc-sys-copp:acl-set/" +
+            "oc-sys-copp:state" {
+        description
+          "SONiC bind points for the ingress control-plane ACL.";
+
+        uses system-controlplane-acl-bind-config;
+    }
+}

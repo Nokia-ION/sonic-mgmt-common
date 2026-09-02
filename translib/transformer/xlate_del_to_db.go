@@ -245,7 +245,7 @@ func yangListDelData(xlateParams xlateToParams, dbDataMap *map[db.DBNum]map[stri
 								/* Non-inhertited table case */
 								xfmrLogDebug("Non-inhertaed table case, URI - %v", curUri)
 								if !tblOwner {
-									xfmrLogDebug("For URI - %v, table owner - %v", xlateParams.uri, *spec.tblOwner)
+									xfmrLogDebug("For URI - %v, table owner - %v", xlateParams.uri, tblOwner)
 									/* Fill only fields */
 									fillFields = true
 								}
@@ -264,7 +264,7 @@ func yangListDelData(xlateParams xlateToParams, dbDataMap *map[db.DBNum]map[stri
 									} else { /*same table but different keys */
 										xfmrLogDebug("Inherited table but parent key is NOT same as current key")
 										if !tblOwner {
-											xfmrLogDebug("For URI - %v, table owner - %v", xlateParams.uri, *spec.tblOwner)
+											xfmrLogDebug("For URI - %v, table owner - %v", xlateParams.uri, tblOwner)
 											/* Fill only fields */
 											fillFields = true
 										}
@@ -273,7 +273,7 @@ func yangListDelData(xlateParams xlateToParams, dbDataMap *map[db.DBNum]map[stri
 									/*same table but no parent-key exists, parent must be a container wth just tableNm annot with no keyXfmr/Nm */
 									xfmrLogDebug("Inherited table but no parent key available")
 									if !tblOwner {
-										xfmrLogDebug("For URI - %v, table owner - %v", xlateParams.uri, *spec.tblOwner)
+										xfmrLogDebug("For URI - %v, table owner - %v", xlateParams.uri, tblOwner)
 										/* Fill only fields */
 										fillFields = true
 
