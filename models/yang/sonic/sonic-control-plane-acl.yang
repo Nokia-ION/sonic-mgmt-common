@@ -1,0 +1,73 @@
+module sonic-control-plane-acl {
+    yang-version 1.1;
+    namespace "http://github.com/sonic-net/sonic-control-plane-acl";
+    prefix cpacl;
+
+    organization
+        "SONiC";
+
+    contact
+        "SONiC";
+
+    description
+        "Records which interfaces a control-plane ACL binding contributed to
+        ACL_TABLE.
+
+        A control-plane binding made through
+        /openconfig-system:system/control-plane-traffic/ingress/acl is realised
+        as an ingress port binding on the ACL_TABLE entry of the ACL set, which
+        is the same entry /openconfig-acl:acl owns. The 'ports' field of that
+        entry is shared: /openconfig-acl:acl/interfaces writes to it as well.
+        Nothing in ACL_TABLE records which binding put a given port there, so
+        removing a control-plane binding could not tell which ports to withdraw
+        and would clear the whole field, unbinding the interfaces the ACL model
+        had bound.
+
+        This table holds that missing attribution. It is written only by the
+        control-plane transformer and read only by it; aclorch does not consume
+        it.
+
+        The key is the ACL_TABLE key rather than a leafref to it. A leafref
+        would make CVL refuse to delete an ACL_TABLE entry while a binding
+        referenced it, and deleting an ACL set through /openconfig-acl:acl does
+        not clear this table, so ordinary ACL deletion would start failing. The
+        transformer instead reconciles what it recorded against the ports
+        ACL_TABLE actually holds, which leaves a row whose ACL has been deleted
+        inert.";
+
+    revision 2026-09-02 {
+        description
+            "Initial revision.";
+    }
+
+    container sonic-control-plane-acl {
+
+        container CONTROL_PLANE_ACL {
+
+            list CONTROL_PLANE_ACL_LIST {
+                key "aclname";
+
+                leaf aclname {
+                    description
+                        "Key of the ACL_TABLE entry this binding applies to,
+                        composed as acl_app.go composes it: the OpenConfig set
+                        name with spaces and hyphens replaced by underscores,
+                        an underscore, then the OpenConfig type name, for
+                        example restrict_access_ACL_IPV4.";
+                    type string {
+                        pattern '[a-zA-Z0-9_-]+';
+                        length "1..255";
+                    }
+                }
+
+                leaf-list ports {
+                    description
+                        "Interfaces this control-plane binding added to
+                        ACL_TABLE.ports. Withdrawing the binding removes these
+                        and leaves any port another binding contributed.";
+                    type string;
+                }
+            }
+        }
+    }
+}
