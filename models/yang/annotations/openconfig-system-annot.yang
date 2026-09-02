@@ -183,9 +183,33 @@ module openconfig-system-annot {
       }
     }
 
+    deviation /oc-sys:system/oc-log:logging/oc-log:remote-servers/oc-log:remote-server/oc-log:config/oc-log:source-address {
+      deviate add {
+        sonic-ext:field-name "source";
+      }
+    }
+
+    deviation /oc-sys:system/oc-log:logging/oc-log:remote-servers/oc-log:remote-server/oc-log:config/oc-log:network-instance {
+      deviate add {
+        sonic-ext:field-name "vrf";
+      }
+    }
+
     deviation /oc-sys:system/oc-log:logging/oc-log:remote-servers/oc-log:remote-server/oc-log:state/oc-log:remote-port {
       deviate add {
         sonic-ext:field-name "port";
+      }
+    }
+
+    deviation /oc-sys:system/oc-log:logging/oc-log:remote-servers/oc-log:remote-server/oc-log:state/oc-log:source-address {
+      deviate add {
+        sonic-ext:field-name "source";
+      }
+    }
+
+    deviation /oc-sys:system/oc-log:logging/oc-log:remote-servers/oc-log:remote-server/oc-log:state/oc-log:network-instance {
+      deviate add {
+        sonic-ext:field-name "vrf";
       }
     }
 
@@ -216,6 +240,32 @@ module openconfig-system-annot {
     deviation /oc-sys:system/oc-log:logging/oc-log:remote-servers/oc-log:remote-server/oc-log:state/oc-log:host {
       deviate add {
           sonic-ext:field-transformer "syslog_server_ip_fld_xfmr";
+      }
+    }
+
+    deviation /oc-sys:system/oc-log:logging/oc-log:remote-servers/oc-log:remote-server/oc-log:selectors {
+      deviate add {
+        sonic-ext:table-name "NONE";
+        sonic-ext:subtree-transformer "remote_servers_list_xfmr";
+      }
+    }
+
+    deviation /oc-sys:system/oc-log:logging/oc-log:remote-servers/oc-log:remote-server/oc-log:selectors/oc-log:selector {
+      deviate add {
+        sonic-ext:subtree-transformer "remote_servers_list_xfmr";
+        sonic-ext:key-transformer "syslog_selector_key_xfmr";
+      }
+    }
+
+    deviation /oc-sys:system/oc-log:logging/oc-log:remote-servers/oc-log:remote-server/oc-log:selectors/oc-log:selector/oc-log:config/oc-log:severity {
+      deviate add {
+        sonic-ext:field-transformer "syslog_selector_severity_fld_xfmr";
+      }
+    }
+
+    deviation /oc-sys:system/oc-log:logging/oc-log:remote-servers/oc-log:remote-server/oc-log:selectors/oc-log:selector/oc-log:config/oc-log:facility {
+      deviate add {
+        sonic-ext:field-transformer "syslog_selector_facility_fld_xfmr";
       }
     }
 
