@@ -1355,6 +1355,11 @@ func buildNiBgpHierResMap(s *ygot.GoStruct, niName string) map[string]map[string
 							niBgpPgMaxPfxLimitFld: strconv.FormatUint(uint64(*afiObj.Ipv4Unicast.PrefixLimit.Config.MaxPrefixes), 10),
 						}))
 					}
+					if afiObj.Ipv6Unicast != nil && afiObj.Ipv6Unicast.PrefixLimit != nil && afiObj.Ipv6Unicast.PrefixLimit.Config != nil && afiObj.Ipv6Unicast.PrefixLimit.Config.MaxPrefixes != nil {
+						res = mergeDbResMapFields(res, makeNiBgpPgAfResMap(niName, pgName, niBgpPgAfiSafiIPv6, map[string]string{
+							niBgpPgMaxPfxLimitFld: strconv.FormatUint(uint64(*afiObj.Ipv6Unicast.PrefixLimit.Config.MaxPrefixes), 10),
+						}))
+					}
 					if afiObj.ApplyPolicy != nil && afiObj.ApplyPolicy.Config != nil && len(afiObj.ApplyPolicy.Config.ExportPolicy) > 0 {
 						exportPolicy := strings.TrimSpace(afiObj.ApplyPolicy.Config.ExportPolicy[0])
 						if exportPolicy != "" {
@@ -1557,9 +1562,12 @@ func populateNiBgpHierToYangFromDb(cfgDb *db.DB, ygRoot *ygot.GoStruct, niName s
 			}
 			if maxStr, ok := pgAfEntry.Field[niBgpPgMaxPfxLimitFld]; ok && strings.TrimSpace(maxStr) != "" {
 				if maxVal, convErr := strconv.ParseUint(strings.TrimSpace(maxStr), 10, 32); convErr == nil {
-					pfxCfg := getNiBgpPeerGroupAfV4PrefixLimitCfgObj(ygRoot, niName, pgName, true)
-					if pfxCfg != nil {
-						v := uint32(maxVal)
+					v := uint32(maxVal)
+					if afi == niBgpPgAfiSafiIPv6 {
+						if pfxCfg := getNiBgpPeerGroupAfV6PrefixLimitCfgObj(ygRoot, niName, pgName, true); pfxCfg != nil {
+							pfxCfg.MaxPrefixes = &v
+						}
+					} else if pfxCfg := getNiBgpPeerGroupAfV4PrefixLimitCfgObj(ygRoot, niName, pgName, true); pfxCfg != nil {
 						pfxCfg.MaxPrefixes = &v
 					}
 				}
