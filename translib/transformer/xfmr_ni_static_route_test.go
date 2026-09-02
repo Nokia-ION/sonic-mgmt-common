@@ -76,6 +76,51 @@ func Test_openconfig_network_instance_static_route_config_prefix(t *testing.T) {
 	unloadDB(db.ConfigDB, cleanupTbl)
 }
 
+func Test_openconfig_network_instance_static_route_config_prefix_ipv6(t *testing.T) {
+	var url, urlInputBodyJSON string
+
+	preReqMap := map[string]interface{}{}
+	cleanupTbl := map[string]interface{}{
+		"STATIC_ROUTE": map[string]interface{}{
+			"default|2004::/64": "",
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	url = niStaticRouteProtoUrl + "/static-routes/static[prefix=2004::/64]/config/prefix"
+	urlInputBodyJSON = "{\"openconfig-network-instance:prefix\":\"2004::/64\"}"
+	t.Run("PATCH network-instance static route config prefix IPv6", processSetRequest(url, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"STATIC_ROUTE": map[string]interface{}{
+			"default|2004::/64": map[string]interface{}{},
+		},
+	}
+	t.Run("Verify IPv6 STATIC_ROUTE row created", verifyDbResult(rclient, "STATIC_ROUTE|default|2004::/64", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	expectedGetJSON := "{\"openconfig-network-instance:prefix\":\"2004::/64\"}"
+	t.Run("GET network-instance static route config prefix IPv6", processGetRequest(url, nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	expectedErr := tlerr.InvalidArgsError{
+		Format: "static route prefix \"2005::/64\" in payload does not match prefix \"2004::/64\" in request path",
+	}
+	urlInputBodyJSON = "{\"openconfig-network-instance:prefix\":\"2005::/64\"}"
+	t.Run("PATCH static route prefix IPv6 mismatch rejected", processSetRequest(url, urlInputBodyJSON, "PATCH", true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	t.Run("DELETE network-instance static route config prefix IPv6", processDeleteRequest(url, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify IPv6 STATIC_ROUTE row deleted", verifyDbResult(rclient, "STATIC_ROUTE|default|2004::/64", map[string]interface{}{}, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
 func Test_openconfig_network_instance_static_route_config_container(t *testing.T) {
 	var url, urlInputBodyJSON string
 
@@ -371,6 +416,72 @@ func Test_openconfig_network_instance_static_route_next_hop_config(t *testing.T)
 
 	t.Run("Verify STATIC_ROUTE next-hop kept after rejected DELETE",
 		verifyDbResult(rclient, "STATIC_ROUTE|default|172.16.1.0/24", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_network_instance_static_route_next_hop_config_ipv6(t *testing.T) {
+	var url, urlInputBodyJSON string
+
+	preReqMap := map[string]interface{}{}
+	cleanupTbl := map[string]interface{}{
+		"STATIC_ROUTE": map[string]interface{}{
+			"default|2004::/64": "",
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	nhUrl := niStaticRouteProtoUrl + "/static-routes/static[prefix=2004::/64]/next-hops/next-hop[index=2001::1]"
+
+	url = nhUrl + "/config/next-hop"
+	urlInputBodyJSON = "{\"openconfig-network-instance:next-hop\":\"2001::1\"}"
+	t.Run("PATCH network-instance static route IPv6 next-hop", processSetRequest(url, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"STATIC_ROUTE": map[string]interface{}{
+			"default|2004::/64": map[string]interface{}{
+				"nexthop": "2001::1",
+			},
+		},
+	}
+	t.Run("Verify IPv6 STATIC_ROUTE next-hop written", verifyDbResult(rclient, "STATIC_ROUTE|default|2004::/64", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	expectedGetJSON := "{\"openconfig-network-instance:next-hop\":\"2001::1\"}"
+	t.Run("GET network-instance static route IPv6 next-hop", processGetRequest(url, nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	expectedGetJSON = "{\"openconfig-network-instance:index\":\"2001::1\"}"
+	t.Run("GET network-instance static route IPv6 next-hop index", processGetRequest(nhUrl+"/config/index", nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	expectedGetJSON = "{\"openconfig-network-instance:config\":{\"index\":\"2001::1\",\"next-hop\":\"2001::1\"}}"
+	t.Run("GET network-instance static route IPv6 next-hop config container",
+		processGetRequest(nhUrl+"/config", nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	// The next-hop in the payload has to agree with the next-hop the list key
+	// already identifies.
+	expectedErr := tlerr.InvalidArgsError{
+		Format: "static route next-hop \"2001::2\" in payload does not match next-hop index \"2001::1\"",
+	}
+	urlInputBodyJSON = "{\"openconfig-network-instance:next-hop\":\"2001::2\"}"
+	t.Run("PATCH static route IPv6 next-hop mismatch rejected", processSetRequest(url, urlInputBodyJSON, "PATCH", true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	// The route keeps the only next-hop it has; the route itself has to be
+	// deleted instead.
+	expectedErr2 := tlerr.NotSupportedError{
+		Format: "DELETE of the only next-hop is not supported; delete the static route instead",
+	}
+	t.Run("DELETE only IPv6 next-hop rejected", processDeleteRequest(nhUrl, true, expectedErr2))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify IPv6 STATIC_ROUTE next-hop kept after rejected DELETE",
+		verifyDbResult(rclient, "STATIC_ROUTE|default|2004::/64", expectedMap, false))
 	time.Sleep(1 * time.Second)
 
 	unloadDB(db.ConfigDB, cleanupTbl)
