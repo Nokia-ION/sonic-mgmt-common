@@ -43,11 +43,13 @@ const (
 	niBgpPgHoldTimeLeaf      = "hold-time"
 	niBgpPgMaxPrefixesLeaf   = "max-prefixes"
 	niBgpPgExportPolicyLeaf  = "export-policy"
+	niBgpPgImportPolicyLeaf  = "import-policy"
 	niBgpPgAsnFld            = "asn"
 	niBgpPgKeepaliveFld      = "keepalive"
 	niBgpPgHoldTimeFld       = "holdtime"
 	niBgpPgMaxPfxLimitFld    = "max_prefix_limit"
 	niBgpPgRouteMapOutFld    = "route_map_out@"
+	niBgpPgRouteMapInFld     = "route_map_in@"
 	niBgpPgAfiSafiIPv4       = "ipv4_unicast"
 	niBgpPgAfiSafiIPv6       = "ipv6_unicast"
 )
@@ -56,7 +58,7 @@ var niBgpPgCfgReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:netwo
 var niBgpPgTimersReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/protocols/protocol\[identifier=BGP\]\[name=bgp\]/bgp/peer-groups/peer-group\[peer-group-name=([^\]]+)\]/timers/config(?:/(keepalive-interval|hold-time))?$`)
 var niBgpPgAfV4PfxReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/protocols/protocol\[identifier=BGP\]\[name=bgp\]/bgp/peer-groups/peer-group\[peer-group-name=([^\]]+)\]/afi-safis/afi-safi(?:\[afi-safi-name=(?:IPV4_UNICAST|ipv4-unicast)\])?/ipv4-unicast/prefix-limit/config(?:/(max-prefixes))?$`)
 var niBgpPgAfV6PfxReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/protocols/protocol\[identifier=BGP\]\[name=bgp\]/bgp/peer-groups/peer-group\[peer-group-name=([^\]]+)\]/afi-safis/afi-safi(?:\[afi-safi-name=(?:IPV6_UNICAST|ipv6-unicast)\])?/ipv6-unicast/prefix-limit/config(?:/(max-prefixes))?$`)
-var niBgpPgAfApplyReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/protocols/protocol\[identifier=BGP\]\[name=bgp\]/bgp/peer-groups/peer-group\[peer-group-name=([^\]]+)\]/afi-safis/afi-safi\[afi-safi-name=([^\]]+)\]/apply-policy/config(?:/(export-policy))?$`)
+var niBgpPgAfApplyReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/protocols/protocol\[identifier=BGP\]\[name=bgp\]/bgp/peer-groups/peer-group\[peer-group-name=([^\]]+)\]/afi-safis/afi-safi\[afi-safi-name=([^\]]+)\]/apply-policy/config(?:/(export-policy|import-policy))?$`)
 
 type niBgpPgReqInfo struct {
 	niName        string
@@ -671,7 +673,10 @@ func parseNiBgpPgMaxPrefixesFromParam(param interface{}) (*uint32, bool) {
 	return nil, false
 }
 
-func parseNiBgpPgExportPolicyFromParam(param interface{}) (string, bool) {
+// The two apply-policy leaves are leaf-lists of policy names and are parsed
+// the same way, so the leaf being written is what the caller tracks, not this
+// function.
+func parseNiBgpPgApplyPolicyFromParam(param interface{}) (string, bool) {
 	switch val := param.(type) {
 	case string:
 		v := strings.TrimSpace(val)
@@ -703,6 +708,64 @@ func parseNiBgpPgExportPolicyFromParam(param interface{}) (string, bool) {
 	return "", false
 }
 
+// niBgpFirstPolicyName picks the policy to store out of an apply-policy
+// leaf-list. CONFIG_DB holds one route-map per direction, so only the first
+// name a payload carries can be kept.
+func niBgpFirstPolicyName(policies []string) (string, bool) {
+	for _, p := range policies {
+		if v := strings.TrimSpace(p); v != "" {
+			return v, true
+		}
+	}
+	return "", false
+}
+
+// niBgpPgApplyPolicyFields renders the CONFIG_DB fields of an apply-policy
+// request. A request naming one leaf carries that leaf's value in param, while
+// a request at the container carries either leaf, or both, in the ygot tree.
+func niBgpPgApplyPolicyFields(inParams XfmrParams, reqInfo *niBgpPgReqInfo) (map[string]string, error) {
+	var importPolicies, exportPolicies []string
+	if applyCfgObj := getNiBgpPeerGroupAfApplyPolicyCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.peerGroupName, reqInfo.afiSafi, false); applyCfgObj != nil {
+		importPolicies = applyCfgObj.ImportPolicy
+		exportPolicies = applyCfgObj.ExportPolicy
+	}
+
+	fields := map[string]string{}
+	switch reqInfo.targetLeaf {
+	case niBgpPgExportPolicyLeaf:
+		policy, ok := parseNiBgpPgApplyPolicyFromParam(inParams.param)
+		if !ok {
+			if policy, ok = niBgpFirstPolicyName(exportPolicies); !ok {
+				return nil, tlerr.InvalidArgsError{Format: "BGP peer-group AFI-SAFI apply-policy export-policy is missing in request payload"}
+			}
+		}
+		fields[niBgpPgRouteMapOutFld] = policy
+	case niBgpPgImportPolicyLeaf:
+		policy, ok := parseNiBgpPgApplyPolicyFromParam(inParams.param)
+		if !ok {
+			if policy, ok = niBgpFirstPolicyName(importPolicies); !ok {
+				return nil, tlerr.InvalidArgsError{Format: "BGP peer-group AFI-SAFI apply-policy import-policy is missing in request payload"}
+			}
+		}
+		fields[niBgpPgRouteMapInFld] = policy
+	case "":
+		// The container itself. param names the container rather than a leaf,
+		// so the value of each leaf can only come from the ygot tree.
+		if policy, ok := niBgpFirstPolicyName(exportPolicies); ok {
+			fields[niBgpPgRouteMapOutFld] = policy
+		}
+		if policy, ok := niBgpFirstPolicyName(importPolicies); ok {
+			fields[niBgpPgRouteMapInFld] = policy
+		}
+		if len(fields) == 0 {
+			return nil, tlerr.InvalidArgsError{Format: "BGP peer-group AFI-SAFI apply-policy config payload carries neither import-policy nor export-policy"}
+		}
+	default:
+		return nil, tlerr.NotSupportedError{Format: "unsupported leaf under peer-group AFI-SAFI apply-policy config"}
+	}
+	return fields, nil
+}
+
 var YangToDb_ni_bgp_pg_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (map[string]map[string]db.Value, error) {
 	res := make(map[string]map[string]db.Value)
 
@@ -730,8 +793,10 @@ var YangToDb_ni_bgp_pg_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) 
 			return makeNiBgpPgAfResMap(reqInfo.niName, reqInfo.peerGroupName, reqInfo.afiSafi, map[string]string{niBgpPgMaxPfxLimitFld: ""}), nil
 		case niBgpPgExportPolicyLeaf:
 			return makeNiBgpPgAfResMap(reqInfo.niName, reqInfo.peerGroupName, reqInfo.afiSafi, map[string]string{niBgpPgRouteMapOutFld: ""}), nil
+		case niBgpPgImportPolicyLeaf:
+			return makeNiBgpPgAfResMap(reqInfo.niName, reqInfo.peerGroupName, reqInfo.afiSafi, map[string]string{niBgpPgRouteMapInFld: ""}), nil
 		}
-		return res, tlerr.NotSupportedError{Format: "DELETE supported only for /peer-groups/peer-group/config/peer-group-name, /peer-groups/peer-group/config/peer-as, /peer-groups/peer-group/timers/config/keepalive-interval, /peer-groups/peer-group/timers/config/hold-time, /peer-groups/peer-group/afi-safis/afi-safi/ipv4-unicast/prefix-limit/config/max-prefixes, /peer-groups/peer-group/afi-safis/afi-safi/ipv6-unicast/prefix-limit/config/max-prefixes, or /peer-groups/peer-group/afi-safis/afi-safi/apply-policy/config/export-policy", Path: inParams.requestUri}
+		return res, tlerr.NotSupportedError{Format: "DELETE supported only for /peer-groups/peer-group/config/peer-group-name, /peer-groups/peer-group/config/peer-as, /peer-groups/peer-group/timers/config/keepalive-interval, /peer-groups/peer-group/timers/config/hold-time, /peer-groups/peer-group/afi-safis/afi-safi/ipv4-unicast/prefix-limit/config/max-prefixes, /peer-groups/peer-group/afi-safis/afi-safi/ipv6-unicast/prefix-limit/config/max-prefixes, /peer-groups/peer-group/afi-safis/afi-safi/apply-policy/config/export-policy, or /peer-groups/peer-group/afi-safis/afi-safi/apply-policy/config/import-policy", Path: inParams.requestUri}
 	}
 
 	if reqInfo.targetPath == niBgpPgTargetCfg {
@@ -791,21 +856,12 @@ var YangToDb_ni_bgp_pg_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) 
 	}
 	if reqInfo.targetPath == niBgpPgTargetAfApplyCfg {
 		switch reqInfo.targetLeaf {
-		case "", niBgpPgExportPolicyLeaf:
-			exportPolicy, ok := parseNiBgpPgExportPolicyFromParam(inParams.param)
-			if !ok {
-				applyCfgObj := getNiBgpPeerGroupAfApplyPolicyCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.peerGroupName, reqInfo.afiSafi, false)
-				if applyCfgObj == nil || len(applyCfgObj.ExportPolicy) == 0 {
-					return res, tlerr.InvalidArgsError{Format: "BGP peer-group AFI-SAFI apply-policy export-policy is missing in request payload"}
-				}
-				exportPolicy = strings.TrimSpace(applyCfgObj.ExportPolicy[0])
-				if exportPolicy == "" {
-					return res, tlerr.InvalidArgsError{Format: "BGP peer-group AFI-SAFI apply-policy export-policy is missing in request payload"}
-				}
+		case "", niBgpPgExportPolicyLeaf, niBgpPgImportPolicyLeaf:
+			fields, err := niBgpPgApplyPolicyFields(inParams, reqInfo)
+			if err != nil {
+				return res, err
 			}
-			return makeNiBgpPgAfResMap(reqInfo.niName, reqInfo.peerGroupName, reqInfo.afiSafi, map[string]string{
-				niBgpPgRouteMapOutFld: exportPolicy,
-			}), nil
+			return makeNiBgpPgAfResMap(reqInfo.niName, reqInfo.peerGroupName, reqInfo.afiSafi, fields), nil
 		default:
 			return res, tlerr.NotSupportedError{Format: "unsupported leaf under peer-group AFI-SAFI apply-policy config", Path: inParams.requestUri}
 		}
@@ -917,6 +973,12 @@ var DbToYang_ni_bgp_pg_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) 
 			exportPolicy, ok := afEntry.Field[niBgpPgRouteMapOutFld]
 			if ok && strings.TrimSpace(exportPolicy) != "" {
 				applyCfgObj.ExportPolicy = []string{strings.TrimSpace(exportPolicy)}
+			}
+		}
+		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == niBgpPgImportPolicyLeaf {
+			importPolicy, ok := afEntry.Field[niBgpPgRouteMapInFld]
+			if ok && strings.TrimSpace(importPolicy) != "" {
+				applyCfgObj.ImportPolicy = []string{strings.TrimSpace(importPolicy)}
 			}
 		}
 		return nil

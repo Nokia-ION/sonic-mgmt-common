@@ -38,16 +38,20 @@ const (
 	niBgpNbrAsnFld        = "asn"
 	niBgpNbrAdminStatus   = "admin_status"
 	niBgpNbrRouteMapInFld = "route_map_in"
-	niBgpNbrAllowAsInFld  = "allow_as_in"
-	niBgpNbrAllowAsCntFld = "allow_as_count"
-	niBgpNbrSendCommFld   = "send_community"
-	niBgpNbrAfiSafiIPv4   = "ipv4_unicast"
-	niBgpNbrAfiSafiIPv6   = "ipv6_unicast"
+	// The outbound direction is spelled the way the inbound one already is in
+	// this table. BGP_PEER_GROUP_AF suffixes both of its route-map fields with
+	// the leaf-list "@" instead; frrcfgd renders either spelling.
+	niBgpNbrRouteMapOutFld = "route_map_out"
+	niBgpNbrAllowAsInFld   = "allow_as_in"
+	niBgpNbrAllowAsCntFld  = "allow_as_count"
+	niBgpNbrSendCommFld    = "send_community"
+	niBgpNbrAfiSafiIPv4    = "ipv4_unicast"
+	niBgpNbrAfiSafiIPv6    = "ipv6_unicast"
 )
 
 var niBgpNbrReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/protocols/protocol\[identifier=BGP\]\[name=bgp\]/bgp/neighbors/neighbor\[neighbor-address=([^\]]+)\]/config(?:/(peer-group|enabled|peer-as|send-community))?$`)
 var niBgpNbrAsPathOptReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/protocols/protocol\[identifier=BGP\]\[name=bgp\]/bgp/neighbors/neighbor\[neighbor-address=([^\]]+)\]/as-path-options/config(?:/(allow-own-as))?$`)
-var niBgpNbrAfApplyReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/protocols/protocol\[identifier=BGP\]\[name=bgp\]/bgp/neighbors/neighbor\[neighbor-address=([^\]]+)\]/afi-safis/afi-safi\[afi-safi-name=([^\]]+)\]/apply-policy/config(?:/(import-policy))?$`)
+var niBgpNbrAfApplyReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/protocols/protocol\[identifier=BGP\]\[name=bgp\]/bgp/neighbors/neighbor\[neighbor-address=([^\]]+)\]/afi-safis/afi-safi\[afi-safi-name=([^\]]+)\]/apply-policy/config(?:/(import-policy|export-policy))?$`)
 var niBgpNbrAfCfgReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/protocols/protocol\[identifier=BGP\]\[name=bgp\]/bgp/neighbors/neighbor\[neighbor-address=([^\]]+)\]/afi-safis/afi-safi\[afi-safi-name=([^\]]+)\]/config(?:/(afi-safi-name|enabled))?$`)
 
 type niBgpNbrReqInfo struct {
@@ -763,7 +767,9 @@ func ensureNiBgpNbrParentRow(res map[string]map[string]db.Value, niName, neighbo
 	return res
 }
 
-func parseNiBgpNbrImportPolicyValue(v interface{}) (string, bool) {
+// The two apply-policy leaves are leaf-lists of policy names and are parsed
+// the same way, so which leaf is being written is the caller's business.
+func parseNiBgpNbrApplyPolicyValue(v interface{}) (string, bool) {
 	switch val := v.(type) {
 	case string:
 		s := strings.TrimSpace(val)
@@ -793,11 +799,14 @@ func parseNiBgpNbrImportPolicyValue(v interface{}) (string, bool) {
 	return "", false
 }
 
-func parseNiBgpNbrImportPolicyFromParam(param interface{}) (string, bool) {
+// ygotField and payloadKey name the leaf being written, since param may arrive
+// as the bare leaf-list, as the ygot config struct, or as the decoded payload
+// map.
+func parseNiBgpNbrApplyPolicyFromParam(param interface{}, ygotField, payloadKey string) (string, bool) {
 	if param == nil {
 		return "", false
 	}
-	if p, ok := parseNiBgpNbrImportPolicyValue(param); ok {
+	if p, ok := parseNiBgpNbrApplyPolicyValue(param); ok {
 		return p, true
 	}
 
@@ -812,9 +821,9 @@ func parseNiBgpNbrImportPolicyFromParam(param interface{}) (string, bool) {
 		return "", false
 	}
 	if rv.Kind() == reflect.Struct {
-		fv := rv.FieldByName("ImportPolicy")
+		fv := rv.FieldByName(ygotField)
 		if fv.IsValid() && fv.CanInterface() {
-			if p, ok := parseNiBgpNbrImportPolicyValue(fv.Interface()); ok {
+			if p, ok := parseNiBgpNbrApplyPolicyValue(fv.Interface()); ok {
 				return p, true
 			}
 		}
@@ -822,10 +831,10 @@ func parseNiBgpNbrImportPolicyFromParam(param interface{}) (string, bool) {
 	if rv.Kind() == reflect.Map {
 		for _, mk := range rv.MapKeys() {
 			k := fmt.Sprint(mk.Interface())
-			if k == "import-policy" || strings.HasSuffix(k, ":import-policy") {
+			if k == payloadKey || strings.HasSuffix(k, ":"+payloadKey) {
 				mv := rv.MapIndex(mk)
 				if mv.IsValid() && mv.CanInterface() {
-					if p, ok := parseNiBgpNbrImportPolicyValue(mv.Interface()); ok {
+					if p, ok := parseNiBgpNbrApplyPolicyValue(mv.Interface()); ok {
 						return p, true
 					}
 				}
@@ -835,23 +844,55 @@ func parseNiBgpNbrImportPolicyFromParam(param interface{}) (string, bool) {
 	return "", false
 }
 
-func parseNiBgpNbrImportPolicy(inParams XfmrParams) (string, error) {
-	reqInfo, err := parseNiBgpNbrRequestUri(inParams.requestUri)
-	if err != nil {
-		return "", err
+// niBgpNbrApplyPolicyFields renders the CONFIG_DB fields of an apply-policy
+// request. A request naming one leaf carries that leaf's value in param, while
+// a request at the container carries either leaf, or both, in the ygot tree.
+func niBgpNbrApplyPolicyFields(inParams XfmrParams, reqInfo *niBgpNbrReqInfo) (map[string]string, error) {
+	var importPolicies, exportPolicies []string
+	if cfgObj := getNiBgpNbrAfApplyPolicyCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.neighborAddr, reqInfo.afiSafi, false); cfgObj != nil {
+		importPolicies = cfgObj.ImportPolicy
+		exportPolicies = cfgObj.ExportPolicy
 	}
-	if p, ok := parseNiBgpNbrImportPolicyFromParam(inParams.param); ok {
-		return p, nil
+
+	fields := map[string]string{}
+	switch reqInfo.targetLeaf {
+	case "import-policy":
+		policy, ok := parseNiBgpNbrApplyPolicyFromParam(inParams.param, "ImportPolicy", "import-policy")
+		if !ok {
+			if policy, ok = niBgpFirstPolicyName(importPolicies); !ok {
+				return nil, tlerr.InvalidArgsError{Format: "BGP neighbor AFI-SAFI apply-policy import-policy is missing in request payload"}
+			}
+		}
+		fields[niBgpNbrRouteMapInFld] = policy
+	case "export-policy":
+		policy, ok := parseNiBgpNbrApplyPolicyFromParam(inParams.param, "ExportPolicy", "export-policy")
+		if !ok {
+			if policy, ok = niBgpFirstPolicyName(exportPolicies); !ok {
+				return nil, tlerr.InvalidArgsError{Format: "BGP neighbor AFI-SAFI apply-policy export-policy is missing in request payload"}
+			}
+		}
+		fields[niBgpNbrRouteMapOutFld] = policy
+	case "":
+		// The container itself, where param is the config struct or the decoded
+		// payload map. Either names both leaves, so each is looked up by name
+		// before falling back to the ygot tree.
+		if policy, ok := parseNiBgpNbrApplyPolicyFromParam(inParams.param, "ImportPolicy", "import-policy"); ok {
+			fields[niBgpNbrRouteMapInFld] = policy
+		} else if policy, ok := niBgpFirstPolicyName(importPolicies); ok {
+			fields[niBgpNbrRouteMapInFld] = policy
+		}
+		if policy, ok := parseNiBgpNbrApplyPolicyFromParam(inParams.param, "ExportPolicy", "export-policy"); ok {
+			fields[niBgpNbrRouteMapOutFld] = policy
+		} else if policy, ok := niBgpFirstPolicyName(exportPolicies); ok {
+			fields[niBgpNbrRouteMapOutFld] = policy
+		}
+		if len(fields) == 0 {
+			return nil, tlerr.InvalidArgsError{Format: "BGP neighbor AFI-SAFI apply-policy config payload carries neither import-policy nor export-policy"}
+		}
+	default:
+		return nil, tlerr.NotSupportedError{Format: "unsupported leaf under neighbor AFI-SAFI apply-policy config"}
 	}
-	cfgObj := getNiBgpNbrAfApplyPolicyCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.neighborAddr, reqInfo.afiSafi, false)
-	if cfgObj == nil || len(cfgObj.ImportPolicy) == 0 {
-		return "", tlerr.InvalidArgsError{Format: "BGP neighbor AFI-SAFI apply-policy import-policy is missing in request payload"}
-	}
-	p := strings.TrimSpace(cfgObj.ImportPolicy[0])
-	if p == "" {
-		return "", tlerr.InvalidArgsError{Format: "BGP neighbor AFI-SAFI apply-policy import-policy is missing in request payload"}
-	}
-	return p, nil
+	return fields, nil
 }
 
 func parseNiBgpNbrAllowOwnAsValue(v interface{}) (*uint8, bool) {
@@ -967,10 +1008,18 @@ var YangToDb_ni_bgp_nbr_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 	if inParams.oper == DELETE {
 		if reqInfo.targetPath == "neighbor-af-apply-policy-config" {
 			switch reqInfo.targetLeaf {
-			case "", "import-policy":
+			case "":
+				// The container delete takes both directions with it.
+				return makeNiBgpNbrAfSingleResMap(reqInfo.niName, reqInfo.neighborAddr, reqInfo.afiSafi, map[string]string{
+					niBgpNbrRouteMapInFld:  "",
+					niBgpNbrRouteMapOutFld: "",
+				}), nil
+			case "import-policy":
 				return makeNiBgpNbrAfSingleResMap(reqInfo.niName, reqInfo.neighborAddr, reqInfo.afiSafi, map[string]string{niBgpNbrRouteMapInFld: ""}), nil
+			case "export-policy":
+				return makeNiBgpNbrAfSingleResMap(reqInfo.niName, reqInfo.neighborAddr, reqInfo.afiSafi, map[string]string{niBgpNbrRouteMapOutFld: ""}), nil
 			default:
-				return res, tlerr.NotSupportedError{Format: "DELETE supported only for /neighbors/neighbor/afi-safis/afi-safi/apply-policy/config or /neighbors/neighbor/afi-safis/afi-safi/apply-policy/config/import-policy", Path: inParams.requestUri}
+				return res, tlerr.NotSupportedError{Format: "DELETE supported only for /neighbors/neighbor/afi-safis/afi-safi/apply-policy/config, /neighbors/neighbor/afi-safis/afi-safi/apply-policy/config/import-policy, or /neighbors/neighbor/afi-safis/afi-safi/apply-policy/config/export-policy", Path: inParams.requestUri}
 			}
 		}
 		if reqInfo.targetPath == "neighbor-af-config" {
@@ -1008,12 +1057,12 @@ var YangToDb_ni_bgp_nbr_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 
 	if reqInfo.targetPath == "neighbor-af-apply-policy-config" {
 		switch reqInfo.targetLeaf {
-		case "", "import-policy":
-			importPolicy, err := parseNiBgpNbrImportPolicy(inParams)
+		case "", "import-policy", "export-policy":
+			fields, err := niBgpNbrApplyPolicyFields(inParams, reqInfo)
 			if err != nil {
 				return res, err
 			}
-			return ensureNiBgpNbrParentRow(makeNiBgpNbrAfSingleResMap(reqInfo.niName, reqInfo.neighborAddr, reqInfo.afiSafi, map[string]string{niBgpNbrRouteMapInFld: importPolicy}), reqInfo.niName, reqInfo.neighborAddr), nil
+			return ensureNiBgpNbrParentRow(makeNiBgpNbrAfSingleResMap(reqInfo.niName, reqInfo.neighborAddr, reqInfo.afiSafi, fields), reqInfo.niName, reqInfo.neighborAddr), nil
 		default:
 			return res, tlerr.NotSupportedError{Format: "unsupported leaf under neighbor AFI-SAFI apply-policy config", Path: inParams.requestUri}
 		}
@@ -1228,6 +1277,12 @@ var DbToYang_ni_bgp_nbr_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams)
 			importPolicy, ok := afEntry.Field[niBgpNbrRouteMapInFld]
 			if ok && strings.TrimSpace(importPolicy) != "" {
 				applyCfgObj.ImportPolicy = []string{strings.TrimSpace(importPolicy)}
+			}
+		}
+		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == "export-policy" {
+			exportPolicy, ok := afEntry.Field[niBgpNbrRouteMapOutFld]
+			if ok && strings.TrimSpace(exportPolicy) != "" {
+				applyCfgObj.ExportPolicy = []string{strings.TrimSpace(exportPolicy)}
 			}
 		}
 		return nil

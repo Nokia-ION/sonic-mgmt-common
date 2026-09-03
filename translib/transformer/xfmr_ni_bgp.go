@@ -238,6 +238,7 @@ var niBgpMappedPayloadLeaves = map[string]bool{
 	"neighbors/neighbor/afi-safis/afi-safi/config/afi-safi-name":                              true,
 	"neighbors/neighbor/afi-safis/afi-safi/config/enabled":                                    true,
 	"neighbors/neighbor/afi-safis/afi-safi/apply-policy/config/import-policy":                 true,
+	"neighbors/neighbor/afi-safis/afi-safi/apply-policy/config/export-policy":                 true,
 	"peer-groups/peer-group/peer-group-name":                                                  true,
 	"peer-groups/peer-group/config/peer-group-name":                                           true,
 	"peer-groups/peer-group/config/peer-as":                                                   true,
@@ -246,6 +247,7 @@ var niBgpMappedPayloadLeaves = map[string]bool{
 	"peer-groups/peer-group/afi-safis/afi-safi/afi-safi-name":                                 true,
 	"peer-groups/peer-group/afi-safis/afi-safi/config/afi-safi-name":                          true,
 	"peer-groups/peer-group/afi-safis/afi-safi/apply-policy/config/export-policy":             true,
+	"peer-groups/peer-group/afi-safis/afi-safi/apply-policy/config/import-policy":             true,
 	"peer-groups/peer-group/afi-safis/afi-safi/ipv4-unicast/prefix-limit/config/max-prefixes": true,
 	"peer-groups/peer-group/afi-safis/afi-safi/ipv6-unicast/prefix-limit/config/max-prefixes": true,
 }
@@ -1321,9 +1323,12 @@ func buildNiBgpHierResMap(s *ygot.GoStruct, niName string) map[string]map[string
 						enabled = *afiObj.Config.Enabled
 					}
 					afFields[niBgpNbrAdminStatus] = niBgpNbrEnabledToAdminStatus(enabled)
-					if afiObj.ApplyPolicy != nil && afiObj.ApplyPolicy.Config != nil && len(afiObj.ApplyPolicy.Config.ImportPolicy) > 0 {
-						if importPolicy := strings.TrimSpace(afiObj.ApplyPolicy.Config.ImportPolicy[0]); importPolicy != "" {
+					if afiObj.ApplyPolicy != nil && afiObj.ApplyPolicy.Config != nil {
+						if importPolicy, ok := niBgpFirstPolicyName(afiObj.ApplyPolicy.Config.ImportPolicy); ok {
 							afFields[niBgpNbrRouteMapInFld] = importPolicy
+						}
+						if exportPolicy, ok := niBgpFirstPolicyName(afiObj.ApplyPolicy.Config.ExportPolicy); ok {
+							afFields[niBgpNbrRouteMapOutFld] = exportPolicy
 						}
 					}
 					res = mergeDbResMapFields(res, ensureNiBgpNbrParentRow(makeNiBgpNbrAfSingleResMap(niName, nbrAddr, afiSafi, afFields), niName, nbrAddr))
@@ -1369,12 +1374,16 @@ func buildNiBgpHierResMap(s *ygot.GoStruct, niName string) map[string]map[string
 							niBgpPgMaxPfxLimitFld: strconv.FormatUint(uint64(*afiObj.Ipv6Unicast.PrefixLimit.Config.MaxPrefixes), 10),
 						}))
 					}
-					if afiObj.ApplyPolicy != nil && afiObj.ApplyPolicy.Config != nil && len(afiObj.ApplyPolicy.Config.ExportPolicy) > 0 {
-						exportPolicy := strings.TrimSpace(afiObj.ApplyPolicy.Config.ExportPolicy[0])
-						if exportPolicy != "" {
-							res = mergeDbResMapFields(res, makeNiBgpPgAfResMap(niName, pgName, afiSafi, map[string]string{
-								niBgpPgRouteMapOutFld: exportPolicy,
-							}))
+					if afiObj.ApplyPolicy != nil && afiObj.ApplyPolicy.Config != nil {
+						applyFields := map[string]string{}
+						if exportPolicy, ok := niBgpFirstPolicyName(afiObj.ApplyPolicy.Config.ExportPolicy); ok {
+							applyFields[niBgpPgRouteMapOutFld] = exportPolicy
+						}
+						if importPolicy, ok := niBgpFirstPolicyName(afiObj.ApplyPolicy.Config.ImportPolicy); ok {
+							applyFields[niBgpPgRouteMapInFld] = importPolicy
+						}
+						if len(applyFields) > 0 {
+							res = mergeDbResMapFields(res, makeNiBgpPgAfResMap(niName, pgName, afiSafi, applyFields))
 						}
 					}
 				}
@@ -1509,6 +1518,12 @@ func populateNiBgpHierToYangFromDb(cfgDb *db.DB, ygRoot *ygot.GoStruct, niName s
 					applyCfg.ImportPolicy = []string{strings.TrimSpace(imp)}
 				}
 			}
+			if exp, ok := nbrAfEntry.Field[niBgpNbrRouteMapOutFld]; ok && strings.TrimSpace(exp) != "" {
+				applyCfg := getNiBgpNbrAfApplyPolicyCfgObj(ygRoot, niName, nbrAddr, afi, true)
+				if applyCfg != nil {
+					applyCfg.ExportPolicy = []string{strings.TrimSpace(exp)}
+				}
+			}
 			if afCfg := getNiBgpNbrAfCfgObj(ygRoot, niName, nbrAddr, afi, true); afCfg != nil {
 				if afiSafiName, ok := niBgpNbrAfiSafiEnumFromName(afi); ok {
 					afCfg.AfiSafiName = afiSafiName
@@ -1590,6 +1605,12 @@ func populateNiBgpHierToYangFromDb(cfgDb *db.DB, ygRoot *ygot.GoStruct, niName s
 				applyCfg := getNiBgpPeerGroupAfApplyPolicyCfgObj(ygRoot, niName, pgName, afi, true)
 				if applyCfg != nil {
 					applyCfg.ExportPolicy = []string{strings.TrimSpace(exp)}
+				}
+			}
+			if imp, ok := pgAfEntry.Field[niBgpPgRouteMapInFld]; ok && strings.TrimSpace(imp) != "" {
+				applyCfg := getNiBgpPeerGroupAfApplyPolicyCfgObj(ygRoot, niName, pgName, afi, true)
+				if applyCfg != nil {
+					applyCfg.ImportPolicy = []string{strings.TrimSpace(imp)}
 				}
 			}
 		}
