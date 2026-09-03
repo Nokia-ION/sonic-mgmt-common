@@ -1737,6 +1737,265 @@ func Test_openconfig_network_instance_table_connections_table_connection_config_
 	unloadDB(db.ConfigDB, cleanupTbl)
 }
 
+const niTableConnUrl = "/openconfig-network-instance:network-instances/network-instance[name=default]/table-connections"
+
+// A table-connection with a route-map and one without, both created by a single
+// container level request, then read back from the container and from the list.
+func Test_openconfig_network_instance_table_connections_container_hierarchical_set(t *testing.T) {
+	preReqMap := map[string]interface{}{
+		"ROUTE_MAP_SET": map[string]interface{}{
+			"RM-REDIST-1": map[string]interface{}{},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"ROUTE_REDISTRIBUTE": map[string]interface{}{
+			"default|static|bgp|ipv4":    "",
+			"default|connected|bgp|ipv6": "",
+		},
+		"ROUTE_MAP_SET": map[string]interface{}{
+			"RM-REDIST-1": "",
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	urlInputBodyJSON := `{"table-connection":[` +
+		`{"src-protocol":"openconfig-policy-types:STATIC","dst-protocol":"openconfig-policy-types:BGP",` +
+		`"address-family":"openconfig-types:IPV4","config":{"src-protocol":"openconfig-policy-types:STATIC",` +
+		`"dst-protocol":"openconfig-policy-types:BGP","address-family":"openconfig-types:IPV4",` +
+		`"import-policy":["RM-REDIST-1"]}},` +
+		`{"src-protocol":"openconfig-policy-types:DIRECTLY_CONNECTED","dst-protocol":"openconfig-policy-types:BGP",` +
+		`"address-family":"openconfig-types:IPV6","config":{"src-protocol":"openconfig-policy-types:DIRECTLY_CONNECTED",` +
+		`"dst-protocol":"openconfig-policy-types:BGP","address-family":"openconfig-types:IPV6"}}]}`
+	t.Run("PATCH network-instance table-connections container",
+		processSetRequest(niTableConnUrl, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"ROUTE_REDISTRIBUTE": map[string]interface{}{
+			"default|static|bgp|ipv4": map[string]interface{}{
+				"route_map": "RM-REDIST-1",
+			},
+		},
+	}
+	t.Run("Verify ROUTE_REDISTRIBUTE row with route_map from container payload",
+		verifyDbResult(rclient, "ROUTE_REDISTRIBUTE|default|static|bgp|ipv4", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	// A table-connection without an import-policy is a plain redistribution, so
+	// the row carries only the placeholder field REDIS needs to hold it.
+	expectedMap = map[string]interface{}{
+		"ROUTE_REDISTRIBUTE": map[string]interface{}{
+			"default|connected|bgp|ipv6": map[string]interface{}{
+				"NULL": "NULL",
+			},
+		},
+	}
+	t.Run("Verify ROUTE_REDISTRIBUTE row without route_map from container payload",
+		verifyDbResult(rclient, "ROUTE_REDISTRIBUTE|default|connected|bgp|ipv6", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	v4EntryJSON := `{"address-family":"openconfig-types:IPV4","config":{"address-family":"openconfig-types:IPV4",` +
+		`"dst-protocol":"openconfig-policy-types:BGP","import-policy":["RM-REDIST-1"],` +
+		`"src-protocol":"openconfig-policy-types:STATIC"},"dst-protocol":"openconfig-policy-types:BGP",` +
+		`"src-protocol":"openconfig-policy-types:STATIC"}`
+	v6EntryJSON := `{"address-family":"openconfig-types:IPV6","config":{"address-family":"openconfig-types:IPV6",` +
+		`"dst-protocol":"openconfig-policy-types:BGP","src-protocol":"openconfig-policy-types:DIRECTLY_CONNECTED"},` +
+		`"dst-protocol":"openconfig-policy-types:BGP","src-protocol":"openconfig-policy-types:DIRECTLY_CONNECTED"}`
+
+	expectedGetJSON := `{"openconfig-network-instance:table-connections":{"table-connection":[` +
+		v4EntryJSON + `,` + v6EntryJSON + `]}}`
+	t.Run("GET network-instance table-connections container",
+		processGetRequest(niTableConnUrl, nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	expectedGetJSON = `{"openconfig-network-instance:table-connection":[` + v4EntryJSON + `,` + v6EntryJSON + `]}`
+	t.Run("GET network-instance table-connection list",
+		processGetRequest(niTableConnUrl+"/table-connection", nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	expectedErr := tlerr.NotSupportedError{
+		Format: "DELETE is not supported at the table-connections container level; delete a table-connection instead",
+	}
+	t.Run("DELETE table-connections container rejected",
+		processDeleteRequest(niTableConnUrl, true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify ROUTE_REDISTRIBUTE row kept after rejected container DELETE",
+		verifyDbResult(rclient, "ROUTE_REDISTRIBUTE|default|connected|bgp|ipv6", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+// The list instance level: a request anchored on the table-connection itself,
+// including one that names only the keys and so asks for a redistribution with
+// no route-map.
+func Test_openconfig_network_instance_table_connection_list_instance(t *testing.T) {
+	preReqMap := map[string]interface{}{
+		"ROUTE_MAP_SET": map[string]interface{}{
+			"RM-REDIST-1": map[string]interface{}{},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"ROUTE_REDISTRIBUTE": map[string]interface{}{
+			"default|static|bgp|ipv4": "",
+		},
+		"ROUTE_MAP_SET": map[string]interface{}{
+			"RM-REDIST-1": "",
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	instUrl := niTableConnUrl + "/table-connection[address-family=IPV4][dst-protocol=BGP][src-protocol=STATIC]"
+
+	urlInputBodyJSON := `{"openconfig-network-instance:config":{"address-family":"openconfig-types:IPV4",` +
+		`"dst-protocol":"openconfig-policy-types:BGP","src-protocol":"openconfig-policy-types:STATIC",` +
+		`"import-policy":["RM-REDIST-1"]}}`
+	t.Run("PATCH network-instance table-connection list instance",
+		processSetRequest(instUrl, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"ROUTE_REDISTRIBUTE": map[string]interface{}{
+			"default|static|bgp|ipv4": map[string]interface{}{
+				"route_map": "RM-REDIST-1",
+			},
+		},
+	}
+	t.Run("Verify ROUTE_REDISTRIBUTE row from list instance payload",
+		verifyDbResult(rclient, "ROUTE_REDISTRIBUTE|default|static|bgp|ipv4", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	entryJSON := `{"address-family":"openconfig-types:IPV4","config":{"address-family":"openconfig-types:IPV4",` +
+		`"dst-protocol":"openconfig-policy-types:BGP","import-policy":["RM-REDIST-1"],` +
+		`"src-protocol":"openconfig-policy-types:STATIC"},"dst-protocol":"openconfig-policy-types:BGP",` +
+		`"src-protocol":"openconfig-policy-types:STATIC"}`
+	expectedGetJSON := `{"openconfig-network-instance:table-connection":[` + entryJSON + `]}`
+	t.Run("GET network-instance table-connection list instance",
+		processGetRequest(instUrl, nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET network-instance table-connection src-protocol key leaf",
+		processGetRequest(instUrl+"/src-protocol", nil,
+			`{"openconfig-network-instance:src-protocol":"openconfig-policy-types:STATIC"}`, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET network-instance table-connection address-family key leaf",
+		processGetRequest(instUrl+"/address-family", nil,
+			`{"openconfig-network-instance:address-family":"openconfig-types:IPV4"}`, false))
+	time.Sleep(1 * time.Second)
+
+	// A key is the row identity, so it cannot be cleared on its own.
+	expectedErr := tlerr.NotSupportedError{
+		Format: "DELETE is not supported for a table-connection list key; delete the table-connection instead",
+	}
+	t.Run("DELETE table-connection key leaf rejected",
+		processDeleteRequest(instUrl+"/src-protocol", true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify ROUTE_REDISTRIBUTE row kept after rejected key leaf DELETE",
+		verifyDbResult(rclient, "ROUTE_REDISTRIBUTE|default|static|bgp|ipv4", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("DELETE network-instance table-connection list instance", processDeleteRequest(instUrl, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify ROUTE_REDISTRIBUTE row removed by list instance DELETE",
+		verifyDbResult(rclient, "ROUTE_REDISTRIBUTE|default|static|bgp|ipv4", map[string]interface{}{}, false))
+	time.Sleep(1 * time.Second)
+
+	// The keys alone are a complete request: they ask for a redistribution with
+	// no route-map, which is what a REPLACE of the whole instance sends.
+	urlInputBodyJSON = `{"openconfig-network-instance:address-family":"openconfig-types:IPV4",` +
+		`"openconfig-network-instance:config":{"address-family":"openconfig-types:IPV4",` +
+		`"dst-protocol":"openconfig-policy-types:BGP","src-protocol":"openconfig-policy-types:STATIC"},` +
+		`"openconfig-network-instance:dst-protocol":"openconfig-policy-types:BGP",` +
+		`"openconfig-network-instance:src-protocol":"openconfig-policy-types:STATIC"}`
+	t.Run("REPLACE network-instance table-connection list instance without import-policy",
+		processSetRequest(instUrl, urlInputBodyJSON, "PUT", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"ROUTE_REDISTRIBUTE": map[string]interface{}{
+			"default|static|bgp|ipv4": map[string]interface{}{
+				"NULL": "NULL",
+			},
+		},
+	}
+	t.Run("Verify ROUTE_REDISTRIBUTE row created without route_map",
+		verifyDbResult(rclient, "ROUTE_REDISTRIBUTE|default|static|bgp|ipv4", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	entryJSON = `{"address-family":"openconfig-types:IPV4","config":{"address-family":"openconfig-types:IPV4",` +
+		`"dst-protocol":"openconfig-policy-types:BGP","src-protocol":"openconfig-policy-types:STATIC"},` +
+		`"dst-protocol":"openconfig-policy-types:BGP","src-protocol":"openconfig-policy-types:STATIC"}`
+	expectedGetJSON = `{"openconfig-network-instance:table-connection":[` + entryJSON + `]}`
+	t.Run("GET network-instance table-connection list instance without import-policy",
+		processGetRequest(instUrl, nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+// The config container level: the key leaves it repeats, and a payload that
+// names no import-policy at all.
+func Test_openconfig_network_instance_table_connection_config_keys_without_policy(t *testing.T) {
+	preReqMap := map[string]interface{}{}
+	cleanupTbl := map[string]interface{}{
+		"ROUTE_REDISTRIBUTE": map[string]interface{}{
+			"default|static|bgp|ipv4": "",
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	cfgUrl := niTableConnUrl + "/table-connection[address-family=IPV4][dst-protocol=BGP][src-protocol=STATIC]/config"
+
+	urlInputBodyJSON := `{"address-family":"openconfig-types:IPV4","dst-protocol":"openconfig-policy-types:BGP",` +
+		`"src-protocol":"openconfig-policy-types:STATIC"}`
+	t.Run("PATCH network-instance table-connection config without import-policy",
+		processSetRequest(cfgUrl, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"ROUTE_REDISTRIBUTE": map[string]interface{}{
+			"default|static|bgp|ipv4": map[string]interface{}{
+				"NULL": "NULL",
+			},
+		},
+	}
+	t.Run("Verify ROUTE_REDISTRIBUTE row created from config keys alone",
+		verifyDbResult(rclient, "ROUTE_REDISTRIBUTE|default|static|bgp|ipv4", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	expectedGetJSON := `{"openconfig-network-instance:config":{"address-family":"openconfig-types:IPV4",` +
+		`"dst-protocol":"openconfig-policy-types:BGP","src-protocol":"openconfig-policy-types:STATIC"}}`
+	t.Run("GET network-instance table-connection config without import-policy",
+		processGetRequest(cfgUrl, nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET network-instance table-connection config dst-protocol key leaf",
+		processGetRequest(cfgUrl+"/dst-protocol", nil,
+			`{"openconfig-network-instance:dst-protocol":"openconfig-policy-types:BGP"}`, false))
+	time.Sleep(1 * time.Second)
+
+	// default-import-policy has no CONFIG_DB mapping, so the whole request is
+	// rejected instead of being reduced to the leaves that do map.
+	urlInputBodyJSON = `{"src-protocol":"openconfig-policy-types:STATIC","default-import-policy":"REJECT_ROUTE"}`
+	expectedErr := tlerr.NotSupportedError{
+		Format: "table-connections payload carries leaves that have no CONFIG_DB mapping: " +
+			"table-connections/table-connection[src-protocol=STATIC][dst-protocol=BGP][address-family=IPV4]" +
+			"/config/default-import-policy",
+	}
+	t.Run("PATCH table-connection config rejects unmapped leaf",
+		processSetRequest(cfgUrl, urlInputBodyJSON, "PATCH", true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
 const niBgpProtoUrl = "/openconfig-network-instance:network-instances/network-instance[name=default]/protocols/protocol[identifier=BGP][name=bgp]"
 
 func Test_openconfig_network_instance_bgp_container_hierarchical_set(t *testing.T) {
