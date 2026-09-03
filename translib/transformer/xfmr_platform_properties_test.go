@@ -10,11 +10,24 @@ import (
 	"github.com/openconfig/ygot/ygot"
 )
 
-// Every row must name a component type, a getter, and the table it reads: either
-// one table for all of its types, or one per type, never both.
+// Properties read from the host rather than from a database. Naming them here
+// rather than deriving them from an empty table keeps the invariant below able
+// to catch a database-backed row that forgot its table.
+var nonDbProps = map[string]bool{
+	"loadAvg1m":   true,
+	"loadAvg5m":   true,
+	"loadAvg15m":  true,
+	"numCores":    true,
+	"uptime":      true,
+	"utilization": true,
+}
+
+// Every row must name a component type and a getter. A database-backed row must
+// also name the table it reads, either one table for all of its types or one per
+// type and never both; a host-backed row must name neither.
 func TestPropTblShape(t *testing.T) {
-	if got := len(propTbl); got != 28 {
-		t.Errorf("propTbl has %d rows, want 28", got)
+	if got := len(propTbl); got != 34 {
+		t.Errorf("propTbl has %d rows, want 34", got)
 	}
 	for name, desc := range propTbl {
 		if len(desc.types) == 0 {
@@ -22,6 +35,13 @@ func TestPropTblShape(t *testing.T) {
 		}
 		if desc.get == nil {
 			t.Errorf("property %q has no getter", name)
+		}
+		if nonDbProps[name] {
+			if desc.table != "" || desc.tables != nil {
+				t.Errorf("property %q is read from the host but names table %q and tables %v, want neither",
+					name, desc.table, desc.tables)
+			}
+			continue
 		}
 		if (desc.table == "") == (desc.tables == nil) {
 			t.Errorf("property %q names table %q and tables %v, want exactly one",
@@ -151,6 +171,13 @@ func TestPropSubscribeInfo(t *testing.T) {
 		// A name with no descriptor row cannot be subscribed at all.
 		prop:  "redundancyProtocol",
 		cType: CompTypePsu,
+	}, {
+		// A property read from the host has no table to watch.
+		prop:  "uptime",
+		cType: CompTypeChassis,
+	}, {
+		prop:  "utilization",
+		cType: CompTypeChassis,
 	}}
 
 	for _, c := range cases {
@@ -162,10 +189,19 @@ func TestPropSubscribeInfo(t *testing.T) {
 	}
 }
 
-// Every property must name the fields it reads, on every component type it
-// applies to, or its subscription stays silent.
+// Every database-backed property must name the fields it reads, on every
+// component type it applies to, or its subscription stays silent. A host-backed
+// property must not be subscribable at all.
 func TestPropTblEveryPropertyNamesItsField(t *testing.T) {
 	for name, desc := range propTbl {
+		if nonDbProps[name] {
+			for _, cType := range desc.types {
+				if _, _, ok := propSubscribeInfo(name, cType); ok {
+					t.Errorf("property %q is subscribable on %v, want not", name, cType)
+				}
+			}
+			continue
+		}
 		want := desc.subFields
 		if len(want) == 0 {
 			want = []string{desc.field}
@@ -577,5 +613,203 @@ func TestFillPropertiesOmittedNotFound(t *testing.T) {
 		if _, ok := err.(tlerr.NotFoundError); !ok {
 			t.Errorf("fillProperties(%q) returned %T (%v), want tlerr.NotFoundError", name, err, err)
 		}
+	}
+}
+
+// The three load averages are the first three fields, and a two-decimal reading
+// parses to exactly that decimal rather than to a scaled approximation of it.
+func TestParseLoadAvg(t *testing.T) {
+	loads, err := parseLoadAvg("0.11 0.36 0.62 2/1215 2780670\n")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := [3]float64{0.11, 0.36, 0.62}
+	if loads != want {
+		t.Errorf("parseLoadAvg == %v, want %v", loads, want)
+	}
+}
+
+// A short or unparseable file is an error, so the property drops out instead of
+// serving a zero load.
+func TestParseLoadAvgRejectsBadInput(t *testing.T) {
+	for _, in := range []string{"", "0.11", "0.11 0.36", "0.11 0.36 x 2/1215 1"} {
+		if _, err := parseLoadAvg(in); err == nil {
+			t.Errorf("parseLoadAvg(%q) returned nil error", in)
+		}
+	}
+}
+
+func TestParseNumCores(t *testing.T) {
+	const cpuinfo = `processor	: 0
+cpu cores	: 8
+
+processor	: 1
+cpu cores	: 8
+`
+	cores, err := parseNumCores(cpuinfo)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cores != 2 {
+		t.Errorf("parseNumCores == %d, want 2", cores)
+	}
+}
+
+// A file listing no processor is an error rather than a count of zero.
+func TestParseNumCoresNoProcessor(t *testing.T) {
+	if _, err := parseNumCores("cpu cores\t: 8\n"); err == nil {
+		t.Error("parseNumCores on a file with no processor returned nil error")
+	}
+}
+
+// Only the aggregate line is read, and idle is the field left out of busy.
+func TestParseCpuJiffies(t *testing.T) {
+	const stat = `cpu  100 2 30 800 60 0 8 0 0 0
+cpu0 50 1 15 400 30 0 4 0 0 0
+cpu1 50 1 15 400 30 0 4 0 0 0
+intr 12345
+`
+	j, err := parseCpuJiffies(stat)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := uint64(1000); j.total != want {
+		t.Errorf("total == %d, want %d", j.total, want)
+	}
+	if want := uint64(200); j.busy != want {
+		t.Errorf("busy == %d, want %d", j.busy, want)
+	}
+}
+
+// guest and guest_nice are already counted inside user and nice, so summing
+// them again would inflate both totals.
+func TestParseCpuJiffiesExcludesGuest(t *testing.T) {
+	j, err := parseCpuJiffies("cpu  100 2 30 800 60 0 8 0 500 7\n")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := uint64(1000); j.total != want {
+		t.Errorf("total == %d, want %d", j.total, want)
+	}
+	if want := uint64(200); j.busy != want {
+		t.Errorf("busy == %d, want %d", j.busy, want)
+	}
+}
+
+func TestParseCpuJiffiesRejectsBadInput(t *testing.T) {
+	for _, in := range []string{"", "intr 12345\n", "cpu0 1 2 3 4 5 6\n", "cpu x 2 3 4 5 6\n"} {
+		if _, err := parseCpuJiffies(in); err == nil {
+			t.Errorf("parseCpuJiffies(%q) returned nil error", in)
+		}
+	}
+}
+
+func TestCpuUtilizationBetween(t *testing.T) {
+	cases := []struct {
+		desc  string
+		first cpuJiffies
+		last  cpuJiffies
+		want  uint64
+	}{
+		{"fully idle", cpuJiffies{total: 1000, busy: 100}, cpuJiffies{total: 1160, busy: 100}, 0},
+		{"fully busy", cpuJiffies{total: 1000, busy: 100}, cpuJiffies{total: 1160, busy: 260}, 100},
+		{"half busy", cpuJiffies{total: 1000, busy: 100}, cpuJiffies{total: 1160, busy: 180}, 50},
+		{"rounds up", cpuJiffies{total: 0, busy: 0}, cpuJiffies{total: 160, busy: 3}, 2},
+		{"busy beyond total is capped", cpuJiffies{total: 1000, busy: 100}, cpuJiffies{total: 1160, busy: 400}, 100},
+	}
+	for _, c := range cases {
+		got, err := cpuUtilizationBetween(c.first, c.last)
+		if err != nil {
+			t.Errorf("%s: unexpected error: %v", c.desc, err)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("%s: cpuUtilizationBetween == %d, want %d", c.desc, got, c.want)
+		}
+	}
+}
+
+// Two samples with no time between them cannot yield a percentage.
+func TestCpuUtilizationBetweenNoElapsedTime(t *testing.T) {
+	for _, c := range []struct {
+		desc  string
+		first cpuJiffies
+		last  cpuJiffies
+	}{
+		{"same reading", cpuJiffies{total: 1000, busy: 100}, cpuJiffies{total: 1000, busy: 100}},
+		{"counters went backwards", cpuJiffies{total: 1000, busy: 100}, cpuJiffies{total: 900, busy: 90}},
+	} {
+		if _, err := cpuUtilizationBetween(c.first, c.last); err == nil {
+			t.Errorf("%s: cpuUtilizationBetween returned nil error", c.desc)
+		}
+	}
+}
+
+// The filler sets the instant leaf and leaves the rest of the component alone.
+func TestFillCpuUtilization(t *testing.T) {
+	comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+	if err := fillCpuUtilization(comp); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if comp.Cpu == nil || comp.Cpu.Utilization == nil || comp.Cpu.Utilization.State == nil {
+		t.Fatalf("cpu utilization state not built: %v", comp.Cpu)
+	}
+	instant := comp.Cpu.Utilization.State.Instant
+	if instant == nil {
+		t.Fatal("instant not set")
+	}
+	if *instant > 100 {
+		t.Errorf("instant == %d, want at most 100", *instant)
+	}
+	if comp.State != nil && comp.State.Name != nil {
+		t.Errorf("filler touched state/name: %v", *comp.State.Name)
+	}
+}
+
+// The host properties are served on the chassis and nowhere else.
+func TestFillPropertiesHostCpuOnlyOnChassis(t *testing.T) {
+	var dbs [db.MaxDB]*db.DB
+	for name := range nonDbProps {
+		comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+		err := fillProperties(comp, "CPU", CompTypeTemp, name, dbs)
+		if _, ok := err.(tlerr.NotFoundError); !ok {
+			t.Errorf("fillProperties(%q) on a sensor returned %T (%v), want tlerr.NotFoundError", name, err, err)
+		}
+	}
+}
+
+// capacity has no source and so has no descriptor row at all.
+func TestFillPropertiesCapacityNotFound(t *testing.T) {
+	var dbs [db.MaxDB]*db.DB
+	comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+	err := fillProperties(comp, "chassis 1", CompTypeChassis, "capacity", dbs)
+	if _, ok := err.(tlerr.NotFoundError); !ok {
+		t.Fatalf("fillProperties(capacity) returned %T (%v), want tlerr.NotFoundError", err, err)
+	}
+	if comp.Properties != nil {
+		t.Errorf("fillProperties populated the component despite failing: %v", comp)
+	}
+}
+
+// Every host property is served on a chassis without a database client, since
+// none of them reads one.
+func TestFillPropertiesHostCpuWithoutDb(t *testing.T) {
+	var dbs [db.MaxDB]*db.DB
+	comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+	if err := fillProperties(comp, "chassis 1", CompTypeChassis, "", dbs); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for name := range nonDbProps {
+		prop, ok := comp.Properties.Property[name]
+		if !ok {
+			t.Errorf("property %q missing", name)
+			continue
+		}
+		if prop.State == nil || prop.State.Value == nil {
+			t.Errorf("property %q has no value", name)
+		}
+	}
+	if _, ok := comp.Properties.Property["capacity"]; ok {
+		t.Error("property capacity present, want absent")
 	}
 }
