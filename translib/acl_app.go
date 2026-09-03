@@ -762,6 +762,9 @@ func (app *AclApp) convertInternalToOCAclRuleProperties(aclName string, ruleName
 	}
 
 	if aclType == ocbinds.OpenconfigAcl_ACL_TYPE_ACL_IPV4 {
+		if entrySet.Ipv4 == nil {
+			entrySet.Ipv4 = &ocbinds.OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry_Ipv4{}
+		}
 		ygot.BuildEmptyTree(entrySet.Ipv4)
 		for ruleKey := range ruleData.Field {
 			if "IP_PROTOCOL" == ruleKey {
@@ -783,9 +786,32 @@ func (app *AclApp) convertInternalToOCAclRuleProperties(aclName string, ruleName
 				addr := ruleData.Get(ruleKey)
 				entrySet.Ipv4.Config.DestinationAddress = &addr
 				entrySet.Ipv4.State.DestinationAddress = &addr
+			} else if "ICMP_TYPE" == ruleKey {
+				num, err := strconv.ParseUint(ruleData.Get(ruleKey), 10, 8)
+				if err != nil {
+					log.Warningf("acl %s rule %s: bad ICMP_TYPE %q: %v", aclName, ruleName, ruleData.Get(ruleKey), err)
+					continue
+				}
+				aclIcmpv4EmptyTree(entrySet.Ipv4)
+				t := uint8(num)
+				entrySet.Ipv4.Icmpv4.Config.Type = &t
+				entrySet.Ipv4.Icmpv4.State.Type = &t
+			} else if "ICMP_CODE" == ruleKey {
+				num, err := strconv.ParseUint(ruleData.Get(ruleKey), 10, 8)
+				if err != nil {
+					log.Warningf("acl %s rule %s: bad ICMP_CODE %q: %v", aclName, ruleName, ruleData.Get(ruleKey), err)
+					continue
+				}
+				aclIcmpv4EmptyTree(entrySet.Ipv4)
+				c := uint8(num)
+				entrySet.Ipv4.Icmpv4.Config.Code = &c
+				entrySet.Ipv4.Icmpv4.State.Code = &c
 			}
 		}
 	} else if aclType == ocbinds.OpenconfigAcl_ACL_TYPE_ACL_IPV6 {
+		if entrySet.Ipv6 == nil {
+			entrySet.Ipv6 = &ocbinds.OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry_Ipv6{}
+		}
 		ygot.BuildEmptyTree(entrySet.Ipv6)
 		for ruleKey := range ruleData.Field {
 			if "IP_PROTOCOL" == ruleKey {
@@ -810,10 +836,20 @@ func (app *AclApp) convertInternalToOCAclRuleProperties(aclName string, ruleName
 			} else if "ICMPV6_TYPE" == ruleKey {
 				// Reverse-map the numeric ICMPv6 type back to the standard
 				// openconfig-icmpv6-types identity.
-				num, _ := strconv.ParseUint(ruleData.Get(ruleKey), 10, 8)
+				num, err := strconv.ParseUint(ruleData.Get(ruleKey), 10, 8)
+				if err != nil {
+					log.Warningf("acl %s rule %s: bad ICMPV6_TYPE %q: %v", aclName, ruleName, ruleData.Get(ruleKey), err)
+					continue
+				}
+				// A numeric ICMPv6 type outside the standard openconfig-icmpv6-types
+				// identity set has no identityref value to represent it, so it is
+				// enforced in the data plane but cannot be surfaced here.
 				if id := getIcmpv6TypeId(uint8(num)); id != ocbinds.OpenconfigIcmpv6Types_TYPE_UNSET {
+					aclIcmpv6EmptyTree(entrySet.Ipv6)
 					entrySet.Ipv6.Icmpv6.Config.Type = id
 					entrySet.Ipv6.Icmpv6.State.Type = id
+				} else {
+					log.Warningf("acl %s rule %s: ICMPV6_TYPE %d has no openconfig-icmpv6-types identity; omitted from GET", aclName, ruleName, num)
 				}
 			}
 		}
@@ -1369,60 +1405,117 @@ func convertOCToInternalL2(ruleData db.Value, aclName string, ruleIndex uint32, 
 	}
 }
 
+// aclIcmpv4EmptyTree ensures the icmpv4 match container and its Config/State
+// children exist on an IPv4 ACL entry before its type/code leaves are populated.
+// It is called lazily from the ICMP_TYPE/ICMP_CODE branches only, so rules that
+// carry no ICMP fields never get an icmpv4 container in their GET output.
+//
+// ygot.BuildEmptyTree on the parent Ipv4 does not build icmpv4's Config/State in
+// the targeted-subtree GET flow (a GET of .../ipv4/icmpv4): the translib
+// framework pre-allocates the icmpv4 target container but leaves Config/State
+// nil, and BuildEmptyTree only descends into nil children. BuildEmptyTree itself
+// only fills nil fields, so calling it here unconditionally is safe whether
+// Icmpv4 was just allocated or was pre-allocated empty by the framework; guarding
+// it behind the nil check would leave Config/State nil and crash on assignment.
+func aclIcmpv4EmptyTree(ipv4 *ocbinds.OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry_Ipv4) {
+	if ipv4.Icmpv4 == nil {
+		ipv4.Icmpv4 = &ocbinds.OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry_Ipv4_Icmpv4{}
+	}
+	ygot.BuildEmptyTree(ipv4.Icmpv4)
+}
+
+// aclIcmpv6EmptyTree is the ICMPv6 counterpart of aclIcmpv4EmptyTree.
+func aclIcmpv6EmptyTree(ipv6 *ocbinds.OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry_Ipv6) {
+	if ipv6.Icmpv6 == nil {
+		ipv6.Icmpv6 = &ocbinds.OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry_Ipv6_Icmpv6{}
+	}
+	// See aclIcmpv4EmptyTree: BuildEmptyTree must run even when the framework
+	// pre-allocated an empty Icmpv6 target container (targeted /ipv6/icmpv6 GET).
+	ygot.BuildEmptyTree(ipv6.Icmpv6)
+}
+
 func convertOCToInternalIPv4(ruleData db.Value, aclName string, ruleIndex uint32, rule *ocbinds.OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry) {
-	if rule.Ipv4.Config.Protocol != nil && util.IsTypeStructPtr(reflect.TypeOf(rule.Ipv4.Config.Protocol)) {
-		protocolType := reflect.TypeOf(rule.Ipv4.Config.Protocol).Elem()
-		switch protocolType {
-		case reflect.TypeOf(ocbinds.OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry_Ipv4_Config_Protocol_Union_E_OpenconfigPacketMatchTypes_IP_PROTOCOL{}):
-			v := (rule.Ipv4.Config.Protocol).(*ocbinds.OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry_Ipv4_Config_Protocol_Union_E_OpenconfigPacketMatchTypes_IP_PROTOCOL)
-			//ruleData["IP_PROTOCOL"] = v.E_OpenconfigPacketMatchTypes_IP_PROTOCOL.ΛMap()["E_OpenconfigPacketMatchTypes_IP_PROTOCOL"][int64(v.E_OpenconfigPacketMatchTypes_IP_PROTOCOL)].Name
-			ruleData.Field["IP_PROTOCOL"] = strconv.FormatInt(int64(IP_PROTOCOL_MAP[v.E_OpenconfigPacketMatchTypes_IP_PROTOCOL]), 10)
-		case reflect.TypeOf(ocbinds.OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry_Ipv4_Config_Protocol_Union_Uint8{}):
-			v := (rule.Ipv4.Config.Protocol).(*ocbinds.OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry_Ipv4_Config_Protocol_Union_Uint8)
-			ruleData.Field["IP_PROTOCOL"] = strconv.FormatInt(int64(v.Uint8), 10)
+	if rule.Ipv4 == nil {
+		return
+	}
+	// ipv4/config and ipv4/icmpv4 are sibling containers, so a subtree write
+	// that only touches icmpv4 leaves Config nil; guard the config-field
+	// derefs accordingly.
+	if rule.Ipv4.Config != nil {
+		if rule.Ipv4.Config.Protocol != nil && util.IsTypeStructPtr(reflect.TypeOf(rule.Ipv4.Config.Protocol)) {
+			protocolType := reflect.TypeOf(rule.Ipv4.Config.Protocol).Elem()
+			switch protocolType {
+			case reflect.TypeOf(ocbinds.OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry_Ipv4_Config_Protocol_Union_E_OpenconfigPacketMatchTypes_IP_PROTOCOL{}):
+				v := (rule.Ipv4.Config.Protocol).(*ocbinds.OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry_Ipv4_Config_Protocol_Union_E_OpenconfigPacketMatchTypes_IP_PROTOCOL)
+				//ruleData["IP_PROTOCOL"] = v.E_OpenconfigPacketMatchTypes_IP_PROTOCOL.ΛMap()["E_OpenconfigPacketMatchTypes_IP_PROTOCOL"][int64(v.E_OpenconfigPacketMatchTypes_IP_PROTOCOL)].Name
+				ruleData.Field["IP_PROTOCOL"] = strconv.FormatInt(int64(IP_PROTOCOL_MAP[v.E_OpenconfigPacketMatchTypes_IP_PROTOCOL]), 10)
+			case reflect.TypeOf(ocbinds.OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry_Ipv4_Config_Protocol_Union_Uint8{}):
+				v := (rule.Ipv4.Config.Protocol).(*ocbinds.OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry_Ipv4_Config_Protocol_Union_Uint8)
+				ruleData.Field["IP_PROTOCOL"] = strconv.FormatInt(int64(v.Uint8), 10)
+			}
+		}
+
+		if rule.Ipv4.Config.Dscp != nil {
+			ruleData.Field["DSCP"] = strconv.FormatInt(int64(*rule.Ipv4.Config.Dscp), 10)
+		}
+		if rule.Ipv4.Config.SourceAddress != nil {
+			ruleData.Field["SRC_IP"] = *rule.Ipv4.Config.SourceAddress
+		}
+		if rule.Ipv4.Config.DestinationAddress != nil {
+			ruleData.Field["DST_IP"] = *rule.Ipv4.Config.DestinationAddress
 		}
 	}
-
-	if rule.Ipv4.Config.Dscp != nil {
-		ruleData.Field["DSCP"] = strconv.FormatInt(int64(*rule.Ipv4.Config.Dscp), 10)
-	}
-	if rule.Ipv4.Config.SourceAddress != nil {
-		ruleData.Field["SRC_IP"] = *rule.Ipv4.Config.SourceAddress
-	}
-	if rule.Ipv4.Config.DestinationAddress != nil {
-		ruleData.Field["DST_IP"] = *rule.Ipv4.Config.DestinationAddress
+	// openconfig-packet-match ICMPv4 type/code match (SONiC ICMP_TYPE and
+	// ICMP_CODE). Both are the numeric values, so no identity map is needed.
+	// Restricting ICMP means pairing these with IP_PROTOCOL 1 and a drop
+	// action, for example to drop ICMP redirects (type 5).
+	if rule.Ipv4.Icmpv4 != nil && rule.Ipv4.Icmpv4.Config != nil {
+		if rule.Ipv4.Icmpv4.Config.Type != nil {
+			ruleData.Field["ICMP_TYPE"] = strconv.FormatInt(int64(*rule.Ipv4.Icmpv4.Config.Type), 10)
+		}
+		if rule.Ipv4.Icmpv4.Config.Code != nil {
+			ruleData.Field["ICMP_CODE"] = strconv.FormatInt(int64(*rule.Ipv4.Icmpv4.Config.Code), 10)
+		}
 	}
 	ruleData.Field["IP_TYPE"] = "IPV4ANY"
 }
 
 func convertOCToInternalIPv6(ruleData db.Value, aclName string, ruleIndex uint32, rule *ocbinds.OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry) {
-	if rule.Ipv6.Config.Protocol != nil && util.IsTypeStructPtr(reflect.TypeOf(rule.Ipv6.Config.Protocol)) {
-		protocolType := reflect.TypeOf(rule.Ipv6.Config.Protocol).Elem()
-		switch protocolType {
-		case reflect.TypeOf(ocbinds.OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry_Ipv6_Config_Protocol_Union_E_OpenconfigPacketMatchTypes_IP_PROTOCOL{}):
-			v := (rule.Ipv6.Config.Protocol).(*ocbinds.OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry_Ipv6_Config_Protocol_Union_E_OpenconfigPacketMatchTypes_IP_PROTOCOL)
-			//ruleData["IP_PROTOCOL"] = v.E_OpenconfigPacketMatchTypes_IP_PROTOCOL.ΛMap()["E_OpenconfigPacketMatchTypes_IP_PROTOCOL"][int64(v.E_OpenconfigPacketMatchTypes_IP_PROTOCOL)].Name
-			ruleData.Field["IP_PROTOCOL"] = strconv.FormatInt(int64(IP_PROTOCOL_MAP[v.E_OpenconfigPacketMatchTypes_IP_PROTOCOL]), 10)
-		case reflect.TypeOf(ocbinds.OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry_Ipv6_Config_Protocol_Union_Uint8{}):
-			v := (rule.Ipv6.Config.Protocol).(*ocbinds.OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry_Ipv6_Config_Protocol_Union_Uint8)
-			ruleData.Field["IP_PROTOCOL"] = strconv.FormatInt(int64(v.Uint8), 10)
+	if rule.Ipv6 == nil {
+		return
+	}
+	// ipv6/config and ipv6/icmpv6 are sibling containers, so a subtree write
+	// that only touches icmpv6 leaves Config nil; guard the config-field
+	// derefs accordingly.
+	if rule.Ipv6.Config != nil {
+		if rule.Ipv6.Config.Protocol != nil && util.IsTypeStructPtr(reflect.TypeOf(rule.Ipv6.Config.Protocol)) {
+			protocolType := reflect.TypeOf(rule.Ipv6.Config.Protocol).Elem()
+			switch protocolType {
+			case reflect.TypeOf(ocbinds.OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry_Ipv6_Config_Protocol_Union_E_OpenconfigPacketMatchTypes_IP_PROTOCOL{}):
+				v := (rule.Ipv6.Config.Protocol).(*ocbinds.OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry_Ipv6_Config_Protocol_Union_E_OpenconfigPacketMatchTypes_IP_PROTOCOL)
+				//ruleData["IP_PROTOCOL"] = v.E_OpenconfigPacketMatchTypes_IP_PROTOCOL.ΛMap()["E_OpenconfigPacketMatchTypes_IP_PROTOCOL"][int64(v.E_OpenconfigPacketMatchTypes_IP_PROTOCOL)].Name
+				ruleData.Field["IP_PROTOCOL"] = strconv.FormatInt(int64(IP_PROTOCOL_MAP[v.E_OpenconfigPacketMatchTypes_IP_PROTOCOL]), 10)
+			case reflect.TypeOf(ocbinds.OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry_Ipv6_Config_Protocol_Union_Uint8{}):
+				v := (rule.Ipv6.Config.Protocol).(*ocbinds.OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry_Ipv6_Config_Protocol_Union_Uint8)
+				ruleData.Field["IP_PROTOCOL"] = strconv.FormatInt(int64(v.Uint8), 10)
+			}
 		}
-	}
 
-	if rule.Ipv6.Config.Dscp != nil {
-		ruleData.Field["DSCP"] = strconv.FormatInt(int64(*rule.Ipv6.Config.Dscp), 10)
-	}
-	if rule.Ipv6.Config.SourceAddress != nil {
-		ruleData.Field["SRC_IPV6"] = *rule.Ipv6.Config.SourceAddress
-	}
-	if rule.Ipv6.Config.DestinationAddress != nil {
-		ruleData.Field["DST_IPV6"] = *rule.Ipv6.Config.DestinationAddress
-	}
-	if rule.Ipv6.Config.SourceFlowLabel != nil {
-		ruleData.Field["SRC_FLOWLABEL"] = strconv.FormatInt(int64(*rule.Ipv6.Config.SourceFlowLabel), 10)
-	}
-	if rule.Ipv6.Config.DestinationFlowLabel != nil {
-		ruleData.Field["DST_FLOWLABEL"] = strconv.FormatInt(int64(*rule.Ipv6.Config.DestinationFlowLabel), 10)
+		if rule.Ipv6.Config.Dscp != nil {
+			ruleData.Field["DSCP"] = strconv.FormatInt(int64(*rule.Ipv6.Config.Dscp), 10)
+		}
+		if rule.Ipv6.Config.SourceAddress != nil {
+			ruleData.Field["SRC_IPV6"] = *rule.Ipv6.Config.SourceAddress
+		}
+		if rule.Ipv6.Config.DestinationAddress != nil {
+			ruleData.Field["DST_IPV6"] = *rule.Ipv6.Config.DestinationAddress
+		}
+		if rule.Ipv6.Config.SourceFlowLabel != nil {
+			ruleData.Field["SRC_FLOWLABEL"] = strconv.FormatInt(int64(*rule.Ipv6.Config.SourceFlowLabel), 10)
+		}
+		if rule.Ipv6.Config.DestinationFlowLabel != nil {
+			ruleData.Field["DST_FLOWLABEL"] = strconv.FormatInt(int64(*rule.Ipv6.Config.DestinationFlowLabel), 10)
+		}
 	}
 	// openconfig-packet-match: ICMPv6 type match (SONiC ICMPV6_TYPE). The
 	// standard model uses an identityref (openconfig-icmpv6-types); map it to
@@ -1552,6 +1645,20 @@ func (app *AclApp) handleRuleFieldsDeletion(d *db.DB, aclKey string, ruleKey str
 			(&ruleEntry).Remove("DSCP")
 		case "protocol":
 			(&ruleEntry).Remove("IP_PROTOCOL")
+			// ICMP type/code. The leaf is named the same under icmpv4 and
+			// icmpv6, so the path decides which SONiC field it maps to.
+		case "type":
+			if strings.Contains(app.pathInfo.Path, "icmpv4/config") {
+				(&ruleEntry).Remove("ICMP_TYPE")
+			} else if strings.Contains(app.pathInfo.Path, "icmpv6/config") {
+				(&ruleEntry).Remove("ICMPV6_TYPE")
+			}
+		case "code":
+			if strings.Contains(app.pathInfo.Path, "icmpv4/config") {
+				(&ruleEntry).Remove("ICMP_CODE")
+			} else if strings.Contains(app.pathInfo.Path, "icmpv6/config") {
+				(&ruleEntry).Remove("ICMPV6_CODE")
+			}
 			// transport
 		case "source-port":
 			(&ruleEntry).Remove("L4_SRC_PORT")
@@ -1572,16 +1679,37 @@ func (app *AclApp) handleRuleFieldsDeletion(d *db.DB, aclKey string, ruleKey str
 		switch targetType.Elem().Name() {
 		case "OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry_L2", "OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry_L2_Config":
 			(&ruleEntry).Remove("ETHER_TYPE")
+			// The icmpv4 match fields live under the sibling ipv4/icmpv4
+			// container, so they must only be cleared when the whole ipv4
+			// container is deleted, not when only ipv4/config is deleted. On a
+			// DELETE the config container is empty, so ygot collapses the
+			// target to the parent Ipv4 struct for both paths; the request
+			// path is the reliable discriminator.
 		case "OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry_Ipv4", "OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry_Ipv4_Config":
 			(&ruleEntry).Remove("IP_PROTOCOL")
 			(&ruleEntry).Remove("SRC_IP")
 			(&ruleEntry).Remove("DST_IP")
 			(&ruleEntry).Remove("DSCP")
+			if !strings.Contains(app.pathInfo.Path, "ipv4/config") {
+				(&ruleEntry).Remove("ICMP_TYPE")
+				(&ruleEntry).Remove("ICMP_CODE")
+			}
+		case "OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry_Ipv4_Icmpv4", "OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry_Ipv4_Icmpv4_Config":
+			(&ruleEntry).Remove("ICMP_TYPE")
+			(&ruleEntry).Remove("ICMP_CODE")
+			// Same sibling-container reasoning as ipv4 above for icmpv6.
 		case "OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry_Ipv6", "OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry_Ipv6_Config":
 			(&ruleEntry).Remove("IP_PROTOCOL")
 			(&ruleEntry).Remove("SRC_IPV6")
 			(&ruleEntry).Remove("DST_IPV6")
 			(&ruleEntry).Remove("DSCP")
+			if !strings.Contains(app.pathInfo.Path, "ipv6/config") {
+				(&ruleEntry).Remove("ICMPV6_TYPE")
+				(&ruleEntry).Remove("ICMPV6_CODE")
+			}
+		case "OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry_Ipv6_Icmpv6", "OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry_Ipv6_Icmpv6_Config":
+			(&ruleEntry).Remove("ICMPV6_TYPE")
+			(&ruleEntry).Remove("ICMPV6_CODE")
 		case "OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry_Transport", "OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry_Transport_Config":
 			(&ruleEntry).Remove("L4_SRC_PORT")
 			(&ruleEntry).Remove("L4_SRC_PORT_RANGE")
@@ -1944,15 +2072,34 @@ func (app *AclApp) translateSubscribeAclEntry(nb *notificationInfoBuilder) error
 			nb.Field("tcp-flags", "TCP_FLAGS")
 		}
 	}
+	// The icmpv4/icmpv6 match leaves live under their own container (not
+	// ipv4/config), so they need their own prefix registration for ON_CHANGE
+	// subscriptions to fire when ICMP_TYPE/ICMP_CODE change in CONFIG_DB.
+	icmpv4FieldSetter := func(prefix string) {
+		if nb.SetFieldPrefix(prefix) {
+			nb.Field("type", "ICMP_TYPE")
+			nb.Field("code", "ICMP_CODE")
+		}
+	}
+	icmpv6FieldSetter := func(prefix string) {
+		if nb.SetFieldPrefix(prefix) {
+			nb.Field("type", "ICMPV6_TYPE")
+			nb.Field("code", "ICMPV6_CODE")
+		}
+	}
 	if wildcardMatch(aclType, "ACL_IPV4") {
 		ipAclFieldSetter("ipv4/config")
 		ipAclFieldSetter("ipv4/state")
+		icmpv4FieldSetter("ipv4/icmpv4/config")
+		icmpv4FieldSetter("ipv4/icmpv4/state")
 		ipTransportFieldSetter("transport/config")
 		ipTransportFieldSetter("transport/state")
 	}
 	if wildcardMatch(aclType, "ACL_IPV6") {
 		ipv6AclFieldSetter("ipv6/config")
 		ipv6AclFieldSetter("ipv6/state")
+		icmpv6FieldSetter("ipv6/icmpv6/config")
+		icmpv6FieldSetter("ipv6/icmpv6/state")
 		ipTransportFieldSetter("transport/config")
 		ipTransportFieldSetter("transport/state")
 	}
