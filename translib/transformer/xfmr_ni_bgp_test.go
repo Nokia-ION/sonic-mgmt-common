@@ -2652,3 +2652,322 @@ func Test_openconfig_network_instance_bgp_container_neighbor_afi_safi_enabled(t 
 
 	unloadDB(db.ConfigDB, cleanupTbl)
 }
+
+const niBgpNbrUrl = niBgpProtoUrl + "/bgp/neighbors/neighbor[neighbor-address=20.0.0.1]"
+
+// The neighbor afi-safis hierarchy above the config containers: the container,
+// the list instance and the key leaf the instance repeats. Until these levels
+// were served, an address family activated through OpenConfig could not be
+// removed through it.
+func Test_openconfig_network_instance_bgp_neighbor_afi_safis_hierarchy(t *testing.T) {
+	preReqMap := map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": map[string]interface{}{
+				"local_asn": "65100",
+			},
+		},
+		"BGP_NEIGHBOR": map[string]interface{}{
+			"default|20.0.0.1": map[string]interface{}{
+				"asn": "65200",
+			},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"BGP_NEIGHBOR_AF": map[string]interface{}{
+			"default|20.0.0.1|ipv4_unicast": "",
+			"default|20.0.0.1|ipv6_unicast": "",
+		},
+		"BGP_NEIGHBOR": map[string]interface{}{
+			"default|20.0.0.1": "",
+		},
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": "",
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	afisUrl := niBgpNbrUrl + "/afi-safis"
+	v4Url := afisUrl + "/afi-safi[afi-safi-name=IPV4_UNICAST]"
+	v6Url := afisUrl + "/afi-safi[afi-safi-name=IPV6_UNICAST]"
+
+	// One request at the container writes a row per family it names.
+	urlInputBodyJSON := `{"afi-safi":[` +
+		`{"afi-safi-name":"IPV4_UNICAST","config":{"afi-safi-name":"IPV4_UNICAST","enabled":true}},` +
+		`{"afi-safi-name":"IPV6_UNICAST","config":{"afi-safi-name":"IPV6_UNICAST","enabled":false}}]}`
+	t.Run("PATCH network-instance BGP neighbor afi-safis container",
+		processSetRequest(afisUrl, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"BGP_NEIGHBOR_AF": map[string]interface{}{
+			"default|20.0.0.1|ipv4_unicast": map[string]interface{}{
+				"admin_status": "up",
+			},
+		},
+	}
+	t.Run("Verify BGP_NEIGHBOR_AF ipv4 row from afi-safis container payload",
+		verifyDbResult(rclient, "BGP_NEIGHBOR_AF|default|20.0.0.1|ipv4_unicast", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"BGP_NEIGHBOR_AF": map[string]interface{}{
+			"default|20.0.0.1|ipv6_unicast": map[string]interface{}{
+				"admin_status": "down",
+			},
+		},
+	}
+	t.Run("Verify BGP_NEIGHBOR_AF ipv6 row from afi-safis container payload",
+		verifyDbResult(rclient, "BGP_NEIGHBOR_AF|default|20.0.0.1|ipv6_unicast", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET network-instance BGP neighbor afi-safi key leaf",
+		processGetRequest(v4Url+"/afi-safi-name", nil,
+			`{"openconfig-network-instance:afi-safi-name":"openconfig-bgp-types:IPV4_UNICAST"}`, false))
+	time.Sleep(1 * time.Second)
+
+	v4EntryJSON := `{"afi-safi-name":"openconfig-bgp-types:IPV4_UNICAST",` +
+		`"config":{"afi-safi-name":"openconfig-bgp-types:IPV4_UNICAST","enabled":true}}`
+	v6EntryJSON := `{"afi-safi-name":"openconfig-bgp-types:IPV6_UNICAST",` +
+		`"config":{"afi-safi-name":"openconfig-bgp-types:IPV6_UNICAST","enabled":false}}`
+	t.Run("GET network-instance BGP neighbor afi-safi list instance",
+		processGetRequest(v4Url, nil,
+			`{"openconfig-network-instance:afi-safi":[`+v4EntryJSON+`]}`, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET network-instance BGP neighbor afi-safi list instance ipv6",
+		processGetRequest(v6Url, nil,
+			`{"openconfig-network-instance:afi-safi":[`+v6EntryJSON+`]}`, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET network-instance BGP neighbor afi-safis container",
+		processGetRequest(afisUrl, nil,
+			`{"openconfig-network-instance:afi-safis":{"afi-safi":[`+v4EntryJSON+`,`+v6EntryJSON+`]}}`, false))
+	time.Sleep(1 * time.Second)
+
+	// A key is the row identity, so removing the instance is what removes it.
+	t.Run("DELETE network-instance BGP neighbor afi-safi list instance",
+		processDeleteRequest(v4Url, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify BGP_NEIGHBOR_AF ipv4 row removed by list instance DELETE",
+		verifyDbResult(rclient, "BGP_NEIGHBOR_AF|default|20.0.0.1|ipv4_unicast", map[string]interface{}{}, false))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"BGP_NEIGHBOR_AF": map[string]interface{}{
+			"default|20.0.0.1|ipv6_unicast": map[string]interface{}{
+				"admin_status": "down",
+			},
+		},
+	}
+	t.Run("Verify BGP_NEIGHBOR_AF ipv6 row kept by ipv4 list instance DELETE",
+		verifyDbResult(rclient, "BGP_NEIGHBOR_AF|default|20.0.0.1|ipv6_unicast", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	// The instance level accepts a payload naming only its key, which asks for
+	// the family to be activated with no other setting.
+	urlInputBodyJSON = `{"openconfig-network-instance:afi-safi-name":"openconfig-bgp-types:IPV4_UNICAST"}`
+	t.Run("PATCH network-instance BGP neighbor afi-safi key leaf",
+		processSetRequest(v4Url+"/afi-safi-name", urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"BGP_NEIGHBOR_AF": map[string]interface{}{
+			"default|20.0.0.1|ipv4_unicast": map[string]interface{}{
+				"admin_status": "up",
+			},
+		},
+	}
+	t.Run("Verify BGP_NEIGHBOR_AF ipv4 row activated by key leaf alone",
+		verifyDbResult(rclient, "BGP_NEIGHBOR_AF|default|20.0.0.1|ipv4_unicast", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	// The container delete takes every family with it.
+	t.Run("DELETE network-instance BGP neighbor afi-safis container",
+		processDeleteRequest(afisUrl, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify BGP_NEIGHBOR_AF ipv4 row removed by afi-safis container DELETE",
+		verifyDbResult(rclient, "BGP_NEIGHBOR_AF|default|20.0.0.1|ipv4_unicast", map[string]interface{}{}, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify BGP_NEIGHBOR_AF ipv6 row removed by afi-safis container DELETE",
+		verifyDbResult(rclient, "BGP_NEIGHBOR_AF|default|20.0.0.1|ipv6_unicast", map[string]interface{}{}, false))
+	time.Sleep(1 * time.Second)
+
+	// The neighbor itself survives its address families being removed.
+	expectedMap = map[string]interface{}{
+		"BGP_NEIGHBOR": map[string]interface{}{
+			"default|20.0.0.1": map[string]interface{}{
+				"asn": "65200",
+			},
+		},
+	}
+	t.Run("Verify BGP_NEIGHBOR kept after afi-safis container DELETE",
+		verifyDbResult(rclient, "BGP_NEIGHBOR|default|20.0.0.1", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+// Deleting the neighbor list instance takes its address-family rows with it, so
+// that a neighbor created through OpenConfig can be removed through it rather
+// than leaving an empty BGP_NEIGHBOR row behind.
+func Test_openconfig_network_instance_bgp_neighbor_list_instance_delete(t *testing.T) {
+	preReqMap := map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": map[string]interface{}{
+				"local_asn": "65100",
+			},
+		},
+		"BGP_NEIGHBOR": map[string]interface{}{
+			"default|20.0.0.1": map[string]interface{}{
+				"asn":          "65200",
+				"admin_status": "up",
+			},
+		},
+		"BGP_NEIGHBOR_AF": map[string]interface{}{
+			"default|20.0.0.1|ipv4_unicast": map[string]interface{}{
+				"admin_status": "up",
+			},
+			"default|20.0.0.1|ipv6_unicast": map[string]interface{}{
+				"admin_status": "up",
+			},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"BGP_NEIGHBOR_AF": map[string]interface{}{
+			"default|20.0.0.1|ipv4_unicast": "",
+			"default|20.0.0.1|ipv6_unicast": "",
+		},
+		"BGP_NEIGHBOR": map[string]interface{}{
+			"default|20.0.0.1": "",
+		},
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": "",
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	// The address is the row identity, so it cannot be cleared on its own.
+	expectedErr := tlerr.NotSupportedError{
+		Format: "DELETE is not supported for the neighbor-address key; delete the neighbor instead",
+	}
+	t.Run("DELETE network-instance BGP neighbor-address key leaf rejected",
+		processDeleteRequest(niBgpNbrUrl+"/neighbor-address", true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"BGP_NEIGHBOR": map[string]interface{}{
+			"default|20.0.0.1": map[string]interface{}{
+				"asn":          "65200",
+				"admin_status": "up",
+			},
+		},
+	}
+	t.Run("Verify BGP_NEIGHBOR kept after rejected key leaf DELETE",
+		verifyDbResult(rclient, "BGP_NEIGHBOR|default|20.0.0.1", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	expectedErr = tlerr.NotSupportedError{
+		Format: "DELETE is not supported at the neighbors container level; delete a neighbor instead",
+	}
+	t.Run("DELETE network-instance BGP neighbors container rejected",
+		processDeleteRequest(niBgpProtoUrl+"/bgp/neighbors", true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	t.Run("DELETE network-instance BGP neighbor list instance",
+		processDeleteRequest(niBgpNbrUrl, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify BGP_NEIGHBOR row removed by list instance DELETE",
+		verifyDbResult(rclient, "BGP_NEIGHBOR|default|20.0.0.1", map[string]interface{}{}, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify BGP_NEIGHBOR_AF ipv4 row removed with its neighbor",
+		verifyDbResult(rclient, "BGP_NEIGHBOR_AF|default|20.0.0.1|ipv4_unicast", map[string]interface{}{}, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify BGP_NEIGHBOR_AF ipv6 row removed with its neighbor",
+		verifyDbResult(rclient, "BGP_NEIGHBOR_AF|default|20.0.0.1|ipv6_unicast", map[string]interface{}{}, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+// Deleting the neighbor config container clears every leaf it maps, in both
+// tables, while the list instance it hangs off survives.
+func Test_openconfig_network_instance_bgp_neighbor_config_container_delete(t *testing.T) {
+	preReqMap := map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": map[string]interface{}{
+				"local_asn": "65100",
+			},
+		},
+		"BGP_PEER_GROUP": map[string]interface{}{
+			"default|PG1": map[string]interface{}{
+				"asn": "65100",
+			},
+		},
+		"BGP_NEIGHBOR": map[string]interface{}{
+			"default|20.0.0.1": map[string]interface{}{
+				"asn":             "65200",
+				"admin_status":    "up",
+				"peer_group_name": "PG1",
+			},
+		},
+		"BGP_NEIGHBOR_AF": map[string]interface{}{
+			"default|20.0.0.1|ipv4_unicast": map[string]interface{}{
+				"admin_status":   "up",
+				"send_community": "both",
+			},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"BGP_NEIGHBOR_AF": map[string]interface{}{
+			"default|20.0.0.1|ipv4_unicast": "",
+		},
+		"BGP_NEIGHBOR": map[string]interface{}{
+			"default|20.0.0.1": "",
+		},
+		"BGP_PEER_GROUP": map[string]interface{}{
+			"default|PG1": "",
+		},
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": "",
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	t.Run("DELETE network-instance BGP neighbor config container",
+		processDeleteRequest(niBgpNbrUrl+"/config", false))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"BGP_NEIGHBOR": map[string]interface{}{
+			"default|20.0.0.1": map[string]interface{}{},
+		},
+	}
+	t.Run("Verify BGP_NEIGHBOR fields cleared by config container DELETE",
+		verifyDbResult(rclient, "BGP_NEIGHBOR|default|20.0.0.1", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	// send-community is the one leaf of the config container that lands in
+	// BGP_NEIGHBOR_AF, so the delete reaches that row too without disturbing
+	// the address family itself.
+	expectedMap = map[string]interface{}{
+		"BGP_NEIGHBOR_AF": map[string]interface{}{
+			"default|20.0.0.1|ipv4_unicast": map[string]interface{}{
+				"admin_status": "up",
+			},
+		},
+	}
+	t.Run("Verify BGP_NEIGHBOR_AF send_community cleared by config container DELETE",
+		verifyDbResult(rclient, "BGP_NEIGHBOR_AF|default|20.0.0.1|ipv4_unicast", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
