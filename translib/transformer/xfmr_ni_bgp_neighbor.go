@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"reflect"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -47,12 +48,35 @@ const (
 	niBgpNbrSendCommFld    = "send_community"
 	niBgpNbrAfiSafiIPv4    = "ipv4_unicast"
 	niBgpNbrAfiSafiIPv6    = "ipv6_unicast"
+	// The levels of the neighbor hierarchy that sit above the config
+	// containers. Each resolves to a target kind the write and read paths
+	// switch on, the same shape the table-connection mapping uses.
+	niBgpNbrTargetAfis      = "neighbor-afi-safis"
+	niBgpNbrTargetAfInst    = "neighbor-afi-safi-instance"
+	niBgpNbrAfiSafiNameLeaf = "afi-safi-name"
 )
+
+// niBgpNbrUriPfx names a neighbor list instance, which every path below it
+// repeats. The levels above the config containers are matched against it.
+const niBgpNbrUriPfx = `^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/protocols/protocol\[identifier=BGP\]\[name=bgp\]/bgp/neighbors/neighbor\[neighbor-address=([^\]]+)\]`
 
 var niBgpNbrReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/protocols/protocol\[identifier=BGP\]\[name=bgp\]/bgp/neighbors/neighbor\[neighbor-address=([^\]]+)\]/config(?:/(peer-group|enabled|peer-as|send-community))?$`)
 var niBgpNbrAsPathOptReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/protocols/protocol\[identifier=BGP\]\[name=bgp\]/bgp/neighbors/neighbor\[neighbor-address=([^\]]+)\]/as-path-options/config(?:/(allow-own-as))?$`)
 var niBgpNbrAfApplyReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/protocols/protocol\[identifier=BGP\]\[name=bgp\]/bgp/neighbors/neighbor\[neighbor-address=([^\]]+)\]/afi-safis/afi-safi\[afi-safi-name=([^\]]+)\]/apply-policy/config(?:/(import-policy|export-policy))?$`)
 var niBgpNbrAfCfgReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/protocols/protocol\[identifier=BGP\]\[name=bgp\]/bgp/neighbors/neighbor\[neighbor-address=([^\]]+)\]/afi-safis/afi-safi\[afi-safi-name=([^\]]+)\]/config(?:/(afi-safi-name|enabled))?$`)
+
+// The afi-safi key leaf below the list instance repeats a key already in the
+// URI, so it resolves to the same row as the instance itself.
+var niBgpNbrAfInstKeyLeafReqUriRe = regexp.MustCompile(niBgpNbrUriPfx + `/afi-safis/afi-safi\[afi-safi-name=([^\]]+)\]/afi-safi-name$`)
+var niBgpNbrAfInstReqUriRe = regexp.MustCompile(niBgpNbrUriPfx + `/afi-safis/afi-safi\[afi-safi-name=([^\]]+)\]$`)
+var niBgpNbrAfisReqUriRe = regexp.MustCompile(niBgpNbrUriPfx + `/afi-safis$`)
+
+// The neighbor list instance and the neighbors container are annotated to the
+// BGP container dispatch rather than to this transformer, so these two are
+// matched by the delete dispatch it calls rather than by the request parser.
+var niBgpNbrInstKeyLeafReqUriRe = regexp.MustCompile(niBgpNbrUriPfx + `/neighbor-address$`)
+var niBgpNbrInstReqUriRe = regexp.MustCompile(niBgpNbrUriPfx + `$`)
+var niBgpNbrsReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/protocols/protocol\[identifier=BGP\]\[name=bgp\]/bgp/neighbors$`)
 
 type niBgpNbrReqInfo struct {
 	niName       string
@@ -132,6 +156,42 @@ func parseNiBgpNbrRequestUri(uri string) (*niBgpNbrReqInfo, error) {
 			afiSafi:      afiSafi,
 			targetLeaf:   leaf,
 			targetPath:   "neighbor-af-config",
+		}, nil
+	}
+	if m := niBgpNbrAfInstKeyLeafReqUriRe.FindStringSubmatch(uri); len(m) >= 4 {
+		afiSafi, ok := normalizeNiBgpNbrAfiSafiName(m[3])
+		if !ok {
+			return nil, tlerr.InvalidArgsError{
+				Format: "unsupported afi-safi-name for network-instance BGP neighbor AFI-SAFI mapping: " + m[3],
+			}
+		}
+		return &niBgpNbrReqInfo{
+			niName:       m[1],
+			neighborAddr: m[2],
+			afiSafi:      afiSafi,
+			targetLeaf:   niBgpNbrAfiSafiNameLeaf,
+			targetPath:   niBgpNbrTargetAfInst,
+		}, nil
+	}
+	if m := niBgpNbrAfInstReqUriRe.FindStringSubmatch(uri); len(m) >= 4 {
+		afiSafi, ok := normalizeNiBgpNbrAfiSafiName(m[3])
+		if !ok {
+			return nil, tlerr.InvalidArgsError{
+				Format: "unsupported afi-safi-name for network-instance BGP neighbor AFI-SAFI mapping: " + m[3],
+			}
+		}
+		return &niBgpNbrReqInfo{
+			niName:       m[1],
+			neighborAddr: m[2],
+			afiSafi:      afiSafi,
+			targetPath:   niBgpNbrTargetAfInst,
+		}, nil
+	}
+	if m := niBgpNbrAfisReqUriRe.FindStringSubmatch(uri); len(m) >= 3 {
+		return &niBgpNbrReqInfo{
+			niName:       m[1],
+			neighborAddr: m[2],
+			targetPath:   niBgpNbrTargetAfis,
 		}, nil
 	}
 	return nil, tlerr.InvalidArgsError{
@@ -355,6 +415,193 @@ func getNiBgpNbrAfCfgObj(s *ygot.GoStruct, niName, neighborAddr, afiSafi string,
 		return nil
 	}
 	return afObj.Config
+}
+
+// wrapNiBgpNbrRootAsDevice normalizes the request root to a device object so
+// that one set of tree walks serves every anchor path in the hierarchy. A
+// request anchored on the afi-safis container or on an afi-safi instance
+// arrives with that node as the root rather than with a full device tree.
+func wrapNiBgpNbrRootAsDevice(s *ygot.GoStruct, reqInfo *niBgpNbrReqInfo) (*ygot.GoStruct, error) {
+	if s == nil || *s == nil {
+		return nil, tlerr.InvalidArgsError{Format: "empty YANG root for BGP neighbor mapping"}
+	}
+	if _, ok := (*s).(*ocbinds.Device); ok {
+		return s, nil
+	}
+
+	devObj := &ocbinds.Device{}
+	var devRoot ygot.GoStruct = devObj
+	nbrObj := getNiBgpNbrObj(&devRoot, reqInfo.niName, reqInfo.neighborAddr, true)
+	if nbrObj == nil {
+		return nil, tlerr.InvalidArgsError{Format: "unable to create neighbor context for BGP neighbor mapping"}
+	}
+
+	// Reuse the original subtree pointers so that DbToYang population updates
+	// the caller owned objects regardless of the anchor path.
+	switch root := (*s).(type) {
+	case *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Neighbors_Neighbor_AfiSafis:
+		nbrObj.AfiSafis = root
+	case *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Neighbors_Neighbor_AfiSafis_AfiSafi:
+		afiKey, ok := niBgpNbrAfiSafiEnumFromName(reqInfo.afiSafi)
+		if !ok {
+			return nil, tlerr.InvalidArgsError{Format: "unsupported afi-safi-name for network-instance BGP neighbor AFI-SAFI mapping: " + reqInfo.afiSafi}
+		}
+		if nbrObj.AfiSafis.AfiSafi == nil {
+			nbrObj.AfiSafis.AfiSafi = map[ocbinds.E_OpenconfigBgpTypes_AFI_SAFI_TYPE]*ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Neighbors_Neighbor_AfiSafis_AfiSafi{}
+		}
+		nbrObj.AfiSafis.AfiSafi[afiKey] = root
+	default:
+		return nil, tlerr.InvalidArgsError{Format: "unsupported YANG root for BGP neighbor mapping"}
+	}
+
+	return &devRoot, nil
+}
+
+// niBgpNbrPayloadAfiSafiName reads an afi-safi-name leaf from the payload. An
+// unrecognized shape yields false, which skips the comparison rather than
+// refusing a write whose key translib has already validated.
+func niBgpNbrPayloadAfiSafiName(param interface{}) (string, bool) {
+	switch v := param.(type) {
+	case ocbinds.E_OpenconfigBgpTypes_AFI_SAFI_TYPE:
+		return niBgpAfiSafiNameFromEnum(v)
+	case string:
+		return normalizeNiBgpNbrAfiSafiName(v)
+	case *string:
+		if v != nil {
+			return normalizeNiBgpNbrAfiSafiName(*v)
+		}
+	}
+	return "", false
+}
+
+// niBgpNbrAfInstFields renders the BGP_NEIGHBOR_AF fields an afi-safi instance
+// payload carries. Naming an address family under a neighbor activates it
+// there, so the row carries admin_status even when enabled is absent, which is
+// what frrcfgd needs to emit "neighbor <addr> activate".
+func niBgpNbrAfInstFields(afObj *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Neighbors_Neighbor_AfiSafis_AfiSafi) map[string]string {
+	fields := map[string]string{}
+	enabled := true
+	if afObj != nil && afObj.Config != nil && afObj.Config.Enabled != nil {
+		enabled = *afObj.Config.Enabled
+	}
+	fields[niBgpNbrAdminStatus] = niBgpNbrEnabledToAdminStatus(enabled)
+	if afObj != nil && afObj.ApplyPolicy != nil && afObj.ApplyPolicy.Config != nil {
+		if policy, ok := niBgpFirstPolicyName(afObj.ApplyPolicy.Config.ImportPolicy); ok {
+			fields[niBgpNbrRouteMapInFld] = policy
+		}
+		if policy, ok := niBgpFirstPolicyName(afObj.ApplyPolicy.Config.ExportPolicy); ok {
+			fields[niBgpNbrRouteMapOutFld] = policy
+		}
+	}
+	return fields
+}
+
+// buildNiBgpNbrAfisResMap maps every afi-safi an afi-safis container payload
+// carries, so that one request can create or update both families.
+func buildNiBgpNbrAfisResMap(s *ygot.GoStruct, reqInfo *niBgpNbrReqInfo) (map[string]map[string]db.Value, error) {
+	nbrObj := getNiBgpNbrObj(s, reqInfo.niName, reqInfo.neighborAddr, false)
+	if nbrObj == nil || nbrObj.AfiSafis == nil || len(nbrObj.AfiSafis.AfiSafi) == 0 {
+		return nil, tlerr.InvalidArgsError{Format: "BGP neighbor afi-safis payload does not name any afi-safi"}
+	}
+
+	rows := make(map[string]db.Value)
+	for afiEnum, afObj := range nbrObj.AfiSafis.AfiSafi {
+		afiSafi, ok := niBgpAfiSafiNameFromEnum(afiEnum)
+		if !ok {
+			return nil, tlerr.InvalidArgsError{Format: fmt.Sprintf("unsupported afi-safi-name for network-instance BGP neighbor AFI-SAFI mapping: %v", afiEnum)}
+		}
+		rows[reqInfo.niName+"|"+reqInfo.neighborAddr+"|"+afiSafi] = db.Value{Field: niBgpNbrAfInstFields(afObj)}
+	}
+	return ensureNiBgpNbrParentRow(map[string]map[string]db.Value{niBgpNbrAfTbl: rows}, reqInfo.niName, reqInfo.neighborAddr), nil
+}
+
+// niBgpNbrInstDeleteResMap removes a neighbor together with the address-family
+// rows that hang off it. Both tables go in one result map: translib orders
+// BGP_NEIGHBOR_AF ahead of BGP_NEIGHBOR by table dependency, and CVL refuses to
+// delete a neighbor while one of its address-family rows still exists.
+func niBgpNbrInstDeleteResMap(niName, neighborAddr string) map[string]map[string]db.Value {
+	res := makeNiBgpNbrAfResMap(niName, neighborAddr, nil)
+	res[niBgpNbrTbl] = map[string]db.Value{niName + "|" + neighborAddr: {}}
+	return res
+}
+
+// niBgpNbrHierDeleteDispatch maps a DELETE anchored on the neighbor list
+// instance or on the neighbors container. Those two nodes are annotated to the
+// BGP container dispatch rather than to this transformer, so the container
+// dispatch hands the request here. It reports whether the request was one of
+// its own.
+func niBgpNbrHierDeleteDispatch(inParams XfmrParams) (bool, map[string]map[string]db.Value, error) {
+	uri := inParams.requestUri
+	if niBgpNbrInstKeyLeafReqUriRe.MatchString(uri) {
+		// The address is the row identity, so there is no field to clear;
+		// removing it means removing the neighbor.
+		return true, nil, tlerr.NotSupportedError{
+			Format: "DELETE is not supported for the neighbor-address key; delete the neighbor instead",
+			Path:   uri,
+		}
+	}
+	if m := niBgpNbrInstReqUriRe.FindStringSubmatch(uri); len(m) >= 3 {
+		return true, niBgpNbrInstDeleteResMap(m[1], m[2]), nil
+	}
+	if niBgpNbrsReqUriRe.MatchString(uri) {
+		return true, nil, tlerr.NotSupportedError{
+			Format: "DELETE is not supported at the neighbors container level; delete a neighbor instead",
+			Path:   uri,
+		}
+	}
+	return false, nil, nil
+}
+
+// niBgpNbrDbAfiSafis lists the address families a neighbor holds a row for,
+// which is what a read anchored on the afi-safis container has to enumerate.
+func niBgpNbrDbAfiSafis(cfgDb *db.DB, niName, neighborAddr string) ([]string, error) {
+	keys, err := cfgDb.GetKeys(&db.TableSpec{Name: niBgpNbrAfTbl})
+	if err != nil {
+		return nil, err
+	}
+	afiSafis := make([]string, 0, 2)
+	for _, k := range keys {
+		if len(k.Comp) == 3 && k.Comp[0] == niName && k.Comp[1] == neighborAddr {
+			afiSafis = append(afiSafis, k.Comp[2])
+		}
+	}
+	sort.Strings(afiSafis)
+	return afiSafis, nil
+}
+
+// populateNiBgpNbrAfFromDb fills one afi-safi instance of a neighbor, which is
+// everything a read at or above the instance reports for that family.
+func populateNiBgpNbrAfFromDb(cfgDb *db.DB, ygRoot *ygot.GoStruct, niName, neighborAddr, afiSafi string) error {
+	entry, err := cfgDb.GetEntry(&db.TableSpec{Name: niBgpNbrAfTbl}, db.Key{Comp: []string{niName, neighborAddr, afiSafi}})
+	if err != nil {
+		return err
+	}
+	afObj := getNiBgpNbrAfObj(ygRoot, niName, neighborAddr, afiSafi, true)
+	if afObj == nil {
+		return tlerr.InvalidArgsError{Format: "Unable to locate BGP neighbor AFI-SAFI object in YANG tree"}
+	}
+	if afiSafiName, ok := niBgpNbrAfiSafiEnumFromName(afiSafi); ok {
+		afObj.AfiSafiName = afiSafiName
+		if afObj.Config != nil {
+			afObj.Config.AfiSafiName = afiSafiName
+		}
+	}
+	if afObj.Config != nil {
+		if status, ok := entry.Field[niBgpNbrAdminStatus]; ok && strings.TrimSpace(status) != "" {
+			if enabled, ok := niBgpNbrAdminStatusToEnabled(status); ok {
+				afObj.Config.Enabled = enabled
+			}
+		}
+	}
+	if afObj.ApplyPolicy != nil && afObj.ApplyPolicy.Config != nil {
+		if policy := strings.TrimSpace(entry.Field[niBgpNbrRouteMapInFld]); policy != "" {
+			afObj.ApplyPolicy.Config.ImportPolicy = []string{policy}
+		}
+		if policy := strings.TrimSpace(entry.Field[niBgpNbrRouteMapOutFld]); policy != "" {
+			afObj.ApplyPolicy.Config.ExportPolicy = []string{policy}
+		}
+	}
+	return nil
 }
 
 func getNiBgpNbrCfgObj(s *ygot.GoStruct, niName, neighborAddr string, createIfMissing bool) *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Neighbors_Neighbor_Config {
@@ -1006,6 +1253,14 @@ var YangToDb_ni_bgp_nbr_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 	}
 
 	if inParams.oper == DELETE {
+		if reqInfo.targetPath == niBgpNbrTargetAfis {
+			return makeNiBgpNbrAfResMap(reqInfo.niName, reqInfo.neighborAddr, nil), nil
+		}
+		if reqInfo.targetPath == niBgpNbrTargetAfInst {
+			// The key leaf is the row identity, so clearing it means removing
+			// the row the instance names.
+			return makeNiBgpNbrAfSingleResMap(reqInfo.niName, reqInfo.neighborAddr, reqInfo.afiSafi, nil), nil
+		}
 		if reqInfo.targetPath == "neighbor-af-apply-policy-config" {
 			switch reqInfo.targetLeaf {
 			case "":
@@ -1042,6 +1297,17 @@ var YangToDb_ni_bgp_nbr_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 			}
 		}
 		switch reqInfo.targetLeaf {
+		case "":
+			// The container delete takes every leaf it maps with it. The list
+			// instance itself survives, so the BGP_NEIGHBOR row is emptied
+			// rather than removed; deleting the neighbor is what removes it.
+			return mergeDbResMapFields(
+				makeNiBgpNbrResMap(reqInfo.niName, reqInfo.neighborAddr, map[string]string{
+					niBgpNbrPeerGroupFld: "",
+					niBgpNbrAsnFld:       "",
+					niBgpNbrAdminStatus:  "",
+				}),
+				makeNiBgpNbrAfResMap(reqInfo.niName, reqInfo.neighborAddr, map[string]string{niBgpNbrSendCommFld: ""})), nil
 		case "peer-group":
 			return makeNiBgpNbrResMap(reqInfo.niName, reqInfo.neighborAddr, map[string]string{niBgpNbrPeerGroupFld: ""}), nil
 		case "peer-as":
@@ -1051,8 +1317,36 @@ var YangToDb_ni_bgp_nbr_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 		case "send-community":
 			return makeNiBgpNbrAfResMap(reqInfo.niName, reqInfo.neighborAddr, map[string]string{niBgpNbrSendCommFld: ""}), nil
 		default:
-			return res, tlerr.NotSupportedError{Format: "DELETE supported only for /neighbors/neighbor/config/peer-group, /neighbors/neighbor/config/peer-as, /neighbors/neighbor/config/enabled, or /neighbors/neighbor/config/send-community", Path: inParams.requestUri}
+			return res, tlerr.NotSupportedError{Format: "DELETE supported only for /neighbors/neighbor/config, /neighbors/neighbor/config/peer-group, /neighbors/neighbor/config/peer-as, /neighbors/neighbor/config/enabled, or /neighbors/neighbor/config/send-community", Path: inParams.requestUri}
 		}
+	}
+
+	if reqInfo.targetPath == niBgpNbrTargetAfis || reqInfo.targetPath == niBgpNbrTargetAfInst {
+		// A payload key that disagrees with the one named in the path would
+		// land on the row the path names and quietly ignore the payload.
+		if reqInfo.targetLeaf == niBgpNbrAfiSafiNameLeaf {
+			if name, ok := niBgpNbrPayloadAfiSafiName(inParams.param); ok && name != reqInfo.afiSafi {
+				return res, tlerr.InvalidArgsError{
+					Format: fmt.Sprintf("BGP neighbor afi-safi-name payload (%s) does not match key (%s)", name, reqInfo.afiSafi),
+				}
+			}
+		}
+		wrappedRoot, wrapErr := wrapNiBgpNbrRootAsDevice(inParams.ygRoot, reqInfo)
+		if wrapErr != nil {
+			return res, wrapErr
+		}
+		if inParams.invokeCRUSubtreeOnce != nil {
+			// The whole subtree is mapped in this call, so translib must not
+			// invoke this transformer again for the child nodes.
+			*inParams.invokeCRUSubtreeOnce = true
+		}
+		if reqInfo.targetPath == niBgpNbrTargetAfis {
+			return buildNiBgpNbrAfisResMap(wrappedRoot, reqInfo)
+		}
+		afObj := getNiBgpNbrAfObj(wrappedRoot, reqInfo.niName, reqInfo.neighborAddr, reqInfo.afiSafi, false)
+		return ensureNiBgpNbrParentRow(
+			makeNiBgpNbrAfSingleResMap(reqInfo.niName, reqInfo.neighborAddr, reqInfo.afiSafi, niBgpNbrAfInstFields(afObj)),
+			reqInfo.niName, reqInfo.neighborAddr), nil
 	}
 
 	if reqInfo.targetPath == "neighbor-af-apply-policy-config" {
@@ -1187,6 +1481,26 @@ var DbToYang_ni_bgp_nbr_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams)
 	cfgDb := inParams.dbs[db.ConfigDB]
 	if cfgDb == nil {
 		return tlerr.InvalidArgsError{Format: "ConfigDB nil for network-instance BGP neighbor config"}
+	}
+
+	if reqInfo.targetPath == niBgpNbrTargetAfis || reqInfo.targetPath == niBgpNbrTargetAfInst {
+		wrappedRoot, wrapErr := wrapNiBgpNbrRootAsDevice(inParams.ygRoot, reqInfo)
+		if wrapErr != nil {
+			return wrapErr
+		}
+		if reqInfo.targetPath == niBgpNbrTargetAfInst {
+			return populateNiBgpNbrAfFromDb(cfgDb, wrappedRoot, reqInfo.niName, reqInfo.neighborAddr, reqInfo.afiSafi)
+		}
+		afiSafis, err := niBgpNbrDbAfiSafis(cfgDb, reqInfo.niName, reqInfo.neighborAddr)
+		if err != nil {
+			return err
+		}
+		for _, afiSafi := range afiSafis {
+			if err := populateNiBgpNbrAfFromDb(cfgDb, wrappedRoot, reqInfo.niName, reqInfo.neighborAddr, afiSafi); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 
 	if reqInfo.targetPath == "neighbor-af-config" {
