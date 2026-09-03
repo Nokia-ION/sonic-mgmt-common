@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"reflect"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/Azure/sonic-mgmt-common/translib/db"
@@ -33,11 +34,27 @@ import (
 const (
 	niTableConnTbl              = "ROUTE_REDISTRIBUTE"
 	niTableConnRouteMapFld      = "route_map"
+	niTableConnTargetRoot       = "table-connections-root"
+	niTableConnTargetInst       = "table-connection-instance"
 	niTableConnTargetCfg        = "table-connection-config"
 	niTableConnImportPolicyLeaf = "import-policy"
+	niTableConnSrcProtoLeaf     = "src-protocol"
+	niTableConnDstProtoLeaf     = "dst-protocol"
+	niTableConnAddrFamilyLeaf   = "address-family"
 )
 
-var niTableConnCfgReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/table-connections/table-connection((?:\[[^\]]+\]){3})/config(?:/(import-policy))?$`)
+const niTableConnUriPfx = `^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/table-connections`
+
+// The three list keys are the CONFIG_DB row identity, so every path below the
+// list carries all of them. The block is captured whole and split afterwards,
+// which is what lets the keys arrive in any order.
+const niTableConnKeyBlock = `((?:\[[^\]]+\]){3})`
+
+var niTableConnCfgReqUriRe = regexp.MustCompile(niTableConnUriPfx + `/table-connection` + niTableConnKeyBlock + `/config(?:/(import-policy|src-protocol|dst-protocol|address-family))?$`)
+var niTableConnInstKeyLeafReqUriRe = regexp.MustCompile(niTableConnUriPfx + `/table-connection` + niTableConnKeyBlock + `/(src-protocol|dst-protocol|address-family)$`)
+var niTableConnInstReqUriRe = regexp.MustCompile(niTableConnUriPfx + `/table-connection` + niTableConnKeyBlock + `$`)
+var niTableConnListReqUriRe = regexp.MustCompile(niTableConnUriPfx + `/table-connection$`)
+var niTableConnRootReqUriRe = regexp.MustCompile(niTableConnUriPfx + `$`)
 var niTableConnListKeyRe = regexp.MustCompile(`\[(src-protocol|dst-protocol|address-family)=([^\]]+)\]`)
 
 type niTableConnReqInfo struct {
@@ -54,28 +71,36 @@ func init() {
 	XlateFuncBind("DbToYang_ni_table_conn_cfg_xfmr", DbToYang_ni_table_conn_cfg_xfmr)
 }
 
+// splitNiTableConnKeys pulls the three list keys out of a captured key block.
+// They are named in the URI, so the order they appear in does not matter.
+func splitNiTableConnKeys(keyBlock, uri string) (string, string, string, error) {
+	unsupported := tlerr.InvalidArgsError{
+		Format: "unsupported path for network-instance table-connections mapping: " + uri,
+	}
+	keyPairs := niTableConnListKeyRe.FindAllStringSubmatch(keyBlock, -1)
+	if len(keyPairs) != 3 {
+		return "", "", "", unsupported
+	}
+	keys := map[string]string{}
+	for _, p := range keyPairs {
+		if len(p) == 3 {
+			keys[p[1]] = p[2]
+		}
+	}
+	srcProtocol, srcOK := keys[niTableConnSrcProtoLeaf]
+	dstProtocol, dstOK := keys[niTableConnDstProtoLeaf]
+	addressFamily, afOK := keys[niTableConnAddrFamilyLeaf]
+	if !srcOK || !dstOK || !afOK {
+		return "", "", "", unsupported
+	}
+	return srcProtocol, dstProtocol, addressFamily, nil
+}
+
 func parseNiTableConnRequestUri(uri string) (*niTableConnReqInfo, error) {
-	m := niTableConnCfgReqUriRe.FindStringSubmatch(uri)
-	if len(m) >= 3 {
-		keyPairs := niTableConnListKeyRe.FindAllStringSubmatch(m[2], -1)
-		if len(keyPairs) != 3 {
-			return nil, tlerr.InvalidArgsError{
-				Format: "unsupported path for network-instance table-connections mapping: " + uri,
-			}
-		}
-		keys := map[string]string{}
-		for _, p := range keyPairs {
-			if len(p) == 3 {
-				keys[p[1]] = p[2]
-			}
-		}
-		srcProtocol, srcOK := keys["src-protocol"]
-		dstProtocol, dstOK := keys["dst-protocol"]
-		addressFamily, afOK := keys["address-family"]
-		if !srcOK || !dstOK || !afOK {
-			return nil, tlerr.InvalidArgsError{
-				Format: "unsupported path for network-instance table-connections mapping: " + uri,
-			}
+	if m := niTableConnCfgReqUriRe.FindStringSubmatch(uri); len(m) >= 3 {
+		srcProtocol, dstProtocol, addressFamily, err := splitNiTableConnKeys(m[2], uri)
+		if err != nil {
+			return nil, err
 		}
 		leaf := ""
 		if len(m) >= 4 {
@@ -89,6 +114,43 @@ func parseNiTableConnRequestUri(uri string) (*niTableConnReqInfo, error) {
 			targetLeaf:    leaf,
 			targetPath:    niTableConnTargetCfg,
 		}, nil
+	}
+	// A key leaf below the list instance repeats a key already in the URI, so it
+	// resolves to the same row as the instance itself.
+	if m := niTableConnInstKeyLeafReqUriRe.FindStringSubmatch(uri); len(m) >= 4 {
+		srcProtocol, dstProtocol, addressFamily, err := splitNiTableConnKeys(m[2], uri)
+		if err != nil {
+			return nil, err
+		}
+		return &niTableConnReqInfo{
+			niName:        m[1],
+			srcProtocol:   srcProtocol,
+			dstProtocol:   dstProtocol,
+			addressFamily: addressFamily,
+			targetLeaf:    m[3],
+			targetPath:    niTableConnTargetInst,
+		}, nil
+	}
+	if m := niTableConnInstReqUriRe.FindStringSubmatch(uri); len(m) >= 3 {
+		srcProtocol, dstProtocol, addressFamily, err := splitNiTableConnKeys(m[2], uri)
+		if err != nil {
+			return nil, err
+		}
+		return &niTableConnReqInfo{
+			niName:        m[1],
+			srcProtocol:   srcProtocol,
+			dstProtocol:   dstProtocol,
+			addressFamily: addressFamily,
+			targetPath:    niTableConnTargetInst,
+		}, nil
+	}
+	// A request naming the list but no instance covers every table-connection,
+	// and is mapped and populated the same way as one naming the container.
+	if m := niTableConnListReqUriRe.FindStringSubmatch(uri); len(m) >= 2 {
+		return &niTableConnReqInfo{niName: m[1], targetPath: niTableConnTargetRoot}, nil
+	}
+	if m := niTableConnRootReqUriRe.FindStringSubmatch(uri); len(m) >= 2 {
+		return &niTableConnReqInfo{niName: m[1], targetPath: niTableConnTargetRoot}, nil
 	}
 
 	return nil, tlerr.InvalidArgsError{
@@ -160,8 +222,88 @@ func niTableConnAddressFamilyToEnum(af string) (ocbinds.E_OpenconfigTypes_ADDRES
 	}
 }
 
-func getNiTableConnCfgObj(s *ygot.GoStruct, reqInfo *niTableConnReqInfo, createIfMissing bool) *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_TableConnections_TableConnection_Config {
-	if s == nil || *s == nil || reqInfo == nil {
+// niTableConnProtocolEnumToDb maps a payload or key enum onto the CONFIG_DB key
+// component, which is how a container level request names its rows.
+func niTableConnProtocolEnumToDb(proto ocbinds.E_OpenconfigPolicyTypes_INSTALL_PROTOCOL_TYPE) (string, error) {
+	switch proto {
+	case ocbinds.OpenconfigPolicyTypes_INSTALL_PROTOCOL_TYPE_BGP:
+		return "bgp", nil
+	case ocbinds.OpenconfigPolicyTypes_INSTALL_PROTOCOL_TYPE_STATIC:
+		return "static", nil
+	case ocbinds.OpenconfigPolicyTypes_INSTALL_PROTOCOL_TYPE_DIRECTLY_CONNECTED:
+		return "connected", nil
+	case ocbinds.OpenconfigPolicyTypes_INSTALL_PROTOCOL_TYPE_OSPF:
+		return "ospf", nil
+	case ocbinds.OpenconfigPolicyTypes_INSTALL_PROTOCOL_TYPE_ISIS:
+		return "isis", nil
+	default:
+		return "", tlerr.InvalidArgsError{Format: fmt.Sprintf("unsupported table-connection protocol: %v", proto)}
+	}
+}
+
+func niTableConnAddressFamilyEnumToDb(af ocbinds.E_OpenconfigTypes_ADDRESS_FAMILY) (string, error) {
+	switch af {
+	case ocbinds.OpenconfigTypes_ADDRESS_FAMILY_IPV4:
+		return "ipv4", nil
+	case ocbinds.OpenconfigTypes_ADDRESS_FAMILY_IPV6:
+		return "ipv6", nil
+	default:
+		return "", tlerr.InvalidArgsError{Format: fmt.Sprintf("unsupported table-connection address-family: %v", af)}
+	}
+}
+
+func niTableConnProtocolDbToEnum(proto string) (ocbinds.E_OpenconfigPolicyTypes_INSTALL_PROTOCOL_TYPE, error) {
+	switch strings.ToLower(strings.TrimSpace(proto)) {
+	case "bgp":
+		return ocbinds.OpenconfigPolicyTypes_INSTALL_PROTOCOL_TYPE_BGP, nil
+	case "static":
+		return ocbinds.OpenconfigPolicyTypes_INSTALL_PROTOCOL_TYPE_STATIC, nil
+	case "connected":
+		return ocbinds.OpenconfigPolicyTypes_INSTALL_PROTOCOL_TYPE_DIRECTLY_CONNECTED, nil
+	case "ospf":
+		return ocbinds.OpenconfigPolicyTypes_INSTALL_PROTOCOL_TYPE_OSPF, nil
+	case "isis":
+		return ocbinds.OpenconfigPolicyTypes_INSTALL_PROTOCOL_TYPE_ISIS, nil
+	default:
+		return ocbinds.OpenconfigPolicyTypes_INSTALL_PROTOCOL_TYPE_UNSET, tlerr.InvalidArgsError{Format: fmt.Sprintf("unsupported table-connection protocol in CONFIG_DB: %s", proto)}
+	}
+}
+
+func niTableConnAddressFamilyDbToEnum(af string) (ocbinds.E_OpenconfigTypes_ADDRESS_FAMILY, error) {
+	switch strings.ToLower(strings.TrimSpace(af)) {
+	case "ipv4":
+		return ocbinds.OpenconfigTypes_ADDRESS_FAMILY_IPV4, nil
+	case "ipv6":
+		return ocbinds.OpenconfigTypes_ADDRESS_FAMILY_IPV6, nil
+	default:
+		return ocbinds.OpenconfigTypes_ADDRESS_FAMILY_UNSET, tlerr.InvalidArgsError{Format: fmt.Sprintf("unsupported table-connection address-family in CONFIG_DB: %s", af)}
+	}
+}
+
+func niTableConnYgotKey(reqInfo *niTableConnReqInfo) (ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_TableConnections_TableConnection_Key, error) {
+	var key ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_TableConnections_TableConnection_Key
+	srcProto, err := niTableConnProtocolToEnum(reqInfo.srcProtocol)
+	if err != nil {
+		return key, err
+	}
+	dstProto, err := niTableConnProtocolToEnum(reqInfo.dstProtocol)
+	if err != nil {
+		return key, err
+	}
+	af, err := niTableConnAddressFamilyToEnum(reqInfo.addressFamily)
+	if err != nil {
+		return key, err
+	}
+	key.SrcProtocol = srcProto
+	key.DstProtocol = dstProto
+	key.AddressFamily = af
+	return key, nil
+}
+
+// getNiTableConnsObj reaches the table-connections container, which is the
+// anchor for a container or keyless list request.
+func getNiTableConnsObj(s *ygot.GoStruct, niName string, createIfMissing bool) *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_TableConnections {
+	if s == nil || *s == nil {
 		return nil
 	}
 	deviceObj, ok := (*s).(*ocbinds.Device)
@@ -176,50 +318,173 @@ func getNiTableConnCfgObj(s *ygot.GoStruct, reqInfo *niTableConnReqInfo, createI
 		}
 		deviceObj.NetworkInstances = &ocbinds.OpenconfigNetworkInstance_NetworkInstances{}
 	}
-	niObj, ok := deviceObj.NetworkInstances.NetworkInstance[reqInfo.niName]
+	niObj, ok := deviceObj.NetworkInstances.NetworkInstance[niName]
 	if !ok || niObj == nil {
 		if !createIfMissing {
 			return nil
 		}
 		var err error
-		niObj, err = deviceObj.NetworkInstances.NewNetworkInstance(reqInfo.niName)
+		niObj, err = deviceObj.NetworkInstances.NewNetworkInstance(niName)
 		if err != nil || niObj == nil {
 			return nil
 		}
 	}
 	ygot.BuildEmptyTree(niObj)
+	return niObj.TableConnections
+}
 
-	srcProto, err := niTableConnProtocolToEnum(reqInfo.srcProtocol)
+func getNiTableConnInstObj(s *ygot.GoStruct, reqInfo *niTableConnReqInfo, createIfMissing bool) *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_TableConnections_TableConnection {
+	key, err := niTableConnYgotKey(reqInfo)
 	if err != nil {
 		return nil
 	}
-	dstProto, err := niTableConnProtocolToEnum(reqInfo.dstProtocol)
-	if err != nil {
-		return nil
-	}
-	af, err := niTableConnAddressFamilyToEnum(reqInfo.addressFamily)
-	if err != nil {
-		return nil
-	}
+	return getNiTableConnInstObjByKey(s, reqInfo.niName, key, createIfMissing)
+}
 
-	key := ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_TableConnections_TableConnection_Key{
-		SrcProtocol:   srcProto,
-		DstProtocol:   dstProto,
-		AddressFamily: af,
+func getNiTableConnInstObjByKey(s *ygot.GoStruct, niName string, key ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_TableConnections_TableConnection_Key, createIfMissing bool) *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_TableConnections_TableConnection {
+	tcsObj := getNiTableConnsObj(s, niName, createIfMissing)
+	if tcsObj == nil {
+		return nil
 	}
-	if tcObj, ok := niObj.TableConnections.TableConnection[key]; ok && tcObj != nil {
+	if tcObj, ok := tcsObj.TableConnection[key]; ok && tcObj != nil {
 		ygot.BuildEmptyTree(tcObj)
-		return tcObj.Config
+		return tcObj
 	}
 	if !createIfMissing {
 		return nil
 	}
-	tcObj, err := niObj.TableConnections.NewTableConnection(srcProto, dstProto, af)
-	if err != nil || tcObj == nil {
+	tcObj, newErr := tcsObj.NewTableConnection(key.SrcProtocol, key.DstProtocol, key.AddressFamily)
+	if newErr != nil || tcObj == nil {
 		return nil
 	}
 	ygot.BuildEmptyTree(tcObj)
+	return tcObj
+}
+
+func getNiTableConnCfgObj(s *ygot.GoStruct, reqInfo *niTableConnReqInfo, createIfMissing bool) *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_TableConnections_TableConnection_Config {
+	tcObj := getNiTableConnInstObj(s, reqInfo, createIfMissing)
+	if tcObj == nil {
+		return nil
+	}
 	return tcObj.Config
+}
+
+// wrapNiTableConnRootAsDevice normalizes the request root to a device object so
+// that one set of tree walks serves every anchor path in the hierarchy.
+func wrapNiTableConnRootAsDevice(s *ygot.GoStruct, reqInfo *niTableConnReqInfo) (*ygot.GoStruct, error) {
+	if s == nil || *s == nil {
+		return nil, tlerr.InvalidArgsError{Format: "empty YANG root for table-connection mapping"}
+	}
+	if _, ok := (*s).(*ocbinds.Device); ok {
+		return s, nil
+	}
+
+	devObj := &ocbinds.Device{}
+	ygot.BuildEmptyTree(devObj)
+	if devObj.NetworkInstances == nil {
+		devObj.NetworkInstances = &ocbinds.OpenconfigNetworkInstance_NetworkInstances{}
+	}
+	niObj, err := devObj.NetworkInstances.NewNetworkInstance(reqInfo.niName)
+	if err != nil || niObj == nil {
+		return nil, tlerr.InvalidArgsError{Format: "unable to create network-instance context for table-connection mapping"}
+	}
+	ygot.BuildEmptyTree(niObj)
+
+	// Reuse the original subtree pointers so that DbToYang population updates
+	// the caller owned objects regardless of the anchor path.
+	switch root := (*s).(type) {
+	case *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_TableConnections:
+		niObj.TableConnections = root
+	case *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_TableConnections_TableConnection:
+		key, keyErr := niTableConnYgotKey(reqInfo)
+		if keyErr != nil {
+			return nil, keyErr
+		}
+		if niObj.TableConnections == nil {
+			niObj.TableConnections = &ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_TableConnections{}
+		}
+		if niObj.TableConnections.TableConnection == nil {
+			niObj.TableConnections.TableConnection = map[ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_TableConnections_TableConnection_Key]*ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_TableConnections_TableConnection{}
+		}
+		niObj.TableConnections.TableConnection[key] = root
+	case *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_TableConnections_TableConnection_Config:
+		var devRoot ygot.GoStruct = devObj
+		tcObj := getNiTableConnInstObj(&devRoot, reqInfo, true)
+		if tcObj == nil {
+			return nil, tlerr.InvalidArgsError{Format: "unable to create table-connection context for table-connection mapping"}
+		}
+		tcObj.Config = root
+	default:
+		return nil, tlerr.InvalidArgsError{Format: "unsupported YANG root for table-connection mapping"}
+	}
+
+	var wrapped ygot.GoStruct = devObj
+	return &wrapped, nil
+}
+
+// niTableConnMappedPayloadLeaves lists every leaf, relative to the
+// table-connections container, that a request may carry. The list keys are
+// included because a payload repeats them alongside the data they identify.
+var niTableConnMappedPayloadLeaves = map[string]bool{
+	"table-connection/src-protocol":          true,
+	"table-connection/dst-protocol":          true,
+	"table-connection/address-family":        true,
+	"table-connection/config/src-protocol":   true,
+	"table-connection/config/dst-protocol":   true,
+	"table-connection/config/address-family": true,
+	"table-connection/config/import-policy":  true,
+}
+
+// findNiTableConnUnmappedPayloadLeaves reports payload leaves that have no
+// CONFIG_DB mapping, so that a request carrying them is refused instead of
+// being silently reduced to the leaves that do map. Each instance is walked
+// separately so that the reported path names its keys the way the URI does.
+func findNiTableConnUnmappedPayloadLeaves(s *ygot.GoStruct, niName string) []string {
+	tcsObj := getNiTableConnsObj(s, niName, false)
+	if tcsObj == nil {
+		return nil
+	}
+	var unmapped []string
+	for key, tcObj := range tcsObj.TableConnection {
+		if tcObj == nil {
+			continue
+		}
+		display := fmt.Sprintf("table-connections/table-connection[src-protocol=%s][dst-protocol=%s][address-family=%s]",
+			niTableConnProtocolEnumToOcName(key.SrcProtocol),
+			niTableConnProtocolEnumToOcName(key.DstProtocol),
+			niTableConnAddressFamilyEnumToOcName(key.AddressFamily))
+		collectOcUnmappedPayloadLeaves(reflect.ValueOf(tcObj), niTableConnMappedPayloadLeaves, "table-connection", display, 0, &unmapped)
+	}
+	sort.Strings(unmapped)
+	return unmapped
+}
+
+func niTableConnProtocolEnumToOcName(proto ocbinds.E_OpenconfigPolicyTypes_INSTALL_PROTOCOL_TYPE) string {
+	switch proto {
+	case ocbinds.OpenconfigPolicyTypes_INSTALL_PROTOCOL_TYPE_BGP:
+		return "BGP"
+	case ocbinds.OpenconfigPolicyTypes_INSTALL_PROTOCOL_TYPE_STATIC:
+		return "STATIC"
+	case ocbinds.OpenconfigPolicyTypes_INSTALL_PROTOCOL_TYPE_DIRECTLY_CONNECTED:
+		return "DIRECTLY_CONNECTED"
+	case ocbinds.OpenconfigPolicyTypes_INSTALL_PROTOCOL_TYPE_OSPF:
+		return "OSPF"
+	case ocbinds.OpenconfigPolicyTypes_INSTALL_PROTOCOL_TYPE_ISIS:
+		return "ISIS"
+	default:
+		return fmt.Sprintf("%v", int64(proto))
+	}
+}
+
+func niTableConnAddressFamilyEnumToOcName(af ocbinds.E_OpenconfigTypes_ADDRESS_FAMILY) string {
+	switch af {
+	case ocbinds.OpenconfigTypes_ADDRESS_FAMILY_IPV4:
+		return "IPV4"
+	case ocbinds.OpenconfigTypes_ADDRESS_FAMILY_IPV6:
+		return "IPV6"
+	default:
+		return fmt.Sprintf("%v", int64(af))
+	}
 }
 
 func parseNiTableConnImportPolicyValues(v interface{}) []string {
@@ -307,21 +572,97 @@ func parseNiTableConnSingleImportPolicy(values []string) (string, error) {
 	return values[0], nil
 }
 
-func parseNiTableConnImportPolicy(inParams XfmrParams, reqInfo *niTableConnReqInfo) (string, error) {
-	if values, ok := parseNiTableConnImportPolicyFromParam(inParams.param); ok {
-		return parseNiTableConnSingleImportPolicy(values)
-	}
-	cfgObj := getNiTableConnCfgObj(inParams.ygRoot, reqInfo, false)
-	if cfgObj == nil || len(cfgObj.ImportPolicy) == 0 {
-		return "", tlerr.InvalidArgsError{Format: "table-connection import-policy is missing in request payload"}
-	}
-	values := make([]string, 0, len(cfgObj.ImportPolicy))
-	for _, p := range cfgObj.ImportPolicy {
-		if s := strings.TrimSpace(p); s != "" {
-			values = append(values, s)
+// niTableConnImportPolicyFromReq resolves the route-map a request names, and
+// reports whether it named one at all. A request that carries no policy is
+// valid at and above the config container: it asks for a redistribution with
+// no route-map attached.
+func niTableConnImportPolicyFromReq(inParams XfmrParams, root *ygot.GoStruct, reqInfo *niTableConnReqInfo) (string, bool, error) {
+	values, ok := parseNiTableConnImportPolicyFromParam(inParams.param)
+	if !ok {
+		if cfgObj := getNiTableConnCfgObj(root, reqInfo, false); cfgObj != nil {
+			for _, p := range cfgObj.ImportPolicy {
+				if s := strings.TrimSpace(p); s != "" {
+					values = append(values, s)
+				}
+			}
 		}
 	}
-	return parseNiTableConnSingleImportPolicy(values)
+	if len(values) == 0 {
+		return "", false, nil
+	}
+	policy, err := parseNiTableConnSingleImportPolicy(values)
+	if err != nil {
+		return "", true, err
+	}
+	return policy, true, nil
+}
+
+// niTableConnPayloadKeyLeafDbValue reads a list key leaf from the payload. An
+// unrecognized shape yields false, which skips the comparison rather than
+// refusing a write whose keys translib has already validated.
+func niTableConnPayloadKeyLeafDbValue(param interface{}, leaf string) (string, bool) {
+	toDb := niTableConnProtocolToDb
+	if leaf == niTableConnAddrFamilyLeaf {
+		toDb = niTableConnAddressFamilyToDb
+	}
+	switch v := param.(type) {
+	case string:
+		if dbVal, err := toDb(v); err == nil {
+			return dbVal, true
+		}
+	case *string:
+		if v == nil {
+			return "", false
+		}
+		if dbVal, err := toDb(*v); err == nil {
+			return dbVal, true
+		}
+	case ocbinds.E_OpenconfigPolicyTypes_INSTALL_PROTOCOL_TYPE:
+		if dbVal, err := niTableConnProtocolEnumToDb(v); err == nil {
+			return dbVal, true
+		}
+	case ocbinds.E_OpenconfigTypes_ADDRESS_FAMILY:
+		if dbVal, err := niTableConnAddressFamilyEnumToDb(v); err == nil {
+			return dbVal, true
+		}
+	}
+	return "", false
+}
+
+// niTableConnCheckPayloadKeyLeaf refuses a key leaf write whose value disagrees
+// with the key named in the URI, which would otherwise land on the row the URI
+// names and quietly ignore the payload.
+func niTableConnCheckPayloadKeyLeaf(inParams XfmrParams, reqInfo *niTableConnReqInfo) error {
+	var uriValue string
+	switch reqInfo.targetLeaf {
+	case niTableConnSrcProtoLeaf:
+		uriValue = reqInfo.srcProtocol
+	case niTableConnDstProtoLeaf:
+		uriValue = reqInfo.dstProtocol
+	case niTableConnAddrFamilyLeaf:
+		uriValue = reqInfo.addressFamily
+	default:
+		return nil
+	}
+
+	payloadValue, ok := niTableConnPayloadKeyLeafDbValue(inParams.param, reqInfo.targetLeaf)
+	if !ok {
+		return nil
+	}
+	toDb := niTableConnProtocolToDb
+	if reqInfo.targetLeaf == niTableConnAddrFamilyLeaf {
+		toDb = niTableConnAddressFamilyToDb
+	}
+	expected, err := toDb(uriValue)
+	if err != nil {
+		return err
+	}
+	if payloadValue != expected {
+		return tlerr.InvalidArgsError{
+			Format: fmt.Sprintf("table-connection %s in the payload does not match %q named in the path", reqInfo.targetLeaf, uriValue),
+		}
+	}
+	return nil
 }
 
 func makeNiTableConnResMap(niName, srcProto, dstProto, af string, fields map[string]string) (map[string]map[string]db.Value, error) {
@@ -343,6 +684,58 @@ func makeNiTableConnResMap(niName, srcProto, dstProto, af string, fields map[str
 			niName + "|" + srcDb + "|" + dstDb + "|" + afDb: db.Value{Field: fields},
 		},
 	}, nil
+}
+
+// buildNiTableConnHierResMap maps every table-connection a container level
+// payload carries, so that one request can create or update several rows.
+func buildNiTableConnHierResMap(s *ygot.GoStruct, niName string) (map[string]map[string]db.Value, error) {
+	res := make(map[string]map[string]db.Value)
+	tcsObj := getNiTableConnsObj(s, niName, false)
+	if tcsObj == nil || len(tcsObj.TableConnection) == 0 {
+		return res, nil
+	}
+
+	rows := make(map[string]db.Value)
+	for key, tcObj := range tcsObj.TableConnection {
+		if tcObj == nil {
+			continue
+		}
+		srcDb, err := niTableConnProtocolEnumToDb(key.SrcProtocol)
+		if err != nil {
+			return nil, err
+		}
+		dstDb, err := niTableConnProtocolEnumToDb(key.DstProtocol)
+		if err != nil {
+			return nil, err
+		}
+		afDb, err := niTableConnAddressFamilyEnumToDb(key.AddressFamily)
+		if err != nil {
+			return nil, err
+		}
+
+		fields := map[string]string{}
+		if tcObj.Config != nil {
+			values := make([]string, 0, len(tcObj.Config.ImportPolicy))
+			for _, p := range tcObj.Config.ImportPolicy {
+				if s := strings.TrimSpace(p); s != "" {
+					values = append(values, s)
+				}
+			}
+			if len(values) > 0 {
+				policy, err := parseNiTableConnSingleImportPolicy(values)
+				if err != nil {
+					return nil, err
+				}
+				fields[niTableConnRouteMapFld] = policy
+			}
+		}
+		rows[niName+"|"+srcDb+"|"+dstDb+"|"+afDb] = db.Value{Field: fields}
+	}
+
+	if len(rows) > 0 {
+		res[niTableConnTbl] = rows
+	}
+	return res, nil
 }
 
 func firstPolicyValueFromDb(in string) string {
@@ -369,26 +762,184 @@ var YangToDb_ni_table_conn_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPara
 	}
 
 	if inParams.oper == DELETE {
-		if reqInfo.targetLeaf != "" && reqInfo.targetLeaf != niTableConnImportPolicyLeaf {
-			return res, tlerr.NotSupportedError{Format: "DELETE supported only for /table-connections/table-connection/config or /table-connections/table-connection/config/import-policy", Path: inParams.requestUri}
+		switch reqInfo.targetPath {
+		case niTableConnTargetRoot:
+			return res, tlerr.NotSupportedError{
+				Format: "DELETE is not supported at the table-connections container level; delete a table-connection instead",
+				Path:   inParams.requestUri,
+			}
+		case niTableConnTargetInst:
+			if reqInfo.targetLeaf != "" {
+				// The three keys are the row identity, so there is no field to
+				// clear; removing one of them means removing the row.
+				return res, tlerr.NotSupportedError{
+					Format: "DELETE is not supported for a table-connection list key; delete the table-connection instead",
+					Path:   inParams.requestUri,
+				}
+			}
+			return makeNiTableConnResMap(reqInfo.niName, reqInfo.srcProtocol, reqInfo.dstProtocol, reqInfo.addressFamily, nil)
+		case niTableConnTargetCfg:
+			switch reqInfo.targetLeaf {
+			case "", niTableConnImportPolicyLeaf:
+				return makeNiTableConnResMap(reqInfo.niName, reqInfo.srcProtocol, reqInfo.dstProtocol, reqInfo.addressFamily, map[string]string{
+					niTableConnRouteMapFld: "",
+				})
+			default:
+				return res, tlerr.NotSupportedError{
+					Format: "DELETE is not supported for a table-connection list key; delete the table-connection instead",
+					Path:   inParams.requestUri,
+				}
+			}
 		}
-		return makeNiTableConnResMap(reqInfo.niName, reqInfo.srcProtocol, reqInfo.dstProtocol, reqInfo.addressFamily, map[string]string{
-			niTableConnRouteMapFld: "",
-		})
+		return res, tlerr.NotSupportedError{Format: "unsupported DELETE path under table-connection mapping", Path: inParams.requestUri}
 	}
 
-	if reqInfo.targetLeaf != "" && reqInfo.targetLeaf != niTableConnImportPolicyLeaf {
-		return res, tlerr.NotSupportedError{Format: "unsupported leaf under table-connection config mapping", Path: inParams.requestUri}
+	// An anchor this mapping cannot place in a device tree still carries its
+	// values in inParams.param, so the walk is skipped rather than the request
+	// refused.
+	wrappedRoot, wrapErr := wrapNiTableConnRootAsDevice(inParams.ygRoot, reqInfo)
+	if wrapErr != nil {
+		wrappedRoot = inParams.ygRoot
+	} else if unmapped := findNiTableConnUnmappedPayloadLeaves(wrappedRoot, reqInfo.niName); len(unmapped) > 0 {
+		return res, tlerr.NotSupportedError{
+			Format: "table-connections payload carries leaves that have no CONFIG_DB mapping: " + formatOcLeafPathList(unmapped),
+			Path:   inParams.requestUri,
+		}
 	}
 
-	routeMap, err := parseNiTableConnImportPolicy(inParams, reqInfo)
+	switch reqInfo.targetPath {
+	case niTableConnTargetRoot:
+		res, err = buildNiTableConnHierResMap(wrappedRoot, reqInfo.niName)
+		if err != nil {
+			return make(map[string]map[string]db.Value), err
+		}
+		if len(res) == 0 {
+			return res, tlerr.InvalidArgsError{Format: "table-connections container payload does not include any table-connection"}
+		}
+		if inParams.invokeCRUSubtreeOnce != nil {
+			// The whole subtree is mapped in this call, so translib must not
+			// invoke this transformer again for the child nodes.
+			*inParams.invokeCRUSubtreeOnce = true
+		}
+		return res, nil
+	case niTableConnTargetInst, niTableConnTargetCfg:
+		if err := niTableConnCheckPayloadKeyLeaf(inParams, reqInfo); err != nil {
+			return res, err
+		}
+
+		fields := map[string]string{}
+		switch reqInfo.targetLeaf {
+		case niTableConnImportPolicyLeaf:
+			// A leaf targeted write names the policy, so a missing one is an error.
+			policy, _, policyErr := niTableConnImportPolicyFromReq(inParams, wrappedRoot, reqInfo)
+			if policyErr != nil {
+				return res, policyErr
+			}
+			if policy == "" {
+				return res, tlerr.InvalidArgsError{Format: "table-connection import-policy is missing in request payload"}
+			}
+			fields[niTableConnRouteMapFld] = policy
+		case "":
+			policy, found, policyErr := niTableConnImportPolicyFromReq(inParams, wrappedRoot, reqInfo)
+			if policyErr != nil {
+				return res, policyErr
+			}
+			if found {
+				fields[niTableConnRouteMapFld] = policy
+			}
+		}
+
+		if reqInfo.targetPath == niTableConnTargetInst && inParams.invokeCRUSubtreeOnce != nil {
+			*inParams.invokeCRUSubtreeOnce = true
+		}
+		return makeNiTableConnResMap(reqInfo.niName, reqInfo.srcProtocol, reqInfo.dstProtocol, reqInfo.addressFamily, fields)
+	}
+
+	return res, tlerr.NotSupportedError{Format: "unsupported path for network-instance table-connections mapping", Path: inParams.requestUri}
+}
+
+// niTableConnDbRowsForNi lists the CONFIG_DB rows that belong to one
+// network-instance, which is what a container level read has to enumerate.
+func niTableConnDbRowsForNi(cfgDb *db.DB, niName string) ([]db.Key, error) {
+	keys, err := cfgDb.GetKeys(&db.TableSpec{Name: niTableConnTbl})
 	if err != nil {
-		return res, err
+		return nil, err
+	}
+	rows := make([]db.Key, 0, len(keys))
+	for _, k := range keys {
+		if len(k.Comp) == 4 && k.Comp[0] == niName {
+			rows = append(rows, k)
+		}
+	}
+	return rows, nil
+}
+
+func niTableConnSetInstanceKeys(tcObj *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_TableConnections_TableConnection, key ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_TableConnections_TableConnection_Key) {
+	tcObj.SrcProtocol = key.SrcProtocol
+	tcObj.DstProtocol = key.DstProtocol
+	tcObj.AddressFamily = key.AddressFamily
+	if tcObj.Config != nil {
+		tcObj.Config.SrcProtocol = key.SrcProtocol
+		tcObj.Config.DstProtocol = key.DstProtocol
+		tcObj.Config.AddressFamily = key.AddressFamily
+	}
+}
+
+func niTableConnSetImportPolicy(cfgObj *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_TableConnections_TableConnection_Config, entry db.Value) {
+	if cfgObj == nil {
+		return
+	}
+	if policy, ok := entry.Field[niTableConnRouteMapFld]; ok {
+		if first := firstPolicyValueFromDb(policy); first != "" {
+			cfgObj.ImportPolicy = []string{first}
+		}
+	}
+}
+
+// readNiTableConnAll populates every table-connection of a network-instance,
+// which serves a read anchored on the container or on the keyless list.
+func readNiTableConnAll(inParams XfmrParams, reqInfo *niTableConnReqInfo, cfgDb *db.DB) error {
+	rows, err := niTableConnDbRowsForNi(cfgDb, reqInfo.niName)
+	if err != nil {
+		return err
 	}
 
-	return makeNiTableConnResMap(reqInfo.niName, reqInfo.srcProtocol, reqInfo.dstProtocol, reqInfo.addressFamily, map[string]string{
-		niTableConnRouteMapFld: routeMap,
-	})
+	wrappedRoot, wrapErr := wrapNiTableConnRootAsDevice(inParams.ygRoot, reqInfo)
+	if wrapErr != nil {
+		return wrapErr
+	}
+
+	for _, row := range rows {
+		srcProto, err := niTableConnProtocolDbToEnum(row.Comp[1])
+		if err != nil {
+			return err
+		}
+		dstProto, err := niTableConnProtocolDbToEnum(row.Comp[2])
+		if err != nil {
+			return err
+		}
+		af, err := niTableConnAddressFamilyDbToEnum(row.Comp[3])
+		if err != nil {
+			return err
+		}
+		entry, err := cfgDb.GetEntry(&db.TableSpec{Name: niTableConnTbl}, row)
+		if err != nil {
+			return err
+		}
+
+		key := ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_TableConnections_TableConnection_Key{
+			SrcProtocol:   srcProto,
+			DstProtocol:   dstProto,
+			AddressFamily: af,
+		}
+		tcObj := getNiTableConnInstObjByKey(wrappedRoot, reqInfo.niName, key, true)
+		if tcObj == nil {
+			return tlerr.InvalidArgsError{Format: "Unable to locate network-instance table-connection object in YANG tree"}
+		}
+		niTableConnSetInstanceKeys(tcObj, key)
+		niTableConnSetImportPolicy(tcObj.Config, entry)
+	}
+	return nil
 }
 
 var DbToYang_ni_table_conn_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) error {
@@ -400,6 +951,10 @@ var DbToYang_ni_table_conn_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrPara
 	cfgDb := inParams.dbs[db.ConfigDB]
 	if cfgDb == nil {
 		return tlerr.InvalidArgsError{Format: "ConfigDB nil for network-instance table-connection config"}
+	}
+
+	if reqInfo.targetPath == niTableConnTargetRoot {
+		return readNiTableConnAll(inParams, reqInfo, cfgDb)
 	}
 
 	srcDb, err := niTableConnProtocolToDb(reqInfo.srcProtocol)
@@ -420,17 +975,49 @@ var DbToYang_ni_table_conn_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrPara
 		return err
 	}
 
+	key, err := niTableConnYgotKey(reqInfo)
+	if err != nil {
+		return err
+	}
+
+	if reqInfo.targetPath == niTableConnTargetInst {
+		tcObj := getNiTableConnInstObj(inParams.ygRoot, reqInfo, true)
+		if tcObj == nil {
+			return tlerr.InvalidArgsError{Format: "Unable to locate network-instance table-connection object in YANG tree"}
+		}
+		switch reqInfo.targetLeaf {
+		case niTableConnSrcProtoLeaf:
+			tcObj.SrcProtocol = key.SrcProtocol
+		case niTableConnDstProtoLeaf:
+			tcObj.DstProtocol = key.DstProtocol
+		case niTableConnAddrFamilyLeaf:
+			tcObj.AddressFamily = key.AddressFamily
+		default:
+			niTableConnSetInstanceKeys(tcObj, key)
+			niTableConnSetImportPolicy(tcObj.Config, entry)
+		}
+		return nil
+	}
+
 	cfgObj := getNiTableConnCfgObj(inParams.ygRoot, reqInfo, true)
 	if cfgObj == nil {
 		return tlerr.InvalidArgsError{Format: "Unable to locate network-instance table-connection config object in YANG tree"}
 	}
 
-	if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == niTableConnImportPolicyLeaf {
-		if policy, ok := entry.Field[niTableConnRouteMapFld]; ok {
-			if first := firstPolicyValueFromDb(policy); first != "" {
-				cfgObj.ImportPolicy = []string{first}
-			}
-		}
+	switch reqInfo.targetLeaf {
+	case niTableConnSrcProtoLeaf:
+		cfgObj.SrcProtocol = key.SrcProtocol
+	case niTableConnDstProtoLeaf:
+		cfgObj.DstProtocol = key.DstProtocol
+	case niTableConnAddrFamilyLeaf:
+		cfgObj.AddressFamily = key.AddressFamily
+	case niTableConnImportPolicyLeaf:
+		niTableConnSetImportPolicy(cfgObj, entry)
+	default:
+		cfgObj.SrcProtocol = key.SrcProtocol
+		cfgObj.DstProtocol = key.DstProtocol
+		cfgObj.AddressFamily = key.AddressFamily
+		niTableConnSetImportPolicy(cfgObj, entry)
 	}
 	return nil
 }
