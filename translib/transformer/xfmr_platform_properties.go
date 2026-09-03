@@ -19,8 +19,10 @@
 package transformer
 
 import (
+	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Azure/sonic-mgmt-common/translib/db"
 	lvl "github.com/Azure/sonic-mgmt-common/translib/log"
@@ -48,6 +50,26 @@ const (
 	/* Nodes an on-change subscription can be served on. */
 	COMP_PROP_STATE       = COMP_PROPS + "/property/state"
 	COMP_PROP_STATE_VALUE = COMP_PROP_STATE + "/" + PROP_VALUE_LEAF
+
+	/* Prefix shared by every leaf under a component's cpu anchor.  The
+	 * utilization container arrives module-qualified, so a prefix match is what
+	 * covers the anchor, the container, its state and the leaf alike. */
+	COMP_CPU = COMP + "/cpu"
+
+	procLoadAvgPath = "/proc/loadavg"
+	procCpuInfoPath = "/proc/cpuinfo"
+	procStatPath    = "/proc/stat"
+
+	/* Interval between the two /proc/stat reads a utilization percentage is
+	 * computed from. */
+	cpuSampleWindow = 100 * time.Millisecond
+
+	/* The fields following the name on a /proc/stat cpu line are user, nice,
+	 * system, idle, iowait, irq, softirq and steal.  idle is the fourth, and
+	 * steal is the last one summed: the two after it, guest and guest_nice, are
+	 * already counted inside user and nice. */
+	cpuStatIdleField = 4
+	cpuStatLastField = 8
 )
 
 /* Reads one property for one component.  cType is the type the caller resolved
@@ -142,6 +164,17 @@ func domThreshold(field string) propDescriptor {
 func domSensor(field string) propDescriptor {
 	return xcvrFloat(TRANSCEIVER_DOM, field)
 }
+
+/* Reads a property from the host rather than from a database.  Naming no table
+ * leaves the property unsubscribable: no key changes when the value does, so it
+ * can only be sampled. */
+func hostProp(types []componentType, get propGetter) propDescriptor {
+	return propDescriptor{types: types, get: get}
+}
+
+/* Component type the host properties are served on, the one the kernel they
+ * describe runs on. */
+var hostCpuTypes = []componentType{CompTypeChassis}
 
 /* FRU component types that carry presence/status health in STATE_DB. */
 var fruTypes = []componentType{CompTypePsu, CompTypeFan, CompTypeFanTray}
@@ -261,6 +294,15 @@ var propTbl = map[string]propDescriptor{
 	"operStatus": operStatusDescriptor(),
 	"hwStatus":   fruBool("presence"),
 	"active":     fruBool("status"),
+
+	/* Host load, core count, uptime and cpu utilization, read from procfs and
+	 * from sysinfo. */
+	"loadAvg1m":   hostProp(hostCpuTypes, cpuLoadAvgProp(0)),
+	"loadAvg5m":   hostProp(hostCpuTypes, cpuLoadAvgProp(1)),
+	"loadAvg15m":  hostProp(hostCpuTypes, cpuLoadAvgProp(2)),
+	"numCores":    hostProp(hostCpuTypes, cpuNumCoresProp),
+	"uptime":      hostProp(hostCpuTypes, cpuUptimeProp),
+	"utilization": hostProp(hostCpuTypes, cpuUtilizationProp),
 }
 
 /* True when the request targets anything under a component's properties. */
@@ -364,4 +406,182 @@ func setProperty(comp *ocbinds.OpenconfigPlatform_Components_Component, compName
 	prop.State.Name = &propName
 	prop.State.Value = union
 	return nil
+}
+
+/* Reads the 1, 5 and 15 minute load averages from /proc/loadavg. */
+func procLoadAvg() ([3]float64, error) {
+	var loads [3]float64
+	data, err := os.ReadFile(procLoadAvgPath)
+	if err != nil {
+		return loads, tlerr.NotFound("cannot read %s: %v", procLoadAvgPath, err)
+	}
+	return parseLoadAvg(string(data))
+}
+
+func parseLoadAvg(loadavg string) ([3]float64, error) {
+	var loads [3]float64
+	fields := strings.Fields(loadavg)
+	if len(fields) < len(loads) {
+		return loads, tlerr.NotFound("%s holds %d fields, want at least %d",
+			procLoadAvgPath, len(fields), len(loads))
+	}
+	for i := range loads {
+		v, err := strconv.ParseFloat(fields[i], 64)
+		if err != nil {
+			return [3]float64{}, err
+		}
+		loads[i] = v
+	}
+	return loads, nil
+}
+
+/* Counts the logical cpus /proc/cpuinfo lists.  Reading the file keeps the
+ * answer the host's: the runtime counts only the cpus this process may run
+ * on. */
+func procNumCores() (uint64, error) {
+	data, err := os.ReadFile(procCpuInfoPath)
+	if err != nil {
+		return 0, tlerr.NotFound("cannot read %s: %v", procCpuInfoPath, err)
+	}
+	return parseNumCores(string(data))
+}
+
+func parseNumCores(cpuinfo string) (uint64, error) {
+	var cores uint64
+	for _, line := range strings.Split(cpuinfo, "\n") {
+		if strings.HasPrefix(line, "processor") {
+			cores++
+		}
+	}
+	if cores == 0 {
+		return 0, tlerr.NotFound("%s lists no processor", procCpuInfoPath)
+	}
+	return cores, nil
+}
+
+/* Cumulative jiffies across every cpu since boot: total over all the fields,
+ * busy over all but idle. */
+type cpuJiffies struct {
+	total uint64
+	busy  uint64
+}
+
+func procCpuJiffies() (cpuJiffies, error) {
+	data, err := os.ReadFile(procStatPath)
+	if err != nil {
+		return cpuJiffies{}, tlerr.NotFound("cannot read %s: %v", procStatPath, err)
+	}
+	return parseCpuJiffies(string(data))
+}
+
+/* Reads the aggregate line, the one named "cpu"; the per-cpu lines that follow
+ * it are named "cpu0", "cpu1" and so on. */
+func parseCpuJiffies(stat string) (cpuJiffies, error) {
+	for _, line := range strings.Split(stat, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 6 || fields[0] != "cpu" {
+			continue
+		}
+		var j cpuJiffies
+		for i := 1; i <= cpuStatLastField && i < len(fields); i++ {
+			v, err := strconv.ParseUint(fields[i], 10, 64)
+			if err != nil {
+				return cpuJiffies{}, err
+			}
+			j.total += v
+			if i != cpuStatIdleField {
+				j.busy += v
+			}
+		}
+		return j, nil
+	}
+	return cpuJiffies{}, tlerr.NotFound("%s holds no aggregate cpu line", procStatPath)
+}
+
+/* Busy share of the cpu time that elapsed across one sample window.  Two reads
+ * are needed because the counters are cumulative: one read gives the average
+ * over the host's whole uptime.  The window is spent inside the request. */
+func cpuUtilizationPct() (uint64, error) {
+	first, err := procCpuJiffies()
+	if err != nil {
+		return 0, err
+	}
+	time.Sleep(cpuSampleWindow)
+	second, err := procCpuJiffies()
+	if err != nil {
+		return 0, err
+	}
+	return cpuUtilizationBetween(first, second)
+}
+
+/* busy/total as a percent, capped at 100.  The per-cpu counters are not updated
+ * at one instant, so a window this short can show more busy jiffies than total
+ * ones. */
+func cpuUtilizationBetween(first, second cpuJiffies) (uint64, error) {
+	if second.total <= first.total {
+		return 0, tlerr.NotFound("no cpu time elapsed between samples")
+	}
+	total := second.total - first.total
+	busy := second.busy - first.busy
+	if busy > total {
+		return 100, nil
+	}
+	return (100*busy + total/2) / total, nil
+}
+
+/* Serves the host cpu utilization on a component's cpu anchor. */
+func fillCpuUtilization(comp *ocbinds.OpenconfigPlatform_Components_Component) error {
+	pct, err := cpuUtilizationPct()
+	if err != nil {
+		return err
+	}
+	/* The framework pre-creates the containers named in the request URI, and
+	 * building a tree stops at one that already exists, so each level is built
+	 * in turn. */
+	ygot.BuildEmptyTree(comp)
+	ygot.BuildEmptyTree(comp.Cpu)
+	ygot.BuildEmptyTree(comp.Cpu.Utilization)
+	instant := uint8(pct)
+	comp.Cpu.Utilization.State.Instant = &instant
+	return nil
+}
+
+/* Serves one of the three load averages as a property. */
+func cpuLoadAvgProp(idx int) propGetter {
+	return func(_ string, _ componentType, _ [db.MaxDB]*db.DB) (interface{}, error) {
+		loads, err := procLoadAvg()
+		if err != nil {
+			return nil, err
+		}
+		return loads[idx], nil
+	}
+}
+
+func cpuNumCoresProp(_ string, _ componentType, _ [db.MaxDB]*db.DB) (interface{}, error) {
+	cores, err := procNumCores()
+	if err != nil {
+		return nil, err
+	}
+	return cores, nil
+}
+
+/* Uptime is served in nanoseconds, so that this property and
+ * /system/state/up-time report one quantity in one unit. */
+func cpuUptimeProp(_ string, _ componentType, _ [db.MaxDB]*db.DB) (interface{}, error) {
+	_, uptime, err := getSystemBootAndUpTime()
+	if err != nil {
+		return nil, err
+	}
+	return uptime, nil
+}
+
+/* Percent busy, the same quantity the cpu anchor's instant leaf carries.  The
+ * two sample separately, so a GET reading both spends two windows and can see
+ * two different values. */
+func cpuUtilizationProp(_ string, _ componentType, _ [db.MaxDB]*db.DB) (interface{}, error) {
+	pct, err := cpuUtilizationPct()
+	if err != nil {
+		return nil, err
+	}
+	return pct, nil
 }
