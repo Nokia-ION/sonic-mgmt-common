@@ -59,6 +59,7 @@ openconfig-routing-policy.yang
 openconfig-routing-policy-annot.yang
 openconfig-bgp-policy.yang
 sonic-policer.yang
+sonic-copp.yang
 sonic-acl.yang
 openconfig-vlan-annot.yang
 openconfig-relay-agent.yang
