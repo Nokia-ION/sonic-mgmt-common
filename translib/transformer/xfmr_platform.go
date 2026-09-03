@@ -1282,6 +1282,8 @@ func compTypesForSubscriptionUri(uri string) []componentType {
 		cTypes = []componentType{CompTypeFan}
 	} else if strings.HasPrefix(uri, "/openconfig-platform:components/component/storage") {
 		cTypes = []componentType{CompTypeStorage}
+	} else if strings.HasPrefix(uri, COMP_CPU) {
+		cTypes = []componentType{CompTypeChassis}
 	} else if strings.HasPrefix(uri, "/openconfig-platform:components/component/integrated-circuit") {
 		cTypes = []componentType{CompTypeIC}
 	} else if strings.HasPrefix(uri, "/openconfig-platform:components/component/software-module") {
@@ -1369,6 +1371,12 @@ func translateSubscribe(inParams XfmrSubscInParams, key, targetUriPath string) (
 	result.needCache = true
 	result.onChange = OnchangeEnable
 	result.nOpts = &notificationOpts{mInterval: 0, pType: OnChange}
+
+	/* The cpu anchor is served from the host, so no key changes when the value
+	 * does and an on-change subscription would stay silent forever. */
+	if strings.HasPrefix(targetUriPath, COMP_CPU) {
+		result.onChange = OnchangeDisable
+	}
 
 	/* Use the requested path to create a positive filter of component types to
 	 * process.  Note that a completely empty filter means no filtering is
@@ -1841,6 +1849,13 @@ func getSysComponents(pf_cpts *ocbinds.OpenconfigPlatform_Components, targetUriP
 		if isPropertiesPath(targetUriPath) && compType != CompTypeFilesystem {
 			return fillProperties(pf_comp, compName, compType, subKey, dbs)
 		}
+		/* The cpu anchor is served on the chassis alone. */
+		if strings.HasPrefix(targetUriPath, COMP_CPU) {
+			if compType != CompTypeChassis {
+				return tlerr.NotFound("%s has no cpu utilization", compName)
+			}
+			return fillCpuUtilization(pf_comp)
+		}
 		switch compType {
 		case CompTypePsu:
 			ygot.BuildEmptyTree(pf_comp.PowerSupply)
@@ -2045,6 +2060,13 @@ func compTypeToFuncCall(cType componentType, compName, subKey string, pfComp *oc
 	case CompTypeIC:
 		return fillICInfo(pfComp, compName, targetUriPath, dbs, ygRoot)
 	case CompTypeChassis:
+		/* A whole-component GET carries the host cpu utilization; having none
+		 * is not fatal to the rest of the component. */
+		if pType == AllPaths {
+			if err := fillCpuUtilization(pfComp); err != nil {
+				log.V(lvl.DEBUG).Infof("compTypeToFuncCall: cpu utilization for %s: %v", compName, err)
+			}
+		}
 		return fillFirmwareInfo(pfComp, compName, pType, targetUriPath, d, cfgdb)
 	case CompTypeNWStack, CompTypeOS, CompTypeBootLoader:
 		return fillSWCompInfo(pfComp, compName, pType, targetUriPath, d, cType)
