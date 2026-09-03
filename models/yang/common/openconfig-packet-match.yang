@@ -311,8 +311,6 @@ module openconfig-packet-match {
         uses ipv6-protocol-fields-config;
         uses ipv6-protocol-fields-state;
       }
-
-      uses ip-icmpv6-header-fields-top;
     }
   }
 
@@ -366,6 +364,121 @@ module openconfig-packet-match {
 
         uses ip-icmpv6-header-fields-config;
       }
+    }
+  }
+
+  grouping ip-icmpv4-header-fields-config {
+    description
+      "Collection of ICMPv4 header fields that can be used to set up a
+      match filter, so that, for example, ICMP redirects can be dropped
+      while echo requests are permitted.";
+
+    // Upstream openconfig-packet-match models ICMPv6 type/code as an
+    // identityref (openconfig-icmpv6-types) but has no equivalent module for
+    // ICMPv4. Rather than introduce one, ICMPv4 type and code are the plain
+    // numeric values carried on the wire, which is also how they are stored
+    // in the SONiC ACL_RULE ICMP_TYPE and ICMP_CODE fields.
+    leaf type {
+      type uint8;
+      description
+        "ICMPv4 type to be matched, as the numeric value defined by IANA,
+        for example 5 for Redirect or 8 for Echo Request.";
+      reference
+        "RFC 792: Internet Control Message Protocol.";
+    }
+
+    leaf code {
+      type uint8;
+      description
+        "ICMPv4 code to be matched, as the numeric value defined by IANA
+        within the message type.";
+      reference
+        "RFC 792: Internet Control Message Protocol.";
+    }
+  }
+
+  grouping ip-icmpv4-header-fields-top {
+    description
+      "Top grouping for ICMPv4 filtering";
+
+    container icmpv4 {
+      description
+        "Top container for ICMPv4 filtering";
+
+      container config {
+        description
+          "Configuration attributes for ICMPv4 filtering";
+
+        uses ip-icmpv4-header-fields-config;
+      }
+
+      container state {
+        description
+          "State attributes for ICMPv4 filtering";
+        config false;
+
+        uses ip-icmpv4-header-fields-config;
+      }
+    }
+  }
+
+  // ACL-specific variants of the IPv4/IPv6 match top groupings. These are
+  // identical to ipv4-protocol-fields-top / ipv6-protocol-fields-top but also
+  // carry the ICMP type/code match containers. They exist as separate
+  // groupings so ICMP matching is added to the ACL model only: the plain
+  // -top groupings remain shared with other consumers (for example
+  // openconfig-qos-elements) that must not expose ICMP match fields. Keeping
+  // the icmp containers as native ACL nodes (rather than an augment) also
+  // preserves subtree GET of the icmpv4/icmpv6 containers.
+  grouping ipv4-protocol-fields-acl-top {
+    description
+      "IPv4 match fields for ACL entries, including ICMPv4 filtering.";
+
+    container ipv4 {
+      description
+        "Top level container for IPv4 match field data";
+
+      container config {
+        description
+          "Configuration data for IPv4 match fields";
+        uses ipv4-protocol-fields-config;
+      }
+
+      container state {
+        config false;
+        description
+          "State information for IPv4 match fields";
+        uses ipv4-protocol-fields-config;
+        uses ipv4-protocol-fields-state;
+      }
+
+      uses ip-icmpv4-header-fields-top;
+    }
+  }
+
+  grouping ipv6-protocol-fields-acl-top {
+    description
+      "IPv6 match fields for ACL entries, including ICMPv6 filtering.";
+
+    container ipv6 {
+      description
+        "Top-level container for IPv6 match field data";
+
+      container config {
+        description
+          "Configuration data for IPv6 match fields";
+        uses ipv6-protocol-fields-config;
+      }
+
+      container state {
+        config false;
+        description
+          "Operational state data for IPv6 match fields";
+        uses ipv6-protocol-fields-config;
+        uses ipv6-protocol-fields-state;
+      }
+
+      uses ip-icmpv6-header-fields-top;
     }
   }
 

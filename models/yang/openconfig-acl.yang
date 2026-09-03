@@ -390,14 +390,14 @@ module openconfig-acl {
               "MAC-layer fields are valid when the ACL type is L2";
           }
         }
-        uses oc-match:ipv4-protocol-fields-top {
+        uses oc-match:ipv4-protocol-fields-acl-top {
           when "../../config/type='ACL_IPV4'" {
             description
               "IPv4-layer fields are valid when the ACL type is
               IPv4";
           }
         }
-        uses oc-match:ipv6-protocol-fields-top {
+        uses oc-match:ipv6-protocol-fields-acl-top {
           when "../../config/type='ACL_IPV6'" {
             description
               "IPv6-layer fields are valid when the ACL type is
