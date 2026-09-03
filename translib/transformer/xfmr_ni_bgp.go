@@ -1646,14 +1646,20 @@ var YangToDb_ni_bgp_global_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPara
 
 	// DELETE: clear only the targeted field in BGP_GLOBALS|<ni-name>.
 	if inParams.oper == DELETE {
-		// The neighbor list instance and the neighbors container carry this
-		// transformer rather than the neighbor one, so their deletes are
-		// mapped by the neighbor file before the container refusal below.
+		// The neighbor and peer-group list instances, and the containers
+		// holding them, carry this transformer rather than their own, so their
+		// deletes are mapped by those files before the container refusal below.
 		if handled, nbrRes, nbrErr := niBgpNbrHierDeleteDispatch(inParams); handled {
 			if nbrRes == nil {
 				nbrRes = make(map[string]map[string]db.Value)
 			}
 			return nbrRes, nbrErr
+		}
+		if handled, pgRes, pgErr := niBgpPgHierDeleteDispatch(inParams); handled {
+			if pgRes == nil {
+				pgRes = make(map[string]map[string]db.Value)
+			}
+			return pgRes, pgErr
 		}
 		if reqInfo.targetPathKind == niBgpTargetProtocolRoot || reqInfo.targetPathKind == niBgpTargetBgpRoot {
 			return res, tlerr.NotSupportedError{Format: "DELETE is not supported at BGP container level; delete mapped child paths or list instances instead", Path: inParams.requestUri}
