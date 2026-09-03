@@ -40,11 +40,12 @@ const (
 	niBgpNbrRouteMapInFld = "route_map_in"
 	niBgpNbrAllowAsInFld  = "allow_as_in"
 	niBgpNbrAllowAsCntFld = "allow_as_count"
+	niBgpNbrSendCommFld   = "send_community"
 	niBgpNbrAfiSafiIPv4   = "ipv4_unicast"
 	niBgpNbrAfiSafiIPv6   = "ipv6_unicast"
 )
 
-var niBgpNbrReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/protocols/protocol\[identifier=BGP\]\[name=bgp\]/bgp/neighbors/neighbor\[neighbor-address=([^\]]+)\]/config(?:/(peer-group|enabled|peer-as))?$`)
+var niBgpNbrReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/protocols/protocol\[identifier=BGP\]\[name=bgp\]/bgp/neighbors/neighbor\[neighbor-address=([^\]]+)\]/config(?:/(peer-group|enabled|peer-as|send-community))?$`)
 var niBgpNbrAsPathOptReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/protocols/protocol\[identifier=BGP\]\[name=bgp\]/bgp/neighbors/neighbor\[neighbor-address=([^\]]+)\]/as-path-options/config(?:/(allow-own-as))?$`)
 var niBgpNbrAfApplyReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/protocols/protocol\[identifier=BGP\]\[name=bgp\]/bgp/neighbors/neighbor\[neighbor-address=([^\]]+)\]/afi-safis/afi-safi\[afi-safi-name=([^\]]+)\]/apply-policy/config(?:/(import-policy))?$`)
 var niBgpNbrAfCfgReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/protocols/protocol\[identifier=BGP\]\[name=bgp\]/bgp/neighbors/neighbor\[neighbor-address=([^\]]+)\]/afi-safis/afi-safi\[afi-safi-name=([^\]]+)\]/config(?:/(afi-safi-name|enabled))?$`)
@@ -654,6 +655,85 @@ func makeNiBgpNbrResMap(niName, neighborAddr string, fields map[string]string) m
 	}
 }
 
+// send-community sits on the neighbor config container, which has no address
+// family, while CONFIG_DB holds it per family in BGP_NEIGHBOR_AF. frrcfgd
+// renders the field as "neighbor <addr> send-community <type>", so the DB
+// spelling is the FRR one. The DB also takes "large", which this model carries
+// no value for.
+func niBgpNbrSendCommunityToDb(v ocbinds.E_OpenconfigBgp_CommunityType) (string, bool) {
+	switch v {
+	case ocbinds.OpenconfigBgp_CommunityType_STANDARD:
+		return "standard", true
+	case ocbinds.OpenconfigBgp_CommunityType_EXTENDED:
+		return "extended", true
+	case ocbinds.OpenconfigBgp_CommunityType_BOTH:
+		return "both", true
+	case ocbinds.OpenconfigBgp_CommunityType_NONE:
+		return "none", true
+	}
+	return "", false
+}
+
+func niBgpNbrSendCommunityFromDb(v string) (ocbinds.E_OpenconfigBgp_CommunityType, bool) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "standard":
+		return ocbinds.OpenconfigBgp_CommunityType_STANDARD, true
+	case "extended":
+		return ocbinds.OpenconfigBgp_CommunityType_EXTENDED, true
+	case "both":
+		return ocbinds.OpenconfigBgp_CommunityType_BOTH, true
+	case "none":
+		return ocbinds.OpenconfigBgp_CommunityType_NONE, true
+	}
+	// "large" is a valid CONFIG_DB value with no counterpart in this model, so
+	// it is reported as absent rather than as one of the four it is not.
+	return ocbinds.OpenconfigBgp_CommunityType_UNSET, false
+}
+
+func parseNiBgpNbrSendCommunityFromParam(param interface{}) (string, bool) {
+	var s string
+	switch val := param.(type) {
+	case ocbinds.E_OpenconfigBgp_CommunityType:
+		return niBgpNbrSendCommunityToDb(val)
+	case string:
+		s = val
+	case *string:
+		if val == nil {
+			return "", false
+		}
+		s = *val
+	default:
+		return "", false
+	}
+	s = strings.TrimSpace(s)
+	if idx := strings.LastIndex(s, ":"); idx >= 0 {
+		s = s[idx+1:]
+	}
+	switch strings.ToUpper(s) {
+	case "STANDARD":
+		return "standard", true
+	case "EXTENDED":
+		return "extended", true
+	case "BOTH":
+		return "both", true
+	case "NONE":
+		return "none", true
+	}
+	return "", false
+}
+
+func parseNiBgpNbrSendCommunity(inParams XfmrParams, reqInfo *niBgpNbrReqInfo) (string, error) {
+	if v, ok := parseNiBgpNbrSendCommunityFromParam(inParams.param); ok {
+		return v, nil
+	}
+	if cfgObj := getNiBgpNbrCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.neighborAddr, false); cfgObj != nil {
+		if v, ok := niBgpNbrSendCommunityToDb(cfgObj.SendCommunity); ok {
+			return v, nil
+		}
+	}
+	return "", tlerr.InvalidArgsError{Format: "BGP neighbor send-community is missing or carries an unsupported value in request payload"}
+}
+
 func makeNiBgpNbrAfResMap(niName, neighborAddr string, fields map[string]string) map[string]map[string]db.Value {
 	return map[string]map[string]db.Value{
 		niBgpNbrAfTbl: {
@@ -919,8 +999,10 @@ var YangToDb_ni_bgp_nbr_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 			return makeNiBgpNbrResMap(reqInfo.niName, reqInfo.neighborAddr, map[string]string{niBgpNbrAsnFld: ""}), nil
 		case "enabled":
 			return makeNiBgpNbrResMap(reqInfo.niName, reqInfo.neighborAddr, map[string]string{niBgpNbrAdminStatus: ""}), nil
+		case "send-community":
+			return makeNiBgpNbrAfResMap(reqInfo.niName, reqInfo.neighborAddr, map[string]string{niBgpNbrSendCommFld: ""}), nil
 		default:
-			return res, tlerr.NotSupportedError{Format: "DELETE supported only for /neighbors/neighbor/config/peer-group, /neighbors/neighbor/config/peer-as, or /neighbors/neighbor/config/enabled", Path: inParams.requestUri}
+			return res, tlerr.NotSupportedError{Format: "DELETE supported only for /neighbors/neighbor/config/peer-group, /neighbors/neighbor/config/peer-as, /neighbors/neighbor/config/enabled, or /neighbors/neighbor/config/send-community", Path: inParams.requestUri}
 		}
 	}
 
@@ -968,6 +1050,10 @@ var YangToDb_ni_bgp_nbr_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 	}
 
 	fields := make(map[string]string)
+	// send-community is the one leaf of this container that lands in
+	// BGP_NEIGHBOR_AF rather than BGP_NEIGHBOR, so it is carried alongside the
+	// BGP_NEIGHBOR fields and merged in below.
+	sendComm := ""
 	switch reqInfo.targetLeaf {
 	case "peer-group":
 		pg, err := parseNiBgpNbrPeerGroup(inParams)
@@ -987,6 +1073,12 @@ var YangToDb_ni_bgp_nbr_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 			return res, err
 		}
 		fields[niBgpNbrAdminStatus] = niBgpNbrEnabledToAdminStatus(*enabled)
+	case "send-community":
+		comm, err := parseNiBgpNbrSendCommunity(inParams, reqInfo)
+		if err != nil {
+			return res, err
+		}
+		sendComm = comm
 	default:
 		if pg, ok := parseNiBgpNbrPeerGroupFromParam(inParams.param); ok {
 			fields[niBgpNbrPeerGroupFld] = pg
@@ -997,7 +1089,10 @@ var YangToDb_ni_bgp_nbr_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 		if enabled, ok := parseNiBgpNbrEnabledFromParam(inParams.param); ok {
 			fields[niBgpNbrAdminStatus] = niBgpNbrEnabledToAdminStatus(*enabled)
 		}
-		if len(fields) == 0 {
+		if comm, ok := parseNiBgpNbrSendCommunityFromParam(inParams.param); ok {
+			sendComm = comm
+		}
+		if len(fields) == 0 && sendComm == "" {
 			cfgObj := getNiBgpNbrCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.neighborAddr, false)
 			if cfgObj != nil {
 				if cfgObj.PeerGroup != nil && strings.TrimSpace(*cfgObj.PeerGroup) != "" {
@@ -1009,11 +1104,23 @@ var YangToDb_ni_bgp_nbr_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 				if cfgObj.Enabled != nil {
 					fields[niBgpNbrAdminStatus] = niBgpNbrEnabledToAdminStatus(*cfgObj.Enabled)
 				}
+				if comm, ok := niBgpNbrSendCommunityToDb(cfgObj.SendCommunity); ok {
+					sendComm = comm
+				}
 			}
 		}
-		if len(fields) == 0 {
-			return res, tlerr.InvalidArgsError{Format: "BGP neighbor config payload missing supported fields (peer-group/peer-as/enabled)"}
+		if len(fields) == 0 && sendComm == "" {
+			return res, tlerr.InvalidArgsError{Format: "BGP neighbor config payload missing supported fields (peer-group/peer-as/enabled/send-community)"}
 		}
+	}
+	if sendComm != "" {
+		afRes := ensureNiBgpNbrParentRow(makeNiBgpNbrAfResMap(reqInfo.niName, reqInfo.neighborAddr, map[string]string{
+			niBgpNbrSendCommFld: sendComm,
+		}), reqInfo.niName, reqInfo.neighborAddr)
+		if len(fields) == 0 {
+			return afRes, nil
+		}
+		return mergeDbResMapFields(afRes, makeNiBgpNbrResMap(reqInfo.niName, reqInfo.neighborAddr, fields)), nil
 	}
 	return makeNiBgpNbrResMap(reqInfo.niName, reqInfo.neighborAddr, fields), nil
 }
@@ -1090,6 +1197,21 @@ var DbToYang_ni_bgp_nbr_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams)
 		if ok && strings.TrimSpace(status) != "" {
 			if enabled, ok := niBgpNbrAdminStatusToEnabled(status); ok {
 				cfgObj.Enabled = enabled
+			}
+		}
+	}
+	if reqInfo.targetPath == "neighbor-config" && (reqInfo.targetLeaf == "" || reqInfo.targetLeaf == "send-community") {
+		// The leaf is written to both families, so either row answers for it.
+		// A neighbor configured for one family only still has the other row
+		// missing, which is not an error here.
+		for _, afiSafi := range []string{niBgpNbrAfiSafiIPv4, niBgpNbrAfiSafiIPv6} {
+			afEntry, afErr := cfgDb.GetEntry(&db.TableSpec{Name: niBgpNbrAfTbl}, db.Key{Comp: []string{reqInfo.niName, reqInfo.neighborAddr, afiSafi}})
+			if afErr != nil {
+				continue
+			}
+			if comm, ok := niBgpNbrSendCommunityFromDb(afEntry.Field[niBgpNbrSendCommFld]); ok {
+				cfgObj.SendCommunity = comm
+				break
 			}
 		}
 	}

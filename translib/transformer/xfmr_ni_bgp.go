@@ -232,6 +232,7 @@ var niBgpMappedPayloadLeaves = map[string]bool{
 	"neighbors/neighbor/config/enabled":                                                       true,
 	"neighbors/neighbor/config/peer-as":                                                       true,
 	"neighbors/neighbor/config/peer-group":                                                    true,
+	"neighbors/neighbor/config/send-community":                                                true,
 	"neighbors/neighbor/as-path-options/config/allow-own-as":                                  true,
 	"neighbors/neighbor/afi-safis/afi-safi/afi-safi-name":                                     true,
 	"neighbors/neighbor/afi-safis/afi-safi/config/afi-safi-name":                              true,
@@ -246,6 +247,7 @@ var niBgpMappedPayloadLeaves = map[string]bool{
 	"peer-groups/peer-group/afi-safis/afi-safi/config/afi-safi-name":                          true,
 	"peer-groups/peer-group/afi-safis/afi-safi/apply-policy/config/export-policy":             true,
 	"peer-groups/peer-group/afi-safis/afi-safi/ipv4-unicast/prefix-limit/config/max-prefixes": true,
+	"peer-groups/peer-group/afi-safis/afi-safi/ipv6-unicast/prefix-limit/config/max-prefixes": true,
 }
 
 // lookupNiBgpProtoObj returns the bgp container of the BGP protocol instance
@@ -1281,6 +1283,13 @@ func buildNiBgpHierResMap(s *ygot.GoStruct, niName string) map[string]map[string
 			// A payload may name a list instance while setting no mapped leaf
 			// under it; that still asks for the row itself to exist.
 			res = mergeDbResMapFields(res, makeNiBgpNbrResMap(niName, nbrAddr, nbrFields))
+			if nbrObj.Config != nil {
+				if comm, ok := niBgpNbrSendCommunityToDb(nbrObj.Config.SendCommunity); ok {
+					res = mergeDbResMapFields(res, ensureNiBgpNbrParentRow(makeNiBgpNbrAfResMap(niName, nbrAddr, map[string]string{
+						niBgpNbrSendCommFld: comm,
+					}), niName, nbrAddr))
+				}
+			}
 			if nbrObj.AsPathOptions != nil && nbrObj.AsPathOptions.Config != nil && nbrObj.AsPathOptions.Config.AllowOwnAs != nil {
 				allowOwnAs := *nbrObj.AsPathOptions.Config.AllowOwnAs
 				if allowOwnAs == 0 {
@@ -1487,6 +1496,11 @@ func populateNiBgpHierToYangFromDb(cfgDb *db.DB, ygRoot *ygot.GoStruct, niName s
 						v := uint8(cntVal)
 						asPathCfg.AllowOwnAs = &v
 					}
+				}
+			}
+			if comm, ok := niBgpNbrSendCommunityFromDb(nbrAfEntry.Field[niBgpNbrSendCommFld]); ok {
+				if nbrCfg := getNiBgpNbrCfgObj(ygRoot, niName, nbrAddr, true); nbrCfg != nil {
+					nbrCfg.SendCommunity = comm
 				}
 			}
 			if imp, ok := nbrAfEntry.Field[niBgpNbrRouteMapInFld]; ok && strings.TrimSpace(imp) != "" {
