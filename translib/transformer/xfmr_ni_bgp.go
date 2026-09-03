@@ -246,6 +246,7 @@ var niBgpMappedPayloadLeaves = map[string]bool{
 	"peer-groups/peer-group/timers/config/keepalive-interval":                                 true,
 	"peer-groups/peer-group/afi-safis/afi-safi/afi-safi-name":                                 true,
 	"peer-groups/peer-group/afi-safis/afi-safi/config/afi-safi-name":                          true,
+	"peer-groups/peer-group/afi-safis/afi-safi/config/enabled":                                true,
 	"peer-groups/peer-group/afi-safis/afi-safi/apply-policy/config/export-policy":             true,
 	"peer-groups/peer-group/afi-safis/afi-safi/apply-policy/config/import-policy":             true,
 	"peer-groups/peer-group/afi-safis/afi-safi/ipv4-unicast/prefix-limit/config/max-prefixes": true,
@@ -1364,6 +1365,16 @@ func buildNiBgpHierResMap(s *ygot.GoStruct, niName string) map[string]map[string
 					if !ok {
 						continue
 					}
+					// Naming an AFI-SAFI under a peer-group activates it there,
+					// so the row carries admin_status even when enabled is
+					// absent, as it does for a neighbor.
+					pgAfEnabled := true
+					if afiObj.Config != nil && afiObj.Config.Enabled != nil {
+						pgAfEnabled = *afiObj.Config.Enabled
+					}
+					res = mergeDbResMapFields(res, makeNiBgpPgAfResMap(niName, pgName, afiSafi, map[string]string{
+						niBgpPgAdminStatusFld: niBgpPgEnabledToAdminStatus(pgAfEnabled),
+					}))
 					if afiObj.Ipv4Unicast != nil && afiObj.Ipv4Unicast.PrefixLimit != nil && afiObj.Ipv4Unicast.PrefixLimit.Config != nil && afiObj.Ipv4Unicast.PrefixLimit.Config.MaxPrefixes != nil {
 						res = mergeDbResMapFields(res, makeNiBgpPgAfResMap(niName, pgName, niBgpPgAfiSafiIPv4, map[string]string{
 							niBgpPgMaxPfxLimitFld: strconv.FormatUint(uint64(*afiObj.Ipv4Unicast.PrefixLimit.Config.MaxPrefixes), 10),
@@ -1588,6 +1599,14 @@ func populateNiBgpHierToYangFromDb(cfgDb *db.DB, ygRoot *ygot.GoStruct, niName s
 			pgAfEntry, afErr := cfgDb.GetEntry(&db.TableSpec{Name: niBgpPeerGroupAfTbl}, db.Key{Comp: []string{niName, pgName, afi}})
 			if afErr != nil {
 				continue
+			}
+			if afCfg := getNiBgpPeerGroupAfCfgObj(ygRoot, niName, pgName, afi, true); afCfg != nil {
+				if afiSafiName, ok := niBgpPgAfiSafiEnumFromName(afi); ok {
+					afCfg.AfiSafiName = afiSafiName
+				}
+				if en, ok := niBgpPgAdminStatusToEnabled(pgAfEntry.Field[niBgpPgAdminStatusFld]); ok {
+					afCfg.Enabled = en
+				}
 			}
 			if maxStr, ok := pgAfEntry.Field[niBgpPgMaxPfxLimitFld]; ok && strings.TrimSpace(maxStr) != "" {
 				if maxVal, convErr := strconv.ParseUint(strings.TrimSpace(maxStr), 10, 32); convErr == nil {
