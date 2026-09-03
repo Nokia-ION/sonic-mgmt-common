@@ -59,7 +59,9 @@ const (
 	// switch on, the same shape the neighbor mapping uses.
 	niBgpPgTargetAfis      = "peer-group-afi-safis"
 	niBgpPgTargetAfInst    = "peer-group-afi-safi-instance"
+	niBgpPgTargetAfCfg     = "peer-group-af-config"
 	niBgpPgAfiSafiNameLeaf = "afi-safi-name"
+	niBgpPgEnabledLeaf     = "enabled"
 )
 
 // niBgpPgUriPfx names a peer-group list instance, which every path below it
@@ -71,6 +73,8 @@ var niBgpPgTimersReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:ne
 var niBgpPgAfV4PfxReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/protocols/protocol\[identifier=BGP\]\[name=bgp\]/bgp/peer-groups/peer-group\[peer-group-name=([^\]]+)\]/afi-safis/afi-safi(?:\[afi-safi-name=(?:IPV4_UNICAST|ipv4-unicast)\])?/ipv4-unicast/prefix-limit/config(?:/(max-prefixes))?$`)
 var niBgpPgAfV6PfxReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/protocols/protocol\[identifier=BGP\]\[name=bgp\]/bgp/peer-groups/peer-group\[peer-group-name=([^\]]+)\]/afi-safis/afi-safi(?:\[afi-safi-name=(?:IPV6_UNICAST|ipv6-unicast)\])?/ipv6-unicast/prefix-limit/config(?:/(max-prefixes))?$`)
 var niBgpPgAfApplyReqUriRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/protocols/protocol\[identifier=BGP\]\[name=bgp\]/bgp/peer-groups/peer-group\[peer-group-name=([^\]]+)\]/afi-safis/afi-safi\[afi-safi-name=([^\]]+)\]/apply-policy/config(?:/(export-policy|import-policy))?$`)
+
+var niBgpPgAfCfgReqUriRe = regexp.MustCompile(niBgpPgUriPfx + `/afi-safis/afi-safi\[afi-safi-name=([^\]]+)\]/config(?:/(afi-safi-name|enabled))?$`)
 
 // The afi-safi key leaf below the list instance repeats a key already in the
 // URI, so it resolves to the same row as the instance itself.
@@ -171,6 +175,26 @@ func parseNiBgpPgRequestUri(uri string) (*niBgpPgReqInfo, error) {
 			afiSafi:       afiSafi,
 			targetLeaf:    leaf,
 			targetPath:    niBgpPgTargetAfApplyCfg,
+		}, nil
+	}
+	m = niBgpPgAfCfgReqUriRe.FindStringSubmatch(uri)
+	if len(m) >= 4 {
+		leaf := ""
+		if len(m) >= 5 {
+			leaf = m[4]
+		}
+		afiSafi, ok := normalizeNiBgpPgAfiSafiName(m[3])
+		if !ok {
+			return nil, tlerr.InvalidArgsError{
+				Format: "unsupported afi-safi-name for network-instance BGP peer-group AFI-SAFI config mapping: " + m[3],
+			}
+		}
+		return &niBgpPgReqInfo{
+			niName:        m[1],
+			peerGroupName: m[2],
+			afiSafi:       afiSafi,
+			targetLeaf:    leaf,
+			targetPath:    niBgpPgTargetAfCfg,
 		}, nil
 	}
 	if m := niBgpPgAfInstKeyLeafReqUriRe.FindStringSubmatch(uri); len(m) >= 4 {
@@ -414,6 +438,14 @@ func getNiBgpPeerGroupAfApplyPolicyCfgObj(s *ygot.GoStruct, niName, peerGroup, a
 	return afObj.ApplyPolicy.Config
 }
 
+func getNiBgpPeerGroupAfCfgObj(s *ygot.GoStruct, niName, peerGroup, afiSafi string, createIfMissing bool) *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_PeerGroups_PeerGroup_AfiSafis_AfiSafi_Config {
+	afObj := getNiBgpPeerGroupAfObjByName(s, niName, peerGroup, afiSafi, createIfMissing)
+	if afObj == nil {
+		return nil
+	}
+	return afObj.Config
+}
+
 func makeNiBgpPgResMap(niName, pgName string, fields map[string]string) map[string]map[string]db.Value {
 	return map[string]map[string]db.Value{
 		niBgpPeerGroupTbl: {
@@ -537,6 +569,63 @@ func niBgpPgEnabledToAdminStatus(enabled bool) string {
 		return "up"
 	}
 	return "down"
+}
+
+func parseNiBgpPgEnabledFromParam(param interface{}) (*bool, bool) {
+	switch v := param.(type) {
+	case bool:
+		b := v
+		return &b, true
+	case *bool:
+		if v != nil {
+			return v, true
+		}
+	case string:
+		if b, err := strconv.ParseBool(strings.TrimSpace(v)); err == nil {
+			return &b, true
+		}
+	case *string:
+		if v != nil {
+			if b, err := strconv.ParseBool(strings.TrimSpace(*v)); err == nil {
+				return &b, true
+			}
+		}
+	}
+	return nil, false
+}
+
+// niBgpPgAfCfgFields renders the BGP_PEER_GROUP_AF fields of an afi-safi config
+// request. An afi-safi carrying no explicit enabled leaf still means the
+// address family is activated for the peer-group, so admin_status is seeded to
+// up in that case, the same reading the instance level above it takes.
+func niBgpPgAfCfgFields(inParams XfmrParams, reqInfo *niBgpPgReqInfo) (map[string]string, error) {
+	fields := map[string]string{}
+	switch reqInfo.targetLeaf {
+	case niBgpPgEnabledLeaf:
+		enabled, ok := parseNiBgpPgEnabledFromParam(inParams.param)
+		if !ok {
+			cfgObj := getNiBgpPeerGroupAfCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.peerGroupName, reqInfo.afiSafi, false)
+			if cfgObj == nil || cfgObj.Enabled == nil {
+				return nil, tlerr.InvalidArgsError{Format: "BGP peer-group AFI-SAFI enabled is missing in request payload"}
+			}
+			enabled = cfgObj.Enabled
+		}
+		fields[niBgpPgAdminStatusFld] = niBgpPgEnabledToAdminStatus(*enabled)
+	case niBgpPgAfiSafiNameLeaf:
+		fields[niBgpPgAdminStatusFld] = niBgpPgEnabledToAdminStatus(true)
+	default:
+		if enabled, ok := parseNiBgpPgEnabledFromParam(inParams.param); ok {
+			fields[niBgpPgAdminStatusFld] = niBgpPgEnabledToAdminStatus(*enabled)
+			break
+		}
+		cfgObj := getNiBgpPeerGroupAfCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.peerGroupName, reqInfo.afiSafi, false)
+		if cfgObj != nil && cfgObj.Enabled != nil {
+			fields[niBgpPgAdminStatusFld] = niBgpPgEnabledToAdminStatus(*cfgObj.Enabled)
+			break
+		}
+		fields[niBgpPgAdminStatusFld] = niBgpPgEnabledToAdminStatus(true)
+	}
+	return fields, nil
 }
 
 func niBgpPgAdminStatusToEnabled(status string) (*bool, bool) {
@@ -915,6 +1004,15 @@ var YangToDb_ni_bgp_pg_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) 
 			// The key leaf is the row identity, so clearing it means removing
 			// the row the instance names.
 			return makeNiBgpPgAfResMap(reqInfo.niName, reqInfo.peerGroupName, reqInfo.afiSafi, nil), nil
+		case niBgpPgTargetAfCfg:
+			switch reqInfo.targetLeaf {
+			case "", niBgpPgAfiSafiNameLeaf, niBgpPgEnabledLeaf:
+				// admin_status is the only field this container maps, and the
+				// key leaf below it names the row rather than a field of it.
+				return makeNiBgpPgAfResMap(reqInfo.niName, reqInfo.peerGroupName, reqInfo.afiSafi, map[string]string{niBgpPgAdminStatusFld: ""}), nil
+			default:
+				return res, tlerr.NotSupportedError{Format: "DELETE supported only for /peer-groups/peer-group/afi-safis/afi-safi/config or its enabled leaf", Path: inParams.requestUri}
+			}
 		case niBgpPgTargetAfPfxCfg:
 			switch reqInfo.targetLeaf {
 			case "", niBgpPgMaxPrefixesLeaf:
@@ -1001,6 +1099,16 @@ var YangToDb_ni_bgp_pg_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) 
 		afObj := getNiBgpPeerGroupAfObjByName(wrappedRoot, reqInfo.niName, reqInfo.peerGroupName, reqInfo.afiSafi, false)
 		return ensureNiBgpPgParentRow(
 			makeNiBgpPgAfResMap(reqInfo.niName, reqInfo.peerGroupName, reqInfo.afiSafi, niBgpPgAfInstFields(afObj, reqInfo.afiSafi)),
+			reqInfo.niName, reqInfo.peerGroupName), nil
+	}
+
+	if reqInfo.targetPath == niBgpPgTargetAfCfg {
+		fields, err := niBgpPgAfCfgFields(inParams, reqInfo)
+		if err != nil {
+			return res, err
+		}
+		return ensureNiBgpPgParentRow(
+			makeNiBgpPgAfResMap(reqInfo.niName, reqInfo.peerGroupName, reqInfo.afiSafi, fields),
 			reqInfo.niName, reqInfo.peerGroupName), nil
 	}
 
@@ -1144,6 +1252,28 @@ var DbToYang_ni_bgp_pg_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) 
 		for _, afiSafi := range afiSafis {
 			if err := populateNiBgpPgAfFromDb(cfgDb, wrappedRoot, reqInfo.niName, reqInfo.peerGroupName, afiSafi); err != nil {
 				return err
+			}
+		}
+		return nil
+	}
+
+	if reqInfo.targetPath == niBgpPgTargetAfCfg {
+		afEntry, afErr := cfgDb.GetEntry(&db.TableSpec{Name: niBgpPeerGroupAfTbl}, db.Key{Comp: []string{reqInfo.niName, reqInfo.peerGroupName, reqInfo.afiSafi}})
+		if afErr != nil {
+			return afErr
+		}
+		afCfgObj := getNiBgpPeerGroupAfCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.peerGroupName, reqInfo.afiSafi, true)
+		if afCfgObj == nil {
+			return tlerr.InvalidArgsError{Format: "Unable to locate BGP peer-group AFI-SAFI config object in YANG tree"}
+		}
+		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == niBgpPgAfiSafiNameLeaf {
+			if afiSafiName, ok := niBgpPgAfiSafiEnumFromName(reqInfo.afiSafi); ok {
+				afCfgObj.AfiSafiName = afiSafiName
+			}
+		}
+		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == niBgpPgEnabledLeaf {
+			if enabled, ok := niBgpPgAdminStatusToEnabled(afEntry.Field[niBgpPgAdminStatusFld]); ok {
+				afCfgObj.Enabled = enabled
 			}
 		}
 		return nil
