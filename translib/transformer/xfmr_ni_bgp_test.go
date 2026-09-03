@@ -3376,3 +3376,162 @@ func Test_openconfig_network_instance_bgp_peer_group_config_container_delete(t *
 
 	unloadDB(db.ConfigDB, cleanupTbl)
 }
+
+// The peer-group afi-safi config container and its enabled leaf, the paths a
+// neighbor already served. Without them a peer-group address family could be
+// named but never activated or deactivated on its own.
+func Test_openconfig_network_instance_bgp_peer_group_afi_safi_config_enabled(t *testing.T) {
+	var url, urlInputBodyJSON string
+
+	preReqMap := map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": map[string]interface{}{
+				"local_asn": "65100",
+			},
+		},
+		"BGP_PEER_GROUP": map[string]interface{}{
+			"default|PG1": map[string]interface{}{
+				"asn": "65200",
+			},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"BGP_PEER_GROUP_AF": map[string]interface{}{
+			"default|PG1|ipv4_unicast": "",
+		},
+		"BGP_PEER_GROUP": map[string]interface{}{
+			"default|PG1": "",
+		},
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": "",
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	url = niBgpPgUrl + "/afi-safis/afi-safi[afi-safi-name=IPV4_UNICAST]/config"
+	urlInputBodyJSON = "{\"afi-safi-name\":\"IPV4_UNICAST\",\"enabled\":true}"
+	t.Run("PATCH network-instance BGP peer-group AFI-SAFI config", processSetRequest(url, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	// admin_status on the AF row is what makes frrcfgd emit
+	// "neighbor <peer-group> activate" under the address-family.
+	expectedMap := map[string]interface{}{
+		"BGP_PEER_GROUP_AF": map[string]interface{}{
+			"default|PG1|ipv4_unicast": map[string]interface{}{
+				"admin_status": "up",
+			},
+		},
+	}
+	t.Run("Verify BGP_PEER_GROUP_AF ipv4 admin_status mapping", verifyDbResult(rclient, "BGP_PEER_GROUP_AF|default|PG1|ipv4_unicast", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET network-instance BGP peer-group AFI-SAFI config enabled",
+		processGetRequest(url+"/enabled", nil, "{\"openconfig-network-instance:enabled\":true}", false))
+	time.Sleep(1 * time.Second)
+
+	urlInputBodyJSON = "{\"openconfig-network-instance:enabled\":false}"
+	t.Run("PATCH network-instance BGP peer-group AFI-SAFI config enabled false",
+		processSetRequest(url+"/enabled", urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"BGP_PEER_GROUP_AF": map[string]interface{}{
+			"default|PG1|ipv4_unicast": map[string]interface{}{
+				"admin_status": "down",
+			},
+		},
+	}
+	t.Run("Verify BGP_PEER_GROUP_AF ipv4 admin_status down", verifyDbResult(rclient, "BGP_PEER_GROUP_AF|default|PG1|ipv4_unicast", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET network-instance BGP peer-group AFI-SAFI config enabled false",
+		processGetRequest(url+"/enabled", nil, "{\"openconfig-network-instance:enabled\":false}", false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("DELETE network-instance BGP peer-group AFI-SAFI config enabled", processDeleteRequest(url+"/enabled", false))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"BGP_PEER_GROUP_AF": map[string]interface{}{
+			"default|PG1|ipv4_unicast": map[string]interface{}{},
+		},
+	}
+	t.Run("Verify BGP_PEER_GROUP_AF ipv4 admin_status cleared", verifyDbResult(rclient, "BGP_PEER_GROUP_AF|default|PG1|ipv4_unicast", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	// Re-activate through the config container, then take the container itself.
+	urlInputBodyJSON = "{\"afi-safi-name\":\"IPV4_UNICAST\",\"enabled\":true}"
+	t.Run("PATCH network-instance BGP peer-group AFI-SAFI config again", processSetRequest(url, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	t.Run("DELETE network-instance BGP peer-group AFI-SAFI config container", processDeleteRequest(url, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify BGP_PEER_GROUP_AF ipv4 admin_status cleared by config container DELETE",
+		verifyDbResult(rclient, "BGP_PEER_GROUP_AF|default|PG1|ipv4_unicast", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	// The peer-group itself is not touched by the address-family deletes.
+	expectedMap = map[string]interface{}{
+		"BGP_PEER_GROUP": map[string]interface{}{
+			"default|PG1": map[string]interface{}{
+				"asn": "65200",
+			},
+		},
+	}
+	t.Run("Verify BGP_PEER_GROUP survives AFI-SAFI config DELETE",
+		verifyDbResult(rclient, "BGP_PEER_GROUP|default|PG1", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_network_instance_bgp_container_peer_group_afi_safi_enabled(t *testing.T) {
+	preReqMap := map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": map[string]interface{}{
+				"local_asn": "65100",
+			},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"BGP_PEER_GROUP_AF": map[string]interface{}{
+			"default|PG1|ipv4_unicast": "",
+		},
+		"BGP_PEER_GROUP": map[string]interface{}{
+			"default|PG1": "",
+		},
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": "",
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	// A peer-group payload that names an AFI-SAFI activates it there, and the
+	// import-policy under the same AFI-SAFI lands on the same row.
+	urlInputBodyJSON := `{` +
+		`"peer-groups":{"peer-group":[{"peer-group-name":"PG1",` +
+		`"config":{"peer-as":65200},` +
+		`"afi-safis":{"afi-safi":[{"afi-safi-name":"IPV4_UNICAST",` +
+		`"config":{"afi-safi-name":"IPV4_UNICAST","enabled":true},` +
+		`"apply-policy":{"config":{"import-policy":["RM-IN-V4"]}}}]}}]}}`
+	t.Run("PATCH BGP container with peer-group AFI-SAFI enabled",
+		processSetRequest(niBgpProtoUrl+"/bgp", urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"BGP_PEER_GROUP_AF": map[string]interface{}{
+			"default|PG1|ipv4_unicast": map[string]interface{}{
+				"admin_status":  "up",
+				"route_map_in@": "RM-IN-V4",
+			},
+		},
+	}
+	t.Run("Verify BGP_PEER_GROUP_AF row from container payload",
+		verifyDbResult(rclient, "BGP_PEER_GROUP_AF|default|PG1|ipv4_unicast", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
