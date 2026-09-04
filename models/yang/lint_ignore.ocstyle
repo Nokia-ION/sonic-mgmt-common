@@ -1,0 +1,3 @@
+# CheckDeviationPlugin: RSTP bridge-priority 0 is required (IEEE/SONiC) but is
+# not a legal restriction of oc-stp-types:stp-bridge-priority-type (1..611440).
+openconfig-spanning-tree-deviation 76 84
