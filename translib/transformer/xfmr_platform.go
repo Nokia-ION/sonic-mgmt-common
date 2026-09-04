@@ -74,12 +74,19 @@ const (
 	VOLTAGE_INFO_TBL      = "VOLTAGE_INFO"
 	FAULT_INFO_TBL        = "FAULT_INFO"
 	EEPROM_TBL            = "EEPROM_INFO"
+	CRM_TBL               = "CRM"
+	CRM_STATS_KEY         = "STATS"
 
 	// SYS_EEPROM_NAME is the synthetic component name under which the system
 	// EEPROM contents (EEPROM_INFO table) are exposed. Previously served by the
 	// standalone pfm_app.go; folded into this transformer so a single handler
 	// owns the /openconfig-platform:components tree.
 	SYS_EEPROM_NAME = "System Eeprom"
+
+	// IC_COMP_NAME is the name under which the integrated circuit is served.
+	// No table holds a row by that name, and the CRM:STATS hash behind it is
+	// switch-global rather than per circuit.
+	IC_COMP_NAME = IC_NAME_PREFIX + "0"
 
 	XCVR_LANE_LIMIT = 8
 
@@ -186,13 +193,15 @@ const (
 	TEMP_INSTANT = "/openconfig-platform:components/component/state/temperature/instant"
 
 	/** Supported Integrated Circuit URIs **/
-	COMP_IC         = "/openconfig-platform:components/component/integrated-circuit"
-	COMP_IC_CFG     = "/openconfig-platform:components/component/integrated-circuit/config"
-	COMP_IC_ST      = "/openconfig-platform:components/component/integrated-circuit/state"
-	COMP_IC_PLC     = "/openconfig-platform:components/component/integrated-circuit/openconfig-platform-pipeline-counters:pipeline-counters"
-	COMP_IC_MEM     = "/openconfig-platform:components/component/integrated-circuit/openconfig-platform-integrated-circuit:memory"
-	COMP_IC_MEM_CPE = "/openconfig-platform:components/component/integrated-circuit/openconfig-platform-integrated-circuit:memory/state/corrected-parity-errors"
-	COMP_IC_MEM_TPE = "/openconfig-platform:components/component/integrated-circuit/openconfig-platform-integrated-circuit:memory/state/total-parity-errors"
+	COMP_IC          = "/openconfig-platform:components/component/integrated-circuit"
+	COMP_IC_CFG      = "/openconfig-platform:components/component/integrated-circuit/config"
+	COMP_IC_ST       = "/openconfig-platform:components/component/integrated-circuit/state"
+	COMP_IC_PLC      = "/openconfig-platform:components/component/integrated-circuit/openconfig-platform-pipeline-counters:pipeline-counters"
+	COMP_IC_MEM      = "/openconfig-platform:components/component/integrated-circuit/openconfig-platform-integrated-circuit:memory"
+	COMP_IC_MEM_CPE  = "/openconfig-platform:components/component/integrated-circuit/openconfig-platform-integrated-circuit:memory/state/corrected-parity-errors"
+	COMP_IC_MEM_TPE  = "/openconfig-platform:components/component/integrated-circuit/openconfig-platform-integrated-circuit:memory/state/total-parity-errors"
+	COMP_IC_UTIL     = "/openconfig-platform:components/component/integrated-circuit/utilization"
+	COMP_IC_UTIL_HWM = COMP_IC_UTIL + "/resources/resource/state/high-watermark"
 
 	/** Supported oc-platform component config URIs **/
 	COMP_CFG_OC_FQ_NAME = "/openconfig-platform:components/component/config/openconfig-pins-platform:fully-qualified-name"
@@ -1238,12 +1247,13 @@ var Subscribe_pfm_components_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSubsc
 		return result, err
 	}
 
-	if key == "" || strings.Contains(key, "_sensor") || key == SYS_EEPROM_NAME {
+	if key == "" || strings.Contains(key, "_sensor") || key == SYS_EEPROM_NAME || key == IC_COMP_NAME {
 		/* No need to verify dB data if we are requesting ALL components, a
-		   sensor, or System Eeprom.  The EEPROM_INFO table stores each attribute
-		   as its own row (keyed by index) with no "System Eeprom" key, so mark it
-		   as a virtual table to tell the framework to skip DB key validation and
-		   go straight to the subtree transformer. */
+		   sensor, System Eeprom, or the integrated circuit.  The EEPROM_INFO
+		   table stores each attribute as its own row (keyed by index) with no
+		   "System Eeprom" key, and IC_COMP_NAME is no table's key either, so
+		   mark them as a virtual table to tell the framework to skip DB key
+		   validation and go straight to the subtree transformer. */
 		result.isVirtualTbl = true
 		return result, err
 	}
@@ -1432,6 +1442,8 @@ func translateSubscribe(inParams XfmrSubscInParams, key, targetUriPath string) (
 			if strings.HasPrefix(targetUriPath, COMP_IC_MEM) {
 				result.onChange = OnchangeDisable
 			} else if strings.HasPrefix(targetUriPath, COMP_IC_PLC) {
+				result.onChange = OnchangeDisable
+			} else if strings.HasPrefix(targetUriPath, COMP_IC_UTIL) {
 				result.onChange = OnchangeDisable
 			}
 		} else if cType == CompTypePort {
@@ -1990,6 +2002,13 @@ func createCompAndFuncCall(pfCpts *ocbinds.OpenconfigPlatform_Components, target
 	switch compType {
 	case CompTypeIC:
 		compNames, err = getAllTableEntries(cfgdb, tblName, tblKey)
+		if len(compNames) == 0 {
+			/* No table names the integrated circuit, so it is created here when
+			 * the switch-global CRM:STATS hash says there is one to report. */
+			if _, cerr := getCrmStats(dbs[db.CountersDB]); cerr == nil {
+				compNames = []string{IC_COMP_NAME}
+			}
+		}
 	default:
 		compNames, err = getAllTableEntries(d, tblName, tblKey)
 	}
@@ -3667,8 +3686,9 @@ func fillICInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 	 *   ...component/integrated-circuit/state/congestion
 	 *   ...component/integrated-circuit/pipeline-counters
 	 *   ...component/integrated-circuit/memory
+	 *   ...component/integrated-circuit/utilization
 	 * Decide now which subtrees to fill based on the request. */
-	var all, allIc, compSt, compCfg, icCfg, icSt, icPlc, icMem bool
+	var all, allIc, compSt, compCfg, icCfg, icSt, icPlc, icMem, icUtil bool
 	if targetUriPath == COMP {
 		all = true
 	} else if strings.HasPrefix(targetUriPath, COMP_CFG) {
@@ -3683,6 +3703,8 @@ func fillICInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 		icPlc = true
 	} else if strings.HasPrefix(targetUriPath, COMP_IC_MEM) {
 		icMem = true
+	} else if strings.HasPrefix(targetUriPath, COMP_IC_UTIL) {
+		icUtil = true
 	} else if strings.HasPrefix(targetUriPath, COMP_IC) {
 		allIc = true
 	}
@@ -3703,6 +3725,9 @@ func fillICInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 		if all || allIc || icMem {
 			ygot.BuildEmptyTree(comp.IntegratedCircuit.Memory)
 			ygot.BuildEmptyTree(comp.IntegratedCircuit.Memory.State)
+		}
+		if all || allIc || icUtil {
+			ygot.BuildEmptyTree(comp.IntegratedCircuit.Utilization)
 		}
 	}
 
@@ -3770,6 +3795,78 @@ func fillICInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 		}
 	}
 
+	/* Handle component integrated-circuit utilization paths.  A request aimed
+	 * at the counts fails without them; the rest of the component does not. */
+	if all || allIc || icUtil {
+		/* The framework creates the leaf a request names, so a count with no
+		 * source has to be refused; leaving it unset serves a zero. */
+		if targetUriPath == COMP_IC_UTIL_HWM {
+			return tlerr.NotFound("%s has no high-watermark", name)
+		}
+		stats, uerr := getCrmStats(ctrsDb)
+		if uerr == nil {
+			uerr = fillICUtilization(comp.IntegratedCircuit.Utilization, stats)
+		}
+		if uerr != nil {
+			if icUtil {
+				return uerr
+			}
+			log.V(lvl.DEBUG).Infof("fillICInfo: no route utilization for %s: %v", name, uerr)
+		}
+	}
+
+	return nil
+}
+
+/* The CRM:STATS fields behind one utilization resource. */
+var crmRouteResources = []struct {
+	name      string
+	used      string
+	available string
+}{
+	{"V4Routes", "crm_stats_ipv4_route_used", "crm_stats_ipv4_route_available"},
+	{"V6Routes", "crm_stats_ipv6_route_used", "crm_stats_ipv6_route_available"},
+}
+
+func getCrmStats(ctrsDb *db.DB) (db.Value, error) {
+	return ctrsDb.GetEntry(&db.TableSpec{Name: CRM_TBL}, db.Key{Comp: []string{CRM_STATS_KEY}})
+}
+
+func getCrmCount(stats *db.Value, field string) (uint64, error) {
+	if !stats.Has(field) {
+		return 0, tlerr.NotFound("%s:%s has no %s", CRM_TBL, CRM_STATS_KEY, field)
+	}
+	return strconv.ParseUint(stats.Get(field), 10, 64)
+}
+
+/* Fills the route resource counts under an integrated circuit's utilization.
+ * max-limit is the sum of the two counts because CRM reports what is used and
+ * what is left, never the size of the table. */
+func fillICUtilization(util *ocbinds.OpenconfigPlatform_Components_Component_IntegratedCircuit_Utilization, stats db.Value) error {
+	ygot.BuildEmptyTree(util)
+	for _, r := range crmRouteResources {
+		used, err := getCrmCount(&stats, r.used)
+		if err != nil {
+			return err
+		}
+		free, err := getCrmCount(&stats, r.available)
+		if err != nil {
+			return err
+		}
+		maxLimit := used + free
+
+		/* The entry may already exist, and NewResource rejects a duplicate key. */
+		res := util.Resources.Resource[r.name]
+		if res == nil {
+			if res, err = util.Resources.NewResource(r.name); err != nil {
+				return err
+			}
+		}
+		ygot.BuildEmptyTree(res)
+		res.State.Used = &used
+		res.State.Free = &free
+		res.State.MaxLimit = &maxLimit
+	}
 	return nil
 }
 
