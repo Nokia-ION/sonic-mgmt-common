@@ -30,6 +30,7 @@
 package transformer
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/Azure/sonic-mgmt-common/translib/db"
@@ -53,6 +54,12 @@ func TestSubscribe_ni_bgp_nbr_state_paths(t *testing.T) {
 		wantStateKey string // NEIGH_STATE_TABLE key, "" when the table must be absent
 		wantApplKey  string // BGP_NEIGH_APPLIED key, "" when the table must be absent
 		wantStatsKey string // BGP_NEIGH_STATS key, "" when the table must be absent
+
+		// The field map registered for BGP_NEIGH_APPLIED, nil to skip the
+		// check. It matters for the on-change paths: a subscription that
+		// registers a field it does not serve is woken by changes it has
+		// nothing to report.
+		wantApplFlds map[string]string
 	}{
 		// The Phase 1 guarantee. An on-change subscription on session-state
 		// reads NEIGH_STATE_TABLE alone, and must not also watch
@@ -85,15 +92,54 @@ func TestSubscribe_ni_bgp_nbr_state_paths(t *testing.T) {
 			wantApplKey:  "default|11.0.0.155",
 			wantStatsKey: "default|11.0.0.155",
 		},
+		// An applied state leaf reads BGP_NEIGH_APPLIED alone, and bgpmon now
+		// updates that row in place instead of rewriting it, so the leaf is
+		// served on-change. It must not register the other two tables, which
+		// would hold it to their sampling and wake it on counter ticks.
 		{
-			name:         "applied state leaf is sampled",
+			name:         "applied state leaf keyed is on-change",
 			uri:          niBgpNbrSubscNbrUrl + "/state",
 			requestURI:   niBgpNbrSubscNbrUrl + "/state/peer-as",
+			wantOnChange: OnchangeEnable,
+			wantPType:    OnChange,
+			wantApplKey:  "default|11.0.0.155",
+			wantApplFlds: map[string]string{"peer_as": "peer-as"},
+		},
+		{
+			name:         "applied peer-group leaf keyed is on-change",
+			uri:          niBgpNbrSubscNbrUrl + "/state",
+			requestURI:   niBgpNbrSubscNbrUrl + "/state/peer-group",
+			wantOnChange: OnchangeEnable,
+			wantPType:    OnChange,
+			wantApplKey:  "default|11.0.0.155",
+			wantApplFlds: map[string]string{"peer_group": "peer-group"},
+		},
+		{
+			name:         "applied enabled leaf keyed is on-change",
+			uri:          niBgpNbrSubscNbrUrl + "/state",
+			requestURI:   niBgpNbrSubscNbrUrl + "/state/enabled",
+			wantOnChange: OnchangeEnable,
+			wantPType:    OnChange,
+			wantApplKey:  "default|11.0.0.155",
+			wantApplFlds: map[string]string{"enabled": "enabled"},
+		},
+		{
+			name:         "applied neighbor-address leaf keyed is on-change",
+			uri:          niBgpNbrSubscNbrUrl + "/state",
+			requestURI:   niBgpNbrSubscNbrUrl + "/state/neighbor-address",
+			wantOnChange: OnchangeEnable,
+			wantPType:    OnChange,
+			wantApplKey:  "default|11.0.0.155",
+			wantApplFlds: map[string]string{"neighbor_address": "neighbor-address"},
+		},
+		{
+			name:         "applied state leaf unkeyed falls back to sampling",
+			uri:          niBgpNbrSubscWildcardUrl + "/state",
+			requestURI:   niBgpNbrSubscWildcardUrl + "/state/peer-as",
 			wantOnChange: OnchangeDisable,
 			wantPType:    Sample,
-			wantStateKey: "11.0.0.155",
-			wantApplKey:  "default|11.0.0.155",
-			wantStatsKey: "default|11.0.0.155",
+			wantApplKey:  "default|*",
+			wantApplFlds: map[string]string{"peer_as": "peer-as"},
 		},
 		{
 			name:         "counter state leaf is sampled",
@@ -132,22 +178,57 @@ func TestSubscribe_ni_bgp_nbr_state_paths(t *testing.T) {
 			wantStatsKey: "default|11.0.0.155",
 		},
 		// transport reads the applied table only, so it never registers
-		// NEIGH_STATE_TABLE.
+		// NEIGH_STATE_TABLE, and it is on-change throughout.
 		{
-			name:         "transport state leaf is sampled",
+			name:         "transport state leaf keyed is on-change on its field alone",
 			uri:          niBgpNbrSubscNbrUrl + "/transport/state",
 			requestURI:   niBgpNbrSubscNbrUrl + "/transport/state/remote-address",
-			wantOnChange: OnchangeDisable,
-			wantPType:    Sample,
+			wantOnChange: OnchangeEnable,
+			wantPType:    OnChange,
 			wantApplKey:  "default|11.0.0.155",
+			wantApplFlds: map[string]string{"remote_address": "remote-address"},
 		},
 		{
-			name:         "transport container is sampled",
+			name:         "transport local-address leaf keyed is on-change",
+			uri:          niBgpNbrSubscNbrUrl + "/transport/state",
+			requestURI:   niBgpNbrSubscNbrUrl + "/transport/state/local-address",
+			wantOnChange: OnchangeEnable,
+			wantPType:    OnChange,
+			wantApplKey:  "default|11.0.0.155",
+			wantApplFlds: map[string]string{"local_address": "local-address"},
+		},
+		{
+			name:         "transport container keyed is on-change on both fields",
 			uri:          niBgpNbrSubscNbrUrl + "/transport",
 			requestURI:   niBgpNbrSubscNbrUrl + "/transport",
+			wantOnChange: OnchangeEnable,
+			wantPType:    OnChange,
+			wantApplKey:  "default|11.0.0.155",
+			wantApplFlds: map[string]string{
+				"local_address":  "local-address",
+				"remote_address": "remote-address",
+			},
+		},
+		{
+			name:         "transport state container keyed is on-change on both fields",
+			uri:          niBgpNbrSubscNbrUrl + "/transport/state",
+			requestURI:   niBgpNbrSubscNbrUrl + "/transport/state",
+			wantOnChange: OnchangeEnable,
+			wantPType:    OnChange,
+			wantApplKey:  "default|11.0.0.155",
+			wantApplFlds: map[string]string{
+				"local_address":  "local-address",
+				"remote_address": "remote-address",
+			},
+		},
+		{
+			name:         "transport unkeyed falls back to sampling",
+			uri:          niBgpNbrSubscWildcardUrl + "/transport/state",
+			requestURI:   niBgpNbrSubscWildcardUrl + "/transport/state/local-address",
 			wantOnChange: OnchangeDisable,
 			wantPType:    Sample,
-			wantApplKey:  "default|11.0.0.155",
+			wantApplKey:  "default|*",
+			wantApplFlds: map[string]string{"local_address": "local-address"},
 		},
 		// A request anchored above the state container descends into it, and
 		// must not be mistaken for a session-state request.
@@ -217,8 +298,15 @@ func TestSubscribe_ni_bgp_nbr_state_paths(t *testing.T) {
 				if hasApplTbl {
 					t.Fatalf("unexpected %s mapping: %v", niBgpNbrAppliedTbl, out.dbDataMap)
 				}
-			} else if _, ok := applTbl[tc.wantApplKey]; !ok {
-				t.Fatalf("missing %s[%s]: %v", niBgpNbrAppliedTbl, tc.wantApplKey, out.dbDataMap)
+			} else {
+				flds, ok := applTbl[tc.wantApplKey]
+				if !ok {
+					t.Fatalf("missing %s[%s]: %v", niBgpNbrAppliedTbl, tc.wantApplKey, out.dbDataMap)
+				}
+				if tc.wantApplFlds != nil && !reflect.DeepEqual(flds, tc.wantApplFlds) {
+					t.Fatalf("%s[%s] field map=%v, want %v",
+						niBgpNbrAppliedTbl, tc.wantApplKey, flds, tc.wantApplFlds)
+				}
 			}
 
 			statsTbl, hasStatsTbl := out.dbDataMap[db.StateDB][niBgpNbrStatsTbl]

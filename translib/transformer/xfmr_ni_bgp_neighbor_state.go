@@ -138,6 +138,14 @@ var niBgpNbrAppliedFldForLeaf = map[string]string{
 	niBgpNbrPeerGrpLeaf: niBgpNbrAppliedPeerGrpFld,
 }
 
+// niBgpNbrAppliedFldForTransportLeaf maps the transport state leaves onto their
+// producer field. They are kept apart from the state container leaves above
+// because they hang below the transport container rather than off state.
+var niBgpNbrAppliedFldForTransportLeaf = map[string]string{
+	niBgpNbrLocalAddrLeaf: niBgpNbrAppliedLocalAddrFld,
+	niBgpNbrRmtAddrLeaf:   niBgpNbrAppliedRmtAddrFld,
+}
+
 // niBgpNbrStatsFldForLeaf maps the leaves of the state container that come from
 // BGP_NEIGH_STATS onto their producer field. The message counters are not
 // listed because they hang below the messages container rather than off the
@@ -817,12 +825,42 @@ var Subscribe_ni_bgp_nbr_state_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSub
 		return result, nil
 	}
 
+	// Which leaf the request is anchored on, if any. The state container mixes
+	// three tables, so the leaf decides which of them has to be watched, and
+	// with it whether the path can be served on-change.
+	anchoredUri := strings.TrimSuffix(leafUri, "/")
+	targetLeaf := anchoredUri[strings.LastIndex(anchoredUri, "/")+1:]
+
+	// Whether the request reads BGP_NEIGH_APPLIED and nothing else.
+	appliedOnly := false
+
 	switch {
 	case strings.Contains(inParams.uri, "/"+niBgpNbrTransportSubtree):
-		result.dbDataMap = RedisDbSubscribeMap{db.StateDB: {niBgpNbrAppliedTbl: {nbrKey: {}}}}
+		// Both transport leaves come from the applied row. A request anchored
+		// on one of them watches that field alone, so the other one moving does
+		// not wake it.
+		transportFlds := map[string]string{
+			niBgpNbrAppliedLocalAddrFld: niBgpNbrLocalAddrLeaf,
+			niBgpNbrAppliedRmtAddrFld:   niBgpNbrRmtAddrLeaf,
+		}
+		if fld, ok := niBgpNbrAppliedFldForTransportLeaf[targetLeaf]; ok {
+			transportFlds = map[string]string{fld: targetLeaf}
+		}
+		result.dbDataMap = RedisDbSubscribeMap{db.StateDB: {niBgpNbrAppliedTbl: {nbrKey: transportFlds}}}
+		appliedOnly = true
 	case strings.Contains(inParams.uri, "/"+niBgpNbrMessagesSubtree):
 		result.dbDataMap = RedisDbSubscribeMap{db.StateDB: {niBgpNbrStatsTbl: {nbrKey: {}}}}
 	default:
+		if appliedFld, ok := niBgpNbrAppliedFldForLeaf[targetLeaf]; ok {
+			// A state leaf that comes from the applied row alone. Registering
+			// the other two tables as well, as the container below has to, would
+			// hold it to their sampling for no reason.
+			result.dbDataMap = RedisDbSubscribeMap{db.StateDB: {
+				niBgpNbrAppliedTbl: {nbrKey: {appliedFld: targetLeaf}},
+			}}
+			appliedOnly = true
+			break
+		}
 		result.dbDataMap = RedisDbSubscribeMap{db.StateDB: {
 			niBgpNbrStateTbl:   {neighborAddr: {niBgpNbrStateFld: niBgpNbrSessionStateLeaf}},
 			niBgpNbrAppliedTbl: {nbrKey: {}},
@@ -830,13 +868,30 @@ var Subscribe_ni_bgp_nbr_state_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSub
 		}}
 	}
 
-	// Anything reading BGP_NEIGH_APPLIED or BGP_NEIGH_STATS is offered sampling
-	// only. The producer rewrites a changed row as a delete followed by a set,
-	// so that a field FRR has stopped reporting disappears instead of going
-	// stale; on-change would turn each of those rewrites into a spurious delete
-	// notification. Making these paths on-change capable is a producer change,
-	// replacing the rewrite with a set plus an explicit delete of the fields
-	// that went away.
+	// bgpmon updates a changed applied row in place and names the fields that
+	// went away, rather than rewriting the row as a delete followed by a set,
+	// so a value change reaches a subscriber as an update and not as the row
+	// being removed and rebuilt. That is what makes these paths on-change
+	// capable. BGP_NEIGH_STATS shares the write pattern but stays sampled,
+	// because its counters move on nearly every scrape and a subscriber gains
+	// nothing from being told each time.
+	//
+	// BGP_NEIGH_APPLIED_META is deliberately not registered. Its last_sync
+	// marker is rewritten every scrape, so watching it would wake every
+	// subscriber on the poll interval and undo the point of on-change. The cost
+	// is that a producer that has stopped publishing is noticed on the next
+	// read of the path rather than announced.
+	if appliedOnly && keyed {
+		result.onChange = OnchangeEnable
+		result.nOpts = &notificationOpts{pType: OnChange}
+		return result, nil
+	}
+
+	// Everything else is sampled: the state container because it reads the
+	// counter tables too, the messages subtree because it is counters, and any
+	// unkeyed request because its notification key would have to be resolved
+	// back from the Redis key, which needs a path transformer these tables have
+	// no SONiC YANG model to support.
 	result.onChange = OnchangeDisable
 	result.nOpts = &notificationOpts{pType: Sample}
 
