@@ -1106,6 +1106,68 @@ func assertStrLeafUnset(t *testing.T, got *string, leaf string) {
 	}
 }
 
+func assertUint64Leaf(t *testing.T, got *uint64, want uint64, leaf string) {
+	t.Helper()
+	if got == nil {
+		t.Fatalf("%s is nil, want %d", leaf, want)
+	}
+	if *got != want {
+		t.Errorf("%s = %d, want %d", leaf, *got, want)
+	}
+}
+
+// The route resources are named V4Routes and V6Routes, used and free are the
+// CRM counts, and max-limit is their sum. high-watermark has no count and stays
+// unset.
+func TestFillICUtilization(t *testing.T) {
+	stats := db.Value{Field: map[string]string{
+		"crm_stats_ipv4_route_used":      "66",
+		"crm_stats_ipv4_route_available": "1048510",
+		"crm_stats_ipv6_route_used":      "3",
+		"crm_stats_ipv6_route_available": "1048573",
+	}}
+
+	util := &ocbinds.OpenconfigPlatform_Components_Component_IntegratedCircuit_Utilization{}
+	if err := fillICUtilization(util, stats); err != nil {
+		t.Fatalf("fillICUtilization() unexpected error: %v", err)
+	}
+
+	want := map[string]struct {
+		used, free, maxLimit uint64
+	}{
+		"V4Routes": {66, 1048510, 1048576},
+		"V6Routes": {3, 1048573, 1048576},
+	}
+	if len(util.Resources.Resource) != len(want) {
+		t.Fatalf("resources = %d, want %d", len(util.Resources.Resource), len(want))
+	}
+	for name, w := range want {
+		res, ok := util.Resources.Resource[name]
+		if !ok {
+			t.Fatalf("resource %q is absent", name)
+		}
+		assertStrLeaf(t, res.Name, name, "resource/name")
+		assertUint64Leaf(t, res.State.Used, w.used, name+" state/used")
+		assertUint64Leaf(t, res.State.Free, w.free, name+" state/free")
+		assertUint64Leaf(t, res.State.MaxLimit, w.maxLimit, name+" state/max-limit")
+		if res.State.HighWatermark != nil {
+			t.Errorf("%s state/high-watermark = %d, want unset", name, *res.State.HighWatermark)
+		}
+	}
+}
+
+// A count that CRM does not carry is not found, so a targeted get reports that
+// rather than a zero.
+func TestFillICUtilizationMissingCount(t *testing.T) {
+	stats := db.Value{Field: map[string]string{"crm_stats_ipv4_route_used": "66"}}
+
+	util := &ocbinds.OpenconfigPlatform_Components_Component_IntegratedCircuit_Utilization{}
+	err := fillICUtilization(util, stats)
+	if _, ok := err.(tlerr.NotFoundError); !ok {
+		t.Fatalf("fillICUtilization() returned %T (%v), want tlerr.NotFoundError", err, err)
+	}
+}
+
 // firstAvailable skips empty values and the not-available sentinels the
 // platform writes, and yields "" when nothing qualifies.
 func TestFirstAvailable(t *testing.T) {
