@@ -212,12 +212,11 @@ func defaultStpPortFields() map[string]string {
 	}
 }
 
-// defaultStpPortBootstrapFields omits edge_port and link_type. Those leaves have
-// YANG must expressions requiring STP|GLOBAL mode=mst, but CVL validates each
-// CONFIG_DB CREATE separately and drops already-validated entries from the batch.
-// STP|GLOBAL is not visible when STP_PORT is validated on cold start.
-// path_cost is also omitted so stpmgr passes 0 to stpd and the daemon derives cost
-// from interface speed (same behavior as adding a VLAN member after MST is enabled).
+// defaultStpPortBootstrapFields omits link_type (and path_cost). link_type has a
+// YANG must requiring STP|GLOBAL mode=mst; CVL validates each CREATE separately
+// so GLOBAL is not visible when STP_PORT is created. queueStpPortDefaultLinkType
+// applies link_type=auto as a follow-up UPDATE. path_cost is omitted so stpmgr
+// passes 0 to stpd and the daemon derives cost from interface speed.
 func defaultStpPortBootstrapFields() map[string]string {
 	return map[string]string{
 		"enabled":               "true",
@@ -225,6 +224,90 @@ func defaultStpPortBootstrapFields() map[string]string {
 		"bpdu_guard_do_disable": "false",
 		"root_guard":            "false",
 		"priority":              DEFAULT_PORT_PRIORITY,
+		"edge_port":             DEFAULT_EDGE_PORT,
+	}
+}
+
+func ensureSubOpCfgMap(inParams XfmrParams, op Operation) map[string]map[string]db.Value {
+	if inParams.subOpDataMap == nil {
+		return nil
+	}
+	if inParams.subOpDataMap[op] == nil {
+		m := make(RedisDbMap)
+		inParams.subOpDataMap[op] = &m
+	}
+	cfg := (*inParams.subOpDataMap[op])[db.ConfigDB]
+	if cfg == nil {
+		cfg = make(map[string]map[string]db.Value)
+		(*inParams.subOpDataMap[op])[db.ConfigDB] = cfg
+	}
+	return cfg
+}
+
+func mergeCfgTableMap(dst map[string]map[string]db.Value, tbl, key string, val db.Value) {
+	if dst[tbl] == nil {
+		dst[tbl] = make(map[string]db.Value)
+	}
+	dst[tbl][key] = val
+}
+
+// queueStpPortDefaultLinkType writes link_type=auto as a follow-up UPDATE after
+// STP|GLOBAL and STP_PORT CREATE/bootstrap. CVL must on link_type requires
+// mode=mst, which is not visible when STP_PORT is validated in the same batch.
+// Existing non-empty link_type (e.g. shared) is left unchanged.
+func queueStpPortDefaultLinkType(inParams XfmrParams, retDbDataMap map[string]map[string]db.Value) {
+	if inParams.subOpDataMap == nil {
+		return
+	}
+	ports := retDbDataMap[STP_PORT_TBL]
+	if len(ports) == 0 {
+		return
+	}
+	cfgDb := stpCfgDb(inParams)
+	updatePorts := make(map[string]db.Value)
+	for ifName, val := range ports {
+		if val.Get("link_type") != "" {
+			continue
+		}
+		if cfgDb != nil {
+			existing, err := cfgDb.GetEntry(&db.TableSpec{Name: STP_PORT_TBL}, db.Key{Comp: []string{ifName}})
+			if err == nil && existing.IsPopulated() && existing.Get("link_type") != "" {
+				continue
+			}
+		}
+		updatePorts[ifName] = db.Value{Field: map[string]string{"link_type": DEFAULT_LINK_TYPE}}
+	}
+	if len(updatePorts) == 0 {
+		return
+	}
+
+	// PATCH/REPLACE put STP|GLOBAL and STP_PORT in the UPDATE map. Move only
+	// those tables to CREATE so link_type UPDATE runs after GLOBAL exists.
+	// Do not move STP_MST_PORT: a later SET of port-priority/cost must stay
+	// UPDATE and leafref STP_PORT that already exists.
+	if inParams.oper == UPDATE || inParams.oper == REPLACE {
+		createMap := ensureSubOpCfgMap(inParams, CREATE)
+		if createMap == nil {
+			return
+		}
+		for _, tbl := range []string{STP_GLOBAL_TBL, STP_PORT_TBL} {
+			keys, ok := retDbDataMap[tbl]
+			if !ok {
+				continue
+			}
+			for key, val := range keys {
+				mergeCfgTableMap(createMap, tbl, key, val)
+			}
+			delete(retDbDataMap, tbl)
+		}
+	}
+
+	updMap := ensureSubOpCfgMap(inParams, UPDATE)
+	if updMap == nil {
+		return
+	}
+	for ifName, val := range updatePorts {
+		mergeCfgTableMap(updMap, STP_PORT_TBL, ifName, val)
 	}
 }
 
@@ -884,23 +967,30 @@ func fillRstpInterfaceState(intf *ocbinds.OpenconfigSpanningTree_Stp_Rstp_Interf
 	return nil
 }
 
-func dbLinkTypeToOc(linkType string) ocbinds.E_OpenconfigSpanningTree_StpLinkType {
+// dbLinkTypeToOc maps STP_PORT.link_type to OC link-type.
+// AUTO is not in standard oc-stp-types:stp-link-type; it is added via
+// openconfig-spanning-tree-deviation (stp-link-type-ext).
+func dbLinkTypeToOc(linkType string) ocbinds.E_OpenconfigSpanningTree_StpLinkTypeExt {
 	switch strings.ToLower(strings.TrimSpace(linkType)) {
 	case "point-to-point", "p2p":
-		return ocbinds.OpenconfigSpanningTree_StpLinkType_P2P
+		return ocbinds.OpenconfigSpanningTree_StpLinkTypeExt_P2P
 	case "shared":
-		return ocbinds.OpenconfigSpanningTree_StpLinkType_SHARED
+		return ocbinds.OpenconfigSpanningTree_StpLinkTypeExt_SHARED
+	case "auto":
+		return ocbinds.OpenconfigSpanningTree_StpLinkTypeExt_AUTO
 	default:
-		return ocbinds.OpenconfigSpanningTree_StpLinkType_UNSET
+		return ocbinds.OpenconfigSpanningTree_StpLinkTypeExt_UNSET
 	}
 }
 
-func ocLinkTypeToDb(linkType ocbinds.E_OpenconfigSpanningTree_StpLinkType) (string, error) {
+func ocLinkTypeToDb(linkType ocbinds.E_OpenconfigSpanningTree_StpLinkTypeExt) (string, error) {
 	switch linkType {
-	case ocbinds.OpenconfigSpanningTree_StpLinkType_P2P:
+	case ocbinds.OpenconfigSpanningTree_StpLinkTypeExt_P2P:
 		return "point-to-point", nil
-	case ocbinds.OpenconfigSpanningTree_StpLinkType_SHARED:
+	case ocbinds.OpenconfigSpanningTree_StpLinkTypeExt_SHARED:
 		return "shared", nil
+	case ocbinds.OpenconfigSpanningTree_StpLinkTypeExt_AUTO:
+		return "auto", nil
 	default:
 		return "", errors.New("unsupported link-type value")
 	}
@@ -942,7 +1032,7 @@ func fillCommonInterfaceConfig(intf *ocbinds.OpenconfigSpanningTree_Stp_Interfac
 	}
 	if entry.IsPopulated() {
 		intf.Config.EdgePort = dbEdgePortToOc(entry.Get("edge_port"))
-		if lt := entry.Get("link_type"); lt != "" && lt != "auto" {
+		if lt := entry.Get("link_type"); lt != "" {
 			intf.Config.LinkType = dbLinkTypeToOc(lt)
 		}
 	}
@@ -1504,7 +1594,7 @@ var YangToDb_stp_link_type_xfmr FieldXfmrYangToDb = func(inParams XfmrParams) (m
 	ifName := NewPathInfo(inParams.uri).Var("name")
 	if stpRoot != nil && stpRoot.Interfaces != nil && ifName != "" {
 		if intf, ok := stpRoot.Interfaces.Interface[ifName]; ok && intf.Config != nil &&
-			intf.Config.LinkType != ocbinds.OpenconfigSpanningTree_StpLinkType_UNSET {
+			intf.Config.LinkType != ocbinds.OpenconfigSpanningTree_StpLinkTypeExt_UNSET {
 			linkType, err := ocLinkTypeToDb(intf.Config.LinkType)
 			if err != nil {
 				return res, err
@@ -1513,7 +1603,7 @@ var YangToDb_stp_link_type_xfmr FieldXfmrYangToDb = func(inParams XfmrParams) (m
 			return res, nil
 		}
 	}
-	if linkType, ok := inParams.param.(ocbinds.E_OpenconfigSpanningTree_StpLinkType); ok {
+	if linkType, ok := inParams.param.(ocbinds.E_OpenconfigSpanningTree_StpLinkTypeExt); ok {
 		val, err := ocLinkTypeToDb(linkType)
 		if err != nil {
 			return res, err
@@ -1534,7 +1624,7 @@ var DbToYang_stp_link_type_xfmr FieldXfmrDbtoYang = func(inParams XfmrParams) (m
 		return res, err
 	}
 	if entry.IsPopulated() {
-		if lt := entry.Get("link_type"); lt != "" && lt != "auto" {
+		if lt := entry.Get("link_type"); lt != "" {
 			res["link-type"] = dbLinkTypeToOc(lt)
 		}
 	}
@@ -1693,6 +1783,9 @@ var stp_post_xfmr PostXfmrFunc = func(inParams XfmrParams) error {
 		}
 	}
 	stripStpGlobalYangDefaultsForMst(inParams.yangDefValMap)
+	if rstpEnableBootstrapRequested(inParams) {
+		queueStpPortDefaultLinkType(inParams, retDbDataMap)
+	}
 	return nil
 }
 
@@ -2130,7 +2223,7 @@ var YangToDb_stp_intf_common_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams
 		}
 		fields["edge_port"] = edgePort
 	}
-	if intf.Config.LinkType != ocbinds.OpenconfigSpanningTree_StpLinkType_UNSET {
+	if intf.Config.LinkType != ocbinds.OpenconfigSpanningTree_StpLinkTypeExt_UNSET {
 		linkType, err := ocLinkTypeToDb(intf.Config.LinkType)
 		if err != nil {
 			return res, err

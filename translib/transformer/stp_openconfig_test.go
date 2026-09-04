@@ -110,6 +110,8 @@ func stpEnableRstpExpected() map[string]interface{} {
 				"bpdu_guard_do_disable": "false",
 				"root_guard":            "false",
 				"priority":              "128",
+				"edge_port":             "false",
+				"link_type":             "auto",
 			},
 		},
 		"STP_MST_PORT": map[string]interface{}{
@@ -150,6 +152,7 @@ func Test_set_rstp_enabled_protocol(t *testing.T) {
 	t.Run("enable RSTP via enabled-protocol", processSetRequest(url, body, "POST", false, nil))
 	time.Sleep(1 * time.Second)
 	t.Run("verify MST mode and MSTI 0 defaults", verifyDbResult(rclient, "STP|GLOBAL", expected, false))
+	t.Run("verify STP_PORT link_type auto after enable", verifyDbResult(rclient, "STP_PORT|"+stpTestIfName, expected, false))
 	t.Run("verify STP_MST_PORT created on enable", verifyStpMstPortCreatedOnEnable)
 	unloadDB(db.ConfigDB, cleanup)
 }
@@ -166,6 +169,7 @@ func Test_set_rstp_enabled_protocol_cold_start_update(t *testing.T) {
 	t.Run("enable RSTP via UPDATE on cold start", processSetRequest(url, body, "PATCH", false, nil))
 	time.Sleep(1 * time.Second)
 	t.Run("verify MST mode and MSTI 0 defaults after cold-start UPDATE", verifyDbResult(rclient, "STP|GLOBAL", expected, false))
+	t.Run("verify STP_PORT link_type auto after enable", verifyDbResult(rclient, "STP_PORT|"+stpTestIfName, expected, false))
 	t.Run("verify STP_MST_PORT created on enable", verifyStpMstPortCreatedOnEnable)
 	unloadDB(db.ConfigDB, cleanup)
 }
@@ -181,6 +185,7 @@ func Test_set_rstp_enabled_protocol_patch(t *testing.T) {
 	t.Run("enable RSTP via PATCH on global config", processSetRequest(url, body, "PATCH", false, nil))
 	time.Sleep(1 * time.Second)
 	t.Run("verify MST mode and MSTI 0 defaults after PATCH", verifyDbResult(rclient, "STP|GLOBAL", expected, false))
+	t.Run("verify STP_PORT link_type auto after enable", verifyDbResult(rclient, "STP_PORT|"+stpTestIfName, expected, false))
 	t.Run("verify STP_MST_PORT created on enable", verifyStpMstPortCreatedOnEnable)
 	unloadDB(db.ConfigDB, cleanup)
 }
@@ -289,6 +294,23 @@ func Test_set_rstp_link_type(t *testing.T) {
 	t.Run("set link-type on interface", processSetRequest(url, body, "POST", false, nil))
 	time.Sleep(1 * time.Second)
 	t.Run("verify link_type in STP_PORT", verifyDbResult(rclient, "STP_PORT|"+stpTestIfName, expected, false))
+}
+
+func Test_set_rstp_link_type_auto(t *testing.T) {
+	url := "/openconfig-spanning-tree:stp/interfaces/interface[name=" + stpTestIfName + "]/config/link-type"
+	body := `{"openconfig-spanning-tree:link-type":"AUTO"}`
+	expected := map[string]interface{}{
+		"STP_PORT": map[string]interface{}{
+			stpTestIfName: map[string]interface{}{"link_type": "auto"},
+		},
+	}
+
+	loadDB(db.ConfigDB, stpMstInstPrereq("32768"))
+	time.Sleep(1 * time.Second)
+	t.Run("set link-type AUTO on interface", processSetRequest(url, body, "POST", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("verify auto link_type in STP_PORT", verifyDbResult(rclient, "STP_PORT|"+stpTestIfName, expected, false))
+	t.Run("get STP link-type AUTO", processGetRequest(url, nil, `{"openconfig-spanning-tree:link-type":"AUTO"}`, false))
 }
 
 func Test_set_rstp_port_priority(t *testing.T) {
