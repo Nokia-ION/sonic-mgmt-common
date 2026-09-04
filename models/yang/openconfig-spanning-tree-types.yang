@@ -169,7 +169,7 @@ module openconfig-spanning-tree-types {
 
   typedef stp-bridge-priority-type {
     type uint32 {
-      range 0..61440;
+      range 1..611440;
     }
     description
       "The manageable component of the Bridge Identifier";

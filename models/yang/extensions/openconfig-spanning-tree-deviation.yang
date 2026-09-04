@@ -16,10 +16,22 @@ module openconfig-spanning-tree-deviation {
 
     oc-ext:openconfig-version "0.1.0";
 
-    revision 2026-07-22 {
+    revision 2026-09-02 {
         description
-            "Initial revision: RSTP-only support mapped to MSTI 0.";
-        reference "0.1.0";
+            "Extend OC stp-link-type with AUTO to match SONiC STP_PORT.link_type.";
+        reference "0.2.3";
+    }
+
+    revision 2026-09-02 {
+        description
+            "Allow RSTP state bridge-priority 0 so GET matches IEEE/SONiC range.";
+        reference "0.2.2";
+    }
+
+    revision 2026-08-22 {
+        description
+            "Allow RSTP interface port-priority 0 to match SONiC/IEEE range.";
+        reference "0.2.1";
     }
 
     revision 2026-08-06 {
@@ -28,10 +40,29 @@ module openconfig-spanning-tree-deviation {
         reference "0.2.0";
     }
 
-    revision 2026-08-22 {
+    revision 2026-07-22 {
         description
-            "Allow RSTP interface port-priority 0 to match SONiC/IEEE range.";
-        reference "0.2.1";
+            "Initial revision: RSTP-only support mapped to MSTI 0.";
+        reference "0.1.0";
+    }
+
+    typedef stp-link-type-ext {
+        type enumeration {
+            enum P2P {
+                description
+                    "Point-to-Point link";
+            }
+            enum SHARED {
+                description
+                    "Shared link";
+            }
+            enum AUTO {
+                description
+                    "Automatically determine the interface link type (SONiC STP_PORT.link_type auto)";
+            }
+        }
+        description
+            "SONiC extension of OpenConfig stp-link-type; AUTO is not in standard OC.";
     }
 
     deviation /oc-stp:stp/oc-stp:mstp {
@@ -43,6 +74,14 @@ module openconfig-spanning-tree-deviation {
     }
 
     deviation /oc-stp:stp/oc-stp:rstp/oc-stp:config/oc-stp:bridge-priority {
+        deviate replace {
+            type uint32 {
+                range "0..61440";
+            }
+        }
+    }
+
+    deviation /oc-stp:stp/oc-stp:rstp/oc-stp:state/oc-stp:bridge-priority {
         deviate replace {
             type uint32 {
                 range "0..61440";
@@ -63,6 +102,18 @@ module openconfig-spanning-tree-deviation {
             type uint8 {
                 range "0..240";
             }
+        }
+    }
+
+    deviation /oc-stp:stp/oc-stp:interfaces/oc-stp:interface/oc-stp:config/oc-stp:link-type {
+        deviate replace {
+            type stp-link-type-ext;
+        }
+    }
+
+    deviation /oc-stp:stp/oc-stp:interfaces/oc-stp:interface/oc-stp:state/oc-stp:link-type {
+        deviate replace {
+            type stp-link-type-ext;
         }
     }
 }
