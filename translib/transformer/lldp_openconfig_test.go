@@ -102,8 +102,19 @@ func lldpCleanupTables() map[string]interface{} {
 	return map[string]interface{}{
 		"LLDP":             map[string]interface{}{"GLOBAL": ""},
 		"LLDP_PORT":        map[string]interface{}{testIfName: ""},
+		"LLDP_CUSTOM_TLV":  map[string]interface{}{"vendor-serial": ""},
+		"MGMT_PORT":        map[string]interface{}{"eth0": ""},
 		"LLDP_ENTRY_TABLE": map[string]interface{}{testIfName: ""},
 		"LLDP_LOC_CHASSIS": map[string]interface{}{"": ""},
+	}
+}
+
+func lldpCountersCleanup() map[string]interface{} {
+	return map[string]interface{}{
+		"LLDP_STATISTICS": map[string]interface{}{
+			"GLOBAL":   "",
+			testIfName: "",
+		},
 	}
 }
 
@@ -112,8 +123,14 @@ func loadLldpFixture(t *testing.T, withNeighbor, withPort bool, portEnabled stri
 	cleanup := lldpCleanupTables()
 	unloadDB(db.ConfigDB, cleanup)
 	unloadDB(db.ApplDB, cleanup)
+	unloadDB(db.CountersDB, lldpCountersCleanup())
 
 	loadDB(db.ConfigDB, lldpGlobalCfgPrereq())
+	loadDB(db.ConfigDB, map[string]interface{}{
+		"MGMT_PORT": map[string]interface{}{
+			"eth0": map[string]interface{}{"admin_status": "up"},
+		},
+	})
 	loadDB(db.ApplDB, lldpLocChassisPrereq())
 	if withNeighbor {
 		loadDB(db.ApplDB, lldpNeighborPrereq())
@@ -128,6 +145,7 @@ func unloadLldpFixture() {
 	cleanup := lldpCleanupTables()
 	unloadDB(db.ConfigDB, cleanup)
 	unloadDB(db.ApplDB, cleanup)
+	unloadDB(db.CountersDB, lldpCountersCleanup())
 }
 
 func Test_openconfig_lldp_config(t *testing.T) {
@@ -219,13 +237,13 @@ func Test_openconfig_lldp_neighbors(t *testing.T) {
 
 	t.Log("\n\n+++++++++++++ GET single LLDP interface with neighbor ++++++++++++")
 	url = "/openconfig-lldp:lldp/interfaces/interface[name=Ethernet0]"
-	expectedGetJSON = `{"openconfig-lldp:interface":[{"config":{"enabled":true,"name":"Ethernet0"},"name":"Ethernet0","neighbors":{"neighbor":[{"capabilities":{"capability":[{"name":"openconfig-lldp-types:MAC_BRIDGE","state":{"enabled":true,"name":"openconfig-lldp-types:MAC_BRIDGE"}}]},"id":"Ethernet0","state":{"age":5000,"chassis-id":"00:aa:00:00:00:01","chassis-id-type":"MAC_ADDRESS","id":"1","management-address":"172.17.2.1,fd00::1","management-address-type":"ipv4","port-description":"Port 1/1","port-id":"Ethernet0","port-id-type":"LOCAL","system-description":"SONiC simulator 1","system-name":"sonic1"}}]},"state":{"enabled":true,"name":"Ethernet0"}}]}`
+	expectedGetJSON = `{"openconfig-lldp:interface":[{"config":{"enabled":true,"name":"Ethernet0"},"name":"Ethernet0","neighbors":{"neighbor":[{"capabilities":{"capability":[{"name":"openconfig-lldp-types:MAC_BRIDGE","state":{"enabled":true,"name":"openconfig-lldp-types:MAC_BRIDGE"}}]},"id":"Ethernet0","mgmt-addresses":{"mgmt-address":[{"address":"172.17.2.1","state":{"address":"172.17.2.1"}},{"address":"fd00::1","state":{"address":"fd00::1"}}]},"state":{"age":5000},"chassis-id":"00:aa:00:00:00:01","chassis-id-type":"MAC_ADDRESS","id":"1","management-address":"172.17.2.1,fd00::1","management-address-type":"ipv4","port-description":"Port 1/1","port-id":"Ethernet0","port-id-type":"LOCAL","system-description":"SONiC simulator 1","system-name":"sonic1"}}]},"state":{"enabled":true,"name":"Ethernet0"}}]}`
 	t.Run("GET single interface with neighbor", processGetRequest(url, nil, expectedGetJSON, false))
 	time.Sleep(1 * time.Second)
 
 	t.Log("\n\n+++++++++++++ GET all LLDP interfaces ++++++++++++")
 	url = "/openconfig-lldp:lldp/interfaces"
-	expectedGetJSON = `{"openconfig-lldp:interfaces":{"interface":[{"config":{"enabled":true,"name":"Ethernet0"},"name":"Ethernet0","neighbors":{"neighbor":[{"capabilities":{"capability":[{"name":"openconfig-lldp-types:MAC_BRIDGE","state":{"enabled":true,"name":"openconfig-lldp-types:MAC_BRIDGE"}}]},"id":"Ethernet0","state":{"age":5000,"chassis-id":"00:aa:00:00:00:01","chassis-id-type":"MAC_ADDRESS","id":"1","management-address":"172.17.2.1,fd00::1","management-address-type":"ipv4","port-description":"Port 1/1","port-id":"Ethernet0","port-id-type":"LOCAL","system-description":"SONiC simulator 1","system-name":"sonic1"}}]},"state":{"enabled":true,"name":"Ethernet0"}}]}}`
+	expectedGetJSON = `{"openconfig-lldp:interfaces":{"interface":[{"config":{"enabled":true,"name":"Ethernet0"},"name":"Ethernet0","neighbors":{"neighbor":[{"capabilities":{"capability":[{"name":"openconfig-lldp-types:MAC_BRIDGE","state":{"enabled":true,"name":"openconfig-lldp-types:MAC_BRIDGE"}}]},"id":"Ethernet0","mgmt-addresses":{"mgmt-address":[{"address":"172.17.2.1","state":{"address":"172.17.2.1"}},{"address":"fd00::1","state":{"address":"fd00::1"}}]},"state":{"age":5000},"chassis-id":"00:aa:00:00:00:01","chassis-id-type":"MAC_ADDRESS","id":"1","management-address":"172.17.2.1,fd00::1","management-address-type":"ipv4","port-description":"Port 1/1","port-id":"Ethernet0","port-id-type":"LOCAL","system-description":"SONiC simulator 1","system-name":"sonic1"}}]},"state":{"enabled":true,"name":"Ethernet0"}}]}}`
 	t.Run("GET all interfaces", processGetRequest(url, nil, expectedGetJSON, false))
 }
 
@@ -253,7 +271,7 @@ func Test_openconfig_lldp_interface_neighbor_without_port(t *testing.T) {
 	defer unloadLldpFixture()
 
 	url = "/openconfig-lldp:lldp/interfaces/interface[name=Ethernet0]"
-	expectedGetJSON := `{"openconfig-lldp:interface":[{"config":{"enabled":true,"name":"Ethernet0"},"name":"Ethernet0","neighbors":{"neighbor":[{"capabilities":{"capability":[{"name":"openconfig-lldp-types:MAC_BRIDGE","state":{"enabled":true,"name":"openconfig-lldp-types:MAC_BRIDGE"}}]},"id":"Ethernet0","state":{"age":5000,"chassis-id":"00:aa:00:00:00:01","chassis-id-type":"MAC_ADDRESS","id":"1","management-address":"172.17.2.1,fd00::1","management-address-type":"ipv4","port-description":"Port 1/1","port-id":"Ethernet0","port-id-type":"LOCAL","system-description":"SONiC simulator 1","system-name":"sonic1"}}]},"state":{"enabled":true,"name":"Ethernet0"}}]}`
+	expectedGetJSON := `{"openconfig-lldp:interface":[{"config":{"enabled":true,"name":"Ethernet0"},"name":"Ethernet0","neighbors":{"neighbor":[{"capabilities":{"capability":[{"name":"openconfig-lldp-types:MAC_BRIDGE","state":{"enabled":true,"name":"openconfig-lldp-types:MAC_BRIDGE"}}]},"id":"Ethernet0","mgmt-addresses":{"mgmt-address":[{"address":"172.17.2.1","state":{"address":"172.17.2.1"}},{"address":"fd00::1","state":{"address":"fd00::1"}}]},"state":{"age":5000},"chassis-id":"00:aa:00:00:00:01","chassis-id-type":"MAC_ADDRESS","id":"1","management-address":"172.17.2.1,fd00::1","management-address-type":"ipv4","port-description":"Port 1/1","port-id":"Ethernet0","port-id-type":"LOCAL","system-description":"SONiC simulator 1","system-name":"sonic1"}}]},"state":{"enabled":true,"name":"Ethernet0"}}]}`
 	t.Run("GET keyed interface neighbor without LLDP_PORT", processGetRequest(url, nil, expectedGetJSON, false))
 	time.Sleep(1 * time.Second)
 
@@ -271,7 +289,7 @@ func Test_openconfig_lldp_keyed_paths(t *testing.T) {
 	defer unloadLldpFixture()
 
 	url = "/openconfig-lldp:lldp/interfaces/interface[name=Ethernet0]"
-	expectedGetJSON := `{"openconfig-lldp:interface":[{"config":{"enabled":true,"name":"Ethernet0"},"name":"Ethernet0","neighbors":{"neighbor":[{"capabilities":{"capability":[{"name":"openconfig-lldp-types:MAC_BRIDGE","state":{"enabled":true,"name":"openconfig-lldp-types:MAC_BRIDGE"}}]},"id":"Ethernet0","state":{"age":5000,"chassis-id":"00:aa:00:00:00:01","chassis-id-type":"MAC_ADDRESS","id":"1","management-address":"172.17.2.1,fd00::1","management-address-type":"ipv4","port-description":"Port 1/1","port-id":"Ethernet0","port-id-type":"LOCAL","system-description":"SONiC simulator 1","system-name":"sonic1"}}]},"state":{"enabled":true,"name":"Ethernet0"}}]}`
+	expectedGetJSON := `{"openconfig-lldp:interface":[{"config":{"enabled":true,"name":"Ethernet0"},"name":"Ethernet0","neighbors":{"neighbor":[{"capabilities":{"capability":[{"name":"openconfig-lldp-types:MAC_BRIDGE","state":{"enabled":true,"name":"openconfig-lldp-types:MAC_BRIDGE"}}]},"id":"Ethernet0","mgmt-addresses":{"mgmt-address":[{"address":"172.17.2.1","state":{"address":"172.17.2.1"}},{"address":"fd00::1","state":{"address":"fd00::1"}}]},"state":{"age":5000},"chassis-id":"00:aa:00:00:00:01","chassis-id-type":"MAC_ADDRESS","id":"1","management-address":"172.17.2.1,fd00::1","management-address-type":"ipv4","port-description":"Port 1/1","port-id":"Ethernet0","port-id-type":"LOCAL","system-description":"SONiC simulator 1","system-name":"sonic1"}}]},"state":{"enabled":true,"name":"Ethernet0"}}]}`
 	t.Run("GET keyed interface container", processGetRequest(url, nil, expectedGetJSON, false))
 	time.Sleep(1 * time.Second)
 
@@ -286,7 +304,7 @@ func Test_openconfig_lldp_keyed_paths(t *testing.T) {
 	time.Sleep(1 * time.Second)
 
 	url = "/openconfig-lldp:lldp/interfaces/interface[name=Ethernet0]/neighbors/neighbor[id=Ethernet0]"
-	expectedGetJSON = `{"openconfig-lldp:neighbor":[{"capabilities":{"capability":[{"name":"openconfig-lldp-types:MAC_BRIDGE","state":{"enabled":true,"name":"openconfig-lldp-types:MAC_BRIDGE"}}]},"id":"Ethernet0","state":{"age":5000,"chassis-id":"00:aa:00:00:00:01","chassis-id-type":"MAC_ADDRESS","id":"1","management-address":"172.17.2.1,fd00::1","management-address-type":"ipv4","port-description":"Port 1/1","port-id":"Ethernet0","port-id-type":"LOCAL","system-description":"SONiC simulator 1","system-name":"sonic1"}}]}`
+	expectedGetJSON = `{"openconfig-lldp:neighbor":[{"capabilities":{"capability":[{"name":"openconfig-lldp-types:MAC_BRIDGE","state":{"enabled":true,"name":"openconfig-lldp-types:MAC_BRIDGE"}}]},"id":"Ethernet0","mgmt-addresses":{"mgmt-address":[{"address":"172.17.2.1","state":{"address":"172.17.2.1"}},{"address":"fd00::1","state":{"address":"fd00::1"}}]},"state":{"age":5000},"chassis-id":"00:aa:00:00:00:01","chassis-id-type":"MAC_ADDRESS","id":"1","management-address":"172.17.2.1,fd00::1","management-address-type":"ipv4","port-description":"Port 1/1","port-id":"Ethernet0","port-id-type":"LOCAL","system-description":"SONiC simulator 1","system-name":"sonic1"}}]}`
 	t.Run("GET keyed neighbor container", processGetRequest(url, nil, expectedGetJSON, false))
 	time.Sleep(1 * time.Second)
 
@@ -408,7 +426,7 @@ func Test_openconfig_lldp_neighbor_list_paths(t *testing.T) {
 	defer unloadLldpFixture()
 
 	url := "/openconfig-lldp:lldp/interfaces/interface[name=Ethernet0]/neighbors"
-	expectedGetJSON := `{"openconfig-lldp:neighbors":{"neighbor":[{"capabilities":{"capability":[{"name":"openconfig-lldp-types:MAC_BRIDGE","state":{"enabled":true,"name":"openconfig-lldp-types:MAC_BRIDGE"}}]},"id":"Ethernet0","state":{"age":5000,"chassis-id":"00:aa:00:00:00:01","chassis-id-type":"MAC_ADDRESS","id":"1","management-address":"172.17.2.1,fd00::1","management-address-type":"ipv4","port-description":"Port 1/1","port-id":"Ethernet0","port-id-type":"LOCAL","system-description":"SONiC simulator 1","system-name":"sonic1"}}]}}`
+	expectedGetJSON := `{"openconfig-lldp:neighbors":{"neighbor":[{"capabilities":{"capability":[{"name":"openconfig-lldp-types:MAC_BRIDGE","state":{"enabled":true,"name":"openconfig-lldp-types:MAC_BRIDGE"}}]},"id":"Ethernet0","mgmt-addresses":{"mgmt-address":[{"address":"172.17.2.1","state":{"address":"172.17.2.1"}},{"address":"fd00::1","state":{"address":"fd00::1"}}]},"state":{"age":5000},"chassis-id":"00:aa:00:00:00:01","chassis-id-type":"MAC_ADDRESS","id":"1","management-address":"172.17.2.1,fd00::1","management-address-type":"ipv4","port-description":"Port 1/1","port-id":"Ethernet0","port-id-type":"LOCAL","system-description":"SONiC simulator 1","system-name":"sonic1"}}]}}`
 	t.Run("GET interface neighbors list", processGetRequest(url, nil, expectedGetJSON, false))
 	time.Sleep(1 * time.Second)
 
@@ -657,4 +675,172 @@ func Test_openconfig_lldp_readonly_reject(t *testing.T) {
 	t.Run("DELETE read-only chassis-id rejected", processDeleteRequest(
 		"/openconfig-lldp:lldp/config/chassis-id",
 		true, unsupportedDeleteErr))
+}
+
+func Test_openconfig_lldp_unsupported_1_2_0_config(t *testing.T) {
+	loadLldpFixture(t, false, false, "")
+	defer unloadLldpFixture()
+	time.Sleep(1 * time.Second)
+
+	ttlErr := tlerr.NotSupportedError{Format: "LLDP configuration not supported on /openconfig-lldp:lldp/config/ttl"}
+	portDescErr := tlerr.NotSupportedError{Format: "LLDP configuration not supported on /openconfig-lldp:lldp/interfaces/interface/config/port-description"}
+	mgmtAddrErr := tlerr.NotSupportedError{Format: "LLDP management addresses are read-only"}
+
+	t.Run("PATCH global ttl rejected", processSetRequest(
+		"/openconfig-lldp:lldp/config/ttl",
+		`{"openconfig-lldp:ttl":120}`,
+		"PATCH", true, ttlErr))
+	t.Run("PATCH ttl inside config container rejected", processSetRequest(
+		"/openconfig-lldp:lldp/config",
+		`{"openconfig-lldp:ttl":120}`,
+		"PATCH", true, ttlErr))
+	t.Run("PATCH interface port-description rejected", processSetRequest(
+		"/openconfig-lldp:lldp/interfaces/interface[name=Ethernet0]/config/port-description",
+		`{"openconfig-lldp:port-description":"override"}`,
+		"PATCH", true, portDescErr))
+	t.Run("PATCH mgmt-addresses rejected", processSetRequest(
+		"/openconfig-lldp:lldp/mgmt-addresses",
+		`{"openconfig-lldp:mgmt-addresses":{}}`,
+		"PATCH", true, mgmtAddrErr))
+	t.Run("DELETE global ttl rejected", processDeleteRequest(
+		"/openconfig-lldp:lldp/config/ttl",
+		true, ttlErr))
+}
+
+func Test_openconfig_lldp_extended_state(t *testing.T) {
+	loadLldpFixture(t, true, true, "true")
+	defer unloadLldpFixture()
+
+	loadDB(db.ApplDB, map[string]interface{}{
+		"LLDP_LOC_CHASSIS": map[string]interface{}{
+			"": map[string]interface{}{
+				"lldp_loc_man_addr": "10.1.0.32,fc00:1::32",
+				"lldp_loc_ttl":      "120",
+			},
+		},
+		"LLDP_ENTRY_TABLE": map[string]interface{}{
+			testIfName: map[string]interface{}{
+				"lldp_rem_ttl":            "90",
+				"lldp_rem_max_frame_size": "1514",
+				"lldp_rem_port_vlan_id":   "146",
+				"lldp_rem_med_inv_serial": "SN-1234",
+				"lldp_rem_agg_port_id":    "42",
+				"lldp_rem_custom_tlvs":    `[{"type":127,"oui":"00:90:69","oui-subtype":"1","value":"435530323133353130363530"}]`,
+			},
+		},
+	})
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET local mgmt-addresses", processGetRequest(
+		"/openconfig-lldp:lldp/mgmt-addresses",
+		nil,
+		`{"openconfig-lldp:mgmt-addresses":{"mgmt-address":[{"address":"10.1.0.32","state":{"address":"10.1.0.32"}},{"address":"fc00:1::32","state":{"address":"fc00:1::32"}}]}}`,
+		false))
+
+	t.Run("GET global state ttl from loc chassis", processGetRequest(
+		"/openconfig-lldp:lldp/state/ttl",
+		nil,
+		`{"openconfig-lldp:ttl":120}`,
+		false))
+
+	t.Run("GET neighbor ttl pvid mfs med-serial", processGetRequest(
+		"/openconfig-lldp:lldp/interfaces/interface[name=Ethernet0]/neighbors/neighbor[id=Ethernet0]/state",
+		nil,
+		`{"openconfig-lldp:state":{"age":5000,"chassis-id":"00:aa:00:00:00:01","chassis-id-type":"MAC_ADDRESS","id":"1","management-address":"172.17.2.1,fd00::1","management-address-type":"ipv4","max-frame-size":1514,"med-inventory-serial-number":"SN-1234","port-description":"Port 1/1","port-id":"Ethernet0","port-id-type":"LOCAL","port-vlan-id":146,"system-description":"SONiC simulator 1","system-name":"sonic1","ttl":90}}`,
+		false))
+
+	t.Run("GET neighbor mgmt-addresses list", processGetRequest(
+		"/openconfig-lldp:lldp/interfaces/interface[name=Ethernet0]/neighbors/neighbor[id=Ethernet0]/mgmt-addresses",
+		nil,
+		`{"openconfig-lldp:mgmt-addresses":{"mgmt-address":[{"address":"172.17.2.1","state":{"address":"172.17.2.1"}},{"address":"fd00::1","state":{"address":"fd00::1"}}]}}`,
+		false))
+
+	t.Run("GET neighbor link-aggregation", processGetRequest(
+		"/openconfig-lldp:lldp/interfaces/interface[name=Ethernet0]/neighbors/neighbor[id=Ethernet0]/link-aggregation/state",
+		nil,
+		`{"openconfig-lldp:state":{"capable":true,"enabled":true,"port-id":42}}`,
+		false))
+
+	t.Run("GET neighbor custom-tlvs", processGetRequest(
+		"/openconfig-lldp:lldp/interfaces/interface[name=Ethernet0]/neighbors/neighbor[id=Ethernet0]/custom-tlvs",
+		nil,
+		`{"openconfig-lldp:custom-tlvs":{"tlv":[{"oui":"00:90:69","oui-subtype":"1","state":{"oui":"00:90:69","oui-subtype":"1","type":127,"value":"Q1UwMjEzNTEwNjUw"},"type":127}]}}`,
+		false))
+}
+
+func Test_openconfig_lldp_counters(t *testing.T) {
+	loadLldpFixture(t, true, true, "true")
+	defer unloadLldpFixture()
+
+	loadDB(db.CountersDB, map[string]interface{}{
+		"LLDP_STATISTICS": map[string]interface{}{
+			"GLOBAL": map[string]interface{}{
+				"frame_in":         "220",
+				"frame_out":        "110",
+				"frame_discard":    "7",
+				"tlv_unknown":      "9",
+				"tlv_accepted":     "13",
+				"entries_aged_out": "11",
+			},
+			testIfName: map[string]interface{}{
+				"frame_in":         "200",
+				"frame_out":        "100",
+				"frame_discard":    "6",
+				"tlv_unknown":      "7",
+				"tlv_accepted":     "9",
+				"entries_aged_out": "8",
+			},
+		},
+	})
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET global state counters from COUNTERS_DB", processGetRequest(
+		"/openconfig-lldp:lldp/state/counters",
+		nil,
+		`{"openconfig-lldp:counters":{"entries-aged-out":11,"frame-discard":7,"frame-in":220,"frame-out":110,"tlv-accepted":13,"tlv-unknown":9}}`,
+		false))
+
+	t.Run("GET interface state counters from COUNTERS_DB", processGetRequest(
+		"/openconfig-lldp:lldp/interfaces/interface[name=Ethernet0]/state/counters",
+		nil,
+		`{"openconfig-lldp:counters":{"frame-discard":6,"frame-in":200,"frame-out":100,"tlv-unknown":7}}`,
+		false))
+}
+
+func Test_openconfig_lldp_management_interface_and_custom_tlvs(t *testing.T) {
+	loadLldpFixture(t, false, false, "")
+	defer unloadLldpFixture()
+	time.Sleep(1 * time.Second)
+
+	t.Run("PATCH global management-interface", processSetRequest(
+		"/openconfig-lldp:lldp/config/management-interface",
+		`{"openconfig-lldp:management-interface":"eth0"}`,
+		"PATCH", false))
+	t.Run("GET global management-interface", processGetRequest(
+		"/openconfig-lldp:lldp/config/management-interface",
+		nil,
+		`{"openconfig-lldp:management-interface":"eth0"}`,
+		false))
+
+	t.Run("PATCH invalid management-interface rejected", processSetRequest(
+		"/openconfig-lldp:lldp/config/management-interface",
+		`{"openconfig-lldp:management-interface":"?"}`,
+		"PATCH", true,
+		tlerr.InvalidArgs("Invalid LLDP management-interface '%s'", "?")))
+
+	t.Run("PUT custom-tlv", processSetRequest(
+		"/openconfig-lldp:lldp/custom-tlvs/tlv[name=vendor-serial]/config",
+		`{"openconfig-lldp:config":{"name":"vendor-serial","oui":"00:90:69","oui-subtype":"1","type":127,"value":"Q1UwMjEzNTEwNjUw"}}`,
+		"PUT", false))
+	t.Run("GET custom-tlvs", processGetRequest(
+		"/openconfig-lldp:lldp/custom-tlvs",
+		nil,
+		`{"openconfig-lldp:custom-tlvs":{"tlv":[{"config":{"name":"vendor-serial","oui":"00:90:69","oui-subtype":"1","type":127,"value":"Q1UwMjEzNTEwNjUw"},"name":"vendor-serial","state":{"name":"vendor-serial","oui":"00:90:69","oui-subtype":"1","type":127,"value":"Q1UwMjEzNTEwNjUw"}}]}}`,
+		false))
+
+	t.Run("PATCH suppress chassis-id rejected", processSetRequest(
+		"/openconfig-lldp:lldp/config/suppress-tlv-advertisement",
+		`{"openconfig-lldp:suppress-tlv-advertisement":["openconfig-lldp-types:CHASSIS_ID"]}`,
+		"PATCH", true,
+		tlerr.NotSupportedError{Format: "LLDP suppress-tlv-advertisement identity not supported by lldpd"}))
 }

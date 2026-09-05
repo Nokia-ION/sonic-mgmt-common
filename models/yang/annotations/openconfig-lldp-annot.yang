@@ -17,6 +17,14 @@ module openconfig-lldp-annot {
     description
         "OpenConfig LLDP YANG annotations for SONiC transformer framework.";
 
+    revision 2026-09-05 {
+        description
+            "OpenConfig LLDP 1.2.0: map global custom-tlvs from CONFIG_DB
+            LLDP_CUSTOM_TLV; keep per-interface custom-tlv-names
+            not-supported; map /lldp/mgmt-addresses from LLDP_LOC_CHASSIS;
+            map state counters from COUNTERS_DB LLDP_STATISTICS.";
+    }
+
     revision 2026-07-03 {
         description
             "Initial revision: map LLDP interfaces/neighbors to APPL_DB LLDP_ENTRY_TABLE.";
@@ -50,6 +58,29 @@ module openconfig-lldp-annot {
         deviate add {
             sonic-ext:subtree-transformer "lldp_interfaces_xfmr";
         }
+    }
+
+    deviation /oc-lldp:lldp/oc-lldp:mgmt-addresses {
+        deviate add {
+            sonic-ext:subtree-transformer "lldp_mgmt_addresses_xfmr";
+        }
+    }
+
+    // Global custom-tlvs is config true in 1.2.0.
+    // custom-tlv-names leafrefs this list but lldpd custom TLVs are global only.
+    deviation /oc-lldp:lldp/oc-lldp:custom-tlvs {
+        deviate add {
+            sonic-ext:db-name "CONFIG_DB";
+            sonic-ext:subtree-transformer "lldp_custom_tlvs_xfmr";
+        }
+    }
+
+    deviation /oc-lldp:lldp/oc-lldp:interfaces/oc-lldp:interface/oc-lldp:config/oc-lldp:custom-tlv-names {
+        deviate not-supported;
+    }
+
+    deviation /oc-lldp:lldp/oc-lldp:interfaces/oc-lldp:interface/oc-lldp:state/oc-lldp:custom-tlv-names {
+        deviate not-supported;
     }
 
     deviation /oc-lldp:lldp/oc-lldp:config/oc-lldp:system-name {
