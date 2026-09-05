@@ -35,10 +35,13 @@
 package transformer
 
 import (
+	"errors"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/Azure/sonic-mgmt-common/translib/db"
+	"github.com/Azure/sonic-mgmt-common/translib/internal/apis"
 )
 
 const niAftsSubscUrl = "/openconfig-network-instance:network-instances/network-instance[name=default]/afts"
@@ -125,11 +128,33 @@ func TestSubscribe_ni_afts_entries_paths(t *testing.T) {
 			if out.nOpts.pType != wantPType {
 				t.Fatalf("pType=%v, want %v", out.nOpts.pType, wantPType)
 			}
-			if _, ok := out.dbDataMap[db.ApplDB][niAftsRouteTbl]["*"]; !ok {
-				t.Fatalf("missing %s[*]: %v", niAftsRouteTbl, out.dbDataMap)
+			wantPatt := niAftsWantRouteKeyPatt(tc.uri)
+			if _, ok := out.dbDataMap[db.ApplDB][niAftsRouteTbl][wantPatt]; !ok {
+				t.Fatalf("missing %s[%s]: %v", niAftsRouteTbl, wantPatt, out.dbDataMap)
 			}
 		})
 	}
+}
+
+// niAftsWantRouteKeyPatt is the ROUTE_TABLE watch pattern a request on the named
+// family registers. The patterns themselves are pinned by
+// TestSubscribe_ni_afts_entries_key_pattern_selects_family.
+func niAftsWantRouteKeyPatt(uri string) string {
+	if strings.Contains(uri, "/"+niAftsIpv4UnicastNode) {
+		return niAftsRouteKeyPattV4
+	}
+	return niAftsRouteKeyPattV6
+}
+
+// niAftsSplitRouteKey models what the db layer does to a ROUTE_TABLE key before
+// matching it against a registered pattern: it splits the key on the APPL_DB
+// separator, into at most compCt components when the subscription asked for a
+// count and on every separator otherwise.
+func niAftsSplitRouteKey(key string, compCt int) db.Key {
+	if compCt > 0 {
+		return db.Key{Comp: strings.SplitN(key, ":", compCt)}
+	}
+	return db.Key{Comp: strings.Split(key, ":")}
 }
 
 // next-hop-group is the one entry leaf fed by a row field rather than by the
@@ -206,7 +231,10 @@ func TestSubscribe_ni_afts_entries_next_hop_group_field_map(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Subscribe_ni_afts_entries_xfmr failed: %v", err)
 			}
-			fields := out.dbDataMap[db.ApplDB][niAftsRouteTbl]["*"]
+			fields := out.dbDataMap[db.ApplDB][niAftsRouteTbl][niAftsWantRouteKeyPatt(tc.uri)]
+			// The key component count travels in the same map as the field
+			// mappings, so take it out before counting what is mapped.
+			delete(fields, KEY_COMP_CNT)
 			got := fields[niAftsFldNhGrp]
 			if got != tc.want {
 				t.Errorf("%s maps to %q, want %q", niAftsFldNhGrp, got, tc.want)
@@ -221,29 +249,124 @@ func TestSubscribe_ni_afts_entries_next_hop_group_field_map(t *testing.T) {
 	}
 }
 
-// The watch has to be registered as an all key pattern. A ROUTE_TABLE key for an
-// IPv6 prefix is split into several components by the APPL_DB separator, and the
-// notification machinery only lets such a key through a pattern that is the
-// single component "*".
-func TestSubscribe_ni_afts_entries_registers_all_key_pattern(t *testing.T) {
-	for _, uri := range []string{
-		niAftsSubscUrl + "/ipv4-unicast/ipv4-entry",
-		niAftsSubscUrl + "/ipv6-unicast/ipv6-entry",
-	} {
-		out, err := Subscribe_ni_afts_entries_xfmr(XfmrSubscInParams{
-			uri:        uri,
-			requestURI: uri,
-			subscProc:  TRANSLATE_SUBSCRIBE,
+// One table holds both families, so the watch each entry list registers is what
+// keeps a route of the other family from waking it. A ROUTE_TABLE key is the
+// prefix, so the families are separable on the key alone, and the two patterns
+// need different key component counts: an IPv6 prefix is only kept whole by
+// asking for a single component, while an IPv4 prefix carries no separator and
+// is left at the default count so that a VRF scoped key splits into two
+// components and stops matching.
+//
+// Getting this wrong is not a failed subscription. Each list would be woken by
+// every route, the path transformer would decline the half of them that is of
+// the other family, and every refusal would be logged.
+func TestSubscribe_ni_afts_entries_key_pattern_selects_family(t *testing.T) {
+	tests := []struct {
+		name string
+		uri  string
+		// patt is the registered pattern and compCt the key component count it
+		// asks for, empty when it leaves the count at its default.
+		patt   string
+		compCt string
+		// wakes and ignores are ROUTE_TABLE keys the pattern does and does not
+		// let through.
+		wakes   []string
+		ignores []string
+	}{
+		{
+			name:   "ipv4 list is woken by dotted keys alone",
+			uri:    niAftsSubscUrl + "/ipv4-unicast/ipv4-entry",
+			patt:   "*.*",
+			compCt: "",
+			wakes:  []string{"10.40.0.0/16", "10.1.0.32", "0.0.0.0/0"},
+			// The IPv6 keys carry no dot. The VRF scoped keys are excluded by
+			// their component count, dotted or not.
+			ignores: []string{
+				"fc00:50::/64", "fc00:1::32", "::/0", "2001:db8:1:2:3:4:5:6/128",
+				"Vrf1:10.1.0.0/16", "Vrf1:fc00:1::/64",
+			},
+		},
+		{
+			name:   "ipv6 list is woken by colon bearing keys alone",
+			uri:    niAftsSubscUrl + "/ipv6-unicast/ipv6-entry",
+			patt:   "*:*",
+			compCt: "1",
+			// The default route and a fully written address are here because
+			// an IPv6 prefix varies in how many components the separator
+			// splits it into, which is what the single component asks around.
+			wakes: []string{
+				"fc00:50::/64", "fc00:1::32", "::/0", "2001:db8:1:2:3:4:5:6/128",
+			},
+			ignores: []string{"10.40.0.0/16", "10.1.0.32", "0.0.0.0/0"},
+		},
+		{
+			// The CRUD parent-table check reaches the callback with a uri that
+			// names no family, and it is an existence check rather than a
+			// subscription, so it keeps watching the table whole.
+			name: "a uri that names no family watches every row",
+			uri:  niAftsSubscUrl,
+			patt: "*",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := Subscribe_ni_afts_entries_xfmr(XfmrSubscInParams{
+				uri:        tc.uri,
+				requestURI: tc.uri,
+				subscProc:  TRANSLATE_SUBSCRIBE,
+			})
+			if err != nil {
+				t.Fatalf("Subscribe_ni_afts_entries_xfmr failed: %v", err)
+			}
+			keys := out.dbDataMap[db.ApplDB][niAftsRouteTbl]
+			if len(keys) != 1 {
+				t.Fatalf("expected a single key pattern, got %v", keys)
+			}
+			fields, ok := keys[tc.patt]
+			if !ok {
+				t.Fatalf("registered pattern is not %q: %v", tc.patt, keys)
+			}
+			if got := fields[KEY_COMP_CNT]; got != tc.compCt {
+				t.Errorf("%s=%q, want %q", KEY_COMP_CNT, got, tc.compCt)
+			}
+
+			compCt := 0
+			if tc.compCt != "" {
+				var err error
+				if compCt, err = strconv.Atoi(tc.compCt); err != nil {
+					t.Fatalf("%s=%q is not a number: %v", KEY_COMP_CNT, tc.compCt, err)
+				}
+			}
+			pattKey := niAftsSplitRouteKey(tc.patt, compCt)
+			for _, k := range tc.wakes {
+				if !niAftsSplitRouteKey(k, compCt).Matches(pattKey) {
+					t.Errorf("key %s does not match %q, so a change to it would not be reported", k, tc.patt)
+				}
+			}
+			for _, k := range tc.ignores {
+				if niAftsSplitRouteKey(k, compCt).Matches(pattKey) {
+					t.Errorf("key %s matches %q, so it would wake this list and then be declined", k, tc.patt)
+				}
+			}
 		})
-		if err != nil {
-			t.Fatalf("Subscribe_ni_afts_entries_xfmr failed for %s: %v", uri, err)
+	}
+}
+
+// A VRF scoped key still reaches the ipv6 list. Only asking for a single key
+// component keeps an IPv6 prefix whole, and at one component a pattern built
+// from * and ? cannot say that a key does not begin with a VRF name, so the
+// address family check in the path transformer stays as the backstop. The ipv4
+// list is not affected: a VRF scoped key splits into two components and no
+// longer matches a one component pattern.
+func TestSubscribe_ni_afts_entries_vrf_key_reaches_ipv6_list_only(t *testing.T) {
+	for _, k := range []string{"Vrf1:10.1.0.0/16", "Vrf1:fc00:1::/64"} {
+		if !niAftsSplitRouteKey(k, 1).Matches(niAftsSplitRouteKey(niAftsRouteKeyPattV6, 1)) {
+			t.Errorf("key %s no longer matches %q; the path transformer check for it can go",
+				k, niAftsRouteKeyPattV6)
 		}
-		keys := out.dbDataMap[db.ApplDB][niAftsRouteTbl]
-		if len(keys) != 1 {
-			t.Fatalf("expected a single key pattern for %s, got %v", uri, keys)
-		}
-		if _, ok := keys["*"]; !ok {
-			t.Errorf("key pattern for %s is not the all key pattern: %v", uri, keys)
+		if niAftsSplitRouteKey(k, 0).Matches(niAftsSplitRouteKey(niAftsRouteKeyPattV4, 0)) {
+			t.Errorf("key %s matches %q, so a VRF row would wake the ipv4 list", k, niAftsRouteKeyPattV4)
 		}
 	}
 }
@@ -280,8 +403,8 @@ func TestSubscribe_ni_afts_entries_without_requestURI(t *testing.T) {
 	if out.onChange != OnchangeEnable || out.nOpts == nil || out.nOpts.pType != OnChange {
 		t.Fatalf("onChange=%v nOpts=%v, want on-change", out.onChange, out.nOpts)
 	}
-	if _, ok := out.dbDataMap[db.ApplDB][niAftsRouteTbl]["*"]; !ok {
-		t.Fatalf("missing %s[*]: %v", niAftsRouteTbl, out.dbDataMap)
+	if _, ok := out.dbDataMap[db.ApplDB][niAftsRouteTbl][niAftsRouteKeyPattV6]; !ok {
+		t.Fatalf("missing %s[%s]: %v", niAftsRouteTbl, niAftsRouteKeyPattV6, out.dbDataMap)
 	}
 }
 
@@ -303,6 +426,10 @@ func TestDbToYangPath_ni_afts_entries(t *testing.T) {
 		keyComp    []string
 		wantPrefix string // empty means no prefix key is expected
 		wantErr    bool
+		// A refusal of a row this list does not serve has to carry
+		// apis.ErrUnrelatedEntry, so the infrastructure can drop the
+		// notification without logging a warning for it.
+		wantUnrelated bool
 	}{
 		{
 			name:       "ipv4 prefix",
@@ -350,32 +477,41 @@ func TestDbToYangPath_ni_afts_entries(t *testing.T) {
 		{
 			// Both lists read one table, so every route event reaches both
 			// subscriptions and the wrong family has to be refused.
-			name:       "ipv6 key on the ipv4 list is refused",
-			schemaPath: v4Entry,
-			keyComp:    []string{"fc00", "61", "", "/64"},
-			wantErr:    true,
+			name:          "ipv6 key on the ipv4 list is refused",
+			schemaPath:    v4Entry,
+			keyComp:       []string{"fc00", "61", "", "/64"},
+			wantErr:       true,
+			wantUnrelated: true,
 		},
 		{
-			name:       "ipv4 key on the ipv6 list is refused",
-			schemaPath: v6Entry,
-			keyComp:    []string{"20.50.0.0/16"},
-			wantErr:    true,
+			name:          "ipv4 key on the ipv6 list is refused",
+			schemaPath:    v6Entry,
+			keyComp:       []string{"20.50.0.0/16"},
+			wantErr:       true,
+			wantUnrelated: true,
 		},
 		{
 			// Only the default network instance can be attributed by key, and a
-			// VRF scoped key rejoins into something that is not a prefix.
-			name:       "vrf scoped key is refused",
-			schemaPath: v4Entry,
-			keyComp:    []string{"Vrf1", "20.50.0.0/16"},
-			wantErr:    true,
+			// VRF scoped key rejoins into something that is not a prefix. Such
+			// a route is one this list does not serve, not a fault.
+			name:          "vrf scoped key is refused",
+			schemaPath:    v4Entry,
+			keyComp:       []string{"Vrf1", "20.50.0.0/16"},
+			wantErr:       true,
+			wantUnrelated: true,
 		},
 		{
-			name:       "unparseable key is refused",
-			schemaPath: v4Entry,
-			keyComp:    []string{"not-a-prefix"},
-			wantErr:    true,
+			// A key that is neither a prefix nor empty is indistinguishable
+			// from a VRF scoped one, so it is declined the same way.
+			name:          "unparseable key is refused",
+			schemaPath:    v4Entry,
+			keyComp:       []string{"not-a-prefix"},
+			wantErr:       true,
+			wantUnrelated: true,
 		},
 		{
+			// No key at all is not a row of the table, so it stays a fault and
+			// keeps its warning.
 			name:       "empty key is refused",
 			schemaPath: v4Entry,
 			keyComp:    []string{},
@@ -413,6 +549,10 @@ func TestDbToYangPath_ni_afts_entries(t *testing.T) {
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("expected an error, got keys %v", keys)
+				}
+				if got := errors.Is(err, apis.ErrUnrelatedEntry); got != tc.wantUnrelated {
+					t.Errorf("errors.Is(err, apis.ErrUnrelatedEntry) = %v, want %v; err: %v",
+						got, tc.wantUnrelated, err)
 				}
 				return
 			}
@@ -890,6 +1030,12 @@ func TestDbToYangPath_ni_afts_next_hop_groups(t *testing.T) {
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("expected an error, got keys %v", keys)
+				}
+				// NEXTHOP_GROUP_TABLE is read by this list alone, so no event
+				// on it belongs to somebody else: every refusal here is a
+				// genuine failure and has to keep its warning.
+				if errors.Is(err, apis.ErrUnrelatedEntry) {
+					t.Errorf("refusal must not be declined as unrelated; err: %v", err)
 				}
 				return
 			}

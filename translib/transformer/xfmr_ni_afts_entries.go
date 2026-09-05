@@ -24,6 +24,7 @@ import (
 	"strings"
 
 	"github.com/Azure/sonic-mgmt-common/translib/db"
+	"github.com/Azure/sonic-mgmt-common/translib/internal/apis"
 	"github.com/Azure/sonic-mgmt-common/translib/ocbinds"
 	"github.com/Azure/sonic-mgmt-common/translib/tlerr"
 	"github.com/openconfig/ygot/ygot"
@@ -206,11 +207,18 @@ var DbToYangPath_ni_afts_entries_path_xfmr PathXfmrDbToYangFunc = func(params Xf
 	}
 
 	// Only the default VRF is mapped, and a VRF scoped key rejoins into
-	// something that is not a prefix, which is how the two are told apart.
+	// something that is not a prefix, which is how the two are told apart. Such
+	// a row is an ordinary route this list does not serve rather than a fault,
+	// so it is declined as unrelated; a key that is not there at all is not a
+	// row and stays a fault.
 	rawPrefix, ok := niAftsRouteKeyPrefix(db.Key{Comp: params.tblKeyComp})
 	if !ok {
+		if strings.Join(params.tblKeyComp, ":") == "" {
+			return fmt.Errorf("ni_afts_entries_path_xfmr: empty ROUTE_TABLE key %v",
+				params.tblKeyComp)
+		}
 		return fmt.Errorf("ni_afts_entries_path_xfmr: ROUTE_TABLE key %v does not name a prefix in the"+
-			" default network instance", params.tblKeyComp)
+			" default network instance: %w", params.tblKeyComp, apis.ErrUnrelatedEntry)
 	}
 	// fpmsyncd keys a host route on the bare address, so the mask the list is
 	// keyed on has to be supplied, exactly as the get path supplies it.
@@ -237,7 +245,7 @@ var DbToYangPath_ni_afts_entries_path_xfmr PathXfmrDbToYangFunc = func(params Xf
 	}
 	if isV4 != wantV4 {
 		return fmt.Errorf("ni_afts_entries_path_xfmr: prefix %s is not of the address family the path"+
-			" %q asks for", prefix, params.ygSchemaPath)
+			" %q asks for: %w", prefix, params.ygSchemaPath, apis.ErrUnrelatedEntry)
 	}
 
 	params.ygPathKeys[niPath+"/name"] = niAftsDefaultNi
@@ -282,11 +290,6 @@ var Subscribe_ni_afts_entries_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSubs
 		fields[niAftsFldNhGrp] = niAftsNhGrpLeaf
 	}
 
-	result.dbDataMap = RedisDbSubscribeMap{db.ApplDB: {
-		niAftsRouteTbl: {"*": fields},
-	}}
-	result.isVirtualTbl = false
-
 	// Which node was asked for, as opposed to which one the callback is anchored
 	// on, survives only in requestURI. The CRUD parent-table check reaches this
 	// callback with requestURI unset and an untrimmed uri, hence the fallback.
@@ -294,12 +297,40 @@ var Subscribe_ni_afts_entries_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSubs
 	if leafUri == "" {
 		leafUri = inParams.uri
 	}
+	reqInfo, reqErr := parseNiAftsEntriesRequestUri(leafUri)
+
+	// Watching the family the request asks for keeps a route of the other family
+	// from waking this list, which the path transformer would otherwise have to
+	// decline once per notification.
+	//
+	// The two families need different key component counts. An IPv6 prefix is
+	// full of the APPL_DB key separator, so only asking for a single component
+	// keeps it whole. An IPv4 prefix holds no separator, so leaving the count at
+	// its default yields the one component the pattern has, while a VRF scoped
+	// key splits into two and stops matching, which keeps the rows this mapping
+	// cannot attribute out of the ipv4 list as well. A uri that does not parse
+	// is the CRUD parent-table check rather than a subscription, and it names no
+	// family, so it keeps watching the table whole.
+	keyPatt := "*"
+	if reqErr == nil {
+		if reqInfo.isV4 {
+			keyPatt = niAftsRouteKeyPattV4
+		} else {
+			keyPatt = niAftsRouteKeyPattV6
+			fields[KEY_COMP_CNT] = "1"
+		}
+	}
+
+	result.dbDataMap = RedisDbSubscribeMap{db.ApplDB: {
+		niAftsRouteTbl: {keyPatt: fields},
+	}}
+	result.isVirtualTbl = false
 
 	// The prefix the list is keyed on is the ROUTE_TABLE key, and
 	// DbToYangPath_ni_afts_entries_path_xfmr recovers it from a notification,
 	// so a request that reaches the entry list can be served on change. A
 	// request on the unicast container names no entry and stays on sampling.
-	if reqInfo, err := parseNiAftsEntriesRequestUri(leafUri); err == nil && reqInfo.atEntryList {
+	if reqErr == nil && reqInfo.atEntryList {
 		result.onChange = OnchangeEnable
 		result.nOpts = &notificationOpts{pType: OnChange}
 		return result, nil

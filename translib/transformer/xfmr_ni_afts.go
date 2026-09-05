@@ -76,6 +76,14 @@ const (
 
 	// The one entry leaf that is fed by a row field rather than by the key.
 	niAftsNhGrpLeaf = "next-hop-group"
+
+	// ROUTE_TABLE watch patterns, one per address family. One table holds both
+	// families, so a watch on every row wakes both entry lists for every route.
+	// The key is the prefix, and an IPv4 prefix carries dots and no colon while
+	// an IPv6 one carries colons, so a route can be steered to the entry list of
+	// its own family on the key alone.
+	niAftsRouteKeyPattV4 = "*.*"
+	niAftsRouteKeyPattV6 = "*:*"
 )
 
 // niAftsNextHop is one entry of the top level AFT next-hop list.

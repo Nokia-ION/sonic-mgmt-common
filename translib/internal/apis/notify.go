@@ -20,6 +20,7 @@
 package apis
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"runtime"
@@ -95,6 +96,14 @@ type Notification struct {
 	// Update and UpdatePaths MUST NOT overlap to prevent duplicate notifications.
 	UpdatePaths []string
 }
+
+// ErrUnrelatedEntry marks the refusal of a db entry that the mapping handed it
+// does not serve, as opposed to one it should have translated and could not.
+// A path transformer wraps it when a notification reaches it for a row that
+// belongs to another path, which is possible wherever one table backs more than
+// one, so that such a notification can be dropped without being reported as a
+// failure.
+var ErrUnrelatedEntry = errors.New("unrelated db entry")
 
 // Minimum Interval for sample notification
 const (
