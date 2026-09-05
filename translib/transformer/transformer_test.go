@@ -103,6 +103,7 @@ func clearDb() {
 	}
 	dbNumTblList[db.CountersDB] = []string{
 		"TEST_SENSOR_MODE_TABLE",
+		"LLDP_STATISTICS",
 	}
 
 	for dbNum, tblList := range dbNumTblList {

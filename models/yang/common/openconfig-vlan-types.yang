@@ -23,6 +23,13 @@ module openconfig-vlan-types {
 
   oc-ext:openconfig-version "3.0.1";
 
+  revision "2026-09-05" {
+    description
+      "Add vlan-id-or-none typedef required by openconfig-lldp 1.2.0.
+      Full openconfig-vlan-types 3.3.0 is not imported.";
+    reference "3.0.1";
+  }
+
   revision "2018-11-21" {
     description
       "Add OpenConfig module metadata extensions.";
@@ -101,6 +108,16 @@ module openconfig-vlan-types {
     }
     description
       "Type definition representing a single-tagged VLAN";
+  }
+
+  typedef vlan-id-or-none {
+    type uint16 {
+      range 0..4094;
+    }
+    description
+      "Type definition representing a single-tagged VLAN identifier
+      where a value of 0 indicates that the system either does not
+      know the PVID or does not support Port-based VLAN operation.";
   }
 
   typedef vlan-range {
