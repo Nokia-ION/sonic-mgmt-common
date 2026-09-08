@@ -26,8 +26,8 @@ var nonDbProps = map[string]bool{
 // also name the table it reads, either one table for all of its types or one per
 // type and never both; a host-backed row must name neither.
 func TestPropTblShape(t *testing.T) {
-	if got := len(propTbl); got != 34 {
-		t.Errorf("propTbl has %d rows, want 34", got)
+	if got := len(propTbl); got != 37 {
+		t.Errorf("propTbl has %d rows, want 37", got)
 	}
 	for name, desc := range propTbl {
 		if len(desc.types) == 0 {
@@ -812,4 +812,66 @@ func TestFillPropertiesHostCpuWithoutDb(t *testing.T) {
 	if _, ok := comp.Properties.Property["capacity"]; ok {
 		t.Error("property capacity present, want absent")
 	}
+}
+
+func assertPropFloat(t *testing.T, comp *ocbinds.OpenconfigPlatform_Components_Component, name string, want float64) {
+	t.Helper()
+	prop, ok := comp.Properties.Property[name]
+	if !ok {
+		t.Fatalf("property %q missing", name)
+	}
+	wantUnion, err := prop.State.To_OpenconfigPlatform_Components_Component_Properties_Property_State_Value_Union(want)
+	if err != nil {
+		t.Fatalf("building union for %q: %v", name, err)
+	}
+	if !reflect.DeepEqual(prop.State.Value, wantUnion) {
+		t.Errorf("property %q = %v, want %v", name, prop.State.Value, wantUnion)
+	}
+}
+
+// speed is served on fans, temperature and overheat_threshold on sensors, and a
+// property is NotFound on a type that does not carry it.
+func TestFillPropertiesFanAndSensor(t *testing.T) {
+	d, err := db.NewDB(getDBOptions(db.StateDB))
+	if err != nil {
+		t.Fatal("NewDB failed")
+	}
+	defer d.DeleteDB()
+
+	seedFanInfoEntry(t, d, "Fan3", map[string]string{
+		"speed": "44",
+	})
+	seedTempInfoEntry(t, d, "MB Front", map[string]string{
+		"temperature":             "26.75",
+		"high_threshold":          "70",
+		"critical_high_threshold": "73",
+	})
+	var dbs [db.MaxDB]*db.DB
+	dbs[db.StateDB] = d
+
+	t.Run("fan speed", func(t *testing.T) {
+		comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+		if err := fillProperties(comp, "Fan3", CompTypeFan, "speed", dbs); err != nil {
+			t.Fatalf("fillProperties(speed) unexpected error: %v", err)
+		}
+		assertPropFloat(t, comp, "speed", 44)
+	})
+	t.Run("sensor temperature and overheat", func(t *testing.T) {
+		comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+		if err := fillProperties(comp, "MB Front", CompTypeTemp, "", dbs); err != nil {
+			t.Fatalf("fillProperties() unexpected error: %v", err)
+		}
+		assertPropFloat(t, comp, "temperature", 26.75)
+		assertPropFloat(t, comp, "overheat_threshold", 73)
+		if _, ok := comp.Properties.Property["speed"]; ok {
+			t.Error("property speed present on a sensor, want absent")
+		}
+	})
+	t.Run("temperature on a fan", func(t *testing.T) {
+		comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+		err := fillProperties(comp, "Fan3", CompTypeFan, "temperature", dbs)
+		if _, ok := err.(tlerr.NotFoundError); !ok {
+			t.Fatalf("fillProperties(temperature on fan) returned %T (%v), want tlerr.NotFoundError", err, err)
+		}
+	})
 }

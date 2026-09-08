@@ -1089,6 +1089,13 @@ func seedPcieDeviceEntry(t *testing.T, d *db.DB, name string, fields map[string]
 	}
 }
 
+func seedTempInfoEntry(t *testing.T, d *db.DB, name string, fields map[string]string) {
+	t.Helper()
+	if err := d.SetEntry(&db.TableSpec{Name: TEMP_TBL}, db.Key{Comp: []string{name}}, db.Value{Field: fields}); err != nil {
+		t.Fatalf("failed to seed TEMPERATURE_INFO for %s: %v", name, err)
+	}
+}
+
 func assertStrLeaf(t *testing.T, got *string, want, leaf string) {
 	t.Helper()
 	if got == nil {
