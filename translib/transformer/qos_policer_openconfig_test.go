@@ -53,6 +53,12 @@ const (
 
 	qosPolClassifiersUrl = "/openconfig-qos:qos/classifiers"
 	qosPolSchedPolicyUrl = "/openconfig-qos:qos/scheduler-policies"
+
+	// The ACTIONS every classifier table type declares, whatever the classifier
+	// turns out to use. A table keeps the type it was created with, so an
+	// action added to the type later would never reach the tables already
+	// standing. Mirrors qosAclTableActions in xfmr_qos_policer.go.
+	qosAclActions = "PACKET_ACTION,POLICER_ACTION,SET_TC,COUNTER"
 )
 
 // qosPolBindUrl is the ingress scheduler-policy binding of one interface.
@@ -109,7 +115,7 @@ func Test_qos_policer_classifier_ipv4(t *testing.T) {
 	expected_map := map[string]interface{}{"ACL_TABLE_TYPE": map[string]interface{}{
 		"QOS_POLICER_V4": map[string]interface{}{
 			"MATCHES@":     "IP_TYPE,IP_PROTOCOL,L4_DST_PORT,TCP_FLAGS",
-			"ACTIONS@":     "PACKET_ACTION,POLICER_ACTION,COUNTER",
+			"ACTIONS@":     qosAclActions,
 			"BIND_POINTS@": "PORT",
 		}}}
 	t.Run("Verify ACL_TABLE_TYPE", verifyDbResult(rclient, "ACL_TABLE_TYPE|QOS_POLICER_V4", expected_map, false))
@@ -176,7 +182,7 @@ func Test_qos_policer_classifier_ipv6(t *testing.T) {
 	expected_map := map[string]interface{}{"ACL_TABLE_TYPE": map[string]interface{}{
 		"QOS_POLICER_V6": map[string]interface{}{
 			"MATCHES@":     "IP_TYPE,SRC_IPV6,DST_IPV6,IP_PROTOCOL",
-			"ACTIONS@":     "PACKET_ACTION,POLICER_ACTION,COUNTER",
+			"ACTIONS@":     qosAclActions,
 			"BIND_POINTS@": "PORT",
 		}}}
 	t.Run("Verify v6 ACL_TABLE_TYPE", verifyDbResult(rclient, "ACL_TABLE_TYPE|QOS_POLICER_V6", expected_map, false))
@@ -237,7 +243,7 @@ func Test_qos_policer_classifier_port_range_and_dscp(t *testing.T) {
 	expected_map = map[string]interface{}{"ACL_TABLE_TYPE": map[string]interface{}{
 		"QOS_POLICER_V4": map[string]interface{}{
 			"MATCHES@":     "IP_TYPE,SRC_IP,DSCP,L4_SRC_PORT,L4_DST_PORT_RANGE",
-			"ACTIONS@":     "PACKET_ACTION,POLICER_ACTION,COUNTER",
+			"ACTIONS@":     qosAclActions,
 			"BIND_POINTS@": "PORT",
 		}}}
 	t.Run("Verify range ACL_TABLE_TYPE", verifyDbResult(rclient, "ACL_TABLE_TYPE|QOS_POLICER_V4", expected_map, false))
@@ -305,7 +311,7 @@ func qosPolPreloadClassifier(cls string) map[string]interface{} {
 	return map[string]interface{}{
 		"ACL_TABLE_TYPE": map[string]interface{}{"QOS_POLICER_V4": map[string]interface{}{
 			"MATCHES@":     "IP_TYPE,IP_PROTOCOL,L4_DST_PORT",
-			"ACTIONS@":     "PACKET_ACTION,POLICER_ACTION,COUNTER",
+			"ACTIONS@":     qosAclActions,
 			"BIND_POINTS@": "PORT",
 		}},
 		"ACL_TABLE": map[string]interface{}{cls: map[string]interface{}{
@@ -1196,7 +1202,7 @@ func Test_qos_policer_table_type_matches_merged(t *testing.T) {
 	expected_map := map[string]interface{}{"ACL_TABLE_TYPE": map[string]interface{}{
 		"QOS_POLICER_V4": map[string]interface{}{
 			"MATCHES@":     "IP_TYPE,IP_PROTOCOL,L4_DST_PORT,SRC_IP",
-			"ACTIONS@":     "PACKET_ACTION,POLICER_ACTION,COUNTER",
+			"ACTIONS@":     qosAclActions,
 			"BIND_POINTS@": "PORT",
 		}}}
 	t.Run("Verify MATCHES merged", verifyDbResult(rclient, "ACL_TABLE_TYPE|QOS_POLICER_V4", expected_map, false))

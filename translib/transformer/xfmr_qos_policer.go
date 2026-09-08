@@ -3,18 +3,19 @@ package transformer
 ////////////////////////////////////////////////////////////////////////////////
 //
 // Realization of the OpenConfig QoS classifier + scheduler-policy trees as
-// SONiC ingress policing.
+// SONiC ingress ACLs.
 //
 // SONiC has no classifier construct of its own. aclorch is the only component
-// that can attach a policer to traffic selected by a packet match, so an
-// OpenConfig classifier that is policed is realized as:
+// that can attach a policer or a traffic class to traffic selected by a packet
+// match, so an OpenConfig classifier that is not a plain DSCP-to-TC map is
+// realized as:
 //
-//	ACL_TABLE_TYPE  a custom type declaring the match fields in use plus the
-//	                POLICER_ACTION and COUNTER actions
+//	ACL_TABLE_TYPE  a custom type declaring the match fields in use plus
+//	                PACKET_ACTION, POLICER_ACTION, SET_TC and COUNTER
 //	ACL_TABLE       one ingress table per classifier, bound to the ports that
-//	                bind the scheduler-policy
+//	                bind the classifier or the scheduler-policy
 //	ACL_RULE        one rule per classifier term, carrying the term's match
-//	                fields and POLICER_ACTION
+//	                fields and POLICER_ACTION / SET_TC
 //	POLICER         one entry per policing scheduler, holding cir/cbs and the
 //	                exceed action
 //
@@ -22,7 +23,11 @@ package transformer
 // independent requests, so neither side can assume the other is already in
 // CONFIG_DB. The stitching is therefore recovered from the tables themselves:
 // a rule's POLICER_ACTION names the policer, and the policer name encodes the
-// scheduler-policy and sequence it came from.
+// scheduler-policy and sequence it came from. target-group is stored on the
+// same rule as SET_TC (the SAI_ACL_ENTRY_ATTR_ACTION_SET_TC action).
+//
+// remark/set-dscp has no ingress ACL backend action yet, so it is rejected
+// rather than silently dropped.
 //
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -53,6 +58,18 @@ const (
 
 	qosAclTableTypeV4 = "QOS_POLICER_V4"
 	qosAclTableTypeV6 = "QOS_POLICER_V6"
+
+	/*
+	 * Every action a classifier can ever need, declared up front rather than as
+	 * each classifier turns out to use it. AclOrch::updateAclTable only carries
+	 * the description and the port list over to an existing table, so a table
+	 * keeps the table type it was created with: an action added to the type
+	 * later never reaches the tables already standing, and their rules are
+	 * rejected as "action is not supported on table". COUNTER is in the list
+	 * even though nothing asks for it, because aclorch creates a counter per
+	 * rule and builds the SAI action type list from this leaf-list.
+	 */
+	qosAclTableActions = "PACKET_ACTION,POLICER_ACTION,SET_TC,COUNTER"
 
 	// Term ids count down from this base so that a numerically lower term id
 	// is matched first, which is the order the OpenConfig term list implies.
@@ -149,6 +166,39 @@ func qosClassifierFamily(cls *ocbinds.OpenconfigQos_Qos_Classifiers_Classifier) 
 	return "ipv4"
 }
 
+// qosTermHasRemark reports whether a term asks to rewrite a packet field.
+func qosTermHasRemark(term *ocbinds.OpenconfigQos_Qos_Classifiers_Classifier_Terms_Term) bool {
+	if term == nil || term.Actions == nil || term.Actions.Remark == nil ||
+		term.Actions.Remark.Config == nil {
+		return false
+	}
+	cfg := term.Actions.Remark.Config
+	return cfg.SetDscp != nil || cfg.SetDot1P != nil || cfg.SetMplsTc != nil
+}
+
+// qosTermHasTargetGroup reports whether a term assigns a forwarding class.
+func qosTermHasTargetGroup(term *ocbinds.OpenconfigQos_Qos_Classifiers_Classifier_Terms_Term) bool {
+	return term != nil && term.Actions != nil && term.Actions.Config != nil &&
+		term.Actions.Config.TargetGroup != nil && *term.Actions.Config.TargetGroup != ""
+}
+
+// qosTermUsesAcl reports whether a term forces its classifier to be realized as
+// an ACL rather than a DSCP_TO_TC_MAP entry. Richer-than-DSCP matches always do.
+// So does a remark: DSCP_TO_TC_MAP derives a traffic class from the DSCP it
+// reads, it cannot rewrite it.
+func qosTermUsesAcl(term *ocbinds.OpenconfigQos_Qos_Classifiers_Classifier_Terms_Term) bool {
+	return qosTermIsPolicing(term) || qosTermHasRemark(term)
+}
+
+// qosTermIsAclRule reports whether a term of an ACL-backed classifier gets a
+// rule of its own. Every term does, including a DSCP-only one that would have
+// been a map entry had the classifier not been an ACL: skipping it would drop
+// the operator's term without saying so. A term the request carries as a bare
+// shell is the one exception, since it selects nothing.
+func qosTermIsAclRule(term *ocbinds.OpenconfigQos_Qos_Classifiers_Classifier_Terms_Term) bool {
+	return term != nil && (term.Conditions != nil || term.Actions != nil)
+}
+
 // qosTermIsPolicing reports whether a term carries any match beyond a bare
 // DSCP value. A DSCP-only term is a DSCP-to-traffic-class map entry, which
 // xfmr_qos_classifier.go already owns; anything richer can only be realized
@@ -193,7 +243,7 @@ func qosClassifierIsPolicing(inParams XfmrParams, name string) bool {
 	if qosObj != nil && qosObj.Classifiers != nil {
 		if cls, ok := qosObj.Classifiers.Classifier[name]; ok && cls.Terms != nil {
 			for _, term := range cls.Terms.Term {
-				if qosTermIsPolicing(term) {
+				if qosTermUsesAcl(term) {
 					return true
 				}
 			}
@@ -207,10 +257,23 @@ func qosClassifierIsPolicing(inParams XfmrParams, name string) bool {
 	return qosPolicedClassifierInDb(inParams.d, name)
 }
 
+// qosAclMatchFields are the ACL_RULE fields that select traffic, as opposed to
+// the ones that act on it. Used to carry a rule's matches over an update that
+// only addresses its actions.
+var qosAclMatchFields = map[string]bool{
+	"IP_TYPE": true, "IP_PROTOCOL": true, "DSCP": true, "ETHER_TYPE": true,
+	"SRC_IP": true, "DST_IP": true, "SRC_IPV6": true, "DST_IPV6": true,
+	"L4_SRC_PORT": true, "L4_DST_PORT": true,
+	"L4_SRC_PORT_RANGE": true, "L4_DST_PORT_RANGE": true,
+	"TCP_FLAGS": true,
+}
+
 // qosAclRuleFields maps one classifier term's conditions onto ACL_RULE fields,
 // returning the field set and the match names the table type must declare.
+// existing is the rule already in the table, if any, and is what the term keeps
+// matching on when the request does not restate its conditions.
 func qosAclRuleFields(termId string, term *ocbinds.OpenconfigQos_Qos_Classifiers_Classifier_Terms_Term,
-	family string) (db.Value, []string, error) {
+	family string, existing db.Value) (db.Value, []string, error) {
 
 	val := db.Value{Field: make(map[string]string)}
 	matches := []string{"IP_TYPE"}
@@ -237,11 +300,6 @@ func qosAclRuleFields(termId string, term *ocbinds.OpenconfigQos_Qos_Classifiers
 		val.Field["IP_TYPE"] = "IPV4ANY"
 	}
 
-	c := term.Conditions
-	if c == nil {
-		return val, matches, nil
-	}
-
 	addMatch := func(name string) {
 		for _, m := range matches {
 			if m == name {
@@ -249,6 +307,29 @@ func qosAclRuleFields(termId string, term *ocbinds.OpenconfigQos_Qos_Classifiers
 			}
 		}
 		matches = append(matches, name)
+	}
+
+	/*
+	 * A request addressing only a term's actions carries no conditions, as in
+	 * a write to .../actions/remark/config/set-dscp on a term that already
+	 * exists. The rule goes on matching what it already matched, so carry
+	 * those fields over rather than refusing a term that was accepted when it
+	 * was created.
+	 */
+	if term.Conditions == nil {
+		for field, value := range existing.Field {
+			if qosAclMatchFields[field] {
+				val.Field[field] = value
+				addMatch(field)
+			}
+		}
+	}
+
+	// A term with no conditions at all still has to reach the backstop below,
+	// so that it is refused rather than turned into a rule matching everything.
+	c := term.Conditions
+	if c == nil {
+		c = &ocbinds.OpenconfigQos_Qos_Classifiers_Classifier_Terms_Term_Conditions{}
 	}
 
 	// A condition with no ACL_RULE equivalent cannot be honoured, and ignoring
@@ -353,9 +434,9 @@ func qosAclRuleFields(termId string, term *ocbinds.OpenconfigQos_Qos_Classifiers
 		addMatch("ETHER_TYPE")
 	}
 
-	// Backstop for a condition that makes a term policing without producing a
-	// match: the rule would match every packet on the port and police all of
-	// it, so fail the request rather than program that.
+	// IP_TYPE on its own means nothing in the term selected any traffic, so the
+	// rule would match every packet on the port and police or rewrite all of
+	// it. Fail the request rather than program that.
 	if len(matches) == 1 {
 		return val, nil, tlerr.NotSupportedError{
 			Format: "Classifier term " + termId + " has no condition that maps to an ACL match",
@@ -436,6 +517,20 @@ func qosEthertype(u interface{}) (string, error) {
 	return "", tlerr.InvalidArgsError{Format: "Unsupported ethertype condition"}
 }
 
+// qosAclRuleInDb returns the rule already backing a classifier term, or an
+// empty value when the term is new.
+func qosAclRuleInDb(inParams XfmrParams, name, termId string) db.Value {
+	if inParams.d == nil {
+		return db.Value{Field: make(map[string]string)}
+	}
+	entry, err := inParams.d.GetEntry(&db.TableSpec{Name: qosAclRuleTbl},
+		db.Key{Comp: []string{name, qosAclRuleName(termId)}})
+	if err != nil || !entry.IsPopulated() {
+		return db.Value{Field: make(map[string]string)}
+	}
+	return entry
+}
+
 // qosClassifierToAcl builds the ACL objects backing a policed classifier and
 // merges them into resMap.
 func qosClassifierToAcl(inParams XfmrParams, name string,
@@ -456,11 +551,15 @@ func qosClassifierToAcl(inParams XfmrParams, name string,
 	ruleEntries := make(map[string]db.Value)
 
 	for termId, term := range cls.Terms.Term {
-		if !qosTermIsPolicing(term) {
+		if !qosTermIsAclRule(term) {
 			continue
 		}
-		ruleVal, matches, err := qosAclRuleFields(termId, term, family)
+		ruleVal, matches, err := qosAclRuleFields(termId, term, family,
+			qosAclRuleInDb(inParams, name, termId))
 		if err != nil {
+			return err
+		}
+		if err := qosApplyTermActions(inParams, term, &ruleVal); err != nil {
 			return err
 		}
 		if policer != "" {
@@ -502,10 +601,7 @@ func qosClassifierToAcl(inParams XfmrParams, name string,
 
 	typeVal := db.Value{Field: make(map[string]string)}
 	typeVal.Field["MATCHES@"] = strings.Join(allMatches, ",")
-	// COUNTER is required even though nothing asks for it: aclorch creates a
-	// counter per rule and builds the SAI action type list from this leaf-list,
-	// so leaving it out fails counter creation and strands the rule.
-	typeVal.Field["ACTIONS@"] = "PACKET_ACTION,POLICER_ACTION,COUNTER"
+	typeVal.Field["ACTIONS@"] = qosAclTableActions
 	typeVal.Field["BIND_POINTS@"] = "PORT"
 	qosMergeTable(resMap, qosAclTableTypeTbl, map[string]db.Value{tableType: typeVal})
 
@@ -538,6 +634,53 @@ func qosAppendUnique(list []string, val string) []string {
 		}
 	}
 	return append(list, val)
+}
+
+// qosTargetGroupToTc resolves a forwarding-group name to the traffic-class
+// number stored as QOS_FWD_GROUP.priority / fabric-priority.
+func qosTargetGroupToTc(inParams XfmrParams, name string) (string, error) {
+	if name == "" {
+		return "", tlerr.InvalidArgsError{Format: "target-group is empty"}
+	}
+	qosObj := getQosRoot(inParams.ygRoot)
+	if qosObj != nil && qosObj.ForwardingGroups != nil {
+		if fg, ok := qosObj.ForwardingGroups.ForwardingGroup[name]; ok &&
+			fg.Config != nil && fg.Config.FabricPriority != nil {
+			return strconv.Itoa(int(*fg.Config.FabricPriority)), nil
+		}
+	}
+	if prio := get_fwd_group_priority(inParams, name); prio != "" {
+		return prio, nil
+	}
+	return "", tlerr.NotFoundError{Format: "Forwarding group " + name + " not found"}
+}
+
+// qosApplyTermActions writes the SET_TC field from a classifier term onto the
+// ACL rule that realizes it. target-group resolves to a traffic class, stored
+// as the aclorch SET_TC action (SAI_ACL_ENTRY_ATTR_ACTION_SET_TC).
+//
+// remark actions (set-dscp, set-dot1p, set-mpls-tc) have no ingress ACL backend
+// action, so they are rejected rather than silently dropped.
+func qosApplyTermActions(inParams XfmrParams,
+	term *ocbinds.OpenconfigQos_Qos_Classifiers_Classifier_Terms_Term,
+	ruleVal *db.Value) error {
+
+	if term == nil || ruleVal == nil {
+		return nil
+	}
+	if qosTermHasTargetGroup(term) {
+		tc, err := qosTargetGroupToTc(inParams, *term.Actions.Config.TargetGroup)
+		if err != nil {
+			return err
+		}
+		ruleVal.Field["SET_TC"] = tc
+	}
+	if qosTermHasRemark(term) {
+		return tlerr.NotSupportedError{
+			Format: "Classifier remark actions (set-dscp, set-dot1p, set-mpls-tc) are not supported",
+		}
+	}
+	return nil
 }
 
 // qosPruneStaleRules asks translib to delete the rules of a classifier that the
@@ -653,6 +796,131 @@ func qosPortsForClassifier(inParams XfmrParams, clsName string) []string {
 		}
 	}
 	return ports
+}
+
+// qosAclClassifiersOnIntf lists the ACL-backed classifiers bound to an
+// interface through /qos/interfaces/interface/input/classifiers, as the
+// interface being in the backing table's ports.
+//
+// A policed classifier is left out. Its interface list is owned by
+// /input/scheduler-policy, which put the interface there when the policy was
+// bound, so reporting it here would let a delete under /input/classifiers
+// unbind a policy nobody asked to touch.
+func qosAclClassifiersOnIntf(inParams XfmrParams, ifName string) []string {
+	names := []string{}
+	if inParams.d == nil || ifName == "" {
+		return names
+	}
+	keys, err := inParams.d.GetKeysByPattern(&db.TableSpec{Name: qosAclTableTbl}, "*")
+	if err != nil {
+		return names
+	}
+	for _, key := range keys {
+		if len(key.Comp) == 0 {
+			continue
+		}
+		entry, err := inParams.d.GetEntry(&db.TableSpec{Name: qosAclTableTbl}, key)
+		if err != nil {
+			continue
+		}
+		if t := entry.Field["type"]; t != qosAclTableTypeV4 && t != qosAclTableTypeV6 {
+			continue
+		}
+		if qosPolicerForClassifier(inParams, key.Comp[0]) != "" {
+			continue
+		}
+		for _, p := range strings.Split(entry.Field["ports@"], ",") {
+			if p == ifName {
+				names = append(names, key.Comp[0])
+				break
+			}
+		}
+	}
+	return names
+}
+
+// qosClassifierIsPolicedInDb reports whether a classifier's rules carry a
+// policer, off a plain DB handle rather than an XfmrParams.
+func qosClassifierIsPolicedInDb(d *db.DB, clsName string) bool {
+	if d == nil || clsName == "" {
+		return false
+	}
+	keys, err := d.GetKeysByPattern(&db.TableSpec{Name: qosAclRuleTbl}, clsName+"|*")
+	if err != nil {
+		return false
+	}
+	for _, key := range keys {
+		entry, err := d.GetEntry(&db.TableSpec{Name: qosAclRuleTbl}, key)
+		if err != nil {
+			continue
+		}
+		if entry.Field["POLICER_ACTION"] != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// qosAclClassifierBoundToIntf names an ACL-backed classifier of the given
+// family bound to an interface, or "" for either family. The subscribe path
+// has only a DB handle to work from, so it cannot use the lister above.
+//
+// A policed classifier is left out for the same reason it is there: its
+// interface list belongs to /input/scheduler-policy, so reporting it as a
+// binding under /input/classifiers would let a delete there act on an
+// interface that has no such binding.
+func qosAclClassifierBoundToIntf(d *db.DB, ifName, family string) string {
+	if d == nil || ifName == "" {
+		return ""
+	}
+	keys, err := d.GetKeysByPattern(&db.TableSpec{Name: qosAclTableTbl}, "*")
+	if err != nil {
+		return ""
+	}
+	for _, key := range keys {
+		if len(key.Comp) == 0 {
+			continue
+		}
+		entry, err := d.GetEntry(&db.TableSpec{Name: qosAclTableTbl}, key)
+		if err != nil {
+			continue
+		}
+		switch entry.Field["type"] {
+		case qosAclTableTypeV4:
+			if family == "ipv6" {
+				continue
+			}
+		case qosAclTableTypeV6:
+			if family == "ipv4" {
+				continue
+			}
+		default:
+			continue
+		}
+		if qosClassifierIsPolicedInDb(d, key.Comp[0]) {
+			continue
+		}
+		for _, p := range strings.Split(entry.Field["ports@"], ",") {
+			if p == ifName {
+				return key.Comp[0]
+			}
+		}
+	}
+	return ""
+}
+
+// qosAclClassifierFamily reports whether the table backing a classifier is the
+// v4 or the v6 one, for the type key of the interface classifier list.
+func qosAclClassifierFamily(inParams XfmrParams, clsName string) string {
+	if inParams.d == nil {
+		return "ipv4"
+	}
+	entry, err := inParams.d.GetEntry(&db.TableSpec{Name: qosAclTableTbl},
+		db.Key{Comp: []string{clsName}})
+	if err == nil && entry.Field["type"] == qosAclTableTypeV6 {
+		return "ipv6"
+	}
+	return "ipv4"
 }
 
 // qosSchedulerPolicerClassifier reports the classifier a scheduler polices, if
@@ -929,7 +1197,7 @@ func qosFillClassifiersFromAcl(inParams XfmrParams,
 			if err != nil {
 				continue
 			}
-			if err := qosFillTermFromRule(clsObj, termId, family, rule); err != nil {
+			if err := qosFillTermFromRule(inParams, clsObj, termId, family, rule); err != nil {
 				return added, err
 			}
 		}
@@ -939,7 +1207,7 @@ func qosFillClassifiersFromAcl(inParams XfmrParams,
 }
 
 // qosFillTermFromRule maps one ACL rule back onto a classifier term.
-func qosFillTermFromRule(clsObj *ocbinds.OpenconfigQos_Qos_Classifiers_Classifier,
+func qosFillTermFromRule(inParams XfmrParams, clsObj *ocbinds.OpenconfigQos_Qos_Classifiers_Classifier,
 	termId string, family string, rule db.Value) error {
 
 	if clsObj.Terms == nil {
@@ -1069,6 +1337,35 @@ func qosFillTermFromRule(clsObj *ocbinds.OpenconfigQos_Qos_Classifiers_Classifie
 				c.L2.Config = &ocbinds.OpenconfigQos_Qos_Classifiers_Classifier_Terms_Term_Conditions_L2_Config{}
 			}
 			c.L2.Config.Ethertype = ethertype
+		}
+	}
+
+	actions := func() *ocbinds.OpenconfigQos_Qos_Classifiers_Classifier_Terms_Term_Actions {
+		if termObj.Actions == nil {
+			termObj.Actions = &ocbinds.OpenconfigQos_Qos_Classifiers_Classifier_Terms_Term_Actions{}
+		}
+		return termObj.Actions
+	}
+
+	/*
+	 * target-group is a leafref to a forwarding group, so it can only be
+	 * reported once one carries this traffic class. Reporting the bare number
+	 * instead would name a group that does not exist, which is worse than
+	 * leaving the action out until the forwarding group is configured.
+	 */
+	if v, ok := rule.Field["SET_TC"]; ok {
+		if fg := get_fwd_group_from_priority(inParams, v); fg != "" {
+			a := actions()
+			if a.Config == nil {
+				a.Config = &ocbinds.OpenconfigQos_Qos_Classifiers_Classifier_Terms_Term_Actions_Config{}
+			}
+			if a.State == nil {
+				a.State = &ocbinds.OpenconfigQos_Qos_Classifiers_Classifier_Terms_Term_Actions_State{}
+			}
+			a.Config.TargetGroup = &fg
+			a.State.TargetGroup = &fg
+		} else {
+			log.V(lvl.DEBUG).Infof("qosFillTermFromRule: no forwarding group with priority %v", v)
 		}
 	}
 
@@ -1453,7 +1750,7 @@ func qosAclRuleKeys(inParams XfmrParams, clsName string) []string {
 	if qosObj != nil && qosObj.Classifiers != nil {
 		if cls, ok := qosObj.Classifiers.Classifier[clsName]; ok && cls.Terms != nil {
 			for termId, term := range cls.Terms.Term {
-				if !qosTermIsPolicing(term) {
+				if !qosTermIsAclRule(term) {
 					continue
 				}
 				key := clsName + "|" + qosAclRuleName(termId)

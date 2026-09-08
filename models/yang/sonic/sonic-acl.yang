@@ -143,6 +143,30 @@ module sonic-acl {
 					}
 				}
 
+				leaf SET_TC {
+					description
+						"Traffic class (0..7) assigned to matching packets, realized as
+						the aclorch SET_TC action (SAI_ACL_ENTRY_ATTR_ACTION_SET_TC).
+						Valid on an ingress L3/L3V6 table, or a custom table type that
+						lists SET_TC among its ACTIONS.";
+					type uint8 {
+						range 0..7 {
+							error-app-tag set-tc-invalid-range;
+						}
+					}
+				}
+				/* SET_TC requires an ingress L3/L3V6 table, or a custom table type
+				 * that advertises the SET_TC action. */
+				must "not(SET_TC) or " +
+					"((/acl:sonic-acl/acl:ACL_TABLE/acl:ACL_TABLE_LIST[acl:aclname = current()/aclname]/acl:stage = 'INGRESS') and " +
+					"(/acl:sonic-acl/acl:ACL_TABLE/acl:ACL_TABLE_LIST[acl:aclname = current()/aclname]/acl:type = 'L3' or " +
+					"/acl:sonic-acl/acl:ACL_TABLE/acl:ACL_TABLE_LIST[acl:aclname = current()/aclname]/acl:type = 'L3V6')) or " +
+					"count(/acl:sonic-acl/acl:ACL_TABLE_TYPE/acl:ACL_TABLE_TYPE_LIST" +
+					"[acl:ACL_TABLE_TYPE_NAME = /acl:sonic-acl/acl:ACL_TABLE/acl:ACL_TABLE_LIST[acl:aclname = current()/aclname]/acl:type]" +
+					"/acl:ACTIONS[. = 'SET_TC']) > 0" {
+					error-app-tag set-tc-unsupported-table;
+				}
+
 				leaf IP_TYPE {
 					mandatory true;
 					type enumeration {
