@@ -446,6 +446,17 @@ var DbToYang_classifier_intf_qos_map_key_xfmr KeyXfmrDbToYang = func(inParams Xf
 	return keyMap, nil
 }
 
+// qosIntfHasDscpMap reports whether an interface names a QoS map in the given
+// PORT_QOS_MAP field.
+func qosIntfHasDscpMap(inParams XfmrParams, ifName, attrName string) bool {
+	if inParams.d == nil {
+		return false
+	}
+	entry, err := inParams.d.GetEntry(&db.TableSpec{Name: "PORT_QOS_MAP"},
+		db.Key{Comp: []string{ifName}})
+	return err == nil && entry.Field[attrName] != ""
+}
+
 func YangToDb_classifier_intf_qos_map_xfmr(inParams XfmrParams) (map[string]map[string]db.Value, error) {
 	res_map := make(map[string]map[string]db.Value)
 
@@ -474,43 +485,123 @@ func YangToDb_classifier_intf_qos_map_xfmr(inParams XfmrParams) (map[string]map[
 
 	var mapv4_name string
 	var mapv6_name string
+	aclNames := []string{}
 
 	map_type := "DSCP_TO_TC_MAP"
 	if intfObj.Input != nil && intfObj.Input.Classifiers != nil {
 		for _, classifier := range intfObj.Input.Classifiers.Classifier {
-			if classifier.Config == nil {
+			if classifier.Config == nil || classifier.Config.Name == nil {
+				/*
+				 * A delete addressing one list instance carries the type key
+				 * and nothing else, which names no classifier. That is not an
+				 * error; the bindings to undo come from the tables below.
+				 */
+				if inParams.oper == DELETE {
+					continue
+				}
 				log.V(lvl.ERROR).Info("Classifier not supported ")
 				return res_map, tlerr.NotFoundError{Format: "Classifier not supported"}
 			}
+			clsName := *classifier.Config.Name
 
-			if !is_classifier_dscp(inParams, *classifier.Config.Name) {
-				log.V(lvl.ERROR).Info("Classifier not supported ", *classifier.Config.Name)
-				return res_map, tlerr.NotFoundError{Format: "Classifier not supported " + *classifier.Config.Name}
+			if qosClassifierIsPolicing(inParams, clsName) {
+				/*
+				 * A policed classifier reaches an interface through the
+				 * scheduler-policy that polices it, which owns the port list
+				 * this path would write. Binding it here would put the
+				 * interface in a list only that policy may take it out of, so
+				 * say so rather than leave a binding nothing can undo.
+				 */
+				if qosPolicerForClassifier(inParams, clsName) != "" {
+					return res_map, tlerr.NotSupportedError{
+						Format: "Classifier " + clsName + " is policed and is bound " +
+							"through its scheduler-policy, not as an interface classifier",
+					}
+				}
+				aclNames = append(aclNames, clsName)
+				continue
+			}
+
+			if !is_classifier_dscp(inParams, clsName) {
+				log.V(lvl.ERROR).Info("Classifier not supported ", clsName)
+				return res_map, tlerr.NotFoundError{Format: "Classifier not supported " + clsName}
 			}
 
 			switch classifier.Config.Type {
 			case ocbinds.OpenconfigQos_Qos_Interfaces_Interface_Input_Classifiers_Classifier_Config_Type_UNSET:
 				fallthrough
 			case ocbinds.OpenconfigQos_Qos_Interfaces_Interface_Input_Classifiers_Classifier_Config_Type_IPV4:
-				mapv4_name = *classifier.Config.Name
+				mapv4_name = clsName
 			case ocbinds.OpenconfigQos_Qos_Interfaces_Interface_Input_Classifiers_Classifier_Config_Type_IPV6:
-				mapv6_name = *classifier.Config.Name
+				mapv6_name = clsName
 			}
 			map_type = "DSCP_TO_TC_MAP"
 		}
 	}
 
 	port_qos_map_table := "PORT_QOS_MAP"
+
+	/*
+	 * SONiC has no per interface classifier binding, so an ACL backed
+	 * classifier is bound by adding the interface to its table's ports. Name
+	 * only this interface, never the whole list: translib appends the members
+	 * named here on an update and removes just those on a delete, so any other
+	 * interface bound to the same classifier stays bound.
+	 */
+	bindAcl := func(names []string) {
+		for _, cls := range names {
+			qosMergeTable(res_map, qosAclTableTbl,
+				map[string]db.Value{cls: {Field: map[string]string{"ports@": if_name}}})
+		}
+	}
+
 	if inParams.oper == DELETE {
+		/*
+		 * A delete carries the list key but not the classifier name, so the
+		 * bindings to undo come from the tables. Only the ones this path made
+		 * are listed; a policed classifier is unbound through its
+		 * scheduler-policy instead.
+		 */
+		if len(aclNames) == 0 {
+			// A delete of one list instance names a family and must leave the
+			// other one bound.
+			family := ""
+			switch pathInfo.Var("type") {
+			case "IPV4":
+				family = "ipv4"
+			case "IPV6":
+				family = "ipv6"
+			}
+			for _, cls := range qosAclClassifiersOnIntf(inParams, if_name) {
+				if family == "" || qosAclClassifierFamily(inParams, cls) == family {
+					aclNames = append(aclNames, cls)
+				}
+			}
+		}
+		bindAcl(aclNames)
+
 		attr_name, ok := map_type_name_in_db[map_type]
 		if !ok {
 			log.V(lvl.ERROR).Info("map_type not implemented", map_type)
 			return res_map, tlerr.InternalError{Format: "Not Implemented"}
 		}
+
+		/*
+		 * Having unbound an ACL, leave PORT_QOS_MAP alone unless the interface
+		 * really carries a map, rather than clearing one the operator never
+		 * configured. A map that is there is reported under this same list key
+		 * and so is part of what the delete addresses.
+		 */
+		if mapv4_name == "" && mapv6_name == "" && len(aclNames) > 0 &&
+			!qosIntfHasDscpMap(inParams, if_name, attr_name) {
+			return res_map, nil
+		}
 		portQosTbl[if_name].Field[attr_name] = ""
 		res_map[port_qos_map_table] = portQosTbl
 		return res_map, nil
 	}
+
+	bindAcl(aclNames)
 
 	map_name := mapv4_name
 	if map_name == "" {
@@ -518,6 +609,9 @@ func YangToDb_classifier_intf_qos_map_xfmr(inParams XfmrParams) (map[string]map[
 	}
 
 	if map_name == "" {
+		if len(aclNames) > 0 {
+			return res_map, nil
+		}
 		log.V(lvl.ERROR).Info("map name is missing")
 		return res_map, tlerr.InternalError{Format: "map name missing "}
 	}
@@ -591,7 +685,9 @@ var DbToYang_classifier_intf_qos_map_xfmr SubTreeXfmrDbToYang = func(inParams Xf
 	mapCfg, err := inParams.d.GetEntry(dbSpec, key)
 	if err != nil {
 		log.V(lvl.DEBUG).Info("QoS Map not found for interface ", if_name)
-		return nil
+		// An ACL backed classifier is bound without a PORT_QOS_MAP entry, so a
+		// missing entry is not the end of the interface's classifiers.
+		return fill_intf_acl_classifiers(inParams, intfObj, if_name)
 	}
 
 	mapState, err := inParams.dbs[db.ApplDB].GetEntry(dbSpec, key)
@@ -671,9 +767,80 @@ var DbToYang_classifier_intf_qos_map_xfmr SubTreeXfmrDbToYang = func(inParams Xf
 		classifier6.State.Name = &state_classifierv6
 		classifier6.State.Type = ocbinds.OpenconfigQos_Qos_Interfaces_Interface_Input_Classifiers_Classifier_Config_Type_IPV6
 	}
+	return fill_intf_acl_classifiers(inParams, intfObj, if_name)
+}
+
+/*
+ * fill_intf_acl_classifiers reports the ACL backed classifiers bound to an
+ * interface. Unlike a DSCP map, which SONiC applies to both families and which
+ * is therefore reported under both list keys, an ACL backed classifier is built
+ * for one family and is reported under that key alone.
+ */
+func fill_intf_acl_classifiers(inParams XfmrParams,
+	intfObj *ocbinds.OpenconfigQos_Qos_Interfaces_Interface, if_name string) error {
+
+	names := qosAclClassifiersOnIntf(inParams, if_name)
+	if len(names) == 0 {
+		return nil
+	}
+
+	if intfObj.Input == nil {
+		intfObj.Input = &ocbinds.OpenconfigQos_Qos_Interfaces_Interface_Input{}
+	}
+	if intfObj.Input.Classifiers == nil {
+		intfObj.Input.Classifiers = &ocbinds.OpenconfigQos_Qos_Interfaces_Interface_Input_Classifiers{}
+	}
+
+	for _, name := range names {
+		clsType := ocbinds.OpenconfigQos_Qos_Interfaces_Interface_Input_Classifiers_Classifier_Config_Type_IPV4
+		if qosAclClassifierFamily(inParams, name) == "ipv6" {
+			clsType = ocbinds.OpenconfigQos_Qos_Interfaces_Interface_Input_Classifiers_Classifier_Config_Type_IPV6
+		}
+
+		// A DSCP map on the same interface already claimed both list keys. It
+		// is what PORT_QOS_MAP says is applied, so let it stand.
+		if _, ok := intfObj.Input.Classifiers.Classifier[clsType]; ok {
+			log.V(lvl.DEBUG).Info("Classifier list already holds type for intf ", if_name, " ", name)
+			continue
+		}
+
+		classifier, err := intfObj.Input.Classifiers.NewClassifier(clsType)
+		if err != nil {
+			return tlerr.InternalError{Format: "Failed to initialize classifier " + name}
+		}
+		clsName := name
+		classifier.Config = &ocbinds.OpenconfigQos_Qos_Interfaces_Interface_Input_Classifiers_Classifier_Config{
+			Name: &clsName, Type: clsType,
+		}
+		classifier.State = &ocbinds.OpenconfigQos_Qos_Interfaces_Interface_Input_Classifiers_Classifier_State{
+			Name: &clsName, Type: clsType,
+		}
+	}
 	return nil
 }
 
 var Subscribe_classifier_intf_qos_map_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSubscInParams) (XfmrSubscOutParams, error) {
+	/*
+	 * The RFC parent table check resolves a keyed binding against the table
+	 * reported here and fails the request when that key is absent. An ACL
+	 * backed classifier is bound by the interface being in its table's ports,
+	 * not through PORT_QOS_MAP, so report the table the binding is really in,
+	 * else a DELETE of the list instance reports it missing.
+	 */
+	pathInfo := NewPathInfo(inParams.uri)
+	family := ""
+	switch pathInfo.Var("type") {
+	case "IPV4":
+		family = "ipv4"
+	case "IPV6":
+		family = "ipv6"
+	}
+	cls := qosAclClassifierBoundToIntf(inParams.dbs[db.ConfigDB],
+		pathInfo.Var("interface-id"), family)
+	if cls != "" {
+		return XfmrSubscOutParams{
+			dbDataMap: RedisDbSubscribeMap{db.ConfigDB: {qosAclTableTbl: {cls: {}}}},
+		}, nil
+	}
 	return Subscribe_qos_map_xfmr(inParams, "PORT_QOS_MAP")
 }
