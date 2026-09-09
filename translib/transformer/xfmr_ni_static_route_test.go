@@ -311,6 +311,84 @@ func Test_openconfig_network_instance_static_route_invalid_prefix_rejected(t *te
 	time.Sleep(1 * time.Second)
 }
 
+// The protocol instance name is not a CONFIG_DB key component, so both served
+// spellings reach the same rows. Every other name would be one more alias for
+// those rows and is refused instead.
+func Test_openconfig_network_instance_static_route_protocol_instance_name(t *testing.T) {
+	preReqMap := map[string]interface{}{
+		"STATIC_ROUTE": map[string]interface{}{
+			"default|172.16.9.0/24": map[string]interface{}{
+				"nexthop": "10.1.1.9",
+			},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"STATIC_ROUTE": map[string]interface{}{
+			"default|172.16.9.0/24":  "",
+			"default|172.16.10.0/24": "",
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	niProtoUrlPfx := "/openconfig-network-instance:network-instances/network-instance[name=default]" +
+		"/protocols/protocol[identifier=STATIC][name="
+	upperProtoUrl := niProtoUrlPfx + "STATIC]"
+	unknownProtoUrl := niProtoUrlPfx + "foo]"
+
+	entryJSON := `{"config":{"prefix":"172.16.9.0/24"},"prefix":"172.16.9.0/24","next-hops":{"next-hop":[` +
+		`{"config":{"index":"10.1.1.9","next-hop":"10.1.1.9"},"index":"10.1.1.9"}]}}`
+	expectedGetJSON := `{"openconfig-network-instance:static":[` + entryJSON + `]}`
+	t.Run("GET static route list with upper case protocol instance name",
+		processGetRequest(upperProtoUrl+"/static-routes/static", nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	url := upperProtoUrl + "/static-routes/static[prefix=172.16.10.0/24]/config/prefix"
+	urlInputBodyJSON := "{\"openconfig-network-instance:prefix\":\"172.16.10.0/24\"}"
+	t.Run("PATCH static route with upper case protocol instance name",
+		processSetRequest(url, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"STATIC_ROUTE": map[string]interface{}{
+			"default|172.16.10.0/24": map[string]interface{}{},
+		},
+	}
+	t.Run("Verify STATIC_ROUTE row created via upper case protocol instance name",
+		verifyDbResult(rclient, "STATIC_ROUTE|default|172.16.10.0/24", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	expectedErr := tlerr.NotSupportedError{
+		Format: "unsupported STATIC protocol instance name \"foo\"; expected \"static\" or \"STATIC\"",
+	}
+	t.Run("GET static route list with unknown protocol instance name rejected",
+		processGetRequest(unknownProtoUrl+"/static-routes/static", nil, "", true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	url = unknownProtoUrl + "/static-routes/static[prefix=172.16.11.0/24]/config/prefix"
+	urlInputBodyJSON = "{\"openconfig-network-instance:prefix\":\"172.16.11.0/24\"}"
+	t.Run("PATCH static route with unknown protocol instance name rejected",
+		processSetRequest(url, urlInputBodyJSON, "PATCH", true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify STATIC_ROUTE not created for unknown protocol instance name",
+		verifyDbResult(rclient, "STATIC_ROUTE|default|172.16.11.0/24", map[string]interface{}{}, false))
+	time.Sleep(1 * time.Second)
+
+	// The identifier may arrive module qualified, which is how a client that
+	// round-trips a GET payload spells it. The transformer accepts it, but
+	// nothing above it does: ygot renders a list key as the bare STATIC and
+	// compares path keys as plain strings, so the qualified spelling matches no
+	// protocol instance and the read reports an empty list.
+	qualifiedProtoUrl := "/openconfig-network-instance:network-instances/network-instance[name=default]" +
+		"/protocols/protocol[identifier=openconfig-policy-types:STATIC][name=static]"
+	t.Run("GET static route list with module qualified identifier reads empty",
+		processGetRequest(qualifiedProtoUrl+"/static-routes/static", nil, "{}", false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
 func Test_openconfig_network_instance_static_route_container_delete_not_supported(t *testing.T) {
 	preReqMap := map[string]interface{}{
 		"STATIC_ROUTE": map[string]interface{}{
