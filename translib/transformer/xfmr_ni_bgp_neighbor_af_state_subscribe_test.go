@@ -165,3 +165,39 @@ func TestSubscribe_ni_bgp_nbr_af_state_non_translate_is_virtual(t *testing.T) {
 		}
 	}
 }
+
+// As for the neighbor state subtree, the served spellings both reach the same
+// counter rows and every other name is refused by the callback itself.
+func TestSubscribe_ni_bgp_nbr_af_state_protocol_instance_name(t *testing.T) {
+	afUrlFor := func(protoName string) string {
+		return "/openconfig-network-instance:network-instances/network-instance[name=default]" +
+			"/protocols/protocol[identifier=BGP][name=" + protoName + "]" +
+			"/bgp/neighbors/neighbor[neighbor-address=11.0.0.155]" +
+			"/afi-safis/afi-safi[afi-safi-name=IPV4_UNICAST]/state/prefixes"
+	}
+
+	for _, protoName := range []string{"bgp", "BGP"} {
+		url := afUrlFor(protoName)
+		out, err := Subscribe_ni_bgp_nbr_af_state_xfmr(XfmrSubscInParams{
+			uri:        url,
+			requestURI: url + "/received",
+			subscProc:  TRANSLATE_SUBSCRIBE,
+		})
+		if err != nil {
+			t.Fatalf("protocol instance name %q was refused: %v", protoName, err)
+		}
+		if _, ok := out.dbDataMap[db.StateDB][niBgpNbrAfStatsTbl]["default|11.0.0.155|ipv4_unicast"]; !ok {
+			t.Fatalf("missing %s[default|11.0.0.155|ipv4_unicast] for protocol instance name %q: %v",
+				niBgpNbrAfStatsTbl, protoName, out.dbDataMap)
+		}
+	}
+
+	url := afUrlFor("bgp2")
+	if _, err := Subscribe_ni_bgp_nbr_af_state_xfmr(XfmrSubscInParams{
+		uri:        url,
+		requestURI: url + "/received",
+		subscProc:  TRANSLATE_SUBSCRIBE,
+	}); err == nil {
+		t.Fatal("expected an unserved protocol instance name to be refused, got no error")
+	}
+}

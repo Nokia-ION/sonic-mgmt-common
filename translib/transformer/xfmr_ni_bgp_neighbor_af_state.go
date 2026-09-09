@@ -275,6 +275,13 @@ var Subscribe_ni_bgp_nbr_af_state_xfmr SubTreeXfmrSubscribe = func(inParams Xfmr
 		return result, nil
 	}
 
+	// The protocol instance name is part of no watched key, so without this an
+	// unserved spelling would be given a working watch on a path that a GET
+	// refuses.
+	if err := validateNiBgpProtoNameInUri(inParams.uri); err != nil {
+		return result, err
+	}
+
 	pathInfo := NewPathInfo(inParams.uri)
 	neighborAddr := pathInfo.Var("neighbor-address")
 	if neighborAddr == "" {
