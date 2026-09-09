@@ -1122,6 +1122,9 @@ func Test_openconfig_subinterface_ipv4_vrrp_patch_config_container(t *testing.T)
 	t.Log("\n\n+++++++++++++ PATCH SUBINTERFACE IPv4 VRRP CONFIG CONTAINER ++++++++++++")
 
 	preReqMap := map[string]interface{}{
+		"INTERFACE": map[string]interface{}{
+			"Ethernet0|20.0.0.1/24": map[string]interface{}{},
+		},
 		"VRRP": map[string]interface{}{
 			"Ethernet0|19": map[string]interface{}{
 				"vid":           "19",
@@ -1137,14 +1140,17 @@ func Test_openconfig_subinterface_ipv4_vrrp_patch_config_container(t *testing.T)
 	loadDB(db.ConfigDB, preReqMap)
 
 	baseURL := "/openconfig-interfaces:interfaces/interface[name=Ethernet0]/subinterfaces/subinterface[index=0]/openconfig-if-ip:ipv4/addresses/address[ip=20.0.0.1]/vrrp/vrrp-group[virtual-router-id=19]"
-	payload := "{\"config\":{\"priority\":107,\"preempt\":false,\"preempt-delay\":4,\"accept-mode\":true,\"advertisement-interval\":300,\"virtual-address\":[\"10.0.0.250\"]}}"
+	payload := "{\"config\":{\"priority\":107,\"preempt\":false,\"preempt-delay\":4,\"accept-mode\":true,\"advertisement-interval\":300,\"virtual-address\":[\"20.0.0.250\"]}}"
 	t.Run("Patch config container", processSetRequest(baseURL+"/config", payload, "PATCH", false, nil))
 	time.Sleep(1 * time.Second)
 
-	expectedConfigJSON := "{\"openconfig-if-ip:config\":{\"virtual-router-id\":19,\"virtual-address\":[\"10.0.0.250\"],\"priority\":107,\"preempt\":false,\"preempt-delay\":4,\"accept-mode\":true,\"advertisement-interval\":300}}"
+	expectedConfigJSON := "{\"openconfig-if-ip:config\":{\"virtual-router-id\":19,\"virtual-address\":[\"20.0.0.250\"],\"priority\":107,\"preempt\":false,\"preempt-delay\":4,\"accept-mode\":true,\"advertisement-interval\":300}}"
 	t.Run("Verify GET config after config container patch", processGetRequest(baseURL+"/config", nil, expectedConfigJSON, false))
 
 	cleanupTbl := map[string]interface{}{
+		"INTERFACE": map[string]interface{}{
+			"Ethernet0|20.0.0.1/24": "",
+		},
 		"VRRP": map[string]interface{}{
 			"Ethernet0|19": "",
 		},
@@ -1190,6 +1196,117 @@ func Test_openconfig_subinterface_ipv6_vrrp_patch_tracking_config_container(t *t
 		},
 		"VRRP6_TRACK": map[string]interface{}{
 			"Ethernet0|29|Ethernet20": "",
+		},
+	}
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_routed_vlan_ipv4_vrrp_vip_parent_subnet(t *testing.T) {
+	t.Log("\n\n+++++++++++++ ROUTED VLAN IPv4 VRRP VIP PARENT SUBNET VALIDATION ++++++++++++")
+
+	preReqMap := map[string]interface{}{
+		"VLAN_INTERFACE": map[string]interface{}{
+			"Vlan100|50.0.0.1/24": map[string]interface{}{},
+		},
+		"VRRP": map[string]interface{}{
+			"Vlan100|25": map[string]interface{}{
+				"vid":          "25",
+				"vip@":         "50.0.0.254",
+				"preempt":      "true",
+				"priority":     "100",
+				"adv_interval": "1",
+			},
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+
+	baseURL := "/openconfig-interfaces:interfaces/interface[name=Vlan100]/openconfig-vlan:routed-vlan/openconfig-if-ip:ipv4/addresses/address[ip=50.0.0.1]/vrrp/vrrp-group[virtual-router-id=25]"
+	t.Run("Patch VIP in parent subnet", processSetRequest(baseURL+"/config/virtual-address", "{\"virtual-address\":[\"50.0.0.200\"]}", "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedConfigJSON := "{\"openconfig-if-ip:config\":{\"virtual-router-id\":25,\"virtual-address\":[\"50.0.0.200\"],\"priority\":100,\"preempt\":true,\"advertisement-interval\":100}}"
+	t.Run("Verify GET after VIP in parent subnet", processGetRequest(baseURL+"/config", nil, expectedConfigJSON, false))
+
+	expErr := tlerr.InvalidArgsError{Format: "VIP 8.8.8.8 is not in the same subnet of parent interface Vlan100"}
+	t.Run("Patch VIP outside parent subnet rejected", processSetRequest(baseURL+"/config/virtual-address", "{\"virtual-address\":[\"8.8.8.8\"]}", "PATCH", true, expErr))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify GET unchanged after rejected VIP", processGetRequest(baseURL+"/config", nil, expectedConfigJSON, false))
+
+	cleanupTbl := map[string]interface{}{
+		"VLAN_INTERFACE": map[string]interface{}{
+			"Vlan100|50.0.0.1/24": "",
+		},
+		"VRRP": map[string]interface{}{
+			"Vlan100|25": "",
+		},
+	}
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_routed_vlan_ipv6_vrrp_vip_parent_subnet_rejected(t *testing.T) {
+	t.Log("\n\n+++++++++++++ ROUTED VLAN IPv6 VRRP VIP PARENT SUBNET VALIDATION ++++++++++++")
+
+	preReqMap := map[string]interface{}{
+		"VLAN_INTERFACE": map[string]interface{}{
+			"Vlan100|2001:db8::1/64": map[string]interface{}{},
+		},
+		"VRRP6": map[string]interface{}{
+			"Vlan100|29": map[string]interface{}{
+				"vid":          "29",
+				"vip@":         "2001:db8::ff",
+				"preempt":      "true",
+				"priority":     "120",
+				"adv_interval": "2",
+			},
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+
+	baseURL := "/openconfig-interfaces:interfaces/interface[name=Vlan100]/openconfig-vlan:routed-vlan/openconfig-if-ip:ipv6/addresses/address[ip=2001:db8::1]/vrrp/vrrp-group[virtual-router-id=29]"
+	expErr := tlerr.InvalidArgsError{Format: "VIP 2001:db9::1 is not in the same subnet of parent interface Vlan100"}
+	t.Run("Patch IPv6 VIP outside parent subnet rejected", processSetRequest(baseURL+"/config/virtual-address", "{\"virtual-address\":[\"2001:db9::1\"]}", "PATCH", true, expErr))
+
+	cleanupTbl := map[string]interface{}{
+		"VLAN_INTERFACE": map[string]interface{}{
+			"Vlan100|2001:db8::1/64": "",
+		},
+		"VRRP6": map[string]interface{}{
+			"Vlan100|29": "",
+		},
+	}
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_subinterface_ipv4_vrrp_vip_parent_subnet_rejected(t *testing.T) {
+	t.Log("\n\n+++++++++++++ SUBINTERFACE IPv4 VRRP VIP PARENT SUBNET VALIDATION ++++++++++++")
+
+	preReqMap := map[string]interface{}{
+		"INTERFACE": map[string]interface{}{
+			"Ethernet0|20.0.0.1/24": map[string]interface{}{},
+		},
+		"VRRP": map[string]interface{}{
+			"Ethernet0|19": map[string]interface{}{
+				"vid":          "19",
+				"vip@":         "20.0.0.254",
+				"preempt":      "true",
+				"priority":     "110",
+				"adv_interval": "1",
+			},
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+
+	baseURL := "/openconfig-interfaces:interfaces/interface[name=Ethernet0]/subinterfaces/subinterface[index=0]/openconfig-if-ip:ipv4/addresses/address[ip=20.0.0.1]/vrrp/vrrp-group[virtual-router-id=19]"
+	expErr := tlerr.InvalidArgsError{Format: "VIP 10.0.0.250 is not in the same subnet of parent interface Ethernet0"}
+	t.Run("Patch subinterface VIP outside parent subnet rejected", processSetRequest(baseURL+"/config/virtual-address", "{\"virtual-address\":[\"10.0.0.250\"]}", "PATCH", true, expErr))
+
+	cleanupTbl := map[string]interface{}{
+		"INTERFACE": map[string]interface{}{
+			"Ethernet0|20.0.0.1/24": "",
+		},
+		"VRRP": map[string]interface{}{
+			"Ethernet0|19": "",
 		},
 	}
 	unloadDB(db.ConfigDB, cleanupTbl)
