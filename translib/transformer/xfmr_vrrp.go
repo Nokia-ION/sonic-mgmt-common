@@ -27,6 +27,7 @@ import (
 
 	"github.com/Azure/sonic-mgmt-common/translib/db"
 	ocbinds "github.com/Azure/sonic-mgmt-common/translib/ocbinds"
+	"github.com/Azure/sonic-mgmt-common/translib/tlerr"
 	log "github.com/golang/glog"
 	"github.com/openconfig/ygot/ygot"
 )
@@ -329,6 +330,9 @@ func yangToDbRoutedVlanVrrp(inParams XfmrParams, isIPv6 bool) (map[string]map[st
 			if !leafHandled || leafVrid == 0 {
 				return resMap, nil
 			}
+			if err := validateVrrpFieldsVipSubnet(inParams.dbs[db.ConfigDB], ifName, leafFields); err != nil {
+				return nil, err
+			}
 			vrrpKey := fmt.Sprintf("%s|%d", ifName, leafVrid)
 			if len(leafFields) > 0 {
 				leafFields[VRRP_FIELD_VRID] = strconv.Itoa(int(leafVrid))
@@ -342,6 +346,9 @@ func yangToDbRoutedVlanVrrp(inParams XfmrParams, isIPv6 bool) (map[string]map[st
 		vrid, fields, trackEntries := mapRoutedVlanIPv6VrrpGroupToDbFields(grpObj, grpVrid, ifName, vrrpTrackTbl, inParams.dbs[db.ConfigDB], pathInfo)
 		if vrid == 0 {
 			return resMap, nil
+		}
+		if err := validateVrrpFieldsVipSubnet(inParams.dbs[db.ConfigDB], ifName, fields); err != nil {
+			return nil, err
 		}
 		vrrpKey := fmt.Sprintf("%s|%d", ifName, vrid)
 		if len(fields) > 0 {
@@ -364,6 +371,9 @@ func yangToDbRoutedVlanVrrp(inParams XfmrParams, isIPv6 bool) (map[string]map[st
 		if !leafHandled || leafVrid == 0 {
 			return resMap, nil
 		}
+		if err := validateVrrpFieldsVipSubnet(inParams.dbs[db.ConfigDB], ifName, leafFields); err != nil {
+			return nil, err
+		}
 		vrrpKey := fmt.Sprintf("%s|%d", ifName, leafVrid)
 		if len(leafFields) > 0 {
 			leafFields[VRRP_FIELD_VRID] = strconv.Itoa(int(leafVrid))
@@ -377,6 +387,9 @@ func yangToDbRoutedVlanVrrp(inParams XfmrParams, isIPv6 bool) (map[string]map[st
 	vrid, fields, trackEntries := mapRoutedVlanIPv4VrrpGroupToDbFields(grpObj, grpVrid, ifName, vrrpTrackTbl, inParams.dbs[db.ConfigDB], pathInfo)
 	if vrid == 0 {
 		return resMap, nil
+	}
+	if err := validateVrrpFieldsVipSubnet(inParams.dbs[db.ConfigDB], ifName, fields); err != nil {
+		return nil, err
 	}
 	vrrpKey := fmt.Sprintf("%s|%d", ifName, vrid)
 	if len(fields) > 0 {
@@ -402,6 +415,10 @@ func yangToDbSubIntfVrrp(inParams XfmrParams, isIPv6 bool) (map[string]map[strin
 		return map[string]map[string]db.Value{}, nil
 	}
 	subIntfIdx := parseSubIntfIndex(pathInfo.Var("index"))
+	parentIfName := ifName
+	if subIntfIdx != 0 {
+		parentIfName = fmt.Sprintf("%s.%d", ifName, subIntfIdx)
+	}
 	uriIP := pathInfo.Var("ip")
 
 	vrrpTbl := VRRP_TBL
@@ -446,6 +463,9 @@ func yangToDbSubIntfVrrp(inParams XfmrParams, isIPv6 bool) (map[string]map[strin
 			if !leafHandled || leafVrid == 0 {
 				return resMap, nil
 			}
+			if err := validateVrrpFieldsVipSubnet(inParams.dbs[db.ConfigDB], parentIfName, leafFields); err != nil {
+				return nil, err
+			}
 			vrrpKey := fmt.Sprintf("%s|%d", ifName, leafVrid)
 			if len(leafFields) > 0 {
 				leafFields[VRRP_FIELD_VRID] = strconv.Itoa(int(leafVrid))
@@ -459,6 +479,9 @@ func yangToDbSubIntfVrrp(inParams XfmrParams, isIPv6 bool) (map[string]map[strin
 		vrid, fields, trackEntries := mapSubIntfIPv6VrrpGroupToDbFields(grpObj, grpVrid, ifName, vrrpTrackTbl, inParams.dbs[db.ConfigDB], pathInfo)
 		if vrid == 0 {
 			return resMap, nil
+		}
+		if err := validateVrrpFieldsVipSubnet(inParams.dbs[db.ConfigDB], parentIfName, fields); err != nil {
+			return nil, err
 		}
 		vrrpKey := fmt.Sprintf("%s|%d", ifName, vrid)
 		if len(fields) > 0 {
@@ -481,6 +504,9 @@ func yangToDbSubIntfVrrp(inParams XfmrParams, isIPv6 bool) (map[string]map[strin
 		if !leafHandled || leafVrid == 0 {
 			return resMap, nil
 		}
+		if err := validateVrrpFieldsVipSubnet(inParams.dbs[db.ConfigDB], parentIfName, leafFields); err != nil {
+			return nil, err
+		}
 		vrrpKey := fmt.Sprintf("%s|%d", ifName, leafVrid)
 		if len(leafFields) > 0 {
 			leafFields[VRRP_FIELD_VRID] = strconv.Itoa(int(leafVrid))
@@ -494,6 +520,9 @@ func yangToDbSubIntfVrrp(inParams XfmrParams, isIPv6 bool) (map[string]map[strin
 	vrid, fields, trackEntries := mapSubIntfIPv4VrrpGroupToDbFields(grpObj, grpVrid, ifName, vrrpTrackTbl, inParams.dbs[db.ConfigDB], pathInfo)
 	if vrid == 0 {
 		return resMap, nil
+	}
+	if err := validateVrrpFieldsVipSubnet(inParams.dbs[db.ConfigDB], parentIfName, fields); err != nil {
+		return nil, err
 	}
 	vrrpKey := fmt.Sprintf("%s|%d", ifName, vrid)
 	if len(fields) > 0 {
@@ -2359,6 +2388,100 @@ func normalizeVirtualLinkLocal(vll string) (string, bool) {
 		return "", false
 	}
 	return vll, true
+}
+
+func validateVrrpFieldsVipSubnet(cfgDb *db.DB, ifName string, fields map[string]string) error {
+	if fields == nil {
+		return nil
+	}
+	vipList := strings.TrimSpace(fields[VRRP_FIELD_VIP])
+	if vipList == "" {
+		return nil
+	}
+	for _, vip := range strings.Split(vipList, ",") {
+		vip = strings.TrimSpace(vip)
+		if vip == "" {
+			continue
+		}
+		if !checkVipParentSubnet(cfgDb, vip, ifName) {
+			return tlerr.InvalidArgs("VIP %s is not in the same subnet of parent interface %s", vip, ifName)
+		}
+	}
+	return nil
+}
+
+func checkVipParentSubnet(cfgDb *db.DB, vip, ifName string) bool {
+	vip = strings.TrimSpace(vip)
+	if slashIdx := strings.IndexByte(vip, '/'); slashIdx > 0 {
+		vip = vip[:slashIdx]
+	}
+	vipAddr := net.ParseIP(vip)
+	if vipAddr == nil {
+		return false
+	}
+	vipIsIPv4 := vipAddr.To4() != nil
+
+	for _, parentPref := range getParentIntfIPPrefixes(cfgDb, ifName) {
+		parentIP, network, err := net.ParseCIDR(parentPref)
+		if err != nil {
+			continue
+		}
+		if (parentIP.To4() != nil) != vipIsIPv4 {
+			continue
+		}
+		if network.Contains(vipAddr) {
+			return true
+		}
+	}
+	return false
+}
+
+func vrrpIntfTableName(ifName string) string {
+	switch {
+	case strings.HasPrefix(ifName, "Ethernet"):
+		if strings.Contains(ifName, ".") {
+			return "VLAN_SUB_INTERFACE"
+		}
+		return "INTERFACE"
+	case strings.HasPrefix(ifName, "PortChannel"):
+		if strings.Contains(ifName, ".") {
+			return "VLAN_SUB_INTERFACE"
+		}
+		return "PORTCHANNEL_INTERFACE"
+	case strings.HasPrefix(ifName, "Vlan"):
+		return "VLAN_INTERFACE"
+	case strings.Contains(ifName, "."):
+		if strings.HasPrefix(ifName, "Eth") || strings.HasPrefix(ifName, "Po") {
+			return "VLAN_SUB_INTERFACE"
+		}
+	}
+	return ""
+}
+
+func getParentIntfIPPrefixes(cfgDb *db.DB, ifName string) []string {
+	if cfgDb == nil {
+		return nil
+	}
+	tblName := vrrpIntfTableName(ifName)
+	if tblName == "" {
+		return nil
+	}
+	ts := db.TableSpec{Name: tblName}
+	keys, err := cfgDb.GetKeysByPattern(&ts, ifName+"|*")
+	if err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if len(key.Comp) < 2 || strings.TrimSpace(key.Comp[0]) != ifName {
+			continue
+		}
+		pref := strings.Join(key.Comp[1:], ":")
+		if strings.TrimSpace(pref) != "" {
+			out = append(out, pref)
+		}
+	}
+	return out
 }
 
 func parseUint8(val string, def uint8) uint8 {
