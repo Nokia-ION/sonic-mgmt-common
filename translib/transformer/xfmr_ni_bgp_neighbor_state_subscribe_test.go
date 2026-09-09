@@ -375,3 +375,54 @@ func TestSubscribe_ni_bgp_nbr_state_non_translate_is_virtual(t *testing.T) {
 		}
 	}
 }
+
+// The protocol instance name is part of no watched key, so the callback has to
+// refuse an unserved spelling itself. Otherwise a subscription would be handed
+// a working watch on a path that a GET on the same path declines.
+func TestSubscribe_ni_bgp_nbr_state_protocol_instance_name(t *testing.T) {
+	nbrUrlFor := func(protoName string) string {
+		return "/openconfig-network-instance:network-instances/network-instance[name=default]" +
+			"/protocols/protocol[identifier=BGP][name=" + protoName + "]" +
+			"/bgp/neighbors/neighbor[neighbor-address=11.0.0.155]"
+	}
+
+	for _, protoName := range []string{"bgp", "BGP"} {
+		url := nbrUrlFor(protoName)
+		out, err := Subscribe_ni_bgp_nbr_state_xfmr(XfmrSubscInParams{
+			uri:        url + "/state",
+			requestURI: url + "/state/session-state",
+			subscProc:  TRANSLATE_SUBSCRIBE,
+		})
+		if err != nil {
+			t.Fatalf("protocol instance name %q was refused: %v", protoName, err)
+		}
+		if out.onChange != OnchangeEnable {
+			t.Fatalf("expected on-change for protocol instance name %q, got %v", protoName, out.onChange)
+		}
+		if _, ok := out.dbDataMap[db.StateDB][niBgpNbrStateTbl]["11.0.0.155"]; !ok {
+			t.Fatalf("missing %s[11.0.0.155] for protocol instance name %q: %v",
+				niBgpNbrStateTbl, protoName, out.dbDataMap)
+		}
+	}
+
+	url := nbrUrlFor("bgp2")
+	if _, err := Subscribe_ni_bgp_nbr_state_xfmr(XfmrSubscInParams{
+		uri:        url + "/state",
+		requestURI: url + "/state/session-state",
+		subscProc:  TRANSLATE_SUBSCRIBE,
+	}); err == nil {
+		t.Fatal("expected an unserved protocol instance name to be refused, got no error")
+	}
+
+	// A subscription that leaves the protocol list unkeyed names no instance,
+	// so it stays a wildcard rather than being refused.
+	unkeyed := "/openconfig-network-instance:network-instances/network-instance[name=default]" +
+		"/protocols/protocol/bgp/neighbors/neighbor[neighbor-address=11.0.0.155]"
+	if _, err := Subscribe_ni_bgp_nbr_state_xfmr(XfmrSubscInParams{
+		uri:        unkeyed + "/state",
+		requestURI: unkeyed + "/state/session-state",
+		subscProc:  TRANSLATE_SUBSCRIBE,
+	}); err != nil {
+		t.Fatalf("an unkeyed protocol list must not be refused: %v", err)
+	}
+}
