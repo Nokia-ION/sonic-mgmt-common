@@ -38,6 +38,11 @@ import (
 const (
 	niStaticRouteTbl = "STATIC_ROUTE"
 
+	// The two protocol instance names served for identifier=STATIC. The lower
+	// case spelling is the one to synthesize when a request carries no name.
+	niStaticRouteProtoNameLower = "static"
+	niStaticRouteProtoNameUpper = "STATIC"
+
 	niStaticRouteNexthopFld    = "nexthop"
 	niStaticRouteIfnameFld     = "ifname"
 	niStaticRouteBlackholeFld  = "blackhole"
@@ -76,8 +81,10 @@ const (
 	niStaticRouteMaxTreeDepth = 32
 )
 
-// The protocol instance name is not part of the CONFIG_DB key, so any name is
-// accepted for identifier=STATIC. The identifier may arrive module qualified.
+// The protocol instance name is not part of the CONFIG_DB key, so it is
+// captured here and echoed back as sent, and the accepted spellings are
+// restricted by validateNiStaticRouteProtoName. The identifier may arrive
+// module qualified.
 const niStaticRouteUriPfx = `^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]/protocols/protocol\[identifier=(?:[-A-Za-z0-9_.]+:)?STATIC\]\[name=([^\]]+)\]`
 
 var niStaticRouteProtoRootReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `$`)
@@ -146,7 +153,36 @@ func validateNiStaticRoutePrefix(prefix string) error {
 	return nil
 }
 
+// niStaticRouteProtoNames lists the protocol instance names served for
+// identifier=STATIC. Every name would otherwise address the same CONFIG_DB
+// rows, so the two conventional spellings bound how many aliases one row has.
+var niStaticRouteProtoNames = map[string]bool{
+	niStaticRouteProtoNameLower: true,
+	niStaticRouteProtoNameUpper: true,
+}
+
+func validateNiStaticRouteProtoName(name string) error {
+	if niStaticRouteProtoNames[name] {
+		return nil
+	}
+	return tlerr.NotSupportedError{
+		Format: fmt.Sprintf("unsupported STATIC protocol instance name %q; expected %q or %q",
+			name, niStaticRouteProtoNameLower, niStaticRouteProtoNameUpper),
+	}
+}
+
 func parseNiStaticRouteRequestUri(uri string) (*niStaticRouteReqInfo, error) {
+	reqInfo, err := matchNiStaticRouteRequestUri(uri)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateNiStaticRouteProtoName(reqInfo.protoName); err != nil {
+		return nil, err
+	}
+	return reqInfo, nil
+}
+
+func matchNiStaticRouteRequestUri(uri string) (*niStaticRouteReqInfo, error) {
 	if m := niStaticRouteNhCfgReqUriRe.FindStringSubmatch(uri); len(m) >= 5 {
 		leaf := ""
 		if len(m) >= 6 {
