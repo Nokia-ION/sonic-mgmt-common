@@ -66,6 +66,7 @@ var niBgpNbrAfStatsFldForLeaf = map[string]string{
 
 type niBgpNbrAfStateReqInfo struct {
 	niName       string
+	protoName    string
 	neighborAddr string
 	afiSafi      string                                     // CONFIG_DB spelling, as the row is keyed
 	afiSafiEnum  ocbinds.E_OpenconfigBgpTypes_AFI_SAFI_TYPE // as the YANG list is keyed
@@ -84,10 +85,8 @@ func parseNiBgpNbrAfStateRequestUri(uri string) (*niBgpNbrAfStateReqInfo, error)
 			Format: "unsupported network-instance BGP neighbor AFI-SAFI state path: " + uri,
 		}
 	}
-	if m[2] != "bgp" {
-		return nil, tlerr.NotSupportedError{
-			Format: fmt.Sprintf("unsupported BGP protocol instance name %q for neighbor AFI-SAFI state; only \"bgp\" is mapped", m[2]),
-		}
+	if err := validateNiBgpProtoName(m[2]); err != nil {
+		return nil, err
 	}
 	afiSafi, ok := normalizeNiBgpNbrAfiSafiName(m[4])
 	if !ok {
@@ -103,6 +102,7 @@ func parseNiBgpNbrAfStateRequestUri(uri string) (*niBgpNbrAfStateReqInfo, error)
 	}
 	return &niBgpNbrAfStateReqInfo{
 		niName:       m[1],
+		protoName:    m[2],
 		neighborAddr: m[3],
 		afiSafi:      afiSafi,
 		afiSafiEnum:  afiSafiEnum,
@@ -155,7 +155,7 @@ func niBgpNbrAfStatsUint32(entry db.Value, field string, reqInfo *niBgpNbrAfStat
 // getNiBgpNbrAfPrefixesObj locates the prefixes container of one neighbor
 // address family in the YANG tree, creating the ancestors when asked to.
 func getNiBgpNbrAfPrefixesObj(s *ygot.GoStruct, reqInfo *niBgpNbrAfStateReqInfo, createIfMissing bool) *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Neighbors_Neighbor_AfiSafis_AfiSafi_State_Prefixes {
-	nbrObj := getNiBgpNbrObj(s, reqInfo.niName, reqInfo.neighborAddr, createIfMissing)
+	nbrObj := getNiBgpNbrObj(s, reqInfo.niName, reqInfo.protoName, reqInfo.neighborAddr, createIfMissing)
 	if nbrObj == nil {
 		return nil
 	}
@@ -194,7 +194,11 @@ func getNiBgpNbrAfPrefixesObj(s *ygot.GoStruct, reqInfo *niBgpNbrAfStateReqInfo,
 var DbToYang_ni_bgp_nbr_af_state_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) error {
 	reqInfo, err := parseNiBgpNbrAfStateRequestUri(inParams.requestUri)
 	if err != nil {
-		if isNiBgpContainerLevelReqUri(inParams.requestUri) {
+		fallback, nameErr := niBgpContainerLevelFallback(inParams.requestUri)
+		if nameErr != nil {
+			return nameErr
+		}
+		if fallback {
 			// The request targets a node above this subtree, so the BGP
 			// container dispatch owns it and has already populated what it
 			// maps. Reporting an error here would fail that request.
