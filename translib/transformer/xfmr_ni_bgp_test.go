@@ -106,6 +106,99 @@ func Test_openconfig_network_instance_bgp_global_as(t *testing.T) {
 	unloadDB(db.ConfigDB, cleanupTbl)
 }
 
+// The protocol instance name is not a CONFIG_DB key component, so both served
+// spellings reach the same BGP_GLOBALS row and each is echoed back as sent.
+// Every other name would be one more alias for that row and is refused.
+func Test_openconfig_network_instance_bgp_protocol_instance_name(t *testing.T) {
+	preReqMap := map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": map[string]interface{}{
+				"local_asn": "65100",
+			},
+		},
+	}
+	cleanupTbl := map[string]interface{}{"BGP_GLOBALS": map[string]interface{}{"default": ""}}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	niProtoUrlPfx := "/openconfig-network-instance:network-instances/network-instance[name=default]" +
+		"/protocols/protocol[identifier=BGP][name="
+	upperUrl := niProtoUrlPfx + "BGP]/bgp/global/config/as"
+	unknownUrl := niProtoUrlPfx + "bgp2]/bgp/global/config/as"
+	// The identifier may arrive module qualified, which is how a client that
+	// round-trips a GET payload spells it, since the payload reports the
+	// identity with its defining module.
+	qualifiedUrl := "/openconfig-network-instance:network-instances/network-instance[name=default]" +
+		"/protocols/protocol[identifier=openconfig-policy-types:BGP][name=bgp]/bgp/global/config/as"
+	// The peer-group and the neighbor are written through parsers of their own,
+	// whose parse failure is otherwise left to the BGP container dispatch. An
+	// unserved name has to be refused there too: the protocol instance prefix
+	// matches whatever follows it, so a name error taken for a container-level
+	// request would accept the write and map nothing.
+	unknownPgUrl := niProtoUrlPfx + "bgp2]/bgp/peer-groups/peer-group[peer-group-name=PGT9]/config/peer-group-name"
+	unknownNbrUrl := niProtoUrlPfx + "bgp2]/bgp/neighbors/neighbor[neighbor-address=20.0.9.1]/config/peer-as"
+
+	t.Run("GET BGP global AS with upper case protocol instance name",
+		processGetRequest(upperUrl, nil, "{\"openconfig-network-instance:as\":65100}", false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("PATCH BGP global AS with upper case protocol instance name",
+		processSetRequest(upperUrl, "{\"openconfig-network-instance:as\":65200}", "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": map[string]interface{}{
+				"local_asn": "65200",
+			},
+		},
+	}
+	t.Run("Verify BGP_GLOBALS reached via upper case protocol instance name",
+		verifyDbResult(rclient, "BGP_GLOBALS|default", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	// The transformers accept the qualified identifier, but nothing above them
+	// does: ygot renders a list key as the bare BGP and compares path keys as
+	// plain strings, so the qualified spelling matches no protocol instance and
+	// the read reports an empty container rather than the row it names.
+	t.Run("GET BGP global AS with module qualified identifier reads empty",
+		processGetRequest(qualifiedUrl, nil, "{}", false))
+	time.Sleep(1 * time.Second)
+
+	expectedErr := tlerr.NotSupportedError{
+		Format: "unsupported BGP protocol instance name \"bgp2\"; expected \"bgp\" or \"BGP\"",
+	}
+	t.Run("GET BGP global AS with unknown protocol instance name rejected",
+		processGetRequest(unknownUrl, nil, "", true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	t.Run("PATCH BGP global AS with unknown protocol instance name rejected",
+		processSetRequest(unknownUrl, "{\"openconfig-network-instance:as\":65300}", "PATCH", true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify BGP_GLOBALS unchanged after rejected protocol instance name",
+		verifyDbResult(rclient, "BGP_GLOBALS|default", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("PATCH BGP peer-group with unknown protocol instance name rejected",
+		processSetRequest(unknownPgUrl, "{\"openconfig-network-instance:peer-group-name\":\"PGT9\"}", "PATCH", true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify no BGP_PEER_GROUP row created for unknown protocol instance name",
+		verifyDbResult(rclient, "BGP_PEER_GROUP|default|PGT9", map[string]interface{}{}, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("PATCH BGP neighbor with unknown protocol instance name rejected",
+		processSetRequest(unknownNbrUrl, "{\"openconfig-network-instance:peer-as\":65309}", "PATCH", true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify no BGP_NEIGHBOR row created for unknown protocol instance name",
+		verifyDbResult(rclient, "BGP_NEIGHBOR|default|20.0.9.1", map[string]interface{}{}, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
 func Test_openconfig_network_instance_bgp_global_router_id(t *testing.T) {
 	var url, urlInputBodyJSON string
 

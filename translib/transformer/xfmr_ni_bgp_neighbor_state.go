@@ -157,6 +157,7 @@ var niBgpNbrStatsFldForLeaf = map[string]string{
 
 type niBgpNbrStateReqInfo struct {
 	niName       string
+	protoName    string
 	neighborAddr string
 	targetLeaf   string // "" for the whole container, else the leaf name
 	subtree      string // niBgpNbrStateSubtree, niBgpNbrTransportSubtree or niBgpNbrMessagesSubtree
@@ -187,13 +188,12 @@ func parseNiBgpNbrStateRequestUri(uri string) (*niBgpNbrStateReqInfo, error) {
 	if m == nil {
 		return nil, tlerr.NotSupportedError{Format: "unsupported network-instance BGP neighbor state path: " + uri}
 	}
-	if m[2] != "bgp" {
-		return nil, tlerr.NotSupportedError{
-			Format: fmt.Sprintf("unsupported BGP protocol instance name %q for neighbor state; only \"bgp\" is mapped", m[2]),
-		}
+	if err := validateNiBgpProtoName(m[2]); err != nil {
+		return nil, err
 	}
 	return &niBgpNbrStateReqInfo{
 		niName:       m[1],
+		protoName:    m[2],
 		neighborAddr: m[3],
 		targetLeaf:   m[4],
 		subtree:      subtree,
@@ -334,7 +334,7 @@ func niBgpNbrStatsUint(entry db.Value, field, neighborAddr string) (uint64, bool
 
 // getNiBgpNbrObj locates the neighbor list entry of the BGP protocol instance
 // in the YANG tree, creating the ancestors when asked to.
-func getNiBgpNbrObj(s *ygot.GoStruct, niName, neighborAddr string, createIfMissing bool) *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Neighbors_Neighbor {
+func getNiBgpNbrObj(s *ygot.GoStruct, niName, protoName, neighborAddr string, createIfMissing bool) *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Neighbors_Neighbor {
 	if s == nil || *s == nil {
 		return nil
 	}
@@ -379,7 +379,7 @@ func getNiBgpNbrObj(s *ygot.GoStruct, niName, neighborAddr string, createIfMissi
 
 	wantKey := ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Key{
 		Identifier: ocbinds.OpenconfigPolicyTypes_INSTALL_PROTOCOL_TYPE_BGP,
-		Name:       "bgp",
+		Name:       protoName,
 	}
 	if pObj, ok := niObj.Protocols.Protocol[wantKey]; ok && pObj != nil {
 		return niBgpNbrObjOfProtocol(pObj, neighborAddr, createIfMissing)
@@ -392,8 +392,8 @@ func getNiBgpNbrObj(s *ygot.GoStruct, niName, neighborAddr string, createIfMissi
 		if !strings.Contains(fmt.Sprint(pKey.Identifier), "BGP") {
 			continue
 		}
-		if pKey.Name != "bgp" {
-			if pObj.Name == nil || *pObj.Name != "bgp" {
+		if pKey.Name != protoName {
+			if pObj.Name == nil || *pObj.Name != protoName {
 				continue
 			}
 		}
@@ -403,7 +403,7 @@ func getNiBgpNbrObj(s *ygot.GoStruct, niName, neighborAddr string, createIfMissi
 	if !createIfMissing {
 		return nil
 	}
-	pObj, err := niObj.Protocols.NewProtocol(ocbinds.OpenconfigPolicyTypes_INSTALL_PROTOCOL_TYPE_BGP, "bgp")
+	pObj, err := niObj.Protocols.NewProtocol(ocbinds.OpenconfigPolicyTypes_INSTALL_PROTOCOL_TYPE_BGP, protoName)
 	if err != nil || pObj == nil {
 		return nil
 	}
@@ -427,16 +427,16 @@ func niBgpNbrObjOfProtocol(pObj *ocbinds.OpenconfigNetworkInstance_NetworkInstan
 	return nbrObj
 }
 
-func getNiBgpNbrStateObj(s *ygot.GoStruct, niName, neighborAddr string, createIfMissing bool) *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Neighbors_Neighbor_State {
-	nbrObj := getNiBgpNbrObj(s, niName, neighborAddr, createIfMissing)
+func getNiBgpNbrStateObj(s *ygot.GoStruct, niName, protoName, neighborAddr string, createIfMissing bool) *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Neighbors_Neighbor_State {
+	nbrObj := getNiBgpNbrObj(s, niName, protoName, neighborAddr, createIfMissing)
 	if nbrObj == nil {
 		return nil
 	}
 	return nbrObj.State
 }
 
-func getNiBgpNbrTransportStateObj(s *ygot.GoStruct, niName, neighborAddr string, createIfMissing bool) *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Neighbors_Neighbor_Transport_State {
-	nbrObj := getNiBgpNbrObj(s, niName, neighborAddr, createIfMissing)
+func getNiBgpNbrTransportStateObj(s *ygot.GoStruct, niName, protoName, neighborAddr string, createIfMissing bool) *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Neighbors_Neighbor_Transport_State {
+	nbrObj := getNiBgpNbrObj(s, niName, protoName, neighborAddr, createIfMissing)
 	if nbrObj == nil || nbrObj.Transport == nil {
 		return nil
 	}
@@ -570,7 +570,7 @@ func populateNiBgpNbrMessageCounters(inParams XfmrParams, entry db.Value, reqInf
 		return nil
 	}
 
-	stateObj := getNiBgpNbrStateObj(inParams.ygRoot, reqInfo.niName, reqInfo.neighborAddr, true)
+	stateObj := getNiBgpNbrStateObj(inParams.ygRoot, reqInfo.niName, reqInfo.protoName, reqInfo.neighborAddr, true)
 	if stateObj == nil {
 		return tlerr.InvalidArgsError{Format: "Unable to locate BGP neighbor state object in YANG tree"}
 	}
@@ -597,7 +597,11 @@ func populateNiBgpNbrMessageCounters(inParams XfmrParams, entry db.Value, reqInf
 var DbToYang_ni_bgp_nbr_state_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) error {
 	reqInfo, err := parseNiBgpNbrStateRequestUri(inParams.requestUri)
 	if err != nil {
-		if isNiBgpContainerLevelReqUri(inParams.requestUri) {
+		fallback, nameErr := niBgpContainerLevelFallback(inParams.requestUri)
+		if nameErr != nil {
+			return nameErr
+		}
+		if fallback {
 			// The request targets a node above the neighbor state subtree, so
 			// the BGP container dispatch owns it and has already populated what
 			// it maps. Reporting an error here would fail that request.
@@ -702,7 +706,7 @@ func populateNiBgpNbrStateFromDb(inParams XfmrParams, stateDb *db.DB, reqInfo *n
 		return nil
 	}
 
-	stateObj := getNiBgpNbrStateObj(inParams.ygRoot, reqInfo.niName, reqInfo.neighborAddr, true)
+	stateObj := getNiBgpNbrStateObj(inParams.ygRoot, reqInfo.niName, reqInfo.protoName, reqInfo.neighborAddr, true)
 	if stateObj == nil {
 		return tlerr.InvalidArgsError{Format: "Unable to locate BGP neighbor state object in YANG tree"}
 	}
@@ -751,7 +755,7 @@ func populateNiBgpNbrTransportStateFromDb(inParams XfmrParams, stateDb *db.DB, r
 		return nil
 	}
 
-	transportObj := getNiBgpNbrTransportStateObj(inParams.ygRoot, reqInfo.niName, reqInfo.neighborAddr, true)
+	transportObj := getNiBgpNbrTransportStateObj(inParams.ygRoot, reqInfo.niName, reqInfo.protoName, reqInfo.neighborAddr, true)
 	if transportObj == nil {
 		return tlerr.InvalidArgsError{Format: "Unable to locate BGP neighbor transport state object in YANG tree"}
 	}
