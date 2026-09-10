@@ -45,17 +45,18 @@ func newSyslogRemoteServer(host string, transportSecurity *bool, profileID *stri
 }
 
 func newSyslogRemoteServerWithSeverity(host string, severity ocbinds.E_OpenconfigSystemLogging_SyslogSeverity) *ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer {
+	return newSyslogRemoteServerWithSelector(host, ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_ALL, severity)
+}
+
+func newSyslogRemoteServerWithSelector(host string, facility ocbinds.E_OpenconfigSystemLogging_SYSLOG_FACILITY, severity ocbinds.E_OpenconfigSystemLogging_SyslogSeverity) *ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer {
 	server := newSyslogRemoteServer(host, nil, nil, nil, nil, nil)
 	server.Selectors = &ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer_Selectors{}
-	selector, err := server.Selectors.NewSelector(
-		ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_ALL,
-		severity,
-	)
+	selector, err := server.Selectors.NewSelector(facility, severity)
 	if err != nil {
 		panic(err)
 	}
 	selector.Config = &ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer_Selectors_Selector_Config{
-		Facility: ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_ALL,
+		Facility: facility,
 		Severity: severity,
 	}
 	return server
@@ -233,6 +234,22 @@ func TestPopulateSyslogServerFromDbEntry_Severity(t *testing.T) {
 	}
 }
 
+func TestPopulateSyslogServerFromDbEntry_Facility(t *testing.T) {
+	entry := db.Value{Field: map[string]string{
+		SYSLOG_FIELD_SEVERITY: "notice",
+		SYSLOG_FIELD_FACILITY: "local1",
+	}}
+	server := populateSyslogServerFromDbEntry(syslogTestHost1, entry)
+	if server.Selectors == nil || len(server.Selectors.Selector) != 1 {
+		t.Fatalf("expected one selector, got %#v", server.Selectors)
+	}
+	for _, selector := range server.Selectors.Selector {
+		if selector.Config == nil || selector.Config.Facility != ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_LOCAL1 {
+			t.Fatalf("unexpected selector facility: %#v", selector.Config)
+		}
+	}
+}
+
 func TestSyslogSourceValidation(t *testing.T) {
 	restore := setSyslogLinuxIPViewForTest(&syslogLinuxIPView{
 		vrfList: []string{"mgmt"},
@@ -287,25 +304,46 @@ func TestSyslogSelectorFieldTransformers(t *testing.T) {
 		uri:   facilityURI,
 		param: "ALL",
 	})
-	if err != nil || len(facilityFields) != 0 {
-		t.Fatalf("YangToDb_syslog_selector_facility_fld_xfmr() = %v, %v; want empty map", facilityFields, err)
+	if err != nil || facilityFields[SYSLOG_FIELD_FACILITY] != "*" {
+		t.Fatalf("YangToDb_syslog_selector_facility_fld_xfmr() = %v, %v; want facility *", facilityFields, err)
 	}
 
-	_, err = YangToDb_syslog_selector_facility_fld_xfmr(XfmrParams{
+	facilityFields, err = YangToDb_syslog_selector_facility_fld_xfmr(XfmrParams{
 		uri:   facilityURI,
-		param: "SYSLOG",
+		param: "LOCAL1",
 	})
-	if err == nil {
-		t.Fatalf("expected SYSLOG facility leaf SET to be rejected")
+	if err != nil || facilityFields[SYSLOG_FIELD_FACILITY] != "local1" {
+		t.Fatalf("YangToDb_syslog_selector_facility_fld_xfmr() = %v, %v; want facility local1", facilityFields, err)
 	}
 
-	badURI := SYSLOG_SERVER_PATH + "/selectors/selector[facility=SYSLOG][severity=NOTICE]/config/severity"
-	_, err = YangToDb_syslog_selector_severity_fld_xfmr(XfmrParams{
-		uri:   badURI,
+	local1URI := SYSLOG_SERVER_PATH + "/selectors/selector[facility=LOCAL1][severity=NOTICE]/config/severity"
+	severityFields, err = YangToDb_syslog_selector_severity_fld_xfmr(XfmrParams{
+		uri:   local1URI,
 		param: "NOTICE",
 	})
-	if err == nil {
-		t.Fatalf("expected non-ALL facility in URI to be rejected")
+	if err != nil || severityFields[SYSLOG_FIELD_SEVERITY] != "notice" {
+		t.Fatalf("YangToDb_syslog_selector_severity_fld_xfmr() = %v, %v; want notice", severityFields, err)
+	}
+
+	dbDataMap := RedisDbMap{
+		db.ConfigDB: map[string]map[string]db.Value{
+			SYSLOG_SERVER_TABLE_NAME: {
+				syslogTestHost1: {Field: map[string]string{
+					SYSLOG_FIELD_FACILITY: "daemon",
+				}},
+			},
+		},
+	}
+	ocFields, err := DbToYang_syslog_selector_facility_fld_xfmr(XfmrParams{
+		curDb:     db.ConfigDB,
+		dbDataMap: &dbDataMap,
+		key:       syslogTestHost1,
+	})
+	if err != nil {
+		t.Fatalf("DbToYang_syslog_selector_facility_fld_xfmr() error = %v", err)
+	}
+	if ocFields["facility"] != ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_SYSTEM_DAEMON {
+		t.Fatalf("DbToYang_syslog_selector_facility_fld_xfmr() = %v; want DAEMON", ocFields["facility"])
 	}
 }
 
@@ -322,9 +360,17 @@ func TestSyslogSeverityMapping(t *testing.T) {
 	if err != nil || dbSev != "notice" {
 		t.Fatalf("syslogSeverityFromURI() = %q, %v; want notice", dbSev, err)
 	}
-	_, err = syslogSeverityFromURI(SYSLOG_SERVER_PATH + "/selectors/selector[facility=SYSLOG][severity=NOTICE]/config/severity")
-	if err == nil {
-		t.Fatalf("expected SYSLOG facility to be rejected")
+	dbFac, err := syslogFacilityFromURI(SYSLOG_SERVER_PATH + "/selectors/selector[facility=LOCAL1][severity=NOTICE]/config/facility")
+	if err != nil || dbFac != "local1" {
+		t.Fatalf("syslogFacilityFromURI() = %q, %v; want local1", dbFac, err)
+	}
+	dbFac, err = ocFacilityToDb(ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_SYSLOG)
+	if err != nil || dbFac != "syslog" {
+		t.Fatalf("ocFacilityToDb() = %q, %v; want syslog", dbFac, err)
+	}
+	ocFac, ok := dbFacilityToOc("auth")
+	if !ok || ocFac != ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_AUTH {
+		t.Fatalf("dbFacilityToOc() = %v, %v; want AUTH", ocFac, ok)
 	}
 }
 
@@ -336,6 +382,21 @@ func TestSyslogServerDbValueFromURI(t *testing.T) {
 	}
 	if value.Field[SYSLOG_FIELD_SEVERITY] != "notice" {
 		t.Fatalf("severity = %q, want notice", value.Field[SYSLOG_FIELD_SEVERITY])
+	}
+	if value.Field[SYSLOG_FIELD_FACILITY] != "*" {
+		t.Fatalf("facility = %q, want *", value.Field[SYSLOG_FIELD_FACILITY])
+	}
+
+	local1URI := SYSLOG_SERVER_PATH + "/selectors/selector[facility=LOCAL1][severity=NOTICE]/config/severity"
+	value, err = syslogServerDbValueFromYang(nil, syslogTestHost1, nil, false, local1URI)
+	if err != nil {
+		t.Fatalf("syslogServerDbValueFromYang() error = %v", err)
+	}
+	if value.Field[SYSLOG_FIELD_SEVERITY] != "notice" {
+		t.Fatalf("severity = %q, want notice", value.Field[SYSLOG_FIELD_SEVERITY])
+	}
+	if value.Field[SYSLOG_FIELD_FACILITY] != "local1" {
+		t.Fatalf("facility = %q, want local1", value.Field[SYSLOG_FIELD_FACILITY])
 	}
 }
 
@@ -578,6 +639,7 @@ func TestYangToDb_Syslog_Servers(t *testing.T) {
 						SYSLOG_FIELD_PORT:     "514",
 						SYSLOG_FIELD_PROTOCOL: "udp",
 						SYSLOG_FIELD_SEVERITY: "notice",
+						SYSLOG_FIELD_FACILITY: "*",
 					}},
 				},
 			},
@@ -606,22 +668,23 @@ func TestYangToDb_Syslog_Servers(t *testing.T) {
 						SYSLOG_FIELD_PORT:     "514",
 						SYSLOG_FIELD_PROTOCOL: "udp",
 						SYSLOG_FIELD_SEVERITY: "notice",
+						SYSLOG_FIELD_FACILITY: "*",
 					}},
 				},
 			},
 		},
 		{
-			name: "Selector rejects non-ALL facility",
+			name: "Selector maps non-ALL facility to CONFIG_DB",
 			op:   UPDATE,
 			uri:  SYSLOG_SERVER_PATH + "/selectors/selector[facility=SYSLOG][severity=NOTICE]/config/severity",
 			key:  syslogTestHost1,
 			ygRoot: func() *ocbinds.Device {
-				server := newSyslogRemoteServerWithSeverity(syslogTestHost1, ocbinds.OpenconfigSystemLogging_SyslogSeverity_NOTICE)
-				for _, selector := range server.Selectors.Selector {
-					selector.Config.Facility = ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_SYSLOG
-				}
 				return newSyslogDevice(map[string]*ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer{
-					syslogTestHost1: server,
+					syslogTestHost1: newSyslogRemoteServerWithSelector(
+						syslogTestHost1,
+						ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_SYSLOG,
+						ocbinds.OpenconfigSystemLogging_SyslogSeverity_NOTICE,
+					),
 				})
 			},
 			serverState: map[string]db.Value{
@@ -631,7 +694,42 @@ func TestYangToDb_Syslog_Servers(t *testing.T) {
 					SYSLOG_FIELD_PROTOCOL: "udp",
 				}},
 			},
-			wantErr: true,
+			wantMap: map[string]map[string]db.Value{
+				SYSLOG_SERVER_TABLE_NAME: {
+					syslogTestHost1: {Field: map[string]string{
+						nullKey:               nullKey,
+						SYSLOG_FIELD_PORT:     "514",
+						SYSLOG_FIELD_PROTOCOL: "udp",
+						SYSLOG_FIELD_SEVERITY: "notice",
+						SYSLOG_FIELD_FACILITY: "syslog",
+					}},
+				},
+			},
+		},
+		{
+			name: "DELETE selector facility clears per-server facility only",
+			op:   DELETE,
+			uri:  SYSLOG_SERVER_PATH + "/selectors/selector[facility=LOCAL1][severity=NOTICE]/config/facility",
+			key:  syslogTestHost1,
+			ygRoot: func() *ocbinds.Device {
+				return newSyslogDevice(nil)
+			},
+			serverState: map[string]db.Value{
+				syslogTestHost1: {Field: map[string]string{
+					nullKey:               nullKey,
+					SYSLOG_FIELD_PORT:     "514",
+					SYSLOG_FIELD_PROTOCOL: "udp",
+					SYSLOG_FIELD_SEVERITY: "notice",
+					SYSLOG_FIELD_FACILITY: "local1",
+				}},
+			},
+			wantMap: map[string]map[string]db.Value{
+				SYSLOG_SERVER_TABLE_NAME: {
+					syslogTestHost1: {Field: map[string]string{
+						SYSLOG_FIELD_FACILITY: "local1",
+					}},
+				},
+			},
 		},
 		{
 			name: "DELETE selector severity clears per-server severity only",
@@ -652,9 +750,7 @@ func TestYangToDb_Syslog_Servers(t *testing.T) {
 			wantMap: map[string]map[string]db.Value{
 				SYSLOG_SERVER_TABLE_NAME: {
 					syslogTestHost1: {Field: map[string]string{
-						nullKey:               nullKey,
-						SYSLOG_FIELD_PORT:     "514",
-						SYSLOG_FIELD_PROTOCOL: "udp",
+						SYSLOG_FIELD_SEVERITY: "notice",
 					}},
 				},
 			},
