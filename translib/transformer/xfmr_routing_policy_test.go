@@ -296,7 +296,9 @@ func Test_openconfig_routing_policy_policy_definition_statement_conditions_match
 	t.Run("Verify ROUTE_MAP match_prefix_set mapping", verifyDbResult(rclient, "ROUTE_MAP|POL1|10", expectedMap, false))
 	time.Sleep(1 * time.Second)
 
-	expectedGetJSON := "{\"openconfig-routing-policy:config\":{\"prefix-set\":\"PS4\"}}"
+	// match-set-options is not stored, so the read side reports the ANY default
+	// alongside the prefix-set it applies to.
+	expectedGetJSON := "{\"openconfig-routing-policy:config\":{\"match-set-options\":\"ANY\",\"prefix-set\":\"PS4\"}}"
 	t.Run("GET routing-policy statement conditions match-prefix-set config", processGetRequest(url, nil, expectedGetJSON, false))
 	time.Sleep(1 * time.Second)
 
@@ -325,6 +327,89 @@ func Test_openconfig_routing_policy_policy_definition_statement_conditions_match
 		},
 	}
 	t.Run("Verify ROUTE_MAP match-prefix-set fields cleared", verifyDbResult(rclient, "ROUTE_MAP|POL1|10", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_routing_policy_policy_definition_statement_conditions_match_prefix_set_match_set_options(t *testing.T) {
+	var url, urlInputBodyJSON string
+
+	preReqMap := map[string]interface{}{
+		"ROUTE_MAP_SET": map[string]interface{}{
+			"POL1": map[string]interface{}{},
+		},
+		"PREFIX_SET": map[string]interface{}{
+			"PS4": map[string]interface{}{
+				"mode": "IPv4",
+			},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": "",
+		},
+		"ROUTE_MAP_SET": map[string]interface{}{
+			"POL1": "",
+		},
+		"PREFIX_SET": map[string]interface{}{
+			"PS4": "",
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	// ANY is the only modifier FRR can honour and it maps to no field, so the
+	// container write still has to land the prefix-set on its own.
+	url = "/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition[name=POL1]/statements/statement[name=10]/conditions/match-prefix-set/config"
+	urlInputBodyJSON = "{\"prefix-set\":\"PS4\",\"match-set-options\":\"ANY\"}"
+	t.Run("PATCH match-prefix-set config with match-set-options ANY", processSetRequest(url, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": map[string]interface{}{
+				"match_prefix_set": "PS4",
+			},
+		},
+	}
+	t.Run("Verify match-set-options ANY adds no ROUTE_MAP field", verifyDbResult(rclient, "ROUTE_MAP|POL1|10", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	// The modifier is not stored, so a GET reports the ANY default once a
+	// prefix-set is configured.
+	t.Run("GET match-prefix-set config match-set-options",
+		processGetRequest(url+"/match-set-options", nil, `{"openconfig-routing-policy:match-set-options":"ANY"}`, false))
+	time.Sleep(1 * time.Second)
+
+	urlInputBodyJSON = "{\"openconfig-routing-policy:match-set-options\":\"ANY\"}"
+	t.Run("PATCH match-prefix-set match-set-options leaf ANY", processSetRequest(url+"/match-set-options", urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify leaf write of ANY left ROUTE_MAP unchanged", verifyDbResult(rclient, "ROUTE_MAP|POL1|10", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	// INVERT has no CONFIG_DB representation, so it is refused rather than
+	// silently ignored, at the leaf and at the container above it.
+	expectedErr := tlerr.NotSupportedError{Format: "routing-policy match-prefix-set match-set-options supports only ANY"}
+	urlInputBodyJSON = "{\"openconfig-routing-policy:match-set-options\":\"INVERT\"}"
+	t.Run("PATCH match-prefix-set match-set-options INVERT rejected",
+		processSetRequest(url+"/match-set-options", urlInputBodyJSON, "PATCH", true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	urlInputBodyJSON = "{\"prefix-set\":\"PS4\",\"match-set-options\":\"INVERT\"}"
+	t.Run("PATCH match-prefix-set config with INVERT rejected",
+		processSetRequest(url, urlInputBodyJSON, "PATCH", true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify refused INVERT left ROUTE_MAP unchanged", verifyDbResult(rclient, "ROUTE_MAP|POL1|10", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	// Removing the unmapped modifier must not take the prefix-set with it.
+	t.Run("DELETE match-prefix-set match-set-options leaf", processDeleteRequest(url+"/match-set-options", false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify DELETE of match-set-options kept match_prefix_set", verifyDbResult(rclient, "ROUTE_MAP|POL1|10", expectedMap, false))
 	time.Sleep(1 * time.Second)
 
 	unloadDB(db.ConfigDB, cleanupTbl)
@@ -882,10 +967,11 @@ func Test_openconfig_routing_policy_container_unmapped_payload_rejected(t *testi
 	urlInputBodyJSON := `{"policy-definitions":{"policy-definition":[` +
 		`{"name":"POL1","statements":{"statement":[{"name":"10",` +
 		`"actions":{"config":{"policy-result":"ACCEPT_ROUTE"}},` +
-		`"conditions":{"match-prefix-set":{"config":{"prefix-set":"PFX1","match-set-options":"ANY"}}}}]}}]}}`
+		`"conditions":{"config":{"call-policy":"POL1"},` +
+		`"match-prefix-set":{"config":{"prefix-set":"PFX1"}}}}]}}]}}`
 	expectedErr := tlerr.NotSupportedError{
 		Format: "routing-policy container payload carries leaves that have no CONFIG_DB mapping: " +
-			"routing-policy/policy-definitions/policy-definition[POL1]/statements/statement[10]/conditions/match-prefix-set/config/match-set-options",
+			"routing-policy/policy-definitions/policy-definition[POL1]/statements/statement[10]/conditions/config/call-policy",
 	}
 	t.Run("PATCH routing-policy container rejects unmapped leaf",
 		processSetRequest(rpolContainerUrl, urlInputBodyJSON, "PATCH", true, expectedErr))
