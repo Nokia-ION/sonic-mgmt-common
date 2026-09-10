@@ -37,6 +37,7 @@ const (
 	niTableConnTargetRoot       = "table-connections-root"
 	niTableConnTargetInst       = "table-connection-instance"
 	niTableConnTargetCfg        = "table-connection-config"
+	niTableConnTargetState      = "table-connection-state"
 	niTableConnImportPolicyLeaf = "import-policy"
 	niTableConnSrcProtoLeaf     = "src-protocol"
 	niTableConnDstProtoLeaf     = "dst-protocol"
@@ -51,6 +52,7 @@ const niTableConnUriPfx = `^/openconfig-network-instance:network-instances/netwo
 const niTableConnKeyBlock = `((?:\[[^\]]+\]){3})`
 
 var niTableConnCfgReqUriRe = regexp.MustCompile(niTableConnUriPfx + `/table-connection` + niTableConnKeyBlock + `/config(?:/(import-policy|src-protocol|dst-protocol|address-family))?$`)
+var niTableConnStateReqUriRe = regexp.MustCompile(niTableConnUriPfx + `/table-connection` + niTableConnKeyBlock + `/state(?:/(import-policy|src-protocol|dst-protocol|address-family))?$`)
 var niTableConnInstKeyLeafReqUriRe = regexp.MustCompile(niTableConnUriPfx + `/table-connection` + niTableConnKeyBlock + `/(src-protocol|dst-protocol|address-family)$`)
 var niTableConnInstReqUriRe = regexp.MustCompile(niTableConnUriPfx + `/table-connection` + niTableConnKeyBlock + `$`)
 var niTableConnListReqUriRe = regexp.MustCompile(niTableConnUriPfx + `/table-connection$`)
@@ -113,6 +115,24 @@ func parseNiTableConnRequestUri(uri string) (*niTableConnReqInfo, error) {
 			addressFamily: addressFamily,
 			targetLeaf:    leaf,
 			targetPath:    niTableConnTargetCfg,
+		}, nil
+	}
+	if m := niTableConnStateReqUriRe.FindStringSubmatch(uri); len(m) >= 3 {
+		srcProtocol, dstProtocol, addressFamily, err := splitNiTableConnKeys(m[2], uri)
+		if err != nil {
+			return nil, err
+		}
+		leaf := ""
+		if len(m) >= 4 {
+			leaf = m[3]
+		}
+		return &niTableConnReqInfo{
+			niName:        m[1],
+			srcProtocol:   srcProtocol,
+			dstProtocol:   dstProtocol,
+			addressFamily: addressFamily,
+			targetLeaf:    leaf,
+			targetPath:    niTableConnTargetState,
 		}, nil
 	}
 	// A key leaf below the list instance repeats a key already in the URI, so it
@@ -371,6 +391,14 @@ func getNiTableConnCfgObj(s *ygot.GoStruct, reqInfo *niTableConnReqInfo, createI
 
 // wrapNiTableConnRootAsDevice normalizes the request root to a device object so
 // that one set of tree walks serves every anchor path in the hierarchy.
+func getNiTableConnStateObj(s *ygot.GoStruct, reqInfo *niTableConnReqInfo, createIfMissing bool) *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_TableConnections_TableConnection_State {
+	tcObj := getNiTableConnInstObj(s, reqInfo, createIfMissing)
+	if tcObj == nil {
+		return nil
+	}
+	return tcObj.State
+}
+
 func wrapNiTableConnRootAsDevice(s *ygot.GoStruct, reqInfo *niTableConnReqInfo) (*ygot.GoStruct, error) {
 	if s == nil || *s == nil {
 		return nil, tlerr.InvalidArgsError{Format: "empty YANG root for table-connection mapping"}
@@ -761,6 +789,15 @@ var YangToDb_ni_table_conn_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPara
 		return res, err
 	}
 
+	// The state container mirrors the config one for reads only, so a write
+	// aimed at it is refused rather than quietly landing on the config fields.
+	if reqInfo.targetPath == niTableConnTargetState {
+		return res, tlerr.NotSupportedError{
+			Format: "table-connection state is read-only; write to the config container instead",
+			Path:   inParams.requestUri,
+		}
+	}
+
 	if inParams.oper == DELETE {
 		switch reqInfo.targetPath {
 		case niTableConnTargetRoot:
@@ -883,6 +920,24 @@ func niTableConnSetInstanceKeys(tcObj *ocbinds.OpenconfigNetworkInstance_Network
 		tcObj.Config.DstProtocol = key.DstProtocol
 		tcObj.Config.AddressFamily = key.AddressFamily
 	}
+	// The state container has no datastore of its own; it reports back the same
+	// ROUTE_REDISTRIBUTE row the config container is mapped to.
+	if tcObj.State != nil {
+		tcObj.State.SrcProtocol = key.SrcProtocol
+		tcObj.State.DstProtocol = key.DstProtocol
+		tcObj.State.AddressFamily = key.AddressFamily
+	}
+}
+
+func niTableConnSetStateImportPolicy(stObj *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_TableConnections_TableConnection_State, entry db.Value) {
+	if stObj == nil {
+		return
+	}
+	if policy, ok := entry.Field[niTableConnRouteMapFld]; ok {
+		if first := firstPolicyValueFromDb(policy); first != "" {
+			stObj.ImportPolicy = []string{first}
+		}
+	}
 }
 
 func niTableConnSetImportPolicy(cfgObj *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_TableConnections_TableConnection_Config, entry db.Value) {
@@ -938,6 +993,7 @@ func readNiTableConnAll(inParams XfmrParams, reqInfo *niTableConnReqInfo, cfgDb 
 		}
 		niTableConnSetInstanceKeys(tcObj, key)
 		niTableConnSetImportPolicy(tcObj.Config, entry)
+		niTableConnSetStateImportPolicy(tcObj.State, entry)
 	}
 	return nil
 }
@@ -995,6 +1051,30 @@ var DbToYang_ni_table_conn_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrPara
 		default:
 			niTableConnSetInstanceKeys(tcObj, key)
 			niTableConnSetImportPolicy(tcObj.Config, entry)
+			niTableConnSetStateImportPolicy(tcObj.State, entry)
+		}
+		return nil
+	}
+
+	if reqInfo.targetPath == niTableConnTargetState {
+		stObj := getNiTableConnStateObj(inParams.ygRoot, reqInfo, true)
+		if stObj == nil {
+			return tlerr.InvalidArgsError{Format: "Unable to locate network-instance table-connection state object in YANG tree"}
+		}
+		switch reqInfo.targetLeaf {
+		case niTableConnSrcProtoLeaf:
+			stObj.SrcProtocol = key.SrcProtocol
+		case niTableConnDstProtoLeaf:
+			stObj.DstProtocol = key.DstProtocol
+		case niTableConnAddrFamilyLeaf:
+			stObj.AddressFamily = key.AddressFamily
+		case niTableConnImportPolicyLeaf:
+			niTableConnSetStateImportPolicy(stObj, entry)
+		default:
+			stObj.SrcProtocol = key.SrcProtocol
+			stObj.DstProtocol = key.DstProtocol
+			stObj.AddressFamily = key.AddressFamily
+			niTableConnSetStateImportPolicy(stObj, entry)
 		}
 		return nil
 	}
