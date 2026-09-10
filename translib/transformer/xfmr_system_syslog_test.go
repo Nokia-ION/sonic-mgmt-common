@@ -732,6 +732,56 @@ func TestYangToDb_Syslog_Servers(t *testing.T) {
 			},
 		},
 		{
+			name: "DELETE config source-address clears per-server source only",
+			op:   DELETE,
+			uri:  SYSLOG_SERVER_PATH + "/config/source-address",
+			key:  syslogTestHost3,
+			ygRoot: func() *ocbinds.Device {
+				return newSyslogDevice(nil)
+			},
+			serverState: map[string]db.Value{
+				syslogTestHost3: {Field: map[string]string{
+					nullKey:               nullKey,
+					SYSLOG_FIELD_PORT:     "514",
+					SYSLOG_FIELD_PROTOCOL: "udp",
+					SYSLOG_FIELD_SOURCE:   "10.0.0.15",
+					SYSLOG_FIELD_VRF:      "mgmt",
+				}},
+			},
+			wantMap: map[string]map[string]db.Value{
+				SYSLOG_SERVER_TABLE_NAME: {
+					syslogTestHost3: {Field: map[string]string{
+						SYSLOG_FIELD_SOURCE: "10.0.0.15",
+					}},
+				},
+			},
+		},
+		{
+			name: "DELETE config network-instance clears per-server vrf only",
+			op:   DELETE,
+			uri:  SYSLOG_SERVER_PATH + "/config/network-instance",
+			key:  syslogTestHost3,
+			ygRoot: func() *ocbinds.Device {
+				return newSyslogDevice(nil)
+			},
+			serverState: map[string]db.Value{
+				syslogTestHost3: {Field: map[string]string{
+					nullKey:               nullKey,
+					SYSLOG_FIELD_PORT:     "514",
+					SYSLOG_FIELD_PROTOCOL: "udp",
+					SYSLOG_FIELD_SOURCE:   "10.0.0.15",
+					SYSLOG_FIELD_VRF:      "mgmt",
+				}},
+			},
+			wantMap: map[string]map[string]db.Value{
+				SYSLOG_SERVER_TABLE_NAME: {
+					syslogTestHost3: {Field: map[string]string{
+						SYSLOG_FIELD_VRF: "mgmt",
+					}},
+				},
+			},
+		},
+		{
 			name: "DELETE selector severity clears per-server severity only",
 			op:   DELETE,
 			uri:  SYSLOG_SERVER_PATH + "/selectors/selector[facility=ALL][severity=NOTICE]/config/severity",
