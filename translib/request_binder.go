@@ -257,7 +257,9 @@ func (binder *requestBinder) unMarshall() (*ygot.GoStruct, *interface{}, error) 
 			} else {
 				unmarshalPath = &gnmi.Path{}
 				unmarshalPath.Elem = append(unmarshalPath.Elem, binder.pathParent.Elem...)
-				unmarshalPath.Elem = append(unmarshalPath.Elem, binder.targetNodePath.Elem...)
+				if binder.targetNodePath != nil {
+					unmarshalPath.Elem = append(unmarshalPath.Elem, binder.targetNodePath.Elem...)
+				}
 			}
 
 			treeNodeList, err2 := ytypes.GetNode(ygSchema.RootSchema(), &deviceObj, unmarshalPath)
@@ -285,7 +287,7 @@ func (binder *requestBinder) unMarshall() (*ygot.GoStruct, *interface{}, error) 
 				for i := 0; i < v.NumField(); i++ {
 					ft := v.Type().Field(i)
 					tagVal, _ := ft.Tag.Lookup("path")
-					if len(binder.targetNodePath.Elem) > 0 && tagVal == binder.targetNodePath.Elem[0].Name {
+					if binder.targetNodePath != nil && len(binder.targetNodePath.Elem) > 0 && tagVal == binder.targetNodePath.Elem[0].Name {
 						fv := v.Field(i)
 						workObjIntf = fv.Interface()
 						break
@@ -297,6 +299,9 @@ func (binder *requestBinder) unMarshall() (*ygot.GoStruct, *interface{}, error) 
 			} else if binder.targetNodeListInst {
 				workObjIntf = *tmpTargetNode
 			} else if ygEntry.IsList() {
+				if binder.targetNodePath == nil {
+					return nil, nil, tlerr.TranslibSyntaxValidationError{StatusCode: 400, ErrorStr: errors.New("Path is empty")}
+				}
 				if treeNodeList, err2 := ytypes.GetNode(ygEntry, *tmpTargetNode, binder.targetNodePath); err2 != nil {
 					return nil, nil, tlerr.TranslibSyntaxValidationError{StatusCode: 400, ErrorStr: err2}
 				} else if len(treeNodeList) == 0 {
@@ -389,6 +394,14 @@ func (binder *requestBinder) unMarshallUri(deviceObj *ocbinds.Device) (*interfac
 	case UPDATE, REPLACE:
 		var pathList []*gnmi.PathElem = path.Elem
 		pathLen := len(pathList)
+		if pathLen == 0 {
+			// Origin-only gNMI SET (URI "/") has no path elements. The
+			// parent/target split below would index pathList[-1] and panic.
+			// Root-path SET handling is not implemented yet; fail cleanly.
+			errMsg := errors.New("Path is empty")
+			log.Error(errMsg)
+			return nil, errMsg
+		}
 
 		if len(pathList[pathLen-1].Key) > 0 {
 			binder.targetNodeListInst = true

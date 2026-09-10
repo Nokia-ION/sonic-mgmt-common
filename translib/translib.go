@@ -164,8 +164,13 @@ func init() {
 func Create(req SetRequest) (SetResponse, error) {
 	var keys []db.WatchKeys
 	var resp SetResponse
-	path := req.Path
-	payload := req.Payload
+	path, payload, err := resolveRootSetRequest(req.Path, req.Payload)
+	if err != nil {
+		resp.ErrSrc = AppErr
+		return resp, err
+	}
+	req.Path = path
+	req.Payload = payload
 	if !isAuthorizedForSet(req) {
 		return resp, tlerr.AuthorizationError{
 			Format: "User is unauthorized for Create Operation",
@@ -237,8 +242,13 @@ func Create(req SetRequest) (SetResponse, error) {
 func Update(req SetRequest) (SetResponse, error) {
 	var keys []db.WatchKeys
 	var resp SetResponse
-	path := req.Path
-	payload := req.Payload
+	path, payload, err := resolveRootSetRequest(req.Path, req.Payload)
+	if err != nil {
+		resp.ErrSrc = AppErr
+		return resp, err
+	}
+	req.Path = path
+	req.Payload = payload
 	if !isAuthorizedForSet(req) {
 		return resp, tlerr.AuthorizationError{
 			Format: "User is unauthorized for Update Operation",
@@ -311,8 +321,13 @@ func Replace(req SetRequest) (SetResponse, error) {
 	var err error
 	var keys []db.WatchKeys
 	var resp SetResponse
-	path := req.Path
-	payload := req.Payload
+	path, payload, err := resolveRootSetRequest(req.Path, req.Payload)
+	if err != nil {
+		resp.ErrSrc = AppErr
+		return resp, err
+	}
+	req.Path = path
+	req.Payload = payload
 	if !isAuthorizedForSet(req) {
 		return resp, tlerr.AuthorizationError{
 			Format: "User is unauthorized for Replace Operation",
@@ -595,12 +610,23 @@ func Bulk(req BulkRequest) (BulkResponse, error) {
 	}
 
 	for i := range req.Request {
+		var app *appInterface
+		var appInfo *appInfo
 		path := req.Request[i].Entry.Path
 		operation := req.Request[i].Operation
+		payload := req.Request[i].Entry.Payload
+
+		if operation != DELETE {
+			path, payload, err = resolveRootSetRequest(path, payload)
+			if err != nil {
+				errSrc = AppErr
+				goto BulkError
+			}
+		}
 
 		log.Infof("Bulk Request operation: %v received with path = %v", req.Request[i].Operation, path)
 
-		app, appInfo, err := getAppModule(path, req.Request[i].Entry.ClientVersion)
+		app, appInfo, err = getAppModule(path, req.Request[i].Entry.ClientVersion)
 		if err != nil {
 			errSrc = ProtoErr
 			goto BulkError
@@ -609,7 +635,6 @@ func Bulk(req BulkRequest) (BulkResponse, error) {
 			opts := appOptions{deleteEmptyEntry: req.Request[i].Entry.DeleteEmptyEntry}
 			err = appInitialize(app, appInfo, path, nil, &opts, operation)
 		} else {
-			payload := req.Request[i].Entry.Payload
 			err = appInitialize(app, appInfo, path, &payload, nil, operation)
 		}
 
@@ -641,7 +666,6 @@ func Bulk(req BulkRequest) (BulkResponse, error) {
 				//REPLACE is chosen because PATH format and payload is same as UPDATE
 				log.V(2).Infof("Since UPDATE Failed, Changing operation type to REPLACE")
 				operation = REPLACE
-				payload := req.Request[i].Entry.Payload
 				err = appInitialize(app, appInfo, path, &payload, nil, operation)
 				if err != nil {
 					errSrc = AppErr
@@ -691,7 +715,6 @@ func Bulk(req BulkRequest) (BulkResponse, error) {
 				//REPLACE is chosen because PATH format and payload is same as UPDATE
 				log.V(2).Infof("Since UPDATE Failed, Changing operation type to REPLACE")
 				operation = REPLACE
-				payload := req.Request[i].Entry.Payload
 				err = appInitialize(app, appInfo, path, &payload, nil, operation)
 				if err != nil {
 					errSrc = AppErr

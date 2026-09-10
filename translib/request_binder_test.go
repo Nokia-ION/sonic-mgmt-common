@@ -562,3 +562,42 @@ func TestUnMarshall(t *testing.T) {
 		}
 	}
 }
+
+// Origin-only gNMI SET is converted to URI "/". UPDATE/REPLACE used to panic
+// with "index out of range [-1]" in unMarshallUri; they must return an error.
+func TestUnMarshallRootPathNoPanic(t *testing.T) {
+	payload := []byte(`{"openconfig-lldp:lldp":{"config":{"enabled":true}}}`)
+	uri := "/"
+	appRootType := reflect.TypeOf(ocbinds.Device{})
+
+	for _, opcode := range []int{UPDATE, REPLACE} {
+		t.Run(fmt.Sprintf("opcode=%d", opcode), func(t *testing.T) {
+			_, workObj, err := getRequestBinder(&uri, &payload, opcode, &appRootType).unMarshall()
+			if err == nil {
+				t.Fatalf("expected error for root-path SET, got workObj=%v", workObj)
+			}
+			if !strings.Contains(err.Error(), "Path is empty") {
+				t.Errorf("got error %v, want Path is empty", err)
+			}
+		})
+	}
+}
+
+func TestUnMarshallUriRootPathNoPanic(t *testing.T) {
+	payload := []byte(`{"openconfig-lldp:lldp":{"config":{"enabled":true}}}`)
+	uri := "/"
+	appRootType := reflect.TypeOf(ocbinds.Device{})
+	deviceObj := ocbinds.Device{}
+
+	for _, opcode := range []int{UPDATE, REPLACE} {
+		t.Run(fmt.Sprintf("opcode=%d", opcode), func(t *testing.T) {
+			_, err := getRequestBinder(&uri, &payload, opcode, &appRootType).unMarshallUri(&deviceObj)
+			if err == nil {
+				t.Fatal("expected error for root-path SET")
+			}
+			if !strings.Contains(err.Error(), "Path is empty") {
+				t.Errorf("got error %v, want Path is empty", err)
+			}
+		})
+	}
+}
