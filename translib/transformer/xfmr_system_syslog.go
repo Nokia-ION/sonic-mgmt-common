@@ -27,6 +27,7 @@ const (
 	SYSLOG_FIELD_SOURCE         = "source"
 	SYSLOG_FIELD_VRF            = "vrf"
 	SYSLOG_FIELD_SEVERITY       = "severity"
+	SYSLOG_FIELD_FACILITY       = "facility"
 	SYSLOG_DEFAULT_PORT         = 514
 	SYSLOG_DEFAULT_TLS_PORT     = 6514
 	SYSLOG_DEFAULT_PROFILE      = "gnxi"
@@ -67,6 +68,61 @@ var dbSyslogSeverityToOc = map[string]ocbinds.E_OpenconfigSystemLogging_SyslogSe
 	"debug":   ocbinds.OpenconfigSystemLogging_SyslogSeverity_DEBUG,
 }
 
+var ocSyslogFacilityToDb = map[ocbinds.E_OpenconfigSystemLogging_SYSLOG_FACILITY]string{
+	ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_ALL:           "*",
+	ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_KERNEL:        "kern",
+	ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_USER:          "user",
+	ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_MAIL:          "mail",
+	ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_SYSTEM_DAEMON: "daemon",
+	ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_AUTH:          "auth",
+	ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_SYSLOG:        "syslog",
+	ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_LOCAL0:        "local0",
+	ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_LOCAL1:        "local1",
+	ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_LOCAL2:        "local2",
+	ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_LOCAL3:        "local3",
+	ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_LOCAL4:        "local4",
+	ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_LOCAL5:        "local5",
+	ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_LOCAL6:        "local6",
+	ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_LOCAL7:        "local7",
+}
+
+var ocFacilityNameToDb = map[string]string{
+	"ALL":           "*",
+	"KERNEL":        "kern",
+	"USER":          "user",
+	"MAIL":          "mail",
+	"SYSTEM_DAEMON": "daemon",
+	"DAEMON":        "daemon",
+	"AUTH":          "auth",
+	"SYSLOG":        "syslog",
+	"LOCAL0":        "local0",
+	"LOCAL1":        "local1",
+	"LOCAL2":        "local2",
+	"LOCAL3":        "local3",
+	"LOCAL4":        "local4",
+	"LOCAL5":        "local5",
+	"LOCAL6":        "local6",
+	"LOCAL7":        "local7",
+}
+
+var dbSyslogFacilityToOc = map[string]ocbinds.E_OpenconfigSystemLogging_SYSLOG_FACILITY{
+	"*":      ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_ALL,
+	"kern":   ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_KERNEL,
+	"user":   ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_USER,
+	"mail":   ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_MAIL,
+	"daemon": ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_SYSTEM_DAEMON,
+	"auth":   ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_AUTH,
+	"syslog": ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_SYSLOG,
+	"local0": ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_LOCAL0,
+	"local1": ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_LOCAL1,
+	"local2": ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_LOCAL2,
+	"local3": ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_LOCAL3,
+	"local4": ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_LOCAL4,
+	"local5": ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_LOCAL5,
+	"local6": ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_LOCAL6,
+	"local7": ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_LOCAL7,
+}
+
 func init() {
 	XlateFuncBind("YangToDb_remote_servers_list_xfmr", YangToDb_remote_servers_list_xfmr)
 	XlateFuncBind("DbToYang_remote_servers_list_xfmr", DbToYang_remote_servers_list_xfmr)
@@ -76,6 +132,7 @@ func init() {
 	XlateFuncBind("YangToDb_syslog_selector_severity_fld_xfmr", YangToDb_syslog_selector_severity_fld_xfmr)
 	XlateFuncBind("DbToYang_syslog_selector_severity_fld_xfmr", DbToYang_syslog_selector_severity_fld_xfmr)
 	XlateFuncBind("YangToDb_syslog_selector_facility_fld_xfmr", YangToDb_syslog_selector_facility_fld_xfmr)
+	XlateFuncBind("DbToYang_syslog_selector_facility_fld_xfmr", DbToYang_syslog_selector_facility_fld_xfmr)
 }
 
 func validateSyslogTlsProfile(transportSecurity bool, profileId *string) error {
@@ -134,14 +191,56 @@ func dbSeverityToOc(severity string) (ocbinds.E_OpenconfigSystemLogging_SyslogSe
 	return ocSev, ok
 }
 
-func validateSyslogFacilityFromURI(uri string) error {
-	pathInfo := NewPathInfo(uri)
-	if facility := pathInfo.Var("facility"); facility != "" && strings.ToUpper(facility) != "ALL" {
-		return tlerr.NotSupportedError{
-			Format: fmt.Sprintf("only ALL facility is supported for remote-server selectors, got %s", facility),
+func ocFacilityToDb(facility ocbinds.E_OpenconfigSystemLogging_SYSLOG_FACILITY) (string, error) {
+	if facility == ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_UNSET {
+		return "", nil
+	}
+	if dbFac, ok := ocSyslogFacilityToDb[facility]; ok {
+		return dbFac, nil
+	}
+	return "", tlerr.InvalidArgsError{Format: fmt.Sprintf("unsupported syslog facility %v", facility)}
+}
+
+func dbFacilityToOc(facility string) (ocbinds.E_OpenconfigSystemLogging_SYSLOG_FACILITY, bool) {
+	facility = strings.ToLower(strings.TrimSpace(facility))
+	if facility == "" {
+		return ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_ALL, true
+	}
+	ocFac, ok := dbSyslogFacilityToOc[facility]
+	return ocFac, ok
+}
+
+func syslogFacilityValueFromParam(param interface{}) (string, error) {
+	if param == nil {
+		return "", tlerr.InvalidArgsError{Format: "missing syslog facility value"}
+	}
+	switch v := param.(type) {
+	case ocbinds.E_OpenconfigSystemLogging_SYSLOG_FACILITY:
+		return ocFacilityToDb(v)
+	case string:
+		if dbFac, ok := ocFacilityNameToDb[strings.ToUpper(v)]; ok {
+			return dbFac, nil
+		}
+	case *string:
+		if v != nil {
+			if dbFac, ok := ocFacilityNameToDb[strings.ToUpper(*v)]; ok {
+				return dbFac, nil
+			}
 		}
 	}
-	return nil
+	return "", tlerr.InvalidArgsError{Format: fmt.Sprintf("unsupported syslog facility value %v", param)}
+}
+
+func syslogFacilityFromURI(uri string) (string, error) {
+	pathInfo := NewPathInfo(uri)
+	facilityName := strings.ToUpper(pathInfo.Var("facility"))
+	if facilityName == "" {
+		return "", nil
+	}
+	if dbFac, ok := ocFacilityNameToDb[facilityName]; ok {
+		return dbFac, nil
+	}
+	return "", tlerr.InvalidArgsError{Format: fmt.Sprintf("unsupported syslog facility %s", facilityName)}
 }
 
 func syslogSeverityValueFromParam(param interface{}) (string, error) {
@@ -165,30 +264,7 @@ func syslogSeverityValueFromParam(param interface{}) (string, error) {
 	return "", tlerr.InvalidArgsError{Format: fmt.Sprintf("unsupported syslog severity value %v", param)}
 }
 
-func validateSyslogFacilityFromParam(param interface{}) error {
-	switch v := param.(type) {
-	case ocbinds.E_OpenconfigSystemLogging_SYSLOG_FACILITY:
-		if v == ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_ALL {
-			return nil
-		}
-	case string:
-		if strings.ToUpper(v) == "ALL" {
-			return nil
-		}
-	case *string:
-		if v != nil && strings.ToUpper(*v) == "ALL" {
-			return nil
-		}
-	}
-	return tlerr.NotSupportedError{
-		Format: "only ALL facility is supported for remote-server selectors",
-	}
-}
-
 func syslogSeverityFromURI(uri string) (string, error) {
-	if err := validateSyslogFacilityFromURI(uri); err != nil {
-		return "", err
-	}
 	pathInfo := NewPathInfo(uri)
 	severityName := strings.ToUpper(pathInfo.Var("severity"))
 	if severityName == "" {
@@ -200,11 +276,12 @@ func syslogSeverityFromURI(uri string) (string, error) {
 	return "", tlerr.InvalidArgsError{Format: fmt.Sprintf("unsupported syslog severity %s", severityName)}
 }
 
-func applySelectorSeverityToFields(fields map[string]string, server *ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer, uri string) error {
+func applySelectorToFields(fields map[string]string, server *ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer, uri string) error {
 	severity := ""
+	facility := ""
 	var err error
 	if server != nil && server.Selectors != nil {
-		severity, err = syslogSeverityFromSelectors(server.Selectors)
+		severity, facility, err = syslogSelectorFromSelectors(server.Selectors)
 		if err != nil {
 			return err
 		}
@@ -215,18 +292,27 @@ func applySelectorSeverityToFields(fields map[string]string, server *ocbinds.Ope
 			return err
 		}
 	}
+	if facility == "" {
+		facility, err = syslogFacilityFromURI(uri)
+		if err != nil {
+			return err
+		}
+	}
 	if severity != "" {
 		fields[SYSLOG_FIELD_SEVERITY] = severity
+	}
+	if facility != "" {
+		fields[SYSLOG_FIELD_FACILITY] = facility
 	}
 	return nil
 }
 
-func syslogSeverityFromSelectors(selectors *ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer_Selectors) (string, error) {
+func syslogSelectorFromSelectors(selectors *ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer_Selectors) (string, string, error) {
 	if selectors == nil || len(selectors.Selector) == 0 {
-		return "", nil
+		return "", "", nil
 	}
 	if len(selectors.Selector) > 1 {
-		return "", tlerr.NotSupportedError{
+		return "", "", tlerr.NotSupportedError{
 			Format: "only one selector per remote syslog server is supported",
 		}
 	}
@@ -234,27 +320,33 @@ func syslogSeverityFromSelectors(selectors *ocbinds.OpenconfigSystem_System_Logg
 		if selector == nil || selector.Config == nil {
 			continue
 		}
-		if selector.Config.Facility != ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_UNSET &&
-			selector.Config.Facility != ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_ALL {
-			return "", tlerr.NotSupportedError{
-				Format: "only ALL facility is supported for remote-server selectors",
-			}
+		dbSev, err := ocSeverityToDb(selector.Config.Severity)
+		if err != nil {
+			return "", "", err
 		}
-		return ocSeverityToDb(selector.Config.Severity)
+		dbFac, err := ocFacilityToDb(selector.Config.Facility)
+		if err != nil {
+			return "", "", err
+		}
+		return dbSev, dbFac, nil
 	}
-	return "", nil
+	return "", "", nil
 }
 
-func populateSyslogServerSelectors(serverObj *ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer, dbSeverity string) error {
+func populateSyslogServerSelectors(serverObj *ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer, dbSeverity, dbFacility string) error {
 	ocSeverity, ok := dbSeverityToOc(dbSeverity)
 	if !ok {
 		return nil
+	}
+	ocFacility, ok := dbFacilityToOc(dbFacility)
+	if !ok {
+		ocFacility = ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_ALL
 	}
 	if serverObj.Selectors == nil {
 		serverObj.Selectors = &ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer_Selectors{}
 	}
 	selectorKey := ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer_Selectors_Selector_Key{
-		Facility: ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_ALL,
+		Facility: ocFacility,
 		Severity: ocSeverity,
 	}
 	selector, err := serverObj.Selectors.NewSelector(selectorKey.Facility, selectorKey.Severity)
@@ -272,9 +364,9 @@ func populateSyslogServerSelectors(serverObj *ocbinds.OpenconfigSystem_System_Lo
 	if selector.State == nil {
 		selector.State = &ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer_Selectors_Selector_State{}
 	}
-	selector.Config.Facility = ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_ALL
+	selector.Config.Facility = ocFacility
 	selector.Config.Severity = ocSeverity
-	selector.State.Facility = ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_ALL
+	selector.State.Facility = ocFacility
 	selector.State.Severity = ocSeverity
 	return nil
 }
@@ -330,7 +422,7 @@ func syslogServerDbValueFromYang(cfgDb *db.DB, host string, server *ocbinds.Open
 			fields[k] = v
 		}
 	}
-	if err := applySelectorSeverityToFields(fields, server, uri); err != nil {
+	if err := applySelectorToFields(fields, server, uri); err != nil {
 		return db.Value{}, err
 	}
 	if err := validateSyslogServerDbFields(fields); err != nil {
@@ -383,7 +475,8 @@ func populateSyslogServerFromDbEntry(host string, entry db.Value) *ocbinds.Openc
 		serverObj.State.NetworkInstance = ygot.String(vrf)
 	}
 	if severity, ok := entry.Field[SYSLOG_FIELD_SEVERITY]; ok {
-		_ = populateSyslogServerSelectors(serverObj, severity)
+		dbFacility := entry.Field[SYSLOG_FIELD_FACILITY]
+		_ = populateSyslogServerSelectors(serverObj, severity, dbFacility)
 	}
 	return serverObj
 }
@@ -513,14 +606,22 @@ var YangToDb_remote_servers_list_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPa
 				return nil, tlerr.NotFoundError{Format: "Resource not found"}
 			}
 			fields := map[string]string{}
-			for k, v := range entry.Field {
-				if k == SYSLOG_FIELD_SEVERITY {
-					continue
+			switch {
+			case strings.HasSuffix(targetUriPath, "/severity"):
+				if sev, ok := entry.Field[SYSLOG_FIELD_SEVERITY]; ok {
+					fields[SYSLOG_FIELD_SEVERITY] = sev
 				}
-				fields[k] = v
+			case strings.HasSuffix(targetUriPath, "/facility"):
+				if fac, ok := entry.Field[SYSLOG_FIELD_FACILITY]; ok {
+					fields[SYSLOG_FIELD_FACILITY] = fac
+				}
+			default:
+				return nil, tlerr.InvalidArgsError{
+					Format: fmt.Sprintf("Unsupported selector DELETE on %s", inParams.uri),
+				}
 			}
 			if len(fields) == 0 {
-				fields[nullKey] = nullKey
+				return nil, tlerr.NotFoundError{Format: "Resource not found"}
 			}
 			syslogTableOps[targetKey] = db.Value{Field: fields}
 		} else if targetKey != "" && (isServerOp || isConfigOp) {
@@ -601,9 +702,6 @@ var DbToYang_syslog_selector_key_xfmr KeyXfmrDbToYang = func(inParams XfmrParams
 }
 
 var YangToDb_syslog_selector_severity_fld_xfmr FieldXfmrYangToDb = func(inParams XfmrParams) (map[string]string, error) {
-	if err := validateSyslogFacilityFromURI(inParams.uri); err != nil {
-		return nil, err
-	}
 	dbSev, err := syslogSeverityValueFromParam(inParams.param)
 	if err != nil {
 		return nil, err
@@ -635,11 +733,32 @@ var DbToYang_syslog_selector_severity_fld_xfmr FieldXfmrDbtoYang = func(inParams
 }
 
 var YangToDb_syslog_selector_facility_fld_xfmr FieldXfmrYangToDb = func(inParams XfmrParams) (map[string]string, error) {
-	if err := validateSyslogFacilityFromURI(inParams.uri); err != nil {
+	dbFac, err := syslogFacilityValueFromParam(inParams.param)
+	if err != nil {
 		return nil, err
 	}
-	if err := validateSyslogFacilityFromParam(inParams.param); err != nil {
-		return nil, err
+	return map[string]string{SYSLOG_FIELD_FACILITY: dbFac}, nil
+}
+
+var DbToYang_syslog_selector_facility_fld_xfmr FieldXfmrDbtoYang = func(inParams XfmrParams) (map[string]interface{}, error) {
+	result := make(map[string]interface{})
+	data := (*inParams.dbDataMap)[inParams.curDb]
+	serverData, ok := data[SYSLOG_SERVER_TABLE_NAME]
+	if !ok {
+		return result, nil
 	}
-	return map[string]string{}, nil
+	entry, ok := serverData[inParams.key]
+	if !ok {
+		return result, nil
+	}
+	facility, ok := entry.Field[SYSLOG_FIELD_FACILITY]
+	if !ok {
+		return result, nil
+	}
+	ocFac, ok := dbFacilityToOc(facility)
+	if !ok {
+		return result, nil
+	}
+	result["facility"] = ocFac
+	return result, nil
 }
