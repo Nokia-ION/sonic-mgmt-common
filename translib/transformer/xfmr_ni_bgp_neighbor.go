@@ -46,8 +46,17 @@ const (
 	niBgpNbrAllowAsInFld   = "allow_as_in"
 	niBgpNbrAllowAsCntFld  = "allow_as_count"
 	niBgpNbrSendCommFld    = "send_community"
+	niBgpNbrConnRetryFld   = "conn_retry"
+	niBgpNbrHoldTimeFld    = "holdtime"
+	niBgpNbrKeepaliveFld   = "keepalive"
 	niBgpNbrAfiSafiIPv4    = "ipv4_unicast"
 	niBgpNbrAfiSafiIPv6    = "ipv6_unicast"
+	// The timers container holds its own target kind because its leaves land in
+	// BGP_NEIGHBOR beside the ones the config container maps.
+	niBgpNbrTargetTimersCfg  = "neighbor-timers-config"
+	niBgpNbrConnectRetryLeaf = "connect-retry"
+	niBgpNbrHoldTimeLeaf     = "hold-time"
+	niBgpNbrKeepaliveLeaf    = "keepalive-interval"
 	// The levels of the neighbor hierarchy that sit above the config
 	// containers. Each resolves to a target kind the write and read paths
 	// switch on, the same shape the table-connection mapping uses.
@@ -61,6 +70,7 @@ const (
 const niBgpNbrUriPfx = niBgpProtoUriPfx + `/bgp/neighbors/neighbor\[neighbor-address=([^\]]+)\]`
 
 var niBgpNbrReqUriRe = regexp.MustCompile(niBgpNbrUriPfx + `/config(?:/(peer-group|enabled|peer-as|send-community))?$`)
+var niBgpNbrTimersReqUriRe = regexp.MustCompile(niBgpNbrUriPfx + `/timers/config(?:/(connect-retry|hold-time|keepalive-interval))?$`)
 var niBgpNbrAsPathOptReqUriRe = regexp.MustCompile(niBgpNbrUriPfx + `/as-path-options/config(?:/(allow-own-as))?$`)
 var niBgpNbrAfApplyReqUriRe = regexp.MustCompile(niBgpNbrUriPfx + `/afi-safis/afi-safi\[afi-safi-name=([^\]]+)\]/apply-policy/config(?:/(import-policy|export-policy))?$`)
 var niBgpNbrAfCfgReqUriRe = regexp.MustCompile(niBgpNbrUriPfx + `/afi-safis/afi-safi\[afi-safi-name=([^\]]+)\]/config(?:/(afi-safi-name|enabled))?$`)
@@ -116,6 +126,20 @@ func matchNiBgpNbrRequestUri(uri string) (*niBgpNbrReqInfo, error) {
 			neighborAddr: m[3],
 			targetLeaf:   leaf,
 			targetPath:   "neighbor-config",
+		}, nil
+	}
+	m = niBgpNbrTimersReqUriRe.FindStringSubmatch(uri)
+	if len(m) >= 4 {
+		leaf := ""
+		if len(m) >= 5 {
+			leaf = m[4]
+		}
+		return &niBgpNbrReqInfo{
+			niName:       m[1],
+			protoName:    m[2],
+			neighborAddr: m[3],
+			targetLeaf:   leaf,
+			targetPath:   niBgpNbrTargetTimersCfg,
 		}, nil
 	}
 	m = niBgpNbrAsPathOptReqUriRe.FindStringSubmatch(uri)
@@ -632,6 +656,90 @@ func getNiBgpNbrCfgObj(s *ygot.GoStruct, niName, protoName, neighborAddr string,
 		return nil
 	}
 	return nbrObj.Config
+}
+
+func getNiBgpNbrTimersCfgObj(s *ygot.GoStruct, niName, protoName, neighborAddr string, createIfMissing bool) *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Neighbors_Neighbor_Timers_Config {
+	nbrObj := getNiBgpNbrObj(s, niName, protoName, neighborAddr, createIfMissing)
+	if nbrObj == nil || nbrObj.Timers == nil {
+		return nil
+	}
+	return nbrObj.Timers.Config
+}
+
+// parseNiBgpNbrTimerValue reads a timer out of a leaf targeted payload. The
+// OpenConfig leaves are decimal64 while BGP_NEIGHBOR stores whole seconds, so
+// only values that survive the narrowing are accepted.
+func parseNiBgpNbrTimerValue(v interface{}) (*uint16, bool) {
+	switch val := v.(type) {
+	case uint16:
+		u := val
+		return &u, true
+	case *uint16:
+		if val != nil {
+			return val, true
+		}
+	case uint32:
+		if val <= 65535 {
+			u := uint16(val)
+			return &u, true
+		}
+	case int:
+		if val >= 0 && val <= 65535 {
+			u := uint16(val)
+			return &u, true
+		}
+	case float64:
+		if val >= 0 && val <= 65535 && val == float64(uint16(val)) {
+			u := uint16(val)
+			return &u, true
+		}
+	case string:
+		if u64, err := strconv.ParseUint(strings.TrimSpace(val), 10, 16); err == nil {
+			u := uint16(u64)
+			return &u, true
+		}
+	}
+	return nil, false
+}
+
+func parseNiBgpNbrTimerFromParam(param interface{}) (*uint16, bool) {
+	if param == nil {
+		return nil, false
+	}
+	return parseNiBgpNbrTimerValue(param)
+}
+
+// niBgpNbrTimerField resolves a leaf targeted timers request to the
+// BGP_NEIGHBOR field it writes and the value to write there.
+func niBgpNbrTimerField(inParams XfmrParams, reqInfo *niBgpNbrReqInfo) (string, *uint16, error) {
+	tmObj := getNiBgpNbrTimersCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.protoName, reqInfo.neighborAddr, false)
+	var fld string
+	var payloadVal *float64
+	switch reqInfo.targetLeaf {
+	case niBgpNbrConnectRetryLeaf:
+		fld = niBgpNbrConnRetryFld
+		if tmObj != nil {
+			payloadVal = tmObj.ConnectRetry
+		}
+	case niBgpNbrHoldTimeLeaf:
+		fld = niBgpNbrHoldTimeFld
+		if tmObj != nil {
+			payloadVal = tmObj.HoldTime
+		}
+	case niBgpNbrKeepaliveLeaf:
+		fld = niBgpNbrKeepaliveFld
+		if tmObj != nil {
+			payloadVal = tmObj.KeepaliveInterval
+		}
+	}
+	if timer, ok := parseNiBgpNbrTimerFromParam(inParams.param); ok {
+		return fld, timer, nil
+	}
+	if payloadVal == nil {
+		return "", nil, tlerr.InvalidArgsError{Format: "BGP neighbor " + reqInfo.targetLeaf + " is missing in request payload"}
+	}
+	timer := uint16(*payloadVal)
+	return fld, &timer, nil
 }
 
 func parseNiBgpNbrPeerGroupValue(v interface{}) (string, bool) {
@@ -1311,6 +1419,25 @@ var YangToDb_ni_bgp_nbr_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 				return res, tlerr.NotSupportedError{Format: "DELETE supported only for /neighbors/neighbor/afi-safis/afi-safi/config or /neighbors/neighbor/afi-safis/afi-safi/config/enabled", Path: inParams.requestUri}
 			}
 		}
+		if reqInfo.targetPath == niBgpNbrTargetTimersCfg {
+			switch reqInfo.targetLeaf {
+			case "":
+				// The container delete takes all three timers with it.
+				return makeNiBgpNbrResMap(reqInfo.niName, reqInfo.neighborAddr, map[string]string{
+					niBgpNbrConnRetryFld: "",
+					niBgpNbrHoldTimeFld:  "",
+					niBgpNbrKeepaliveFld: "",
+				}), nil
+			case niBgpNbrConnectRetryLeaf:
+				return makeNiBgpNbrResMap(reqInfo.niName, reqInfo.neighborAddr, map[string]string{niBgpNbrConnRetryFld: ""}), nil
+			case niBgpNbrHoldTimeLeaf:
+				return makeNiBgpNbrResMap(reqInfo.niName, reqInfo.neighborAddr, map[string]string{niBgpNbrHoldTimeFld: ""}), nil
+			case niBgpNbrKeepaliveLeaf:
+				return makeNiBgpNbrResMap(reqInfo.niName, reqInfo.neighborAddr, map[string]string{niBgpNbrKeepaliveFld: ""}), nil
+			default:
+				return res, tlerr.NotSupportedError{Format: "DELETE supported only for /neighbors/neighbor/timers/config, its connect-retry leaf, its hold-time leaf, or its keepalive-interval leaf", Path: inParams.requestUri}
+			}
+		}
 		if reqInfo.targetPath == "neighbor-as-path-options-config" {
 			switch reqInfo.targetLeaf {
 			case "", "allow-own-as":
@@ -1394,6 +1521,37 @@ var YangToDb_ni_bgp_nbr_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 			return res, err
 		}
 		return ensureNiBgpNbrParentRow(makeNiBgpNbrAfSingleResMap(reqInfo.niName, reqInfo.neighborAddr, reqInfo.afiSafi, fields), reqInfo.niName, reqInfo.neighborAddr), nil
+	}
+
+	if reqInfo.targetPath == niBgpNbrTargetTimersCfg {
+		switch reqInfo.targetLeaf {
+		case "":
+			// A request at the timers config container can carry any of them.
+			fields := map[string]string{}
+			if tmObj := getNiBgpNbrTimersCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.protoName, reqInfo.neighborAddr, false); tmObj != nil {
+				if tmObj.ConnectRetry != nil {
+					fields[niBgpNbrConnRetryFld] = strconv.FormatUint(uint64(uint16(*tmObj.ConnectRetry)), 10)
+				}
+				if tmObj.HoldTime != nil {
+					fields[niBgpNbrHoldTimeFld] = strconv.FormatUint(uint64(uint16(*tmObj.HoldTime)), 10)
+				}
+				if tmObj.KeepaliveInterval != nil {
+					fields[niBgpNbrKeepaliveFld] = strconv.FormatUint(uint64(uint16(*tmObj.KeepaliveInterval)), 10)
+				}
+			}
+			if len(fields) == 0 {
+				return res, tlerr.InvalidArgsError{Format: "BGP neighbor timers config payload carries none of connect-retry, hold-time or keepalive-interval"}
+			}
+			return makeNiBgpNbrResMap(reqInfo.niName, reqInfo.neighborAddr, fields), nil
+		case niBgpNbrConnectRetryLeaf, niBgpNbrHoldTimeLeaf, niBgpNbrKeepaliveLeaf:
+			fld, timer, err := niBgpNbrTimerField(inParams, reqInfo)
+			if err != nil {
+				return res, err
+			}
+			return makeNiBgpNbrResMap(reqInfo.niName, reqInfo.neighborAddr, map[string]string{fld: strconv.FormatUint(uint64(*timer), 10)}), nil
+		default:
+			return res, tlerr.NotSupportedError{Format: "unsupported leaf under neighbor timers config", Path: inParams.requestUri}
+		}
 	}
 
 	if reqInfo.targetPath == "neighbor-as-path-options-config" {
@@ -1560,6 +1718,47 @@ var DbToYang_ni_bgp_nbr_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams)
 	entry, err := cfgDb.GetEntry(&db.TableSpec{Name: niBgpNbrTbl}, db.Key{Comp: []string{reqInfo.niName, reqInfo.neighborAddr}})
 	if err != nil {
 		return err
+	}
+
+	if reqInfo.targetPath == niBgpNbrTargetTimersCfg {
+		tmObj := getNiBgpNbrTimersCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.protoName, reqInfo.neighborAddr, true)
+		if tmObj == nil {
+			return tlerr.InvalidArgsError{Format: "Unable to locate BGP neighbor timers config object in YANG tree"}
+		}
+		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == niBgpNbrConnectRetryLeaf {
+			connRetry, ok := entry.Field[niBgpNbrConnRetryFld]
+			if ok && strings.TrimSpace(connRetry) != "" {
+				ival, err := strconv.ParseUint(strings.TrimSpace(connRetry), 10, 16)
+				if err != nil {
+					return err
+				}
+				iv := float64(uint16(ival))
+				tmObj.ConnectRetry = &iv
+			}
+		}
+		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == niBgpNbrHoldTimeLeaf {
+			hold, ok := entry.Field[niBgpNbrHoldTimeFld]
+			if ok && strings.TrimSpace(hold) != "" {
+				ival, err := strconv.ParseUint(strings.TrimSpace(hold), 10, 16)
+				if err != nil {
+					return err
+				}
+				iv := float64(uint16(ival))
+				tmObj.HoldTime = &iv
+			}
+		}
+		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == niBgpNbrKeepaliveLeaf {
+			keepalive, ok := entry.Field[niBgpNbrKeepaliveFld]
+			if ok && strings.TrimSpace(keepalive) != "" {
+				ival, err := strconv.ParseUint(strings.TrimSpace(keepalive), 10, 16)
+				if err != nil {
+					return err
+				}
+				iv := float64(uint16(ival))
+				tmObj.KeepaliveInterval = &iv
+			}
+		}
+		return nil
 	}
 
 	cfgObj := getNiBgpNbrCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.protoName, reqInfo.neighborAddr, true)
