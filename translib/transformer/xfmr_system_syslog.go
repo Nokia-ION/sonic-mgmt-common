@@ -624,6 +624,30 @@ var YangToDb_remote_servers_list_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPa
 				return nil, tlerr.NotFoundError{Format: "Resource not found"}
 			}
 			syslogTableOps[targetKey] = db.Value{Field: fields}
+		} else if targetKey != "" && strings.Contains(targetUriPath, "/config/") {
+			entry, err := dbGetEntry(cfgDb, &db.TableSpec{Name: SYSLOG_SERVER_TABLE_NAME}, db.Key{Comp: []string{targetKey}})
+			if err != nil {
+				return nil, tlerr.NotFoundError{Format: "Resource not found"}
+			}
+			fields := map[string]string{}
+			switch {
+			case strings.HasSuffix(targetUriPath, "/source-address"):
+				if src, ok := entry.Field[SYSLOG_FIELD_SOURCE]; ok {
+					fields[SYSLOG_FIELD_SOURCE] = src
+				}
+			case strings.HasSuffix(targetUriPath, "/network-instance"):
+				if vrf, ok := entry.Field[SYSLOG_FIELD_VRF]; ok {
+					fields[SYSLOG_FIELD_VRF] = vrf
+				}
+			default:
+				return nil, tlerr.InvalidArgsError{
+					Format: fmt.Sprintf("Unsupported config DELETE on %s", inParams.uri),
+				}
+			}
+			if len(fields) == 0 {
+				return nil, tlerr.NotFoundError{Format: "Resource not found"}
+			}
+			syslogTableOps[targetKey] = db.Value{Field: fields}
 		} else if targetKey != "" && (isServerOp || isConfigOp) {
 			syslogTableOps[targetKey] = db.Value{}
 		} else {
