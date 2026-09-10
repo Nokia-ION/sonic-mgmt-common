@@ -108,13 +108,16 @@ func setupSyslogDbMocks(serverState map[string]db.Value) func() {
 }
 
 func syslogTlsServerFields(port, protocol, transportSecurity, profileID string) map[string]string {
-	return map[string]string{
+	fields := map[string]string{
 		nullKey:                     nullKey,
-		SYSLOG_FIELD_PORT:           port,
 		SYSLOG_FIELD_PROTOCOL:       protocol,
 		SYSLOG_FIELD_TRANSPORT_SEC:  transportSecurity,
 		SYSLOG_FIELD_TLS_PROFILE_ID: profileID,
 	}
+	if port != "" {
+		fields[SYSLOG_FIELD_PORT] = port
+	}
+	return fields
 }
 
 func TestSyslogServerConfigToDbFields(t *testing.T) {
@@ -135,8 +138,6 @@ func TestSyslogServerConfigToDbFields(t *testing.T) {
 			},
 			want: map[string]string{
 				nullKey:                    nullKey,
-				SYSLOG_FIELD_PORT:          "514",
-				SYSLOG_FIELD_PROTOCOL:      "udp",
 				SYSLOG_FIELD_TRANSPORT_SEC: "false",
 			},
 		},
@@ -147,7 +148,7 @@ func TestSyslogServerConfigToDbFields(t *testing.T) {
 				TransportSecurity: &tsTrue,
 				TlsProfileId:      ygot.String(syslogTestProfile),
 			},
-			want: syslogTlsServerFields("6514", "tls", "true", syslogTestProfile),
+			want: syslogTlsServerFields("", "tls", "true", syslogTestProfile),
 		},
 		{
 			name: "TLS explicit port",
@@ -165,9 +166,7 @@ func TestSyslogServerConfigToDbFields(t *testing.T) {
 				Host: ygot.String(syslogTestHost1),
 			},
 			want: map[string]string{
-				nullKey:               nullKey,
-				SYSLOG_FIELD_PORT:     "514",
-				SYSLOG_FIELD_PROTOCOL: "udp",
+				nullKey: nullKey,
 			},
 		},
 		{
@@ -178,11 +177,9 @@ func TestSyslogServerConfigToDbFields(t *testing.T) {
 				NetworkInstance: ygot.String("mgmt"),
 			},
 			want: map[string]string{
-				nullKey:               nullKey,
-				SYSLOG_FIELD_PORT:     "514",
-				SYSLOG_FIELD_PROTOCOL: "udp",
-				SYSLOG_FIELD_SOURCE:   "1.1.1.1",
-				SYSLOG_FIELD_VRF:      "mgmt",
+				nullKey:             nullKey,
+				SYSLOG_FIELD_SOURCE: "1.1.1.1",
+				SYSLOG_FIELD_VRF:    "mgmt",
 			},
 		},
 	}
@@ -445,6 +442,13 @@ func TestValidateSyslogTlsProfile(t *testing.T) {
 			profileID:         nil,
 			wantErr:           false,
 		},
+		{
+			name:              "Profile without transport-security is rejected",
+			transportSecurity: false,
+			profileID:         &profileID,
+			wantErr:           true,
+			errContains:       "transport-security is required",
+		},
 	}
 
 	for _, tt := range tests {
@@ -460,21 +464,209 @@ func TestValidateSyslogTlsProfile(t *testing.T) {
 	}
 }
 
+func TestApplySyslogTlsSemantics(t *testing.T) {
+	tsFalse := false
+	tsTrue := true
+	port200 := uint16(200)
+	newProfile := "siem-west"
+
+	tests := []struct {
+		name        string
+		cfg         *ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer_Config
+		existing    map[string]string
+		fields      map[string]string
+		wantFields  map[string]string
+		wantDel     map[string]string
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name: "TLS create leaves port unset",
+			cfg: &ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer_Config{
+				TransportSecurity: &tsTrue,
+				TlsProfileId:      ygot.String(syslogTestProfile),
+			},
+			fields: map[string]string{
+				nullKey:                     nullKey,
+				SYSLOG_FIELD_TRANSPORT_SEC:  "true",
+				SYSLOG_FIELD_TLS_PROFILE_ID: syslogTestProfile,
+			},
+			wantFields: syslogTlsServerFields("", "tls", "true", syslogTestProfile),
+		},
+		{
+			name: "TLS create keeps explicit port",
+			cfg: &ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer_Config{
+				TransportSecurity: &tsTrue,
+				TlsProfileId:      ygot.String(syslogTestProfile),
+				RemotePort:        &port200,
+			},
+			fields: map[string]string{
+				nullKey:                     nullKey,
+				SYSLOG_FIELD_PORT:           "200",
+				SYSLOG_FIELD_TRANSPORT_SEC:  "true",
+				SYSLOG_FIELD_TLS_PROFILE_ID: syslogTestProfile,
+			},
+			wantFields: syslogTlsServerFields("200", "tls", "true", syslogTestProfile),
+		},
+		{
+			name: "TLS enable keeps previously configured port",
+			cfg: &ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer_Config{
+				TransportSecurity: &tsTrue,
+				TlsProfileId:      ygot.String(syslogTestProfile),
+			},
+			existing: map[string]string{
+				nullKey:               nullKey,
+				SYSLOG_FIELD_PORT:     "514",
+				SYSLOG_FIELD_PROTOCOL: "udp",
+			},
+			fields: map[string]string{
+				nullKey:                     nullKey,
+				SYSLOG_FIELD_PORT:           "514",
+				SYSLOG_FIELD_PROTOCOL:       "udp",
+				SYSLOG_FIELD_TRANSPORT_SEC:  "true",
+				SYSLOG_FIELD_TLS_PROFILE_ID: syslogTestProfile,
+			},
+			wantFields: syslogTlsServerFields("514", "tls", "true", syslogTestProfile),
+		},
+		{
+			name: "Change profile-id on existing TLS server",
+			cfg: &ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer_Config{
+				TlsProfileId: ygot.String(newProfile),
+			},
+			existing: syslogTlsServerFields("6514", "tls", "true", syslogTestProfile),
+			fields: map[string]string{
+				nullKey:                     nullKey,
+				SYSLOG_FIELD_PORT:           "6514",
+				SYSLOG_FIELD_PROTOCOL:       "tls",
+				SYSLOG_FIELD_TRANSPORT_SEC:  "true",
+				SYSLOG_FIELD_TLS_PROFILE_ID: newProfile,
+			},
+			wantFields: syslogTlsServerFields("6514", "tls", "true", newProfile),
+		},
+		{
+			name: "Profile-id without transport-security is rejected",
+			cfg: &ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer_Config{
+				TlsProfileId: ygot.String(syslogTestProfile),
+			},
+			existing: map[string]string{
+				nullKey:               nullKey,
+				SYSLOG_FIELD_PORT:     "514",
+				SYSLOG_FIELD_PROTOCOL: "udp",
+			},
+			fields: map[string]string{
+				nullKey:                     nullKey,
+				SYSLOG_FIELD_PORT:           "514",
+				SYSLOG_FIELD_PROTOCOL:       "udp",
+				SYSLOG_FIELD_TLS_PROFILE_ID: syslogTestProfile,
+			},
+			wantErr:     true,
+			errContains: "transport-security is required",
+		},
+		{
+			name: "Transport-security true without profile is rejected",
+			cfg: &ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer_Config{
+				TransportSecurity: &tsTrue,
+			},
+			fields: map[string]string{
+				nullKey:                    nullKey,
+				SYSLOG_FIELD_TRANSPORT_SEC: "true",
+			},
+			wantErr:     true,
+			errContains: "tls-profile-id is required",
+		},
+		{
+			name: "Disable TLS unsets profile and leaves port unset",
+			cfg: &ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer_Config{
+				TransportSecurity: &tsFalse,
+			},
+			existing: syslogTlsServerFields("6514", "tls", "true", syslogTestProfile),
+			fields: map[string]string{
+				nullKey:                     nullKey,
+				SYSLOG_FIELD_PROTOCOL:       "tls",
+				SYSLOG_FIELD_TRANSPORT_SEC:  "false",
+				SYSLOG_FIELD_TLS_PROFILE_ID: syslogTestProfile,
+			},
+			wantFields: map[string]string{
+				nullKey:                    nullKey,
+				SYSLOG_FIELD_PROTOCOL:      "udp",
+				SYSLOG_FIELD_TRANSPORT_SEC: "false",
+			},
+			wantDel: map[string]string{
+				SYSLOG_FIELD_TLS_PROFILE_ID: syslogTestProfile,
+			},
+		},
+		{
+			name: "Disable TLS keeps previously configured port",
+			cfg: &ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer_Config{
+				TransportSecurity: &tsFalse,
+			},
+			existing: syslogTlsServerFields("200", "tls", "true", syslogTestProfile),
+			fields: map[string]string{
+				nullKey:                     nullKey,
+				SYSLOG_FIELD_PORT:           "200",
+				SYSLOG_FIELD_PROTOCOL:       "tls",
+				SYSLOG_FIELD_TRANSPORT_SEC:  "false",
+				SYSLOG_FIELD_TLS_PROFILE_ID: syslogTestProfile,
+			},
+			wantFields: map[string]string{
+				nullKey:                    nullKey,
+				SYSLOG_FIELD_PORT:          "200",
+				SYSLOG_FIELD_PROTOCOL:      "udp",
+				SYSLOG_FIELD_TRANSPORT_SEC: "false",
+			},
+			wantDel: map[string]string{
+				SYSLOG_FIELD_TLS_PROFILE_ID: syslogTestProfile,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fields := map[string]string{}
+			for k, v := range tt.fields {
+				fields[k] = v
+			}
+			gotDel, err := applySyslogTlsSemantics(fields, tt.cfg, tt.existing)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("applySyslogTlsSemantics() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr {
+				if tt.errContains != "" && (err == nil || !strings.Contains(err.Error(), tt.errContains)) {
+					t.Fatalf("applySyslogTlsSemantics() error = %v, want substring %q", err, tt.errContains)
+				}
+				return
+			}
+			if !reflect.DeepEqual(fields, tt.wantFields) {
+				t.Fatalf("fields = %v, want %v", fields, tt.wantFields)
+			}
+			if tt.wantDel == nil {
+				tt.wantDel = map[string]string{}
+			}
+			if !reflect.DeepEqual(gotDel, tt.wantDel) {
+				t.Fatalf("delFields = %v, want %v", gotDel, tt.wantDel)
+			}
+		})
+	}
+}
+
 func TestYangToDb_Syslog_Servers(t *testing.T) {
 	tsTrue := true
+	tsFalse := false
 	source := "1.1.1.1"
 	vrf := "mgmt"
 
 	tests := []struct {
-		name        string
-		op          Operation
-		uri         string
-		key         string
-		ygRoot      func() *ocbinds.Device
-		serverState map[string]db.Value
-		wantMap     map[string]map[string]db.Value
-		wantSubDel  map[string]map[string]db.Value
-		wantErr     bool
+		name           string
+		op             Operation
+		uri            string
+		key            string
+		ygRoot         func() *ocbinds.Device
+		serverState    map[string]db.Value
+		wantMap        map[string]map[string]db.Value
+		wantSubDel     map[string]map[string]db.Value
+		wantSubReplace map[string]map[string]db.Value
+		wantAux        map[string]map[string]db.Value
+		wantErr        bool
 	}{
 		{
 			name: "List: REPLACE deletes missing servers",
@@ -491,7 +683,7 @@ func TestYangToDb_Syslog_Servers(t *testing.T) {
 			},
 			wantMap: map[string]map[string]db.Value{
 				SYSLOG_SERVER_TABLE_NAME: {
-					syslogTestHost3: {Field: syslogTlsServerFields("6514", "tls", "true", syslogTestProfile)},
+					syslogTestHost3: {Field: syslogTlsServerFields("", "tls", "true", syslogTestProfile)},
 				},
 			},
 			wantSubDel: map[string]map[string]db.Value{
@@ -538,7 +730,6 @@ func TestYangToDb_Syslog_Servers(t *testing.T) {
 				SYSLOG_SERVER_TABLE_NAME: {
 					syslogTestHost1: {Field: map[string]string{
 						nullKey:               nullKey,
-						SYSLOG_FIELD_PORT:     "514",
 						SYSLOG_FIELD_PROTOCOL: "udp",
 					}},
 				},
@@ -565,6 +756,40 @@ func TestYangToDb_Syslog_Servers(t *testing.T) {
 				})
 			},
 			wantErr: true,
+		},
+		{
+			name: "UPDATE transport-security false replaces row and drops profile",
+			op:   UPDATE,
+			uri:  SYSLOG_SERVER_PATH + "/config",
+			key:  syslogTestHost3,
+			ygRoot: func() *ocbinds.Device {
+				return newSyslogDevice(map[string]*ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer{
+					syslogTestHost3: newSyslogRemoteServer(syslogTestHost3, &tsFalse, nil, nil, nil, nil),
+				})
+			},
+			serverState: map[string]db.Value{
+				syslogTestHost3: {Field: syslogTlsServerFields("6514", "tls", "true", syslogTestProfile)},
+			},
+			wantMap: map[string]map[string]db.Value{
+				SYSLOG_SERVER_TABLE_NAME: {},
+			},
+			wantSubReplace: map[string]map[string]db.Value{
+				SYSLOG_SERVER_TABLE_NAME: {
+					syslogTestHost3: {Field: map[string]string{
+						nullKey:                    nullKey,
+						SYSLOG_FIELD_PORT:          "6514",
+						SYSLOG_FIELD_PROTOCOL:      "udp",
+						SYSLOG_FIELD_TRANSPORT_SEC: "false",
+					}},
+				},
+			},
+			wantAux: map[string]map[string]db.Value{
+				SYSLOG_SERVER_TABLE_NAME: {
+					syslogTestHost3: {Field: map[string]string{
+						SYSLOG_FIELD_TLS_PROFILE_ID: syslogTestProfile,
+					}},
+				},
+			},
 		},
 		{
 			name:   "List: DELETE clears all",
@@ -595,7 +820,6 @@ func TestYangToDb_Syslog_Servers(t *testing.T) {
 				SYSLOG_SERVER_TABLE_NAME: {
 					syslogTestHost1: {Field: map[string]string{
 						nullKey:               nullKey,
-						SYSLOG_FIELD_PORT:     "514",
 						SYSLOG_FIELD_PROTOCOL: "udp",
 						SYSLOG_FIELD_SOURCE:   source,
 						SYSLOG_FIELD_VRF:      vrf,
@@ -826,12 +1050,13 @@ func TestYangToDb_Syslog_Servers(t *testing.T) {
 			dbs := [db.MaxDB]*db.DB{db.ConfigDB: &db.DB{}}
 			ygRoot := ygot.GoStruct(tt.ygRoot())
 			inParams := XfmrParams{
-				dbs:          dbs,
-				ygRoot:       &ygRoot,
-				oper:         tt.op,
-				uri:          tt.uri,
-				key:          tt.key,
-				subOpDataMap: make(map[Operation]*map[db.DBNum]map[string]map[string]db.Value),
+				dbs:           dbs,
+				ygRoot:        &ygRoot,
+				oper:          tt.op,
+				uri:           tt.uri,
+				key:           tt.key,
+				subOpDataMap:  make(map[Operation]*map[db.DBNum]map[string]map[string]db.Value),
+				yangAuxValMap: make(map[string]map[string]db.Value),
 			}
 
 			gotMap, err := YangToDb_remote_servers_list_xfmr(inParams)
@@ -852,6 +1077,21 @@ func TestYangToDb_Syslog_Servers(t *testing.T) {
 				gotSubDel := (*delOps)[db.ConfigDB]
 				if !reflect.DeepEqual(gotSubDel, tt.wantSubDel) {
 					t.Fatalf("SubOpMap DELETE got = %v, want %v", gotSubDel, tt.wantSubDel)
+				}
+			}
+			if tt.wantSubReplace != nil {
+				replOps := inParams.subOpDataMap[REPLACE]
+				if replOps == nil || (*replOps)[db.ConfigDB] == nil {
+					t.Fatalf("Expected REPLACE sub operations, got none")
+				}
+				gotSubReplace := (*replOps)[db.ConfigDB]
+				if !reflect.DeepEqual(gotSubReplace, tt.wantSubReplace) {
+					t.Fatalf("SubOpMap REPLACE got = %v, want %v", gotSubReplace, tt.wantSubReplace)
+				}
+			}
+			if tt.wantAux != nil {
+				if !reflect.DeepEqual(inParams.yangAuxValMap, tt.wantAux) {
+					t.Fatalf("yangAuxValMap got = %v, want %v", inParams.yangAuxValMap, tt.wantAux)
 				}
 			}
 		})
