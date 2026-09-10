@@ -46,6 +46,7 @@ const (
 	niBgpNbrAllowAsInFld   = "allow_as_in"
 	niBgpNbrAllowAsCntFld  = "allow_as_count"
 	niBgpNbrSendCommFld    = "send_community"
+	niBgpNbrAuthPwdFld     = "auth_password"
 	niBgpNbrConnRetryFld   = "conn_retry"
 	niBgpNbrHoldTimeFld    = "holdtime"
 	niBgpNbrKeepaliveFld   = "keepalive"
@@ -69,7 +70,7 @@ const (
 // repeats. The levels above the config containers are matched against it.
 const niBgpNbrUriPfx = niBgpProtoUriPfx + `/bgp/neighbors/neighbor\[neighbor-address=([^\]]+)\]`
 
-var niBgpNbrReqUriRe = regexp.MustCompile(niBgpNbrUriPfx + `/config(?:/(peer-group|enabled|peer-as|send-community))?$`)
+var niBgpNbrReqUriRe = regexp.MustCompile(niBgpNbrUriPfx + `/config(?:/(peer-group|enabled|peer-as|send-community|auth-password))?$`)
 var niBgpNbrTimersReqUriRe = regexp.MustCompile(niBgpNbrUriPfx + `/timers/config(?:/(connect-retry|hold-time|keepalive-interval))?$`)
 var niBgpNbrAsPathOptReqUriRe = regexp.MustCompile(niBgpNbrUriPfx + `/as-path-options/config(?:/(allow-own-as))?$`)
 var niBgpNbrAfApplyReqUriRe = regexp.MustCompile(niBgpNbrUriPfx + `/afi-safis/afi-safi\[afi-safi-name=([^\]]+)\]/apply-policy/config(?:/(import-policy|export-policy))?$`)
@@ -820,6 +821,82 @@ func parseNiBgpNbrPeerGroup(inParams XfmrParams) (string, error) {
 	return strings.TrimSpace(*cfgObj.PeerGroup), nil
 }
 
+func parseNiBgpNbrAuthPasswordValue(v interface{}) (string, bool) {
+	switch val := v.(type) {
+	case string:
+		// The value is a secret, so it is kept exactly as sent rather than
+		// trimmed the way the other string leaves of this container are.
+		if strings.TrimSpace(val) != "" {
+			return val, true
+		}
+	case *string:
+		if val != nil && strings.TrimSpace(*val) != "" {
+			return *val, true
+		}
+	}
+	return "", false
+}
+
+func parseNiBgpNbrAuthPasswordFromParam(param interface{}) (string, bool) {
+	if param == nil {
+		return "", false
+	}
+	if pwd, ok := parseNiBgpNbrAuthPasswordValue(param); ok {
+		return pwd, true
+	}
+
+	rv := reflect.ValueOf(param)
+	for rv.IsValid() && (rv.Kind() == reflect.Interface || rv.Kind() == reflect.Ptr) {
+		if rv.IsNil() {
+			return "", false
+		}
+		rv = rv.Elem()
+	}
+	if !rv.IsValid() {
+		return "", false
+	}
+
+	if rv.Kind() == reflect.Struct {
+		fv := rv.FieldByName("AuthPassword")
+		if fv.IsValid() && fv.CanInterface() {
+			if pwd, ok := parseNiBgpNbrAuthPasswordValue(fv.Interface()); ok {
+				return pwd, true
+			}
+		}
+	}
+
+	if rv.Kind() == reflect.Map {
+		for _, mk := range rv.MapKeys() {
+			k := fmt.Sprint(mk.Interface())
+			if k == "auth-password" || strings.HasSuffix(k, ":auth-password") {
+				mv := rv.MapIndex(mk)
+				if mv.IsValid() && mv.CanInterface() {
+					if pwd, ok := parseNiBgpNbrAuthPasswordValue(mv.Interface()); ok {
+						return pwd, true
+					}
+				}
+			}
+		}
+	}
+	return "", false
+}
+
+func parseNiBgpNbrAuthPassword(inParams XfmrParams) (string, error) {
+	reqInfo, err := parseNiBgpNbrRequestUri(inParams.requestUri)
+	if err != nil {
+		return "", err
+	}
+	if pwd, ok := parseNiBgpNbrAuthPasswordFromParam(inParams.param); ok {
+		return pwd, nil
+	}
+
+	cfgObj := getNiBgpNbrCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.protoName, reqInfo.neighborAddr, false)
+	if cfgObj == nil || cfgObj.AuthPassword == nil || strings.TrimSpace(*cfgObj.AuthPassword) == "" {
+		return "", tlerr.InvalidArgsError{Format: "BGP neighbor auth-password is missing in request payload"}
+	}
+	return *cfgObj.AuthPassword, nil
+}
+
 func niBgpNbrAdminStatusToEnabled(status string) (*bool, bool) {
 	s := strings.TrimSpace(strings.ToLower(status))
 	switch s {
@@ -1459,6 +1536,7 @@ var YangToDb_ni_bgp_nbr_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 					niBgpNbrPeerGroupFld: "",
 					niBgpNbrAsnFld:       "",
 					niBgpNbrAdminStatus:  "",
+					niBgpNbrAuthPwdFld:   "",
 				}),
 				makeNiBgpNbrAfResMap(reqInfo.niName, reqInfo.neighborAddr, map[string]string{niBgpNbrSendCommFld: ""})), nil
 		case "peer-group":
@@ -1469,8 +1547,10 @@ var YangToDb_ni_bgp_nbr_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 			return makeNiBgpNbrResMap(reqInfo.niName, reqInfo.neighborAddr, map[string]string{niBgpNbrAdminStatus: ""}), nil
 		case "send-community":
 			return makeNiBgpNbrAfResMap(reqInfo.niName, reqInfo.neighborAddr, map[string]string{niBgpNbrSendCommFld: ""}), nil
+		case "auth-password":
+			return makeNiBgpNbrResMap(reqInfo.niName, reqInfo.neighborAddr, map[string]string{niBgpNbrAuthPwdFld: ""}), nil
 		default:
-			return res, tlerr.NotSupportedError{Format: "DELETE supported only for /neighbors/neighbor/config, /neighbors/neighbor/config/peer-group, /neighbors/neighbor/config/peer-as, /neighbors/neighbor/config/enabled, or /neighbors/neighbor/config/send-community", Path: inParams.requestUri}
+			return res, tlerr.NotSupportedError{Format: "DELETE supported only for /neighbors/neighbor/config, /neighbors/neighbor/config/peer-group, /neighbors/neighbor/config/peer-as, /neighbors/neighbor/config/enabled, /neighbors/neighbor/config/send-community, or /neighbors/neighbor/config/auth-password", Path: inParams.requestUri}
 		}
 	}
 
@@ -1606,6 +1686,12 @@ var YangToDb_ni_bgp_nbr_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 			return res, err
 		}
 		sendComm = comm
+	case "auth-password":
+		pwd, err := parseNiBgpNbrAuthPassword(inParams)
+		if err != nil {
+			return res, err
+		}
+		fields[niBgpNbrAuthPwdFld] = pwd
 	default:
 		if pg, ok := parseNiBgpNbrPeerGroupFromParam(inParams.param); ok {
 			fields[niBgpNbrPeerGroupFld] = pg
@@ -1618,6 +1704,9 @@ var YangToDb_ni_bgp_nbr_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 		}
 		if comm, ok := parseNiBgpNbrSendCommunityFromParam(inParams.param); ok {
 			sendComm = comm
+		}
+		if pwd, ok := parseNiBgpNbrAuthPasswordFromParam(inParams.param); ok {
+			fields[niBgpNbrAuthPwdFld] = pwd
 		}
 		if len(fields) == 0 && sendComm == "" {
 			cfgObj := getNiBgpNbrCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.protoName, reqInfo.neighborAddr, false)
@@ -1634,10 +1723,13 @@ var YangToDb_ni_bgp_nbr_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 				if comm, ok := niBgpNbrSendCommunityToDb(cfgObj.SendCommunity); ok {
 					sendComm = comm
 				}
+				if cfgObj.AuthPassword != nil && strings.TrimSpace(*cfgObj.AuthPassword) != "" {
+					fields[niBgpNbrAuthPwdFld] = *cfgObj.AuthPassword
+				}
 			}
 		}
 		if len(fields) == 0 && sendComm == "" {
-			return res, tlerr.InvalidArgsError{Format: "BGP neighbor config payload missing supported fields (peer-group/peer-as/enabled/send-community)"}
+			return res, tlerr.InvalidArgsError{Format: "BGP neighbor config payload missing supported fields (peer-group/peer-as/enabled/send-community/auth-password)"}
 		}
 	}
 	if sendComm != "" {
@@ -1790,6 +1882,12 @@ var DbToYang_ni_bgp_nbr_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams)
 			if enabled, ok := niBgpNbrAdminStatusToEnabled(status); ok {
 				cfgObj.Enabled = enabled
 			}
+		}
+	}
+	if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == "auth-password" {
+		pwd, ok := entry.Field[niBgpNbrAuthPwdFld]
+		if ok && strings.TrimSpace(pwd) != "" {
+			cfgObj.AuthPassword = &pwd
 		}
 	}
 	if reqInfo.targetPath == "neighbor-config" && (reqInfo.targetLeaf == "" || reqInfo.targetLeaf == "send-community") {
