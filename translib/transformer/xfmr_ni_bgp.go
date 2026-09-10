@@ -1360,6 +1360,22 @@ func buildNiBgpHierResMap(s *ygot.GoStruct, niName, protoName string) map[string
 				if nbrObj.Config.Enabled != nil {
 					nbrFields[niBgpNbrAdminStatus] = niBgpNbrEnabledToAdminStatus(*nbrObj.Config.Enabled)
 				}
+				// The password is a secret, so it is stored exactly as it
+				// arrived rather than trimmed the way a name would be.
+				if nbrObj.Config.AuthPassword != nil && strings.TrimSpace(*nbrObj.Config.AuthPassword) != "" {
+					nbrFields[niBgpNbrAuthPwdFld] = *nbrObj.Config.AuthPassword
+				}
+			}
+			if nbrObj.Timers != nil && nbrObj.Timers.Config != nil {
+				if nbrObj.Timers.Config.ConnectRetry != nil {
+					nbrFields[niBgpNbrConnRetryFld] = strconv.FormatUint(uint64(*nbrObj.Timers.Config.ConnectRetry), 10)
+				}
+				if nbrObj.Timers.Config.HoldTime != nil {
+					nbrFields[niBgpNbrHoldTimeFld] = strconv.FormatUint(uint64(*nbrObj.Timers.Config.HoldTime), 10)
+				}
+				if nbrObj.Timers.Config.KeepaliveInterval != nil {
+					nbrFields[niBgpNbrKeepaliveFld] = strconv.FormatUint(uint64(*nbrObj.Timers.Config.KeepaliveInterval), 10)
+				}
 			}
 			// A payload may name a list instance while setting no mapped leaf
 			// under it; that still asks for the row itself to exist.
@@ -1568,6 +1584,32 @@ func populateNiBgpHierToYangFromDb(cfgDb *db.DB, ygRoot *ygot.GoStruct, niName, 
 				if enStr, ok := nbrEntry.Field[niBgpNbrAdminStatus]; ok && strings.TrimSpace(enStr) != "" {
 					if en, ok := niBgpNbrAdminStatusToEnabled(enStr); ok {
 						nbrCfg.Enabled = en
+					}
+				}
+				if pwd, ok := nbrEntry.Field[niBgpNbrAuthPwdFld]; ok && strings.TrimSpace(pwd) != "" {
+					nbrCfg.AuthPassword = &pwd
+				}
+			}
+			// The timers sit in the same BGP_NEIGHBOR row as the config
+			// leaves above, so they are read out of the entry already in hand.
+			tmCfg := getNiBgpNbrTimersCfgObj(ygRoot, niName, protoName, nbrAddr, true)
+			if tmCfg != nil {
+				if crStr, ok := nbrEntry.Field[niBgpNbrConnRetryFld]; ok && strings.TrimSpace(crStr) != "" {
+					if crVal, convErr := strconv.ParseUint(strings.TrimSpace(crStr), 10, 64); convErr == nil {
+						cr := float64(uint16(crVal))
+						tmCfg.ConnectRetry = &cr
+					}
+				}
+				if holdStr, ok := nbrEntry.Field[niBgpNbrHoldTimeFld]; ok && strings.TrimSpace(holdStr) != "" {
+					if holdVal, convErr := strconv.ParseUint(strings.TrimSpace(holdStr), 10, 64); convErr == nil {
+						hold := float64(uint16(holdVal))
+						tmCfg.HoldTime = &hold
+					}
+				}
+				if keepStr, ok := nbrEntry.Field[niBgpNbrKeepaliveFld]; ok && strings.TrimSpace(keepStr) != "" {
+					if keepVal, convErr := strconv.ParseUint(strings.TrimSpace(keepStr), 10, 64); convErr == nil {
+						keep := float64(uint16(keepVal))
+						tmCfg.KeepaliveInterval = &keep
 					}
 				}
 			}
