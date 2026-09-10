@@ -697,6 +697,53 @@ func TestValidateEditConfig_Delete_StpMstTeardown_WithLinkType_Positive(t *testi
 	verifyValidateEditConfig(t, cfgData, Success)
 }
 
+func TestValidateEditConfig_Syslog_TlsOff_ReplaceOp(t *testing.T) {
+	setupTestData(t, map[string]interface{}{
+		"SYSLOG_SERVER": map[string]interface{}{
+			"1.1.1.1": map[string]interface{}{
+				"protocol":           "tls",
+				"transport_security": "true",
+				"tls_profile_id":     "test",
+				"port":               "6514",
+			},
+		},
+	})
+
+	updateUdp := cmn.CVLEditConfigData{
+		VType: cmn.VALIDATE_ALL,
+		VOp:   cmn.OP_UPDATE,
+		Key:   "SYSLOG_SERVER|1.1.1.1",
+		Data: map[string]string{
+			"protocol":           "udp",
+			"transport_security": "false",
+			"port":               "6514",
+		},
+	}
+	deleteProfile := cmn.CVLEditConfigData{
+		VType: cmn.VALIDATE_ALL,
+		VOp:   cmn.OP_DELETE,
+		Key:   "SYSLOG_SERVER|1.1.1.1",
+		Data:  map[string]string{"tls_profile_id": ""},
+	}
+
+	t.Run("without_replace_op_fails", func(tt *testing.T) {
+		verifyValidateEditConfig(tt, []cmn.CVLEditConfigData{updateUdp, deleteProfile}, CVLErrorInfo{
+			ErrCode:   CVL_SEMANTIC_ERROR,
+			TableName: "SYSLOG_SERVER",
+			Keys:      []string{"1.1.1.1"},
+			Msg:       mustExpressionErrMessage,
+		})
+	})
+
+	t.Run("with_replace_op_succeeds", func(tt *testing.T) {
+		replUpdate := updateUdp
+		replUpdate.ReplaceOp = true
+		replDelete := deleteProfile
+		replDelete.ReplaceOp = true
+		verifyValidateEditConfig(tt, []cmn.CVLEditConfigData{replUpdate, replDelete}, Success)
+	})
+}
+
 func testNullAdd(data ...cmn.CVLEditConfigData) func(*testing.T) {
 	return func(t *testing.T) {
 		session, _ := NewCvlSession()

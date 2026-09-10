@@ -28,8 +28,6 @@ const (
 	SYSLOG_FIELD_VRF            = "vrf"
 	SYSLOG_FIELD_SEVERITY       = "severity"
 	SYSLOG_FIELD_FACILITY       = "facility"
-	SYSLOG_DEFAULT_PORT         = 514
-	SYSLOG_DEFAULT_TLS_PORT     = 6514
 	SYSLOG_DEFAULT_PROFILE      = "gnxi"
 )
 
@@ -159,21 +157,29 @@ func validateSyslogTlsProfile(transportSecurity bool, profileId *string) error {
 	return nil
 }
 
-func validateSyslogServerDbFields(fields map[string]string) error {
-	transportSecurity := false
-	if ts, ok := fields[SYSLOG_FIELD_TRANSPORT_SEC]; ok {
-		if b, err := strconv.ParseBool(ts); err == nil {
-			transportSecurity = b
-		}
+func isSyslogTlsEnabled(fields map[string]string) bool {
+	if fields == nil {
+		return false
 	}
 	if fields[SYSLOG_FIELD_PROTOCOL] == "tls" {
-		transportSecurity = true
+		return true
 	}
-	var profileId *string
-	if pid, ok := fields[SYSLOG_FIELD_TLS_PROFILE_ID]; ok && pid != "" {
-		profileId = &pid
+	if ts, ok := fields[SYSLOG_FIELD_TRANSPORT_SEC]; ok {
+		b, err := strconv.ParseBool(ts)
+		return err == nil && b
 	}
-	return validateSyslogTlsProfile(transportSecurity, profileId)
+	return false
+}
+
+func syslogTlsProfileIDPtr(profile string) *string {
+	if profile == "" {
+		return nil
+	}
+	return &profile
+}
+
+func validateSyslogServerDbFields(fields map[string]string) error {
+	return validateSyslogTlsProfile(isSyslogTlsEnabled(fields), syslogTlsProfileIDPtr(fields[SYSLOG_FIELD_TLS_PROFILE_ID]))
 }
 
 func ocSeverityToDb(severity ocbinds.E_OpenconfigSystemLogging_SyslogSeverity) (string, error) {
@@ -371,29 +377,19 @@ func populateSyslogServerSelectors(serverObj *ocbinds.OpenconfigSystem_System_Lo
 	return nil
 }
 
-// MODIFIED: added source-address and network-instance field mapping (Group A).
+// syslogServerConfigToDbFields copies only YANG leaves that are present. Protocol
+// is applied later by applySyslogTlsSemantics. Port is written only when the
+// client sets remote-port; existing DB port is otherwise left unchanged.
 func syslogServerConfigToDbFields(cfg *ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer_Config) map[string]string {
 	fields := map[string]string{nullKey: nullKey}
 	if cfg == nil {
 		return fields
 	}
-	tls := cfg.TransportSecurity != nil && *cfg.TransportSecurity
 	if cfg.RemotePort != nil {
 		fields[SYSLOG_FIELD_PORT] = strconv.Itoa(int(*cfg.RemotePort))
-	} else if tls {
-		fields[SYSLOG_FIELD_PORT] = strconv.Itoa(SYSLOG_DEFAULT_TLS_PORT)
-	} else {
-		fields[SYSLOG_FIELD_PORT] = strconv.Itoa(SYSLOG_DEFAULT_PORT)
 	}
 	if cfg.TransportSecurity != nil {
 		fields[SYSLOG_FIELD_TRANSPORT_SEC] = strconv.FormatBool(*cfg.TransportSecurity)
-		if tls {
-			fields[SYSLOG_FIELD_PROTOCOL] = "tls"
-		} else {
-			fields[SYSLOG_FIELD_PROTOCOL] = "udp"
-		}
-	} else {
-		fields[SYSLOG_FIELD_PROTOCOL] = "udp"
 	}
 	if cfg.TlsProfileId != nil {
 		fields[SYSLOG_FIELD_TLS_PROFILE_ID] = *cfg.TlsProfileId
@@ -407,31 +403,133 @@ func syslogServerConfigToDbFields(cfg *ocbinds.OpenconfigSystem_System_Logging_R
 	return fields
 }
 
-// MODIFIED: added uri parameter, selector severity handling, and source/vrf validation (Group A/B).
-func syslogServerDbValueFromYang(cfgDb *db.DB, host string, server *ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer, mergeExisting bool, uri string) (db.Value, error) {
+// applySyslogTlsSemantics enforces the TLS pairing rules and fills protocol:
+//   - transport-security true requires tls-profile-id (from this payload or existing DB)
+//   - tls-profile-id requires transport-security true (already in DB is enough to change profile-id)
+//   - TLS on: protocol=tls; port is left unchanged
+//   - transport-security false: drop tls-profile-id, protocol=udp; port is left unchanged.
+//     The caller must SetEntry/REPLACE the SYSLOG_SERVER row (not HDEL tls_profile_id
+//     as a DELETE sub-op). translib applies DELETE sub-ops before UPDATE, and CVL
+//     rejects dropping the profile while protocol is still tls unless SetEntry
+//     marks the UPDATE+HDEL pair as ReplaceOp.
+func applySyslogTlsSemantics(fields map[string]string, cfg *ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer_Config, existing map[string]string) (map[string]string, error) {
+	delFields := make(map[string]string)
+	existingProfile := ""
+	if existing != nil {
+		existingProfile = existing[SYSLOG_FIELD_TLS_PROFILE_ID]
+	}
+
+	if cfg != nil && cfg.TransportSecurity != nil && !*cfg.TransportSecurity {
+		delete(fields, SYSLOG_FIELD_TLS_PROFILE_ID)
+		if existingProfile != "" {
+			delFields[SYSLOG_FIELD_TLS_PROFILE_ID] = existingProfile
+		}
+		fields[SYSLOG_FIELD_TRANSPORT_SEC] = "false"
+		fields[SYSLOG_FIELD_PROTOCOL] = "udp"
+		return delFields, nil
+	}
+
+	tlsEnabled := isSyslogTlsEnabled(fields)
+	yangProfile := cfg != nil && cfg.TlsProfileId != nil && *cfg.TlsProfileId != ""
+	if yangProfile && !tlsEnabled {
+		return nil, tlerr.InvalidArgsError{
+			Format: "transport-security is required when tls-profile-id is set",
+		}
+	}
+	if tlsEnabled {
+		if err := validateSyslogTlsProfile(true, syslogTlsProfileIDPtr(fields[SYSLOG_FIELD_TLS_PROFILE_ID])); err != nil {
+			return nil, err
+		}
+		fields[SYSLOG_FIELD_TRANSPORT_SEC] = "true"
+		fields[SYSLOG_FIELD_PROTOCOL] = "tls"
+		return delFields, nil
+	}
+
+	if _, ok := fields[SYSLOG_FIELD_PROTOCOL]; !ok {
+		fields[SYSLOG_FIELD_PROTOCOL] = "udp"
+	}
+	return delFields, nil
+}
+
+func syslogServerDbMutationFromYang(cfgDb *db.DB, host string, server *ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer, mergeExisting bool, uri string) (db.Value, map[string]string, error) {
 	fields := syslogServerConfigToDbFields(nil)
+	existing := map[string]string{}
 	if mergeExisting && cfgDb != nil {
 		if entry, err := dbGetEntry(cfgDb, &db.TableSpec{Name: SYSLOG_SERVER_TABLE_NAME}, db.Key{Comp: []string{host}}); err == nil {
 			for k, v := range entry.Field {
 				fields[k] = v
+				existing[k] = v
 			}
 		}
 	}
+	var cfg *ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer_Config
 	if server != nil && server.Config != nil {
-		for k, v := range syslogServerConfigToDbFields(server.Config) {
+		cfg = server.Config
+		for k, v := range syslogServerConfigToDbFields(cfg) {
 			fields[k] = v
 		}
 	}
 	if err := applySelectorToFields(fields, server, uri); err != nil {
-		return db.Value{}, err
+		return db.Value{}, nil, err
+	}
+	delFields, err := applySyslogTlsSemantics(fields, cfg, existing)
+	if err != nil {
+		return db.Value{}, nil, err
 	}
 	if err := validateSyslogServerDbFields(fields); err != nil {
-		return db.Value{}, err
+		return db.Value{}, nil, err
 	}
 	if err := validateSyslogServerFields(cfgDb, host, fields); err != nil {
-		return db.Value{}, err
+		return db.Value{}, nil, err
 	}
-	return db.Value{Field: fields}, nil
+	return db.Value{Field: fields}, delFields, nil
+}
+
+func syslogServerDbValueFromYang(cfgDb *db.DB, host string, server *ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer, mergeExisting bool, uri string) (db.Value, error) {
+	value, _, err := syslogServerDbMutationFromYang(cfgDb, host, server, mergeExisting, uri)
+	return value, err
+}
+
+func addSyslogYangAuxFields(inParams XfmrParams, host string, fields map[string]string) {
+	if inParams.yangAuxValMap == nil || len(fields) == 0 {
+		return
+	}
+	if inParams.yangAuxValMap[SYSLOG_SERVER_TABLE_NAME] == nil {
+		inParams.yangAuxValMap[SYSLOG_SERVER_TABLE_NAME] = make(map[string]db.Value)
+	}
+	entry := inParams.yangAuxValMap[SYSLOG_SERVER_TABLE_NAME][host]
+	if entry.Field == nil {
+		entry.Field = make(map[string]string)
+	}
+	for k, v := range fields {
+		entry.Field[k] = v
+	}
+	inParams.yangAuxValMap[SYSLOG_SERVER_TABLE_NAME][host] = entry
+}
+
+func storeSyslogServerDbMutation(inParams XfmrParams, cfgDb *db.DB, syslogTableOps map[string]db.Value, host string, server *ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer, mergeExisting bool) error {
+	value, delFields, err := syslogServerDbMutationFromYang(cfgDb, host, server, mergeExisting, inParams.uri)
+	if err != nil {
+		return err
+	}
+	if len(delFields) > 0 && inParams.subOpDataMap != nil {
+		// translib processCommon applies DELETE sub-ops before UPDATE, so an
+		// HDEL of tls_profile_id fails CVL while protocol is still tls.
+		// REPLACE uses SetEntry on the same key: HMSET the UDP row and HDEL
+		// tls_profile_id in one write. yangAuxValMap keeps this from being
+		// treated as a partial terminal-container replace (which would skip HDEL).
+		addSyslogYangAuxFields(inParams, host, delFields)
+		updateSubOpDataMap(map[db.DBNum]map[string]map[string]db.Value{
+			db.ConfigDB: {
+				SYSLOG_SERVER_TABLE_NAME: {
+					host: value,
+				},
+			},
+		}, REPLACE, inParams)
+		return nil
+	}
+	syslogTableOps[host] = value
+	return nil
 }
 
 // MODIFIED: added source-address, network-instance, and selector severity population (Group A/B).
@@ -667,22 +765,18 @@ var YangToDb_remote_servers_list_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPa
 		mergeExisting := inParams.oper == UPDATE && !isListOp
 		if isListOp {
 			for host, server := range newServersMap {
-				value, err := syslogServerDbValueFromYang(cfgDb, host, server, false, inParams.uri)
-				if err != nil {
+				if err := storeSyslogServerDbMutation(inParams, cfgDb, syslogTableOps, host, server, false); err != nil {
 					return nil, err
 				}
-				syslogTableOps[host] = value
 			}
 		} else if targetKey != "" {
 			if inParams.oper == REPLACE && isServerOp && newServersMap[targetKey] == nil {
 				syslogTableOps[targetKey] = db.Value{}
 			} else {
 				server := newServersMap[targetKey]
-				value, err := syslogServerDbValueFromYang(cfgDb, targetKey, server, mergeExisting, inParams.uri)
-				if err != nil {
+				if err := storeSyslogServerDbMutation(inParams, cfgDb, syslogTableOps, targetKey, server, mergeExisting); err != nil {
 					return nil, err
 				}
-				syslogTableOps[targetKey] = value
 			}
 		} else {
 			return nil, tlerr.InvalidArgsError{
