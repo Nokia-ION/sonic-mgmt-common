@@ -17,6 +17,12 @@ module openconfig-lldp-annot {
     description
         "OpenConfig LLDP YANG annotations for SONiC transformer framework.";
 
+    revision 2026-09-10 {
+        description
+            "Add path transformers so gNMI subscribe can resolve wildcard
+            list keys for LLDP interfaces/neighbors and global custom-tlvs.";
+    }
+
     revision 2026-09-05 {
         description
             "OpenConfig LLDP 1.2.0: map global custom-tlvs from CONFIG_DB
@@ -57,6 +63,7 @@ module openconfig-lldp-annot {
     deviation /oc-lldp:lldp/oc-lldp:interfaces {
         deviate add {
             sonic-ext:subtree-transformer "lldp_interfaces_xfmr";
+            sonic-ext:path-transformer "lldp_interfaces_path_xfmr";
         }
     }
 
@@ -72,6 +79,7 @@ module openconfig-lldp-annot {
         deviate add {
             sonic-ext:db-name "CONFIG_DB";
             sonic-ext:subtree-transformer "lldp_custom_tlvs_xfmr";
+            sonic-ext:path-transformer "lldp_custom_tlvs_path_xfmr";
         }
     }
 
