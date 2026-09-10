@@ -57,6 +57,7 @@ var rpolMappedPayloadLeaves = map[string]bool{
 	"policy-definitions/policy-definition/statements/statement/actions/bgp-actions/set-as-path-prepend/config/asn":                   true,
 	"policy-definitions/policy-definition/statements/statement/actions/bgp-actions/set-as-path-prepend/config/repeat-n":              true,
 	"policy-definitions/policy-definition/statements/statement/conditions/match-prefix-set/config/prefix-set":                        true,
+	"policy-definitions/policy-definition/statements/statement/conditions/match-prefix-set/config/match-set-options":                 true,
 	"policy-definitions/policy-definition/statements/statement/conditions/bgp-conditions/config/med-eq":                              true,
 	"policy-definitions/policy-definition/statements/statement/conditions/bgp-conditions/config/origin-eq":                           true,
 	"policy-definitions/policy-definition/statements/statement/conditions/bgp-conditions/config/local-pref-eq":                       true,
