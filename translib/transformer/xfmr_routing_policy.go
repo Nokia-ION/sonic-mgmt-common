@@ -92,6 +92,7 @@ const (
 	rpolSetTypeExpanded                    = "EXPANDED"
 	rpolMatchActionAny                     = "ANY"
 	rpolMatchActionAll                     = "ALL"
+	rpolMatchSetOptionsInvert              = "INVERT"
 	rpolTargetExtCommunitySetName          = "ext-community-set-name"
 	rpolExtCommunitySetNameLeaf            = "ext-community-set-name"
 	rpolCommunityMemberLeaf                = "community-member"
@@ -102,7 +103,7 @@ const (
 var rpolPolicyDefCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/config(?:/(name))?$`)
 var rpolStmtNameReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/name$`)
 var rpolStmtActionsCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/actions/config(?:/(policy-result))?$`)
-var rpolStmtCondMatchPfxCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/conditions/match-prefix-set/config(?:/(prefix-set))?$`)
+var rpolStmtCondMatchPfxCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/conditions/match-prefix-set/config(?:/(prefix-set|match-set-options))?$`)
 var rpolStmtBgpActionsCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/actions/(?:[A-Za-z0-9_.-]+:)?bgp-actions/(?:[A-Za-z0-9_.-]+:)?config(?:/(?:[A-Za-z0-9_.-]+:)?(set-next-hop|set-route-origin|set-local-pref|set-med))?$`)
 var rpolStmtBgpSetCommunityReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/actions/(?:[A-Za-z0-9_.-]+:)?bgp-actions/(?:[A-Za-z0-9_.-]+:)?set-community$`)
 var rpolStmtBgpSetCommunityInlineCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/actions/(?:[A-Za-z0-9_.-]+:)?bgp-actions/(?:[A-Za-z0-9_.-]+:)?set-community/(?:[A-Za-z0-9_.-]+:)?inline/(?:[A-Za-z0-9_.-]+:)?config(?:/(?:[A-Za-z0-9_.-]+:)?(communities))?$`)
@@ -1902,6 +1903,52 @@ func rpolMatchSetOptionsToMatchAction(v ocbinds.E_OpenconfigRoutingPolicy_MatchS
 	}
 }
 
+// parseRpolMatchSetOptionsRestrictedFromParam reads the restricted match
+// modifier out of a leaf targeted request payload. The prefix-set condition uses
+// the restricted type, which allows only ANY and INVERT.
+func parseRpolMatchSetOptionsRestrictedFromParam(param interface{}) (ocbinds.E_OpenconfigRoutingPolicy_MatchSetOptionsRestrictedType, bool) {
+	switch v := param.(type) {
+	case ocbinds.E_OpenconfigRoutingPolicy_MatchSetOptionsRestrictedType:
+		return v, true
+	case *ocbinds.E_OpenconfigRoutingPolicy_MatchSetOptionsRestrictedType:
+		if v != nil {
+			return *v, true
+		}
+	case string:
+		switch strings.ToUpper(strings.TrimSpace(v)) {
+		case rpolMatchActionAny:
+			return ocbinds.OpenconfigRoutingPolicy_MatchSetOptionsRestrictedType_ANY, true
+		case rpolMatchSetOptionsInvert:
+			return ocbinds.OpenconfigRoutingPolicy_MatchSetOptionsRestrictedType_INVERT, true
+		}
+	}
+	return ocbinds.OpenconfigRoutingPolicy_MatchSetOptionsRestrictedType_UNSET, false
+}
+
+// validateRpolMatchPfxSetOptions enforces the one match modifier a prefix-set
+// condition can carry. FRR matches a prefix-list with ANY semantics and
+// ROUTE_MAP has no field to record anything else, so ANY is accepted and
+// mapped to nothing, while INVERT is refused rather than silently ignored.
+func validateRpolMatchPfxSetOptions(inParams XfmrParams, reqInfo *rpolReqInfo) error {
+	opts := ocbinds.OpenconfigRoutingPolicy_MatchSetOptionsRestrictedType_UNSET
+	if reqInfo.targetLeaf == rpolMatchSetOptionsLeaf {
+		if v, ok := parseRpolMatchSetOptionsRestrictedFromParam(inParams.param); ok {
+			opts = v
+		}
+	}
+	if opts == ocbinds.OpenconfigRoutingPolicy_MatchSetOptionsRestrictedType_UNSET {
+		if cfgObj := getRpolPolicyStmtCondMatchPrefixSetCfgObj(inParams.ygRoot, reqInfo.policyName, reqInfo.stmtName, false); cfgObj != nil {
+			opts = cfgObj.MatchSetOptions
+		}
+	}
+	switch opts {
+	case ocbinds.OpenconfigRoutingPolicy_MatchSetOptionsRestrictedType_UNSET,
+		ocbinds.OpenconfigRoutingPolicy_MatchSetOptionsRestrictedType_ANY:
+		return nil
+	}
+	return tlerr.NotSupportedError{Format: "routing-policy match-prefix-set match-set-options supports only ANY"}
+}
+
 func rpolMatchActionToMatchSetOptions(v string) (ocbinds.E_OpenconfigRoutingPolicy_MatchSetOptionsType, bool) {
 	switch strings.ToUpper(strings.TrimSpace(v)) {
 	case rpolMatchActionAny:
@@ -1978,6 +2025,11 @@ func rpolYangToDbXfmr(inParams XfmrParams) (res map[string]map[string]db.Value, 
 		case rpolTargetStmtActionsCfg:
 			return makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, map[string]string{rpolRouteOperationFld: ""}), nil
 		case rpolTargetStmtCondMatchPfxCfg:
+			if reqInfo.targetLeaf == rpolMatchSetOptionsLeaf {
+				// Nothing is stored for the match modifier, so its removal
+				// must not take the prefix-set fields with it.
+				return res, nil
+			}
 			return makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, map[string]string{
 				rpolMatchPrefixSetFld:     "",
 				rpolMatchIpv6PrefixSetFld: "",
@@ -2214,10 +2266,17 @@ func rpolYangToDbXfmr(inParams XfmrParams) (res map[string]map[string]db.Value, 
 		}
 		return makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, map[string]string{rpolRouteOperationFld: routeOp}), nil
 	}
-	if reqInfo.targetPath == rpolTargetStmtCondMatchPfxCfg && (reqInfo.targetLeaf == "" || reqInfo.targetLeaf == rpolPrefixSetLeaf) {
+	if reqInfo.targetPath == rpolTargetStmtCondMatchPfxCfg && (reqInfo.targetLeaf == "" || reqInfo.targetLeaf == rpolPrefixSetLeaf || reqInfo.targetLeaf == rpolMatchSetOptionsLeaf) {
 		_, err := parseRpolStmtNameToUint16(reqInfo.stmtName)
 		if err != nil {
 			return res, err
+		}
+		if err := validateRpolMatchPfxSetOptions(inParams, reqInfo); err != nil {
+			return res, err
+		}
+		if reqInfo.targetLeaf == rpolMatchSetOptionsLeaf {
+			// Accepted above and mapped to no field, so there is nothing to write.
+			return res, nil
 		}
 		pfxSet, ok := parseRpolPrefixSetFromParam(inParams.param)
 		if !ok {
@@ -2718,12 +2777,23 @@ func rpolDbToYangXfmr(inParams XfmrParams) (err error) {
 		if cfgObj == nil {
 			return tlerr.InvalidArgsError{Format: "Unable to locate routing-policy statement conditions match-prefix-set config object in YANG tree"}
 		}
-		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == rpolPrefixSetLeaf {
-			if pfxSet, ok := entry.Field[rpolMatchPrefixSetFld]; ok && strings.TrimSpace(pfxSet) != "" {
+		matched := false
+		if pfxSet, ok := entry.Field[rpolMatchPrefixSetFld]; ok && strings.TrimSpace(pfxSet) != "" {
+			matched = true
+			if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == rpolPrefixSetLeaf {
 				cfgObj.PrefixSet = ygot.String(strings.TrimSpace(pfxSet))
-			} else if pfxSet6, ok := entry.Field[rpolMatchIpv6PrefixSetFld]; ok && strings.TrimSpace(pfxSet6) != "" {
+			}
+		} else if pfxSet6, ok := entry.Field[rpolMatchIpv6PrefixSetFld]; ok && strings.TrimSpace(pfxSet6) != "" {
+			matched = true
+			if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == rpolPrefixSetLeaf {
 				cfgObj.PrefixSet = ygot.String(strings.TrimSpace(pfxSet6))
 			}
+		}
+		if matched && (reqInfo.targetLeaf == "" || reqInfo.targetLeaf == rpolMatchSetOptionsLeaf) {
+			// The modifier is not stored because the match is always ANY, which
+			// is also the YANG default. Report it only once a prefix-set is
+			// actually configured, so the answer describes a real condition.
+			cfgObj.MatchSetOptions = ocbinds.OpenconfigRoutingPolicy_MatchSetOptionsRestrictedType_ANY
 		}
 		return nil
 	}
