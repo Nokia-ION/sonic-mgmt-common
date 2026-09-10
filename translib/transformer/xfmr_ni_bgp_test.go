@@ -2578,6 +2578,66 @@ func Test_openconfig_network_instance_bgp_container_hierarchical_set(t *testing.
 	unloadDB(db.ConfigDB, cleanupTbl)
 }
 
+// The levels above the neighbor's own annotated containers are served by the
+// BGP container level handler rather than by the neighbor transformer, and
+// that is a separate mapping which used to drop both of these buckets: a
+// payload naming them was accepted and written nowhere, and a read reported
+// them not at all. The peer-group timers beside them were always carried, so
+// this keeps the two in step.
+func Test_openconfig_network_instance_bgp_container_neighbor_timers_and_auth_password(t *testing.T) {
+	preReqMap := map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": map[string]interface{}{
+				"local_asn": "65100",
+			},
+		},
+		"BGP_NEIGHBOR": map[string]interface{}{
+			"default|20.0.0.1": map[string]interface{}{
+				"asn": "65200",
+			},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"BGP_NEIGHBOR": map[string]interface{}{"default|20.0.0.1": ""},
+		"BGP_GLOBALS":  map[string]interface{}{"default": ""},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	urlInputBodyJSON := `{` +
+		`"neighbors":{"neighbor":[{"neighbor-address":"20.0.0.1",` +
+		`"config":{"neighbor-address":"20.0.0.1","auth-password":"Sonic123"},` +
+		`"timers":{"config":{"connect-retry":"43","hold-time":"99","keepalive-interval":"33"}}}]}}`
+	t.Run("PATCH network-instance BGP container with neighbor timers and auth-password",
+		processSetRequest(niBgpProtoUrl+"/bgp", urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"BGP_NEIGHBOR": map[string]interface{}{
+			"default|20.0.0.1": map[string]interface{}{
+				"asn":           "65200",
+				"auth_password": "Sonic123",
+				"conn_retry":    "43",
+				"holdtime":      "99",
+				"keepalive":     "33",
+			},
+		},
+	}
+	t.Run("Verify BGP_NEIGHBOR timers and auth_password from container payload",
+		verifyDbResult(rclient, "BGP_NEIGHBOR|default|20.0.0.1", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	// The timers container sits above the annotated config container, so this
+	// read is served by the same handler the write above went through.
+	url := niBgpProtoUrl + "/bgp/neighbors/neighbor[neighbor-address=20.0.0.1]/timers"
+	expectedGetJSON := "{\"openconfig-network-instance:timers\":{\"config\":{\"connect-retry\":43,\"hold-time\":99,\"keepalive-interval\":33}}}"
+	t.Run("GET network-instance BGP neighbor timers container",
+		processGetRequest(url, nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
 func Test_openconfig_network_instance_bgp_container_get(t *testing.T) {
 	preReqMap := map[string]interface{}{
 		"BGP_GLOBALS": map[string]interface{}{
