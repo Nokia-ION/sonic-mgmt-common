@@ -239,6 +239,7 @@ func init() {
 	XlateFuncBind("DbToYang_lldp_interfaces_xfmr", DbToYang_lldp_interfaces_xfmr)
 	XlateFuncBind("YangToDb_lldp_interfaces_xfmr", YangToDb_lldp_interfaces_xfmr)
 	XlateFuncBind("Subscribe_lldp_interfaces_xfmr", Subscribe_lldp_interfaces_xfmr)
+	XlateFuncBind("DbToYangPath_lldp_interfaces_path_xfmr", DbToYangPath_lldp_interfaces_path_xfmr)
 
 	XlateFuncBind("DbToYang_lldp_system_name_fld_xfmr", DbToYang_lldp_system_name_fld_xfmr)
 	XlateFuncBind("DbToYang_lldp_system_description_fld_xfmr", DbToYang_lldp_system_description_fld_xfmr)
@@ -252,6 +253,7 @@ func init() {
 	XlateFuncBind("DbToYang_lldp_custom_tlvs_xfmr", DbToYang_lldp_custom_tlvs_xfmr)
 	XlateFuncBind("YangToDb_lldp_custom_tlvs_xfmr", YangToDb_lldp_custom_tlvs_xfmr)
 	XlateFuncBind("Subscribe_lldp_custom_tlvs_xfmr", Subscribe_lldp_custom_tlvs_xfmr)
+	XlateFuncBind("DbToYangPath_lldp_custom_tlvs_path_xfmr", DbToYangPath_lldp_custom_tlvs_path_xfmr)
 }
 
 func getLldpRoot(s *ygot.GoStruct) *ocbinds.OpenconfigLldp_Lldp {
@@ -1394,6 +1396,20 @@ var Subscribe_lldp_custom_tlvs_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSub
 	return result, nil
 }
 
+// DbToYangPath_lldp_custom_tlvs_path_xfmr fills custom-tlv list keys for
+// subscribe. LLDP_CUSTOM_TLV is keyed by the YANG tlv name, so tlv[name=*]
+// maps directly from the Redis key.
+var DbToYangPath_lldp_custom_tlvs_path_xfmr PathXfmrDbToYangFunc = func(params XfmrDbToYgPathParams) error {
+	if params.tblName != LLDP_CUSTOM_TLV_TABLE {
+		return fmt.Errorf("unsupported table %s for lldp custom-tlvs path xfmr", params.tblName)
+	}
+	if len(params.tblKeyComp) == 0 || params.tblKeyComp[0] == "" {
+		return fmt.Errorf("missing DB key for table %s", params.tblName)
+	}
+	params.ygPathKeys[LLDP_CUSTOM_TLV+"/name"] = params.tblKeyComp[0]
+	return nil
+}
+
 // --- Interfaces transformer ---
 
 var YangToDb_lldp_interfaces_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (map[string]map[string]db.Value, error) {
@@ -1529,6 +1545,30 @@ var Subscribe_lldp_interfaces_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSubs
 	}
 
 	return result, nil
+}
+
+// DbToYangPath_lldp_interfaces_path_xfmr fills interface/name and neighbor/id
+// for subscribe wildcard resolution. LLDP_ENTRY_TABLE, LLDP_PORT, and
+// LLDP_STATISTICS are all keyed by ifname. Neighbor list key follows the
+// existing GET convention (ifname, not lldp_rem_index). Nested neighbor
+// lists (capability, mgmt-address, custom-tlv) are not in the Redis key
+// and cannot be resolved here.
+var DbToYangPath_lldp_interfaces_path_xfmr PathXfmrDbToYangFunc = func(params XfmrDbToYgPathParams) error {
+	switch params.tblName {
+	case LLDP_ENTRY_TABLE, LLDP_PORT_TABLE, LLDP_STATISTICS_TABLE:
+	default:
+		return fmt.Errorf("unsupported table %s for lldp interfaces path xfmr", params.tblName)
+	}
+	if len(params.tblKeyComp) == 0 || params.tblKeyComp[0] == "" {
+		return fmt.Errorf("missing DB key for table %s", params.tblName)
+	}
+	ifName := params.tblKeyComp[0]
+	if ifName == LLDP_STATISTICS_GLOBAL_KEY {
+		return fmt.Errorf("invalid interface key %q", ifName)
+	}
+	params.ygPathKeys[LLDP_INTERFACE+"/name"] = ifName
+	params.ygPathKeys[LLDP_INTERFACE+"/neighbors/neighbor/id"] = ifName
+	return nil
 }
 
 func collectLldpInterfaceNames(appDb, cfgDb, countersDb *db.DB, ifName string) []string {

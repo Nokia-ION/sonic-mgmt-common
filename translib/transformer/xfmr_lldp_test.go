@@ -519,3 +519,83 @@ func Test_fillGlobalConfigLeaves_management_interface(t *testing.T) {
 		t.Fatalf("management-interface: %#v", cfg.ManagementInterface)
 	}
 }
+
+func TestDbToYangPath_lldp_interfaces_path_xfmr(t *testing.T) {
+	wantName := LLDP_INTERFACE + "/name"
+	wantNeigh := LLDP_INTERFACE + "/neighbors/neighbor/id"
+
+	for _, tbl := range []string{LLDP_ENTRY_TABLE, LLDP_PORT_TABLE, LLDP_STATISTICS_TABLE} {
+		t.Run(tbl, func(t *testing.T) {
+			params := XfmrDbToYgPathParams{
+				tblName:    tbl,
+				tblKeyComp: []string{"Ethernet2"},
+				ygPathKeys: map[string]string{},
+			}
+			if err := DbToYangPath_lldp_interfaces_path_xfmr(params); err != nil {
+				t.Fatalf("path xfmr failed: %v", err)
+			}
+			if params.ygPathKeys[wantName] != "Ethernet2" {
+				t.Fatalf("name: got %q", params.ygPathKeys[wantName])
+			}
+			if params.ygPathKeys[wantNeigh] != "Ethernet2" {
+				t.Fatalf("neighbor id: got %q", params.ygPathKeys[wantNeigh])
+			}
+		})
+	}
+
+	t.Run("missing key", func(t *testing.T) {
+		params := XfmrDbToYgPathParams{tblName: LLDP_ENTRY_TABLE, ygPathKeys: map[string]string{}}
+		if err := DbToYangPath_lldp_interfaces_path_xfmr(params); err == nil {
+			t.Fatal("expected error for missing key")
+		}
+	})
+	t.Run("global statistics key", func(t *testing.T) {
+		params := XfmrDbToYgPathParams{
+			tblName:    LLDP_STATISTICS_TABLE,
+			tblKeyComp: []string{LLDP_STATISTICS_GLOBAL_KEY},
+			ygPathKeys: map[string]string{},
+		}
+		if err := DbToYangPath_lldp_interfaces_path_xfmr(params); err == nil {
+			t.Fatal("expected error for GLOBAL statistics key")
+		}
+	})
+	t.Run("wrong table", func(t *testing.T) {
+		params := XfmrDbToYgPathParams{
+			tblName:    LLDP_CFG_TABLE,
+			tblKeyComp: []string{"GLOBAL"},
+			ygPathKeys: map[string]string{},
+		}
+		if err := DbToYangPath_lldp_interfaces_path_xfmr(params); err == nil {
+			t.Fatal("expected error for unsupported table")
+		}
+	})
+}
+
+func TestDbToYangPath_lldp_custom_tlvs_path_xfmr(t *testing.T) {
+	params := XfmrDbToYgPathParams{
+		tblName:    LLDP_CUSTOM_TLV_TABLE,
+		tblKeyComp: []string{"vendor-serial"},
+		ygPathKeys: map[string]string{},
+	}
+	if err := DbToYangPath_lldp_custom_tlvs_path_xfmr(params); err != nil {
+		t.Fatalf("path xfmr failed: %v", err)
+	}
+	want := LLDP_CUSTOM_TLV + "/name"
+	if params.ygPathKeys[want] != "vendor-serial" {
+		t.Fatalf("got %q, want vendor-serial", params.ygPathKeys[want])
+	}
+
+	if err := DbToYangPath_lldp_custom_tlvs_path_xfmr(XfmrDbToYgPathParams{
+		tblName:    LLDP_ENTRY_TABLE,
+		tblKeyComp: []string{"Ethernet0"},
+		ygPathKeys: map[string]string{},
+	}); err == nil {
+		t.Fatal("expected error for unsupported table")
+	}
+	if err := DbToYangPath_lldp_custom_tlvs_path_xfmr(XfmrDbToYgPathParams{
+		tblName:    LLDP_CUSTOM_TLV_TABLE,
+		ygPathKeys: map[string]string{},
+	}); err == nil {
+		t.Fatal("expected error for missing key")
+	}
+}
