@@ -2129,6 +2129,87 @@ func Test_openconfig_network_instance_table_connections_table_connection_config_
 	unloadDB(db.ConfigDB, cleanupTbl)
 }
 
+// The state container has no datastore of its own: it reports the same
+// ROUTE_REDISTRIBUTE row the config container writes, and refuses writes.
+func Test_openconfig_network_instance_table_connections_table_connection_state(t *testing.T) {
+	var url string
+
+	preReqMap := map[string]interface{}{
+		"ROUTE_MAP_SET": map[string]interface{}{
+			"RM-REDIST-1": map[string]interface{}{},
+		},
+		"ROUTE_REDISTRIBUTE": map[string]interface{}{
+			"default|static|bgp|ipv4": map[string]interface{}{
+				"route_map": "RM-REDIST-1",
+			},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"ROUTE_REDISTRIBUTE": map[string]interface{}{
+			"default|static|bgp|ipv4": "",
+		},
+		"ROUTE_MAP_SET": map[string]interface{}{
+			"RM-REDIST-1": "",
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	url = "/openconfig-network-instance:network-instances/network-instance[name=default]/table-connections/table-connection[src-protocol=STATIC][dst-protocol=BGP][address-family=IPV4]/state"
+	expectedGetJSON := `{"openconfig-network-instance:state":{"address-family":"openconfig-types:IPV4",` +
+		`"dst-protocol":"openconfig-policy-types:BGP","import-policy":["RM-REDIST-1"],` +
+		`"src-protocol":"openconfig-policy-types:STATIC"}}`
+	t.Run("GET network-instance table-connection state container",
+		processGetRequest(url, nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET network-instance table-connection state import-policy",
+		processGetRequest(url+"/import-policy", nil,
+			`{"openconfig-network-instance:import-policy":["RM-REDIST-1"]}`, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET network-instance table-connection state src-protocol",
+		processGetRequest(url+"/src-protocol", nil,
+			`{"openconfig-network-instance:src-protocol":"openconfig-policy-types:STATIC"}`, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET network-instance table-connection state dst-protocol",
+		processGetRequest(url+"/dst-protocol", nil,
+			`{"openconfig-network-instance:dst-protocol":"openconfig-policy-types:BGP"}`, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET network-instance table-connection state address-family",
+		processGetRequest(url+"/address-family", nil,
+			`{"openconfig-network-instance:address-family":"openconfig-types:IPV4"}`, false))
+	time.Sleep(1 * time.Second)
+
+	// A write aimed at state must be refused rather than land on config.
+	expectedErr := tlerr.NotSupportedError{
+		Format: "table-connection state is read-only; write to the config container instead",
+	}
+	t.Run("PATCH network-instance table-connection state rejected",
+		processSetRequest(url+"/import-policy", "{\"openconfig-network-instance:import-policy\":[\"RM-REDIST-1\"]}", "PATCH", true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	t.Run("DELETE network-instance table-connection state rejected",
+		processDeleteRequest(url, true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	// The refused writes must leave the row that backs the state read alone.
+	expectedMap := map[string]interface{}{
+		"ROUTE_REDISTRIBUTE": map[string]interface{}{
+			"default|static|bgp|ipv4": map[string]interface{}{
+				"route_map": "RM-REDIST-1",
+			},
+		},
+	}
+	t.Run("Verify ROUTE_REDISTRIBUTE unchanged after refused state writes",
+		verifyDbResult(rclient, "ROUTE_REDISTRIBUTE|default|static|bgp|ipv4", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
 const niTableConnUrl = "/openconfig-network-instance:network-instances/network-instance[name=default]/table-connections"
 
 // A table-connection with a route-map and one without, both created by a single
@@ -2187,13 +2268,19 @@ func Test_openconfig_network_instance_table_connections_container_hierarchical_s
 		verifyDbResult(rclient, "ROUTE_REDISTRIBUTE|default|connected|bgp|ipv6", expectedMap, false))
 	time.Sleep(1 * time.Second)
 
+	// The state container reports the same row back, so it accompanies config
+	// wherever a request reaches the list instance or above.
 	v4EntryJSON := `{"address-family":"openconfig-types:IPV4","config":{"address-family":"openconfig-types:IPV4",` +
 		`"dst-protocol":"openconfig-policy-types:BGP","import-policy":["RM-REDIST-1"],` +
 		`"src-protocol":"openconfig-policy-types:STATIC"},"dst-protocol":"openconfig-policy-types:BGP",` +
-		`"src-protocol":"openconfig-policy-types:STATIC"}`
+		`"src-protocol":"openconfig-policy-types:STATIC",` +
+		`"state":{"address-family":"openconfig-types:IPV4","dst-protocol":"openconfig-policy-types:BGP",` +
+		`"import-policy":["RM-REDIST-1"],"src-protocol":"openconfig-policy-types:STATIC"}}`
 	v6EntryJSON := `{"address-family":"openconfig-types:IPV6","config":{"address-family":"openconfig-types:IPV6",` +
 		`"dst-protocol":"openconfig-policy-types:BGP","src-protocol":"openconfig-policy-types:DIRECTLY_CONNECTED"},` +
-		`"dst-protocol":"openconfig-policy-types:BGP","src-protocol":"openconfig-policy-types:DIRECTLY_CONNECTED"}`
+		`"dst-protocol":"openconfig-policy-types:BGP","src-protocol":"openconfig-policy-types:DIRECTLY_CONNECTED",` +
+		`"state":{"address-family":"openconfig-types:IPV6","dst-protocol":"openconfig-policy-types:BGP",` +
+		`"src-protocol":"openconfig-policy-types:DIRECTLY_CONNECTED"}}`
 
 	expectedGetJSON := `{"openconfig-network-instance:table-connections":{"table-connection":[` +
 		v4EntryJSON + `,` + v6EntryJSON + `]}}`
@@ -2263,7 +2350,9 @@ func Test_openconfig_network_instance_table_connection_list_instance(t *testing.
 	entryJSON := `{"address-family":"openconfig-types:IPV4","config":{"address-family":"openconfig-types:IPV4",` +
 		`"dst-protocol":"openconfig-policy-types:BGP","import-policy":["RM-REDIST-1"],` +
 		`"src-protocol":"openconfig-policy-types:STATIC"},"dst-protocol":"openconfig-policy-types:BGP",` +
-		`"src-protocol":"openconfig-policy-types:STATIC"}`
+		`"src-protocol":"openconfig-policy-types:STATIC",` +
+		`"state":{"address-family":"openconfig-types:IPV4","dst-protocol":"openconfig-policy-types:BGP",` +
+		`"import-policy":["RM-REDIST-1"],"src-protocol":"openconfig-policy-types:STATIC"}}`
 	expectedGetJSON := `{"openconfig-network-instance:table-connection":[` + entryJSON + `]}`
 	t.Run("GET network-instance table-connection list instance",
 		processGetRequest(instUrl, nil, expectedGetJSON, false))
@@ -2322,7 +2411,9 @@ func Test_openconfig_network_instance_table_connection_list_instance(t *testing.
 
 	entryJSON = `{"address-family":"openconfig-types:IPV4","config":{"address-family":"openconfig-types:IPV4",` +
 		`"dst-protocol":"openconfig-policy-types:BGP","src-protocol":"openconfig-policy-types:STATIC"},` +
-		`"dst-protocol":"openconfig-policy-types:BGP","src-protocol":"openconfig-policy-types:STATIC"}`
+		`"dst-protocol":"openconfig-policy-types:BGP","src-protocol":"openconfig-policy-types:STATIC",` +
+		`"state":{"address-family":"openconfig-types:IPV4","dst-protocol":"openconfig-policy-types:BGP",` +
+		`"src-protocol":"openconfig-policy-types:STATIC"}}`
 	expectedGetJSON = `{"openconfig-network-instance:table-connection":[` + entryJSON + `]}`
 	t.Run("GET network-instance table-connection list instance without import-policy",
 		processGetRequest(instUrl, nil, expectedGetJSON, false))
