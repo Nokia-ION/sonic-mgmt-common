@@ -307,6 +307,7 @@ var niBgpMappedPayloadLeaves = map[string]bool{
 	"neighbors/neighbor/config/peer-as":                                                       true,
 	"neighbors/neighbor/config/peer-group":                                                    true,
 	"neighbors/neighbor/config/send-community":                                                true,
+	"neighbors/neighbor/config/auth-password":                                                 true,
 	"neighbors/neighbor/timers/config/connect-retry":                                          true,
 	"neighbors/neighbor/timers/config/hold-time":                                              true,
 	"neighbors/neighbor/timers/config/keepalive-interval":                                     true,
