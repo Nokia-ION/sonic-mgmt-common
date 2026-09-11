@@ -1214,3 +1214,258 @@ func Test_openconfig_routing_policy_defined_sets_bgp_defined_sets_ext_community_
 
 	unloadDB(db.ConfigDB, cleanupTbl)
 }
+
+func Test_openconfig_routing_policy_defined_sets_prefix_set_config(t *testing.T) {
+	var url, urlInputBodyJSON string
+
+	preReqMap := map[string]interface{}{}
+	cleanupTbl := map[string]interface{}{
+		"PREFIX_SET": map[string]interface{}{
+			"PS1": "",
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	// Naming a set is enough to create it, and the mode CONFIG_DB defaults to
+	// is seeded because frrcfgd drops a prefix-set that carries none.
+	url = "/openconfig-routing-policy:routing-policy/defined-sets/prefix-sets/prefix-set[name=PS1]/config/name"
+	urlInputBodyJSON = "{\"openconfig-routing-policy:name\":\"PS1\"}"
+	t.Run("PATCH routing-policy prefix-set config name", processSetRequest(url, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"PREFIX_SET": map[string]interface{}{
+			"PS1": map[string]interface{}{
+				"mode": "IPv4",
+			},
+		},
+	}
+	t.Run("Verify PREFIX_SET row seeded with the default mode", verifyDbResult(rclient, "PREFIX_SET|PS1", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET routing-policy prefix-set config name",
+		processGetRequest(url, nil, "{\"openconfig-routing-policy:name\":\"PS1\"}", false))
+	time.Sleep(1 * time.Second)
+
+	expectedErr := tlerr.InvalidArgsError{
+		Format: "prefix-set name payload (PS2) does not match key (PS1)",
+	}
+	urlInputBodyJSON = "{\"openconfig-routing-policy:name\":\"PS2\"}"
+	t.Run("PATCH prefix-set name mismatch rejected", processSetRequest(url, urlInputBodyJSON, "PATCH", true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	url = "/openconfig-routing-policy:routing-policy/defined-sets/prefix-sets/prefix-set[name=PS1]/config/mode"
+	urlInputBodyJSON = "{\"openconfig-routing-policy:mode\":\"IPV6\"}"
+	t.Run("PATCH routing-policy prefix-set config mode", processSetRequest(url, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"PREFIX_SET": map[string]interface{}{
+			"PS1": map[string]interface{}{
+				"mode": "IPv6",
+			},
+		},
+	}
+	t.Run("Verify PREFIX_SET mode", verifyDbResult(rclient, "PREFIX_SET|PS1", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET routing-policy prefix-set config mode",
+		processGetRequest(url, nil, "{\"openconfig-routing-policy:mode\":\"IPV6\"}", false))
+	time.Sleep(1 * time.Second)
+
+	// PREFIX_SET holds one address family per set and FRR keeps its
+	// prefix-lists the same way, so MIXED is refused rather than resolved to
+	// one of them.
+	unsupportedErr := tlerr.NotSupportedError{
+		Format: "routing-policy prefix-set mode MIXED has no CONFIG_DB mapping; configure one prefix-set per address family",
+	}
+	urlInputBodyJSON = "{\"openconfig-routing-policy:mode\":\"MIXED\"}"
+	t.Run("PATCH prefix-set config mode MIXED rejected", processSetRequest(url, urlInputBodyJSON, "PATCH", true, unsupportedErr))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify refused MIXED left PREFIX_SET unchanged", verifyDbResult(rclient, "PREFIX_SET|PS1", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	// A prefix-set always has an address family, so the mode leaf has no state
+	// to be deleted back to.
+	unsupportedErr = tlerr.NotSupportedError{
+		Format: "DELETE is not supported for prefix-set config mode; a prefix-set always has an address family, so delete the prefix-set instead",
+	}
+	t.Run("DELETE prefix-set config mode rejected", processDeleteRequest(url, true, unsupportedErr))
+	time.Sleep(1 * time.Second)
+
+	url = "/openconfig-routing-policy:routing-policy/defined-sets/prefix-sets/prefix-set[name=PS1]/config"
+	urlInputBodyJSON = "{\"name\":\"PS1\",\"mode\":\"IPV4\"}"
+	t.Run("PATCH routing-policy prefix-set config container", processSetRequest(url, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"PREFIX_SET": map[string]interface{}{
+			"PS1": map[string]interface{}{
+				"mode": "IPv4",
+			},
+		},
+	}
+	t.Run("Verify PREFIX_SET row from config container", verifyDbResult(rclient, "PREFIX_SET|PS1", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET routing-policy prefix-set config container",
+		processGetRequest(url, nil, "{\"openconfig-routing-policy:config\":{\"mode\":\"IPV4\",\"name\":\"PS1\"}}", false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET routing-policy prefix-set name key leaf",
+		processGetRequest("/openconfig-routing-policy:routing-policy/defined-sets/prefix-sets/prefix-set[name=PS1]/name",
+			nil, "{\"openconfig-routing-policy:name\":\"PS1\"}", false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("DELETE routing-policy prefix-set config container", processDeleteRequest(url, false))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"PREFIX_SET": map[string]interface{}{
+			"PS1": map[string]interface{}{},
+		},
+	}
+	t.Run("Verify PREFIX_SET row deleted", verifyDbResult(rclient, "PREFIX_SET|PS1", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_routing_policy_defined_sets_prefix_set_prefix_config(t *testing.T) {
+	var url, urlInputBodyJSON string
+
+	preReqMap := map[string]interface{}{
+		"PREFIX_SET": map[string]interface{}{
+			"PS1": map[string]interface{}{
+				"mode": "IPv4",
+			},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"PREFIX": map[string]interface{}{
+			"PS1|5|10.1.0.0/16|exact":   "",
+			"PS1|10|10.2.0.0/16|17..24": "",
+		},
+		"PREFIX_SET": map[string]interface{}{
+			"PS1": "",
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	// OpenConfig keys a prefix by ip-prefix and masklength-range and has no
+	// sequence-number leaf, so the sequence is allocated here, from 5 upwards
+	// in steps of 5 the way FRR numbers entries it is given without one. Every
+	// row is a permit because a prefix-set is purely a match set in
+	// OpenConfig, and frrcfgd ignores a row that carries no action at all.
+	url = "/openconfig-routing-policy:routing-policy/defined-sets/prefix-sets/prefix-set[name=PS1]" +
+		"/prefixes/prefix[ip-prefix=10.1.0.0/16][masklength-range=exact]/config"
+	urlInputBodyJSON = "{\"ip-prefix\":\"10.1.0.0/16\",\"masklength-range\":\"exact\"}"
+	t.Run("PATCH routing-policy prefix config container", processSetRequest(url, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"PREFIX": map[string]interface{}{
+			"PS1|5|10.1.0.0/16|exact": map[string]interface{}{
+				"action": "permit",
+			},
+		},
+	}
+	t.Run("Verify PREFIX row at the first allocated sequence",
+		verifyDbResult(rclient, "PREFIX|PS1|5|10.1.0.0/16|exact", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET routing-policy prefix config container",
+		processGetRequest(url, nil,
+			"{\"openconfig-routing-policy:config\":{\"ip-prefix\":\"10.1.0.0/16\",\"masklength-range\":\"exact\"}}", false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET routing-policy prefix config ip-prefix",
+		processGetRequest(url+"/ip-prefix", nil, "{\"openconfig-routing-policy:ip-prefix\":\"10.1.0.0/16\"}", false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET routing-policy prefix config masklength-range",
+		processGetRequest(url+"/masklength-range", nil, "{\"openconfig-routing-policy:masklength-range\":\"exact\"}", false))
+	time.Sleep(1 * time.Second)
+
+	// Rewriting the same entry updates its row rather than adding a second
+	// copy of the prefix at a fresh sequence number.
+	t.Run("PATCH routing-policy prefix config container again", processSetRequest(url, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify rewriting the entry kept its sequence",
+		verifyDbResult(rclient, "PREFIX|PS1|5|10.1.0.0/16|exact", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	// A second entry takes the next step, and a range renders as "ge N le M".
+	url = "/openconfig-routing-policy:routing-policy/defined-sets/prefix-sets/prefix-set[name=PS1]" +
+		"/prefixes/prefix[ip-prefix=10.2.0.0/16][masklength-range=17..24]/config/ip-prefix"
+	urlInputBodyJSON = "{\"openconfig-routing-policy:ip-prefix\":\"10.2.0.0/16\"}"
+	t.Run("PATCH routing-policy prefix config ip-prefix", processSetRequest(url, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"PREFIX": map[string]interface{}{
+			"PS1|10|10.2.0.0/16|17..24": map[string]interface{}{
+				"action": "permit",
+			},
+		},
+	}
+	t.Run("Verify PREFIX row at the next allocated sequence",
+		verifyDbResult(rclient, "PREFIX|PS1|10|10.2.0.0/16|17..24", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	// A range that does not widen the prefix it qualifies is refused, since
+	// FRR would not accept the "ge" it renders to.
+	badUrl := "/openconfig-routing-policy:routing-policy/defined-sets/prefix-sets/prefix-set[name=PS1]" +
+		"/prefixes/prefix[ip-prefix=10.3.0.0/16][masklength-range=8..24]/config"
+	expectedErr := tlerr.InvalidArgsError{
+		Format: "routing-policy prefix masklength-range 8..24 must satisfy 16 <= N <= M <= 32 for prefix 10.3.0.0/16",
+	}
+	urlInputBodyJSON = "{\"ip-prefix\":\"10.3.0.0/16\",\"masklength-range\":\"8..24\"}"
+	t.Run("PATCH prefix with a range below the prefix length rejected",
+		processSetRequest(badUrl, urlInputBodyJSON, "PATCH", true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	// A prefix of the wrong family for the set it is going into is refused
+	// rather than stored where FRR would never render it.
+	badUrl = "/openconfig-routing-policy:routing-policy/defined-sets/prefix-sets/prefix-set[name=PS1]" +
+		"/prefixes/prefix[ip-prefix=2001:db8::/32][masklength-range=exact]/config"
+	expectedErr = tlerr.InvalidArgsError{
+		Format: "routing-policy prefix 2001:db8::/32 is IPv6 but prefix-set PS1 has mode IPv4",
+	}
+	urlInputBodyJSON = "{\"ip-prefix\":\"2001:db8::/32\",\"masklength-range\":\"exact\"}"
+	t.Run("PATCH IPv6 prefix into an IPv4 prefix-set rejected",
+		processSetRequest(badUrl, urlInputBodyJSON, "PATCH", true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	// A prefix carrying host bits would make a GET report a different list key
+	// than the SET used, so it is refused instead of being masked silently.
+	badUrl = "/openconfig-routing-policy:routing-policy/defined-sets/prefix-sets/prefix-set[name=PS1]" +
+		"/prefixes/prefix[ip-prefix=10.4.1.1/16][masklength-range=exact]/config"
+	expectedErr = tlerr.InvalidArgsError{
+		Format: "routing-policy prefix ip-prefix 10.4.1.1/16 carries host bits; use its canonical form 10.4.0.0/16",
+	}
+	urlInputBodyJSON = "{\"ip-prefix\":\"10.4.1.1/16\",\"masklength-range\":\"exact\"}"
+	t.Run("PATCH non-canonical prefix rejected", processSetRequest(badUrl, urlInputBodyJSON, "PATCH", true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	// ip-prefix is a list key, so removing it removes the entry it identifies
+	// rather than clearing a field of it.
+	url = "/openconfig-routing-policy:routing-policy/defined-sets/prefix-sets/prefix-set[name=PS1]" +
+		"/prefixes/prefix[ip-prefix=10.2.0.0/16][masklength-range=17..24]/ip-prefix"
+	t.Run("DELETE routing-policy prefix ip-prefix key leaf", processDeleteRequest(url, false))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"PREFIX": map[string]interface{}{
+			"PS1|10|10.2.0.0/16|17..24": map[string]interface{}{},
+		},
+	}
+	t.Run("Verify PREFIX row removed", verifyDbResult(rclient, "PREFIX|PS1|10|10.2.0.0/16|17..24", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
