@@ -697,6 +697,77 @@ func TestValidateEditConfig_Delete_StpMstTeardown_WithLinkType_Positive(t *testi
 	verifyValidateEditConfig(t, cfgData, Success)
 }
 
+// A CONFIG_DB PREFIX row carries its sequence number in the key, and the
+// sequence_number key leaf has a must keeping it unique within the prefix
+// list. Deleting such a row used to trip that must: CVL validates while the
+// row is still in Redis, so count() over the list saw it twice, once from the
+// request and once from the db. A row going away cannot break a constraint on
+// its own key, so the must is skipped for the delete.
+func TestValidateEditConfig_Delete_KeyLeaf_Must_Skipped_Positive(t *testing.T) {
+	setupTestData(t, map[string]interface{}{
+		"PREFIX_SET": map[string]interface{}{
+			"PSET1": map[string]interface{}{
+				"mode": "IPv4",
+			},
+		},
+		"PREFIX": map[string]interface{}{
+			"PSET1|5|10.11.0.0/16|exact": map[string]interface{}{
+				"action": "permit",
+			},
+			"PSET1|10|10.12.0.0/16|17..24": map[string]interface{}{
+				"action": "permit",
+			},
+		},
+	})
+
+	cfgData := []cmn.CVLEditConfigData{
+		{
+			VType: cmn.VALIDATE_ALL,
+			VOp:   cmn.OP_DELETE,
+			Key:   "PREFIX|PSET1|10|10.12.0.0/16|17..24",
+			Data:  map[string]string{},
+		},
+	}
+
+	verifyValidateEditConfig(t, cfgData, Success)
+}
+
+// The same must is still enforced where it means something: a new entry may
+// not reuse a sequence number already taken in that prefix list.
+func TestValidateEditConfig_Create_KeyLeaf_Must_Enforced_Negative(t *testing.T) {
+	setupTestData(t, map[string]interface{}{
+		"PREFIX_SET": map[string]interface{}{
+			"PSET1": map[string]interface{}{
+				"mode": "IPv4",
+			},
+		},
+		"PREFIX": map[string]interface{}{
+			"PSET1|5|10.11.0.0/16|exact": map[string]interface{}{
+				"action": "permit",
+			},
+		},
+	})
+
+	cfgData := []cmn.CVLEditConfigData{
+		{
+			VType: cmn.VALIDATE_ALL,
+			VOp:   cmn.OP_CREATE,
+			Key:   "PREFIX|PSET1|5|10.13.0.0/16|exact",
+			Data:  map[string]string{"action": "permit"},
+		},
+	}
+
+	verifyValidateEditConfig(t, cfgData, CVLErrorInfo{
+		ErrCode:          CVL_SEMANTIC_ERROR,
+		TableName:        "PREFIX",
+		Keys:             []string{"PSET1", "5", "10.13.0.0/16", "exact"},
+		Field:            "sequence_number",
+		Value:            "5",
+		Msg:              mustExpressionErrMessage,
+		ConstraintErrMsg: "sequence_number required to be unique for each prefix-list",
+	})
+}
+
 func TestValidateEditConfig_Syslog_TlsOff_ReplaceOp(t *testing.T) {
 	setupTestData(t, map[string]interface{}{
 		"SYSLOG_SERVER": map[string]interface{}{

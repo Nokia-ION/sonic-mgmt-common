@@ -111,6 +111,40 @@ func skipMustOnStpMstTeardownDelete(yangListName string, cfgData *cmn.CVLEditCon
 	}
 }
 
+// skipMustOnKeyLeafDelete skips a must expression attached to a key leaf when
+// the whole row is being deleted. A row going away cannot break a constraint
+// on its own key, but CVL validates while the row is still in Redis, so an
+// aggregate such as count() over the list sees it twice, once from the request
+// tree and once from the db, and a perfectly valid row trips its own
+// constraint. This is what refuses every delete of a CONFIG_DB PREFIX row,
+// whose sequence_number key leaf carries a uniqueness must.
+//
+// Expressions that test /cmn:operation are left alone. Their author already
+// decided which operations they apply to, and some exist only to police a
+// delete, such as the ACL_RULE aclname check that refuses to remove a rule
+// while ports are still bound to it.
+func skipMustOnKeyLeafDelete(tableName, nodeName string, mustExp *mustInfo,
+	cfgData *cmn.CVLEditConfigData) bool {
+
+	if cfgData == nil || cfgData.VOp != cmn.OP_DELETE || len(cfgData.Data) > 0 {
+		return false
+	}
+	if mustExp == nil || strings.Contains(mustExp.expr, ":operation") {
+		return false
+	}
+	tInfo, ok := modelInfo.tableInfo[tableName]
+	if !ok {
+		return false
+	}
+	for _, keyName := range tInfo.keys {
+		if keyName == nodeName {
+			return true
+		}
+	}
+
+	return false
+}
+
 // skipStpPvstOnlyDefault skips schema default injection for STP leaves that
 // apply only in PVST mode. This avoids CVL injecting rootguard_timeout when
 // STP is enabled in MST/RSTP mode.
@@ -1086,7 +1120,8 @@ func compileLeafRefPath() {
 
 // Validate must expression
 func (c *CVL) validateMustExp(node *xmlquery.Node,
-	tableName, key string, op cmn.CVLOperation) (r CVLErrorInfo) {
+	tableName, key string, op cmn.CVLOperation,
+	cfgData *cmn.CVLEditConfigData) (r CVLErrorInfo) {
 	defer func() {
 		ret := &r
 		CVL_LOG(INFO_API, "validateMustExp(): table name = %s, "+
@@ -1119,6 +1154,12 @@ func (c *CVL) validateMustExp(node *xmlquery.Node,
 	//Find the node where must expression is attached
 	for nodeName, mustExpArr := range modelInfo.tableInfo[tableName].mustExpr {
 		for _, mustExp := range mustExpArr {
+			if skipMustOnKeyLeafDelete(tableName, nodeName, mustExp, cfgData) {
+				CVL_LOG(INFO_DEBUG, "Skip must \"%s\" on key leaf %s for "+
+					"delete of %s %s", mustExp.expr, nodeName, tableName, key)
+				continue
+			}
+
 			ctxNode := node
 			if ctxNode.Data != nodeName { //must expression at list level
 				ctxNode = ctxNode.FirstChild
@@ -1764,7 +1805,7 @@ func (c *CVL) validateSemantics(node *xmlquery.Node,
 	}
 
 	if !skipMustOnStpMstTeardownDelete(yangListName, cfgData) {
-		if errObj := c.validateMustExp(node, yangListName, key, cfgData.VOp); errObj.ErrCode != CVL_SUCCESS {
+		if errObj := c.validateMustExp(node, yangListName, key, cfgData.VOp, cfgData); errObj.ErrCode != CVL_SUCCESS {
 			return errObj
 		}
 	}
