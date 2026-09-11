@@ -1561,3 +1561,66 @@ func Test_openconfig_routing_policy_defined_sets_prefix_sets_container_level(t *
 
 	unloadDB(db.ConfigDB, cleanupTbl)
 }
+
+func Test_openconfig_routing_policy_match_prefix_set_unknown_set(t *testing.T) {
+	var url, urlInputBodyJSON string
+
+	preReqMap := map[string]interface{}{
+		"ROUTE_MAP_SET": map[string]interface{}{
+			"POL1": map[string]interface{}{},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": "",
+		},
+		"ROUTE_MAP_SET": map[string]interface{}{
+			"POL1": "",
+		},
+		"PREFIX": map[string]interface{}{
+			"PS6|5|2001:db8::/32|exact": "",
+		},
+		"PREFIX_SET": map[string]interface{}{
+			"PS6": "",
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	// The condition only names a set, so the address family that decides which
+	// ROUTE_MAP field carries it comes from the set. A set that does not exist
+	// yet used to be created as IPv4 regardless of what it was meant to hold,
+	// which silently drove the IPv4 field for an IPv6 set.
+	url = "/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition[name=POL1]" +
+		"/statements/statement[name=10]/conditions/match-prefix-set/config/prefix-set"
+	expectedErr := tlerr.InvalidArgsError{
+		Format: "routing-policy prefix-set PS6 is not configured; create it under defined-sets/prefix-sets with a mode before matching on it",
+	}
+	urlInputBodyJSON = "{\"openconfig-routing-policy:prefix-set\":\"PS6\"}"
+	t.Run("PATCH match-prefix-set naming an unknown prefix-set rejected",
+		processSetRequest(url, urlInputBodyJSON, "PATCH", true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	// Once the set exists with its own mode, the condition resolves to the
+	// field of that family.
+	psUrl := "/openconfig-routing-policy:routing-policy/defined-sets/prefix-sets/prefix-set[name=PS6]/config"
+	urlInputBodyJSON = "{\"name\":\"PS6\",\"mode\":\"IPV6\"}"
+	t.Run("PATCH routing-policy prefix-set PS6 as IPv6", processSetRequest(psUrl, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	urlInputBodyJSON = "{\"openconfig-routing-policy:prefix-set\":\"PS6\"}"
+	t.Run("PATCH match-prefix-set naming the IPv6 prefix-set", processSetRequest(url, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": map[string]interface{}{
+				"match_ipv6_prefix_set": "PS6",
+			},
+		},
+	}
+	t.Run("Verify ROUTE_MAP took the IPv6 match field", verifyDbResult(rclient, "ROUTE_MAP|POL1|10", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
