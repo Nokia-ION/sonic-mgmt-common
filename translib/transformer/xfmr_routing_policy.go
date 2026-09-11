@@ -1696,18 +1696,6 @@ func parseRpolStmtNameToUint16(stmtName string) (uint16, error) {
 	return uint16(u64), nil
 }
 
-func getRpolPrefixSetMode(cfgDb *db.DB, pfxSet string) (string, error) {
-	entry, err := cfgDb.GetEntry(&db.TableSpec{Name: "PREFIX_SET"}, db.Key{Comp: []string{pfxSet}})
-	if err != nil {
-		return "", err
-	}
-	mode, ok := entry.Field["mode"]
-	if !ok || strings.TrimSpace(mode) == "" {
-		return "", tlerr.InvalidArgsError{Format: fmt.Sprintf("PREFIX_SET %s missing mode field", pfxSet)}
-	}
-	return strings.ToLower(strings.TrimSpace(mode)), nil
-}
-
 func makeRpolRouteMapSetResMap(policyName string, fields map[string]string) map[string]map[string]db.Value {
 	return map[string]map[string]db.Value{
 		rpolRouteMapSetTbl: {
@@ -2344,33 +2332,25 @@ func rpolYangToDbXfmr(inParams XfmrParams) (res map[string]map[string]db.Value, 
 			}
 			pfxSet = strings.TrimSpace(*cfgObj.PrefixSet)
 		}
-		cfgDb := inParams.dbs[db.ConfigDB]
-		if cfgDb == nil {
+		if inParams.dbs[db.ConfigDB] == nil {
 			return res, tlerr.InvalidArgsError{Format: "ConfigDB nil for routing-policy mapping"}
 		}
-		mode, err := getRpolPrefixSetMode(cfgDb, pfxSet)
-		pfxSetAutoCreate := false
+		// The condition names a set but says nothing about its address family,
+		// and the family decides which ROUTE_MAP field carries it.
+		mode, err := rpolResolvePrefixSetMode(inParams, pfxSet)
 		if err != nil {
-			// If PREFIX_SET doesn't exist yet, auto-create a minimal IPv4 entry so
-			// dependent match-prefix-set writes can proceed.
-			mode = "ipv4"
-			pfxSetAutoCreate = true
+			return res, err
 		}
 		fields := map[string]string{}
-		if mode == "ipv4" {
+		switch mode {
+		case rpolPrefixSetModeIpv4:
 			fields[rpolMatchPrefixSetFld] = pfxSet
-		} else if mode == "ipv6" {
+		case rpolPrefixSetModeIpv6:
 			fields[rpolMatchIpv6PrefixSetFld] = pfxSet
-		} else {
+		default:
 			return res, tlerr.InvalidArgsError{Format: fmt.Sprintf("unsupported PREFIX_SET mode %s for set %s", mode, pfxSet)}
 		}
-		res = makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, fields)
-		if pfxSetAutoCreate {
-			res = mergeDbResMap(res, makeRpolPrefixSetResMap(pfxSet, map[string]string{
-				rpolPrefixSetModeFld: "IPv4",
-			}))
-		}
-		return res, nil
+		return makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, fields), nil
 	}
 	if reqInfo.targetPath == rpolTargetStmtBgpActionsCfg {
 		_, err := parseRpolStmtNameToUint16(reqInfo.stmtName)
