@@ -1391,12 +1391,22 @@ func Test_openconfig_routing_policy_defined_sets_prefix_set_prefix_config(t *tes
 	time.Sleep(1 * time.Second)
 
 	// Rewriting the same entry updates its row rather than adding a second
-	// copy of the prefix at a fresh sequence number.
+	// copy of the prefix at a fresh sequence number. The action already stored
+	// is left alone, so the rewrite carries no field of its own and the row
+	// picks up the placeholder a fieldless write leaves behind.
 	t.Run("PATCH routing-policy prefix config container again", processSetRequest(url, urlInputBodyJSON, "PATCH", false, nil))
 	time.Sleep(1 * time.Second)
 
+	rewrittenMap := map[string]interface{}{
+		"PREFIX": map[string]interface{}{
+			"PS1|5|10.1.0.0/16|exact": map[string]interface{}{
+				"NULL":   "NULL",
+				"action": "permit",
+			},
+		},
+	}
 	t.Run("Verify rewriting the entry kept its sequence",
-		verifyDbResult(rclient, "PREFIX|PS1|5|10.1.0.0/16|exact", expectedMap, false))
+		verifyDbResult(rclient, "PREFIX|PS1|5|10.1.0.0/16|exact", rewrittenMap, false))
 	time.Sleep(1 * time.Second)
 
 	// A second entry takes the next step, and a range renders as "ge N le M".
@@ -1534,15 +1544,26 @@ func Test_openconfig_routing_policy_defined_sets_prefix_sets_container_level(t *
 
 	// The same payload sent one level down maps the same way, so that a
 	// request anchored at the list instance is not silently narrowed to the
-	// set row with its prefixes dropped.
+	// set row with its prefixes dropped. A request that already names the
+	// instance carries the instance's own children, not the list again.
 	url = "/openconfig-routing-policy:routing-policy/defined-sets/prefix-sets/prefix-set[name=PS1]"
-	urlInputBodyJSON = `{"openconfig-routing-policy:prefix-set":[` +
-		`{"name":"PS1","config":{"name":"PS1","mode":"IPV4"},"prefixes":{"prefix":[` +
+	urlInputBodyJSON = `{"openconfig-routing-policy:config":{"name":"PS1","mode":"IPV4"},` +
+		`"openconfig-routing-policy:prefixes":{"prefix":[` +
 		`{"ip-prefix":"10.1.0.0/16","masklength-range":"exact",` +
-		`"config":{"ip-prefix":"10.1.0.0/16","masklength-range":"exact"}}]}}]}`
+		`"config":{"ip-prefix":"10.1.0.0/16","masklength-range":"exact"}}]}}`
 	t.Run("PATCH routing-policy prefix-set list instance", processSetRequest(url, urlInputBodyJSON, "PATCH", false, nil))
 	time.Sleep(1 * time.Second)
 
+	// The entry is rewritten rather than created, so its stored action stands
+	// and the row carries the placeholder a fieldless write leaves behind.
+	expectedMap = map[string]interface{}{
+		"PREFIX": map[string]interface{}{
+			"PS1|5|10.1.0.0/16|exact": map[string]interface{}{
+				"NULL":   "NULL",
+				"action": "permit",
+			},
+		},
+	}
 	t.Run("Verify the list instance write kept the entry at its sequence",
 		verifyDbResult(rclient, "PREFIX|PS1|5|10.1.0.0/16|exact", expectedMap, false))
 	time.Sleep(1 * time.Second)
