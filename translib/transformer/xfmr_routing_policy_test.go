@@ -1469,3 +1469,95 @@ func Test_openconfig_routing_policy_defined_sets_prefix_set_prefix_config(t *tes
 
 	unloadDB(db.ConfigDB, cleanupTbl)
 }
+
+func Test_openconfig_routing_policy_defined_sets_prefix_sets_container_level(t *testing.T) {
+	var url, urlInputBodyJSON string
+
+	preReqMap := map[string]interface{}{}
+	cleanupTbl := map[string]interface{}{
+		"PREFIX": map[string]interface{}{
+			"PS1|5|10.1.0.0/16|exact":   "",
+			"PS1|10|10.2.0.0/16|17..24": "",
+		},
+		"PREFIX_SET": map[string]interface{}{
+			"PS1": "",
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	// A container level write has to create the set and every prefix under it
+	// in one pass, allocating a distinct sequence number for each even though
+	// CONFIG_DB holds none of them yet.
+	url = "/openconfig-routing-policy:routing-policy"
+	urlInputBodyJSON = `{"defined-sets":{"prefix-sets":{"prefix-set":[` +
+		`{"name":"PS1","config":{"name":"PS1","mode":"IPV4"},"prefixes":{"prefix":[` +
+		`{"ip-prefix":"10.1.0.0/16","masklength-range":"exact",` +
+		`"config":{"ip-prefix":"10.1.0.0/16","masklength-range":"exact"}},` +
+		`{"ip-prefix":"10.2.0.0/16","masklength-range":"17..24",` +
+		`"config":{"ip-prefix":"10.2.0.0/16","masklength-range":"17..24"}}]}}]}}}`
+	t.Run("PATCH routing-policy container with a whole prefix-set",
+		processSetRequest(url, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"PREFIX_SET": map[string]interface{}{
+			"PS1": map[string]interface{}{
+				"mode": "IPv4",
+			},
+		},
+	}
+	t.Run("Verify PREFIX_SET row from the container write", verifyDbResult(rclient, "PREFIX_SET|PS1", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"PREFIX": map[string]interface{}{
+			"PS1|5|10.1.0.0/16|exact": map[string]interface{}{
+				"action": "permit",
+			},
+		},
+	}
+	t.Run("Verify first PREFIX row from the container write",
+		verifyDbResult(rclient, "PREFIX|PS1|5|10.1.0.0/16|exact", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"PREFIX": map[string]interface{}{
+			"PS1|10|10.2.0.0/16|17..24": map[string]interface{}{
+				"action": "permit",
+			},
+		},
+	}
+	t.Run("Verify second PREFIX row got its own sequence",
+		verifyDbResult(rclient, "PREFIX|PS1|10|10.2.0.0/16|17..24", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	// The same payload sent one level down maps the same way, so that a
+	// request anchored at the list instance is not silently narrowed to the
+	// set row with its prefixes dropped.
+	url = "/openconfig-routing-policy:routing-policy/defined-sets/prefix-sets/prefix-set[name=PS1]"
+	urlInputBodyJSON = `{"openconfig-routing-policy:prefix-set":[` +
+		`{"name":"PS1","config":{"name":"PS1","mode":"IPV4"},"prefixes":{"prefix":[` +
+		`{"ip-prefix":"10.1.0.0/16","masklength-range":"exact",` +
+		`"config":{"ip-prefix":"10.1.0.0/16","masklength-range":"exact"}}]}}]}`
+	t.Run("PATCH routing-policy prefix-set list instance", processSetRequest(url, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify the list instance write kept the entry at its sequence",
+		verifyDbResult(rclient, "PREFIX|PS1|5|10.1.0.0/16|exact", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	// A leaf error inside a container payload has to be reported rather than
+	// swallowed along with the rest of the request.
+	url = "/openconfig-routing-policy:routing-policy"
+	expectedErr := tlerr.NotSupportedError{
+		Format: "routing-policy prefix-set mode MIXED has no CONFIG_DB mapping; configure one prefix-set per address family",
+	}
+	urlInputBodyJSON = `{"defined-sets":{"prefix-sets":{"prefix-set":[` +
+		`{"name":"PS1","config":{"name":"PS1","mode":"MIXED"}}]}}}`
+	t.Run("PATCH routing-policy container with MIXED mode rejected",
+		processSetRequest(url, urlInputBodyJSON, "PATCH", true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}

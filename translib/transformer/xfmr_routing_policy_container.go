@@ -67,6 +67,13 @@ var rpolMappedPayloadLeaves = map[string]bool{
 	"defined-sets/bgp-defined-sets/community-sets/community-set/config/community-set-name":                                           true,
 	"defined-sets/bgp-defined-sets/community-sets/community-set/config/community-member":                                             true,
 	"defined-sets/bgp-defined-sets/community-sets/community-set/config/match-set-options":                                            true,
+	"defined-sets/prefix-sets/prefix-set/name":                                                                                       true,
+	"defined-sets/prefix-sets/prefix-set/config/name":                                                                                true,
+	"defined-sets/prefix-sets/prefix-set/config/mode":                                                                                true,
+	"defined-sets/prefix-sets/prefix-set/prefixes/prefix/ip-prefix":                                                                  true,
+	"defined-sets/prefix-sets/prefix-set/prefixes/prefix/masklength-range":                                                           true,
+	"defined-sets/prefix-sets/prefix-set/prefixes/prefix/config/ip-prefix":                                                           true,
+	"defined-sets/prefix-sets/prefix-set/prefixes/prefix/config/masklength-range":                                                    true,
 	"defined-sets/bgp-defined-sets/ext-community-sets/ext-community-set/ext-community-set-name":                                      true,
 	"defined-sets/bgp-defined-sets/ext-community-sets/ext-community-set/config/ext-community-set-name":                               true,
 	"defined-sets/bgp-defined-sets/ext-community-sets/ext-community-set/config/ext-community-member":                                 true,
@@ -127,6 +134,14 @@ func rpolCommunitySetCfgUri(communitySetName string) string {
 func rpolExtCommunitySetCfgUri(communitySetName string) string {
 	return fmt.Sprintf("%s/defined-sets/bgp-defined-sets/ext-community-sets/ext-community-set[ext-community-set-name=%s]/config",
 		rpolUriRoot, communitySetName)
+}
+
+// rpolPrefixSetCfgUri targets the config container of a prefix-set. The
+// prefix-set node maps and populates the prefixes it holds as well, so one
+// replay covers the whole set and the sequence numbers of the prefixes a single
+// request adds are allocated together.
+func rpolPrefixSetCfgUri(prefixSetName string) string {
+	return fmt.Sprintf("%s/defined-sets/prefix-sets/prefix-set[name=%s]/config", rpolUriRoot, prefixSetName)
 }
 
 // lookupRpolObj returns the routing-policy container of the request without
@@ -351,6 +366,28 @@ func rpolContainerSetTargetUris(s *ygot.GoStruct) ([]string, error) {
 		}
 	}
 
+	if rpObj.DefinedSets != nil && rpObj.DefinedSets.PrefixSets != nil {
+		setNames := make([]string, 0, len(rpObj.DefinedSets.PrefixSets.PrefixSet))
+		for setName := range rpObj.DefinedSets.PrefixSets.PrefixSet {
+			setNames = append(setNames, setName)
+		}
+		sort.Strings(setNames)
+		for _, setName := range setNames {
+			psObj := rpObj.DefinedSets.PrefixSets.PrefixSet[setName]
+			if psObj == nil {
+				continue
+			}
+			if psObj.Config != nil && psObj.Config.Name != nil {
+				if name := strings.TrimSpace(*psObj.Config.Name); name != "" && name != setName {
+					return nil, tlerr.InvalidArgsError{
+						Format: fmt.Sprintf("prefix-set config name payload (%s) does not match key (%s)", name, setName),
+					}
+				}
+			}
+			uris = append(uris, rpolPrefixSetCfgUri(setName))
+		}
+	}
+
 	return uris, nil
 }
 
@@ -471,6 +508,10 @@ func rpolContainerGetTargetUris(cfgDb *db.DB) []string {
 		for _, setName := range setNames {
 			uris = append(uris, rpolExtCommunitySetCfgUri(setName))
 		}
+	}
+
+	for _, setName := range rpolPrefixSetNamesFromDb(cfgDb) {
+		uris = append(uris, rpolPrefixSetCfgUri(setName))
 	}
 
 	return uris
