@@ -64,6 +64,7 @@ const (
 	rpolTargetStmtBgpActionsCfg            = "statement-actions-bgp-actions-config"
 	rpolTargetStmtBgpSetCommunity          = "statement-actions-bgp-set-community"
 	rpolTargetStmtBgpSetCommunityInlineCfg = "statement-actions-bgp-set-community-inline-config"
+	rpolTargetStmtBgpSetCommunityRefCfg    = "statement-actions-bgp-set-community-reference-config"
 	rpolTargetStmtBgpSetAsPathCfg          = "statement-actions-bgp-set-as-path-prepend-config"
 	rpolTargetStmtBgpConditionsCfg         = "statement-conditions-bgp-conditions-config"
 	rpolTargetCommunitySetName             = "community-set-name"
@@ -71,6 +72,8 @@ const (
 	rpolPolicyDefNameLeaf                  = "name"
 	rpolStmtNameLeaf                       = "name"
 	rpolCommunitySetNameLeaf               = "community-set-name"
+	rpolCommunitySetRefLeaf                = "community-set-ref"
+	rpolCommunitySetRefsLeaf               = "community-set-refs"
 	rpolPolicyResultLeaf                   = "policy-result"
 	rpolPrefixSetLeaf                      = "prefix-set"
 	rpolAsnLeaf                            = "asn"
@@ -113,6 +116,7 @@ var rpolStmtCondMatchPfxCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-p
 var rpolStmtBgpActionsCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/actions/(?:[A-Za-z0-9_.-]+:)?bgp-actions/(?:[A-Za-z0-9_.-]+:)?config(?:/(?:[A-Za-z0-9_.-]+:)?(set-next-hop|set-route-origin|set-local-pref|set-med))?$`)
 var rpolStmtBgpSetCommunityReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/actions/(?:[A-Za-z0-9_.-]+:)?bgp-actions/(?:[A-Za-z0-9_.-]+:)?set-community$`)
 var rpolStmtBgpSetCommunityInlineCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/actions/(?:[A-Za-z0-9_.-]+:)?bgp-actions/(?:[A-Za-z0-9_.-]+:)?set-community/(?:[A-Za-z0-9_.-]+:)?inline/(?:[A-Za-z0-9_.-]+:)?config(?:/(?:[A-Za-z0-9_.-]+:)?(communities))?$`)
+var rpolStmtBgpSetCommunityRefCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/actions/(?:[A-Za-z0-9_.-]+:)?bgp-actions/(?:[A-Za-z0-9_.-]+:)?set-community/(?:[A-Za-z0-9_.-]+:)?reference/(?:[A-Za-z0-9_.-]+:)?config(?:/(?:[A-Za-z0-9_.-]+:)?(community-set-refs|community-set-ref))?$`)
 var rpolStmtBgpSetAsPathCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/actions/(?:[A-Za-z0-9_.-]+:)?bgp-actions/(?:[A-Za-z0-9_.-]+:)?set-as-path-prepend/(?:[A-Za-z0-9_.-]+:)?config(?:/(?:[A-Za-z0-9_.-]+:)?(asn|repeat-n))?$`)
 var rpolStmtBgpConditionsCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/conditions/(?:[A-Za-z0-9_.-]+:)?bgp-conditions/(?:[A-Za-z0-9_.-]+:)?config(?:/(?:[A-Za-z0-9_.-]+:)?(med-eq|origin-eq|local-pref-eq|community-set|ext-community-set))?$`)
 var rpolContainerReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy(?:/.*)?$`)
@@ -222,6 +226,19 @@ func parseRpolRequestUri(uri string) (*rpolReqInfo, error) {
 			stmtName:   m[2],
 			targetLeaf: leaf,
 			targetPath: rpolTargetStmtBgpSetCommunityInlineCfg,
+		}, nil
+	}
+	m = rpolStmtBgpSetCommunityRefCfgReqUriRe.FindStringSubmatch(uri)
+	if len(m) >= 3 {
+		leaf := ""
+		if len(m) >= 4 {
+			leaf = m[3]
+		}
+		return &rpolReqInfo{
+			policyName: m[1],
+			stmtName:   m[2],
+			targetLeaf: leaf,
+			targetPath: rpolTargetStmtBgpSetCommunityRefCfg,
 		}, nil
 	}
 	m = rpolStmtBgpSetAsPathCfgReqUriRe.FindStringSubmatch(uri)
@@ -830,6 +847,46 @@ func getRpolPolicyStmtBgpSetCommunityCfgObj(s *ygot.GoStruct, policyName, stmtNa
 		stmtObj.Actions.BgpActions.SetCommunity.Config = &ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_SetCommunity_Config{}
 	}
 	return stmtObj.Actions.BgpActions.SetCommunity.Config
+}
+
+// rpolSetCommunityRefName resolves the community-set a set-community reference
+// names. openconfig-bgp-policy 6.2.0 added the community-set-refs leaf-list and
+// deprecated the singular community-set-ref without removing it, so both
+// spellings are accepted here. ROUTE_MAP set_community_ref is a single leafref,
+// so a list carrying more than one reference has nowhere to be stored and is
+// refused rather than silently truncated to its first entry. Both spellings may
+// be given together only when they name the same set, since they map to the one
+// field and a disagreement has no answer that is not a guess.
+func rpolSetCommunityRefName(refCfgObj *ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_SetCommunity_Reference_Config) (string, error) {
+	if refCfgObj == nil {
+		return "", nil
+	}
+
+	refs := make([]string, 0, len(refCfgObj.CommunitySetRefs))
+	for _, ref := range refCfgObj.CommunitySetRefs {
+		if trimmed := strings.TrimSpace(ref); trimmed != "" {
+			refs = append(refs, trimmed)
+		}
+	}
+	if len(refs) > 1 {
+		return "", tlerr.NotSupportedError{Format: fmt.Sprintf(
+			"routing-policy statement actions bgp-actions set-community reference config community-set-refs carries %d references; ROUTE_MAP set_community_ref holds one community-set, so exactly one is supported",
+			len(refs))}
+	}
+
+	single := ""
+	if refCfgObj.CommunitySetRef != nil {
+		single = strings.TrimSpace(*refCfgObj.CommunitySetRef)
+	}
+	if len(refs) == 1 {
+		if single != "" && single != refs[0] {
+			return "", tlerr.InvalidArgsError{Format: fmt.Sprintf(
+				"routing-policy statement actions bgp-actions set-community reference config names %s in community-set-refs and %s in community-set-ref; both map to set_community_ref, so they have to agree",
+				refs[0], single)}
+		}
+		return refs[0], nil
+	}
+	return single, nil
 }
 
 func getRpolPolicyStmtBgpSetCommunityRefCfgObj(s *ygot.GoStruct, policyName, stmtName string, createIfMissing bool) *ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_SetCommunity_Reference_Config {
@@ -2103,6 +2160,10 @@ func rpolYangToDbXfmr(inParams XfmrParams) (res map[string]map[string]db.Value, 
 			return makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, map[string]string{
 				rpolSetCommunityInlineFld: "",
 			}), nil
+		case rpolTargetStmtBgpSetCommunityRefCfg:
+			return makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, map[string]string{
+				rpolSetCommunityRefFld: "",
+			}), nil
 		case rpolTargetStmtBgpSetAsPathCfg:
 			fields := map[string]string{}
 			switch reqInfo.targetLeaf {
@@ -2443,10 +2504,13 @@ func rpolYangToDbXfmr(inParams XfmrParams) (res map[string]map[string]db.Value, 
 		switch cfgObj.Method {
 		case ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_SetCommunity_Config_Method_REFERENCE:
 			refCfgObj := getRpolPolicyStmtBgpSetCommunityRefCfgObj(inParams.ygRoot, reqInfo.policyName, reqInfo.stmtName, false)
-			if refCfgObj == nil || refCfgObj.CommunitySetRef == nil || strings.TrimSpace(*refCfgObj.CommunitySetRef) == "" {
-				return res, tlerr.InvalidArgsError{Format: "routing-policy statement actions bgp-actions set-community reference config community-set-ref is missing in request payload"}
+			refName, refErr := rpolSetCommunityRefName(refCfgObj)
+			if refErr != nil {
+				return res, refErr
 			}
-			refName := strings.TrimSpace(*refCfgObj.CommunitySetRef)
+			if refName == "" {
+				return res, tlerr.InvalidArgsError{Format: "routing-policy statement actions bgp-actions set-community reference config community-set-refs is missing in request payload"}
+			}
 			res = makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, map[string]string{
 				rpolSetCommunityInlineFld: "",
 				rpolSetCommunityRefFld:    refName,
@@ -2470,6 +2534,32 @@ func rpolYangToDbXfmr(inParams XfmrParams) (res map[string]map[string]db.Value, 
 		default:
 			return res, tlerr.InvalidArgsError{Format: "routing-policy statement actions bgp-actions set-community config method is missing or unsupported"}
 		}
+	}
+	if reqInfo.targetPath == rpolTargetStmtBgpSetCommunityRefCfg {
+		_, err := parseRpolStmtNameToUint16(reqInfo.stmtName)
+		if err != nil {
+			return res, err
+		}
+		refCfgObj := getRpolPolicyStmtBgpSetCommunityRefCfgObj(inParams.ygRoot, reqInfo.policyName, reqInfo.stmtName, false)
+		refName, refErr := rpolSetCommunityRefName(refCfgObj)
+		if refErr != nil {
+			return res, refErr
+		}
+		if refName == "" {
+			return res, tlerr.InvalidArgsError{Format: "routing-policy statement actions bgp-actions set-community reference config community-set-refs is missing in request payload"}
+		}
+		// CONFIG_DB records no method of its own: a GET reports REFERENCE
+		// because set_community_ref is the field that carries a value. So a
+		// reference written here clears the inline spelling, exactly as a
+		// request at set-community carrying method REFERENCE does, rather than
+		// leaving both fields set for the GET to choose between.
+		res = makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, map[string]string{
+			rpolSetCommunityInlineFld: "",
+			rpolSetCommunityRefFld:    refName,
+		})
+		res = mergeDbResMap(res, makeRpolCommunitySetResMap(refName,
+			rpolCommunitySetSeedFields(inParams.dbs[db.ConfigDB], rpolCommunitySetTbl, refName, "")))
+		return res, nil
 	}
 	if reqInfo.targetPath == rpolTargetStmtBgpSetCommunityInlineCfg {
 		_, err := parseRpolStmtNameToUint16(reqInfo.stmtName)
@@ -2904,7 +2994,12 @@ func rpolDbToYangXfmr(inParams XfmrParams) (err error) {
 			cfgObj.Method = ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_SetCommunity_Config_Method_REFERENCE
 			refCfgObj := getRpolPolicyStmtBgpSetCommunityRefCfgObj(inParams.ygRoot, reqInfo.policyName, reqInfo.stmtName, true)
 			if refCfgObj != nil {
-				refCfgObj.CommunitySetRef = ygot.String(strings.TrimSpace(ref))
+				// Both spellings are reported. 6.2.0 deprecated the singular
+				// leaf rather than removing it, so a client written against
+				// either revision of the model finds the spelling it knows.
+				refName := strings.TrimSpace(ref)
+				refCfgObj.CommunitySetRefs = []string{refName}
+				refCfgObj.CommunitySetRef = ygot.String(refName)
 			}
 		} else if inline, ok := entry.Field[rpolSetCommunityInlineFld]; ok && strings.TrimSpace(inline) != "" {
 			cfgObj.Method = ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_SetCommunity_Config_Method_INLINE
@@ -2922,6 +3017,24 @@ func rpolDbToYangXfmr(inParams XfmrParams) (err error) {
 					}
 				}
 			}
+		}
+		return nil
+	}
+	if reqInfo.targetPath == rpolTargetStmtBgpSetCommunityRefCfg {
+		ref, ok := entry.Field[rpolSetCommunityRefFld]
+		if !ok || strings.TrimSpace(ref) == "" {
+			return nil
+		}
+		refCfgObj := getRpolPolicyStmtBgpSetCommunityRefCfgObj(inParams.ygRoot, reqInfo.policyName, reqInfo.stmtName, true)
+		if refCfgObj == nil {
+			return tlerr.InvalidArgsError{Format: "Unable to locate routing-policy statement actions bgp-actions set-community reference config object in YANG tree"}
+		}
+		refName := strings.TrimSpace(ref)
+		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == rpolCommunitySetRefsLeaf {
+			refCfgObj.CommunitySetRefs = []string{refName}
+		}
+		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == rpolCommunitySetRefLeaf {
+			refCfgObj.CommunitySetRef = ygot.String(refName)
 		}
 		return nil
 	}

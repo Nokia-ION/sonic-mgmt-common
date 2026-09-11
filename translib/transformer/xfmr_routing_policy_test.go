@@ -442,14 +442,19 @@ func Test_openconfig_routing_policy_policy_definition_statement_actions_bgp_acti
 	expectedMap := map[string]interface{}{
 		"ROUTE_MAP": map[string]interface{}{
 			"POL1|10": map[string]interface{}{
-				"set_community_ref": "COMMSET1",
+				// The two spellings are mutually exclusive, so writing the
+				// reference empties the inline field rather than leaving a
+				// value there for a GET to choose between.
+				"set_community_inline": "",
+				"set_community_ref":    "COMMSET1",
 			},
 		},
 	}
 	t.Run("Verify ROUTE_MAP set_community_ref mapping", verifyDbResult(rclient, "ROUTE_MAP|POL1|10", expectedMap, false))
 	time.Sleep(1 * time.Second)
 
-	expectedGetJSON := "{\"openconfig-bgp-policy:set-community\":{\"config\":{\"method\":\"REFERENCE\"},\"reference\":{\"config\":{\"community-set-ref\":\"COMMSET1\"}}}}"
+	expectedGetJSON := "{\"openconfig-bgp-policy:set-community\":{\"config\":{\"method\":\"REFERENCE\"},\"reference\":{\"config\":" +
+		"{\"community-set-ref\":\"COMMSET1\",\"community-set-refs\":[\"COMMSET1\"]}}}}"
 	t.Run("GET routing-policy statement actions bgp set-community", processGetRequest(url, nil, expectedGetJSON, false))
 	time.Sleep(1 * time.Second)
 
@@ -458,7 +463,11 @@ func Test_openconfig_routing_policy_policy_definition_statement_actions_bgp_acti
 
 	expectedMap = map[string]interface{}{
 		"ROUTE_MAP": map[string]interface{}{
-			"POL1|10": map[string]interface{}{},
+			"POL1|10": map[string]interface{}{
+				// Both fields go, and a row left with none carries the
+				// placeholder instead.
+				"NULL": "NULL",
+			},
 		},
 	}
 	t.Run("Verify ROUTE_MAP set-community fields cleared", verifyDbResult(rclient, "ROUTE_MAP|POL1|10", expectedMap, false))
@@ -510,7 +519,11 @@ func Test_openconfig_routing_policy_policy_definition_statement_actions_bgp_acti
 
 	expectedMap = map[string]interface{}{
 		"ROUTE_MAP": map[string]interface{}{
-			"POL1|10": map[string]interface{}{},
+			"POL1|10": map[string]interface{}{
+				// The only field goes, and a row left with none carries the
+				// placeholder instead.
+				"NULL": "NULL",
+			},
 		},
 	}
 	t.Run("Verify ROUTE_MAP set-community inline field cleared", verifyDbResult(rclient, "ROUTE_MAP|POL1|10", expectedMap, false))
@@ -1641,6 +1654,153 @@ func Test_openconfig_routing_policy_match_prefix_set_unknown_set(t *testing.T) {
 		},
 	}
 	t.Run("Verify ROUTE_MAP took the IPv6 match field", verifyDbResult(rclient, "ROUTE_MAP|POL1|10", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+// openconfig-bgp-policy 6.2.0 added the community-set-refs leaf-list and
+// deprecated the singular community-set-ref, so that a statement could name more
+// than one community set. ROUTE_MAP set_community_ref is a single leafref, so the
+// list is served for exactly one reference: that is what this DB can express, and
+// a longer list is refused rather than quietly stored as its first entry.
+//
+// The reference config also gains a mapping of its own here, so that a request
+// can be anchored on it the way one can already be anchored on the inline config.
+// Nothing in CONFIG_DB records which method is in use - a GET reports REFERENCE
+// because set_community_ref is the field carrying a value - so a reference
+// written at that anchor clears the inline spelling, just as a request at
+// set-community naming method REFERENCE does.
+func Test_openconfig_routing_policy_statement_actions_bgp_set_community_refs(t *testing.T) {
+	var urlInputBodyJSON string
+
+	preReqMap := map[string]interface{}{
+		"ROUTE_MAP_SET": map[string]interface{}{
+			"POL1": map[string]interface{}{},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": "",
+		},
+		"ROUTE_MAP_SET": map[string]interface{}{
+			"POL1": "",
+		},
+		"COMMUNITY_SET": map[string]interface{}{
+			"CS1": "",
+			"CS2": "",
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	setCommUrl := "/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition[name=POL1]" +
+		"/statements/statement[name=10]/actions/bgp-actions/set-community"
+	refCfgUrl := setCommUrl + "/reference/config"
+
+	storedRef := func(name string) map[string]interface{} {
+		return map[string]interface{}{
+			"ROUTE_MAP": map[string]interface{}{
+				"POL1|10": map[string]interface{}{
+					// Writing a reference clears the inline spelling, which
+					// leaves that field present and empty rather than absent.
+					"set_community_inline": "",
+					"set_community_ref":    name,
+				},
+			},
+		}
+	}
+
+	// The leaf-list is accepted wherever the singular leaf is, starting with a
+	// payload sent at set-community naming the REFERENCE method.
+	urlInputBodyJSON = `{"config":{"method":"REFERENCE"},"reference":{"config":{"community-set-refs":["CS1"]}}}`
+	t.Run("PATCH set-community with community-set-refs",
+		processSetRequest(setCommUrl, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify the leaf-list reached set_community_ref",
+		verifyDbResult(rclient, "ROUTE_MAP|POL1|10", storedRef("CS1"), false))
+	time.Sleep(1 * time.Second)
+
+	// Both spellings come back, so a client written against either revision of
+	// the model finds the one it knows.
+	t.Run("GET the reference config reports both spellings",
+		processGetRequest(refCfgUrl, nil,
+			`{"openconfig-bgp-policy:config":{"community-set-ref":"CS1","community-set-refs":["CS1"]}}`, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET the community-set-refs leaf-list on its own",
+		processGetRequest(refCfgUrl+"/community-set-refs", nil,
+			`{"openconfig-bgp-policy:community-set-refs":["CS1"]}`, false))
+	time.Sleep(1 * time.Second)
+
+	// A request anchored on the reference config writes the same field, with no
+	// method leaf needed alongside it.
+	urlInputBodyJSON = `{"openconfig-bgp-policy:community-set-refs":["CS2"]}`
+	t.Run("PATCH the reference config directly",
+		processSetRequest(refCfgUrl, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify the direct write replaced the stored reference",
+		verifyDbResult(rclient, "ROUTE_MAP|POL1|10", storedRef("CS2"), false))
+	time.Sleep(1 * time.Second)
+
+	// A second reference has nowhere to be stored.
+	expectedErr := tlerr.NotSupportedError{
+		Format: "routing-policy statement actions bgp-actions set-community reference config community-set-refs carries 2 references; ROUTE_MAP set_community_ref holds one community-set, so exactly one is supported",
+	}
+	urlInputBodyJSON = `{"openconfig-bgp-policy:community-set-refs":["CS1","CS2"]}`
+	t.Run("PATCH two references rejected",
+		processSetRequest(refCfgUrl, urlInputBodyJSON, "PATCH", true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify the refused list left the stored reference alone",
+		verifyDbResult(rclient, "ROUTE_MAP|POL1|10", storedRef("CS2"), false))
+	time.Sleep(1 * time.Second)
+
+	// Both spellings map to the one field, so a payload naming a different set in
+	// each has no answer that is not a guess.
+	disagreeErr := tlerr.InvalidArgsError{
+		Format: "routing-policy statement actions bgp-actions set-community reference config names CS1 in community-set-refs and CS2 in community-set-ref; both map to set_community_ref, so they have to agree",
+	}
+	urlInputBodyJSON = `{"openconfig-bgp-policy:community-set-refs":["CS1"],"openconfig-bgp-policy:community-set-ref":"CS2"}`
+	t.Run("PATCH disagreeing spellings rejected",
+		processSetRequest(refCfgUrl, urlInputBodyJSON, "PATCH", true, disagreeErr))
+	time.Sleep(1 * time.Second)
+
+	// Agreeing is accepted, since there is only one value to store.
+	urlInputBodyJSON = `{"openconfig-bgp-policy:community-set-refs":["CS1"],"openconfig-bgp-policy:community-set-ref":"CS1"}`
+	t.Run("PATCH agreeing spellings accepted",
+		processSetRequest(refCfgUrl, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify agreeing spellings stored the one reference",
+		verifyDbResult(rclient, "ROUTE_MAP|POL1|10", storedRef("CS1"), false))
+	time.Sleep(1 * time.Second)
+
+	// The deprecated spelling still writes on its own, at the new anchor as well.
+	urlInputBodyJSON = `{"openconfig-bgp-policy:community-set-ref":"CS2"}`
+	t.Run("PATCH the deprecated singular leaf still works",
+		processSetRequest(refCfgUrl, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify the deprecated spelling stored its reference",
+		verifyDbResult(rclient, "ROUTE_MAP|POL1|10", storedRef("CS2"), false))
+	time.Sleep(1 * time.Second)
+
+	// Both spellings are the one field, so deleting the reference config clears
+	// it whichever spelling put it there.
+	t.Run("DELETE the reference config", processDeleteRequest(refCfgUrl, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify the reference was cleared",
+		verifyDbResult(rclient, "ROUTE_MAP|POL1|10", map[string]interface{}{
+			"ROUTE_MAP": map[string]interface{}{
+				"POL1|10": map[string]interface{}{
+					"set_community_inline": "",
+				},
+			},
+		}, false))
 	time.Sleep(1 * time.Second)
 
 	unloadDB(db.ConfigDB, cleanupTbl)
