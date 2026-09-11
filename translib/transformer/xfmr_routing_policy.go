@@ -98,6 +98,12 @@ const (
 	rpolCommunityMemberLeaf                = "community-member"
 	rpolExtCommunityMemberLeaf             = "ext-community-member"
 	rpolMatchSetOptionsLeaf                = "match-set-options"
+	rpolTargetPrefixSet                    = "prefix-set-node"
+	rpolTargetPrefixEntry                  = "prefix-entry-node"
+	rpolPrefixSetNameLeaf                  = "name"
+	rpolPrefixSetModeLeaf                  = "mode"
+	rpolIpPrefixLeaf                       = "ip-prefix"
+	rpolMasklengthRangeLeaf                = "masklength-range"
 )
 
 var rpolPolicyDefCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/config(?:/(name))?$`)
@@ -113,10 +119,19 @@ var rpolContainerReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:rout
 var rpolCommunitySetReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/defined-sets/(?:[A-Za-z0-9_.-]+:)?bgp-defined-sets/(?:[A-Za-z0-9_.-]+:)?community-sets/(?:[A-Za-z0-9_.-]+:)?community-set\[(?:[A-Za-z0-9_.-]+:)?community-set-name=([^\]]+)\]/(?:(?:[A-Za-z0-9_.-]+:)?community-set-name|(?:[A-Za-z0-9_.-]+:)?config(?:/(?:[A-Za-z0-9_.-]+:)?(community-set-name|community-member|match-set-options))?)$`)
 var rpolExtCommunitySetReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/defined-sets/(?:[A-Za-z0-9_.-]+:)?bgp-defined-sets/(?:[A-Za-z0-9_.-]+:)?ext-community-sets/(?:[A-Za-z0-9_.-]+:)?ext-community-set\[(?:[A-Za-z0-9_.-]+:)?ext-community-set-name=([^\]]+)\]/(?:(?:[A-Za-z0-9_.-]+:)?ext-community-set-name|(?:[A-Za-z0-9_.-]+:)?config(?:/(?:[A-Za-z0-9_.-]+:)?(ext-community-set-name|ext-community-member|match-set-options))?)$`)
 
+// The prefix-set lists sit under defined-sets in the routing-policy module
+// itself rather than under bgp-defined-sets, and a prefix entry is keyed by
+// ip-prefix and masklength-range together.
+var rpolPrefixSetReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/defined-sets/(?:[A-Za-z0-9_.-]+:)?prefix-sets/(?:[A-Za-z0-9_.-]+:)?prefix-set\[(?:[A-Za-z0-9_.-]+:)?name=([^\]]+)\]/(?:(?:[A-Za-z0-9_.-]+:)?name|(?:[A-Za-z0-9_.-]+:)?config(?:/(?:[A-Za-z0-9_.-]+:)?(name|mode))?)$`)
+var rpolPrefixEntryReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/defined-sets/(?:[A-Za-z0-9_.-]+:)?prefix-sets/(?:[A-Za-z0-9_.-]+:)?prefix-set\[(?:[A-Za-z0-9_.-]+:)?name=([^\]]+)\]/(?:[A-Za-z0-9_.-]+:)?prefixes/(?:[A-Za-z0-9_.-]+:)?prefix\[(?:[A-Za-z0-9_.-]+:)?ip-prefix=([^\]]+)\]\[(?:[A-Za-z0-9_.-]+:)?masklength-range=([^\]]+)\]/(?:(?:[A-Za-z0-9_.-]+:)?ip-prefix|(?:[A-Za-z0-9_.-]+:)?masklength-range|(?:[A-Za-z0-9_.-]+:)?config(?:/(?:[A-Za-z0-9_.-]+:)?(ip-prefix|masklength-range))?)$`)
+
 type rpolReqInfo struct {
 	policyName       string
 	stmtName         string
 	communitySetName string
+	prefixSetName    string
+	ipPrefix         string
+	masklengthRange  string
 	targetLeaf       string
 	targetPath       string
 }
@@ -257,6 +272,32 @@ func parseRpolRequestUri(uri string) (*rpolReqInfo, error) {
 			communitySetName: m[1],
 			targetLeaf:       leaf,
 			targetPath:       rpolTargetExtCommunitySetName,
+		}, nil
+	}
+	m = rpolPrefixEntryReqUriRe.FindStringSubmatch(uri)
+	if len(m) >= 4 {
+		leaf := ""
+		if len(m) >= 5 {
+			leaf = m[4]
+		}
+		return &rpolReqInfo{
+			prefixSetName:   m[1],
+			ipPrefix:        m[2],
+			masklengthRange: m[3],
+			targetLeaf:      leaf,
+			targetPath:      rpolTargetPrefixEntry,
+		}, nil
+	}
+	m = rpolPrefixSetReqUriRe.FindStringSubmatch(uri)
+	if len(m) >= 2 {
+		leaf := ""
+		if len(m) >= 3 {
+			leaf = m[2]
+		}
+		return &rpolReqInfo{
+			prefixSetName: m[1],
+			targetLeaf:    leaf,
+			targetPath:    rpolTargetPrefixSet,
 		}, nil
 	}
 	// Any other node of the routing-policy subtree is served by the container
@@ -2020,6 +2061,17 @@ func rpolYangToDbXfmr(inParams XfmrParams) (res map[string]map[string]db.Value, 
 			default:
 				return makeRpolExtCommunitySetResMap(reqInfo.communitySetName, nil), nil
 			}
+		case rpolTargetPrefixSet:
+			if reqInfo.targetLeaf == rpolPrefixSetModeLeaf {
+				// frrcfgd drops a prefix-set that carries no mode, and every
+				// prefix in it along with the set, and OpenConfig gives mode no
+				// default to fall back to. So there is no state to return the
+				// leaf to; removing a set means removing the set.
+				return res, tlerr.NotSupportedError{Format: "DELETE is not supported for prefix-set config mode; a prefix-set always has an address family, so delete the prefix-set instead", Path: inParams.requestUri}
+			}
+			return rpolDeletePrefixSetResMap(inParams.dbs[db.ConfigDB], reqInfo.prefixSetName), nil
+		case rpolTargetPrefixEntry:
+			return rpolDeletePrefixEntryResMap(inParams.dbs[db.ConfigDB], reqInfo)
 		case rpolTargetStmtName:
 			return makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, nil), nil
 		case rpolTargetStmtActionsCfg:
@@ -2148,6 +2200,12 @@ func rpolYangToDbXfmr(inParams XfmrParams) (res map[string]map[string]db.Value, 
 			return res, tlerr.InvalidArgsError{Format: fmt.Sprintf("statement name payload (%s) does not match key (%s)", stmtName, reqInfo.stmtName)}
 		}
 		return makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, map[string]string{}), nil
+	}
+	if reqInfo.targetPath == rpolTargetPrefixSet {
+		return rpolMapPrefixSetRequest(inParams, reqInfo)
+	}
+	if reqInfo.targetPath == rpolTargetPrefixEntry {
+		return rpolMapPrefixEntryRequest(inParams, reqInfo)
 	}
 	if reqInfo.targetPath == rpolTargetCommunitySetName {
 		if name, ok := parseRpolCommunitySetNameFromParam(inParams.param); ok && name != reqInfo.communitySetName {
@@ -2688,6 +2746,12 @@ func rpolDbToYangXfmr(inParams XfmrParams) (err error) {
 		name := reqInfo.stmtName
 		stmtObj.Name = &name
 		return nil
+	}
+	if reqInfo.targetPath == rpolTargetPrefixSet {
+		return rpolReadPrefixSet(inParams, reqInfo)
+	}
+	if reqInfo.targetPath == rpolTargetPrefixEntry {
+		return rpolReadPrefixEntry(inParams, reqInfo)
 	}
 	if reqInfo.targetPath == rpolTargetCommunitySetName {
 		entry, err := cfgDb.GetEntry(&db.TableSpec{Name: rpolCommunitySetTbl}, db.Key{Comp: []string{reqInfo.communitySetName}})
