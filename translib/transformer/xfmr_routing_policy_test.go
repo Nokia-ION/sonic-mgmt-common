@@ -77,11 +77,11 @@ func Test_openconfig_routing_policy_policy_definition_config_name(t *testing.T) 
 }
 
 func Test_openconfig_routing_policy_policy_definition_statement_name(t *testing.T) {
-	var url, urlInputBodyJSON string
+	var urlInputBodyJSON string
 
 	preReqMap := map[string]interface{}{
 		"ROUTE_MAP_SET": map[string]interface{}{
-			"POL1": map[string]interface{}{},
+			"POL1": map[string]interface{}{"NULL": "NULL"},
 		},
 	}
 	cleanupTbl := map[string]interface{}{
@@ -95,39 +95,78 @@ func Test_openconfig_routing_policy_policy_definition_statement_name(t *testing.
 	loadDB(db.ConfigDB, preReqMap)
 	time.Sleep(1 * time.Second)
 
-	url = "/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition[name=POL1]/statements/statement[name=10]/name"
-	urlInputBodyJSON = "{\"openconfig-routing-policy:name\":\"10\"}"
-	t.Run("PATCH routing-policy statement name", processSetRequest(url, urlInputBodyJSON, "PATCH", false, nil))
-	time.Sleep(1 * time.Second)
+	stmtUrl := "/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition[name=POL1]/statements/statement[name=10]"
+	keyUrl := stmtUrl + "/name"
+	cfgUrl := stmtUrl + "/config"
+	cfgNameUrl := cfgUrl + "/name"
 
-	expectedMap := map[string]interface{}{
+	// A statement carrying no other configuration still has to leave a row
+	// behind, and SONiC keeps such a row alive with the NULL placeholder.
+	presentRow := map[string]interface{}{
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": map[string]interface{}{"NULL": "NULL"},
+		},
+	}
+	absentRow := map[string]interface{}{
 		"ROUTE_MAP": map[string]interface{}{
 			"POL1|10": map[string]interface{}{},
 		},
 	}
-	t.Run("Verify ROUTE_MAP statement row", verifyDbResult(rclient, "ROUTE_MAP|POL1|10", expectedMap, false))
+
+	urlInputBodyJSON = "{\"openconfig-routing-policy:name\":\"10\"}"
+	t.Run("PATCH routing-policy statement config name", processSetRequest(cfgNameUrl, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify ROUTE_MAP statement row", verifyDbResult(rclient, "ROUTE_MAP|POL1|10", presentRow, false))
 	time.Sleep(1 * time.Second)
 
 	expectedGetJSON := "{\"openconfig-routing-policy:name\":\"10\"}"
-	t.Run("GET routing-policy statement name", processGetRequest(url, nil, expectedGetJSON, false))
+	t.Run("GET routing-policy statement config name", processGetRequest(cfgNameUrl, nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	expectedGetJSON = "{\"openconfig-routing-policy:config\":{\"name\":\"10\"}}"
+	t.Run("GET routing-policy statement config", processGetRequest(cfgUrl, nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	// The key leaf and the config leaf answer with the same value.
+	expectedGetJSON = "{\"openconfig-routing-policy:name\":\"10\"}"
+	t.Run("GET routing-policy statement name", processGetRequest(keyUrl, nil, expectedGetJSON, false))
 	time.Sleep(1 * time.Second)
 
 	expectedErr := tlerr.InvalidArgsError{
 		Format: "statement name payload (20) does not match key (10)",
 	}
 	urlInputBodyJSON = "{\"openconfig-routing-policy:name\":\"20\"}"
-	t.Run("PATCH statement name mismatch rejected", processSetRequest(url, urlInputBodyJSON, "PATCH", true, expectedErr))
+	t.Run("PATCH statement config name mismatch rejected", processSetRequest(cfgNameUrl, urlInputBodyJSON, "PATCH", true, expectedErr))
 	time.Sleep(1 * time.Second)
 
-	t.Run("DELETE routing-policy statement name", processDeleteRequest(url, false))
+	t.Run("Verify mismatch left the statement row alone", verifyDbResult(rclient, "ROUTE_MAP|POL1|10", presentRow, false))
 	time.Sleep(1 * time.Second)
 
-	expectedMap = map[string]interface{}{
-		"ROUTE_MAP": map[string]interface{}{
-			"POL1|10": map[string]interface{}{},
-		},
-	}
-	t.Run("Verify ROUTE_MAP statement row deleted", verifyDbResult(rclient, "ROUTE_MAP|POL1|10", expectedMap, false))
+	// The same write addressed at the config container rather than the leaf.
+	urlInputBodyJSON = "{\"name\":\"10\"}"
+	t.Run("PATCH routing-policy statement config", processSetRequest(cfgUrl, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify ROUTE_MAP statement row from config container", verifyDbResult(rclient, "ROUTE_MAP|POL1|10", presentRow, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("DELETE routing-policy statement config name", processDeleteRequest(cfgNameUrl, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify ROUTE_MAP statement row deleted", verifyDbResult(rclient, "ROUTE_MAP|POL1|10", absentRow, false))
+	time.Sleep(1 * time.Second)
+
+	// Removing the statement through the key leaf takes the row with it, the
+	// same as removing it through config/name.
+	urlInputBodyJSON = "{\"openconfig-routing-policy:name\":\"10\"}"
+	t.Run("PATCH statement config name again", processSetRequest(cfgNameUrl, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	t.Run("DELETE routing-policy statement name", processDeleteRequest(keyUrl, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify ROUTE_MAP statement row deleted through the key leaf", verifyDbResult(rclient, "ROUTE_MAP|POL1|10", absentRow, false))
 	time.Sleep(1 * time.Second)
 
 	unloadDB(db.ConfigDB, cleanupTbl)
@@ -1049,7 +1088,7 @@ func Test_openconfig_routing_policy_container_key_only_payload(t *testing.T) {
 func Test_openconfig_routing_policy_container_get(t *testing.T) {
 	preReqMap := map[string]interface{}{
 		"ROUTE_MAP_SET": map[string]interface{}{
-			"POL1": map[string]interface{}{},
+			"POL1": map[string]interface{}{"NULL": "NULL"},
 		},
 		"ROUTE_MAP": map[string]interface{}{
 			"POL1|10": map[string]interface{}{
@@ -1078,7 +1117,7 @@ func Test_openconfig_routing_policy_container_get(t *testing.T) {
 	time.Sleep(1 * time.Second)
 
 	statementEntryJSON := `{"actions":{"openconfig-bgp-policy:bgp-actions":{"config":{"set-local-pref":200}},` +
-		`"config":{"policy-result":"ACCEPT_ROUTE"}},"name":"10"}`
+		`"config":{"policy-result":"ACCEPT_ROUTE"}},"config":{"name":"10"},"name":"10"}`
 	policyEntryJSON := `{"config":{"name":"POL1"},"name":"POL1","statements":{"statement":[` + statementEntryJSON + `]}}`
 	definedSetsJSON := `{"openconfig-bgp-policy:bgp-defined-sets":{"community-sets":{"community-set":[` +
 		`{"community-set-name":"COMM1","config":{"community-set-name":"COMM1"}}]}}}`

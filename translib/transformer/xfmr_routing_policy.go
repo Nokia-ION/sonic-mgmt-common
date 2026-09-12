@@ -116,7 +116,7 @@ const (
 )
 
 var rpolPolicyDefCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/config(?:/(name))?$`)
-var rpolStmtNameReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/name$`)
+var rpolStmtNameReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/(?:(?:[A-Za-z0-9_.-]+:)?name|(?:[A-Za-z0-9_.-]+:)?config(?:/(?:[A-Za-z0-9_.-]+:)?name)?)$`)
 var rpolStmtActionsCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/actions/config(?:/(policy-result))?$`)
 var rpolStmtCondMatchPfxCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/conditions/match-prefix-set/config(?:/(prefix-set|match-set-options))?$`)
 var rpolStmtBgpActionsCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/actions/(?:[A-Za-z0-9_.-]+:)?bgp-actions/(?:[A-Za-z0-9_.-]+:)?config(?:/(?:[A-Za-z0-9_.-]+:)?(set-next-hop|set-route-origin|set-local-pref|set-med-action|set-med))?$`)
@@ -2390,6 +2390,14 @@ func rpolYangToDbXfmr(inParams XfmrParams) (res map[string]map[string]db.Value, 
 		if stmtName, ok := parseRpolStmtNameFromParam(inParams.param); ok && stmtName != reqInfo.stmtName {
 			return res, tlerr.InvalidArgsError{Format: fmt.Sprintf("statement name payload (%s) does not match key (%s)", stmtName, reqInfo.stmtName)}
 		}
+		// A config container payload carries the name in the tree rather than
+		// in param, so the key check has to look in both places.
+		if stmtObj := getRpolPolicyStmtObj(inParams.ygRoot, reqInfo.policyName, reqInfo.stmtName, false); stmtObj != nil &&
+			stmtObj.Config != nil && stmtObj.Config.Name != nil {
+			if name := strings.TrimSpace(*stmtObj.Config.Name); name != "" && name != reqInfo.stmtName {
+				return res, tlerr.InvalidArgsError{Format: fmt.Sprintf("statement config name payload (%s) does not match key (%s)", name, reqInfo.stmtName)}
+			}
+		}
 		return makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, map[string]string{}), nil
 	}
 	if reqInfo.targetPath == rpolTargetPrefixSet {
@@ -2989,6 +2997,11 @@ func rpolDbToYangXfmr(inParams XfmrParams) (err error) {
 		}
 		name := reqInfo.stmtName
 		stmtObj.Name = &name
+		// Keep the key leaf and the config leaf in step on GET so that both
+		// /name and /config/name answer with the same value.
+		if stmtObj.Config != nil {
+			stmtObj.Config.Name = &name
+		}
 		return nil
 	}
 	if reqInfo.targetPath == rpolTargetPrefixSet {
