@@ -641,6 +641,32 @@ func Test_openconfig_routing_policy_policy_definition_statement_actions_bgp_acti
 	t.Run("GET routing-policy statement bgp-actions set-med", processGetRequest(url+"/set-med", nil, "{\"openconfig-bgp-policy:set-med\":100}", false))
 	time.Sleep(1 * time.Second)
 
+	// bgp-set-med-type carried a signed string member until openconfig-bgp-policy
+	// 8.0.0 split the increment out into set-med-action, so a +N MED is now
+	// refused while binding the request. The wording belongs to ygot and is not
+	// asserted; that the stored MED is untouched is what shows the write was
+	// refused rather than half applied.
+	t.Run("PATCH routing-policy statement bgp-actions set-med as +10 rejected",
+		processSetRequest(url+"/set-med", "{\"openconfig-bgp-policy:set-med\":\"+10\"}", "PATCH", true))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify ROUTE_MAP kept the numeric MED after the refused increment",
+		verifyDbResult(rclient, "ROUTE_MAP|POL1|10", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	// set-med-action came with the same revision and has no CONFIG_DB mapping
+	// yet. The unmapped leaf check only guards requests at the routing-policy
+	// root, so without an explicit refusal here a container payload carrying it
+	// would be answered with success and the action dropped.
+	expectedErr := tlerr.NotSupportedError{
+		Format: "routing-policy statement actions bgp-actions config set-med-action has no CONFIG_DB mapping",
+	}
+	t.Run("PATCH routing-policy statement bgp-actions set-med-action rejected",
+		processSetRequest(url, "{\"set-med\":10,\"set-med-action\":\"ADD\"}", "PATCH", true, expectedErr))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify ROUTE_MAP kept the numeric MED after the refused action",
+		verifyDbResult(rclient, "ROUTE_MAP|POL1|10", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
 	prefixedUrl = "/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition[name=POL1]/statements/statement[name=10]/actions/openconfig-bgp-policy:bgp-actions/openconfig-bgp-policy:config"
 	t.Run("PATCH routing-policy statement bgp-actions config with module-prefixed augment segments", processSetRequest(prefixedUrl, urlInputBodyJSON, "PATCH", false, nil))
 	time.Sleep(1 * time.Second)

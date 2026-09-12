@@ -1656,9 +1656,6 @@ func parseRpolBgpSetMedValue(v interface{}) (string, bool) {
 	switch val := v.(type) {
 	case *ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_Config_SetMed_Union_Uint32:
 		return strconv.FormatUint(uint64(val.Uint32), 10), true
-	case *ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_Config_SetMed_Union_String:
-		s := strings.TrimSpace(val.String)
-		return s, s != ""
 	case *ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_Config_SetMed_Union_E_OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_Config_SetMed:
 		if val.E_OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_Config_SetMed == ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_Config_SetMed_IGP {
 			return "igp", true
@@ -1976,13 +1973,13 @@ func rpolExtCommunitySetTypeFromMembers(members []string) string {
 // rpolMatchSetOptionsToMatchAction maps the OpenConfig match modifier onto the
 // CONFIG_DB match_action, which decides whether FRR gets one permit line per
 // member or a single line holding all of them.
-func rpolMatchSetOptionsToMatchAction(v ocbinds.E_OpenconfigRoutingPolicy_MatchSetOptionsType) (string, error) {
+func rpolMatchSetOptionsToMatchAction(v ocbinds.E_OpenconfigBgpPolicy_MatchSetOptionsType) (string, error) {
 	switch v {
-	case ocbinds.OpenconfigRoutingPolicy_MatchSetOptionsType_ANY:
+	case ocbinds.OpenconfigBgpPolicy_MatchSetOptionsType_ANY:
 		return rpolMatchActionAny, nil
-	case ocbinds.OpenconfigRoutingPolicy_MatchSetOptionsType_ALL:
+	case ocbinds.OpenconfigBgpPolicy_MatchSetOptionsType_ALL:
 		return rpolMatchActionAll, nil
-	case ocbinds.OpenconfigRoutingPolicy_MatchSetOptionsType_INVERT:
+	case ocbinds.OpenconfigBgpPolicy_MatchSetOptionsType_INVERT:
 		return "", tlerr.NotSupportedError{Format: "routing-policy match-set-options INVERT has no CONFIG_DB mapping"}
 	default:
 		return "", tlerr.InvalidArgsError{Format: "unsupported routing-policy match-set-options value in request payload"}
@@ -2035,14 +2032,14 @@ func validateRpolMatchPfxSetOptions(inParams XfmrParams, reqInfo *rpolReqInfo) e
 	return tlerr.NotSupportedError{Format: "routing-policy match-prefix-set match-set-options supports only ANY"}
 }
 
-func rpolMatchActionToMatchSetOptions(v string) (ocbinds.E_OpenconfigRoutingPolicy_MatchSetOptionsType, bool) {
+func rpolMatchActionToMatchSetOptions(v string) (ocbinds.E_OpenconfigBgpPolicy_MatchSetOptionsType, bool) {
 	switch strings.ToUpper(strings.TrimSpace(v)) {
 	case rpolMatchActionAny:
-		return ocbinds.OpenconfigRoutingPolicy_MatchSetOptionsType_ANY, true
+		return ocbinds.OpenconfigBgpPolicy_MatchSetOptionsType_ANY, true
 	case rpolMatchActionAll:
-		return ocbinds.OpenconfigRoutingPolicy_MatchSetOptionsType_ALL, true
+		return ocbinds.OpenconfigBgpPolicy_MatchSetOptionsType_ALL, true
 	}
-	return ocbinds.OpenconfigRoutingPolicy_MatchSetOptionsType_UNSET, false
+	return ocbinds.OpenconfigBgpPolicy_MatchSetOptionsType_UNSET, false
 }
 
 func rpolEncodeCommunityMembers(members []string) string {
@@ -2286,14 +2283,14 @@ func rpolYangToDbXfmr(inParams XfmrParams) (res map[string]map[string]db.Value, 
 			}
 		}
 		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == rpolMatchSetOptionsLeaf {
-			matchOpts := ocbinds.OpenconfigRoutingPolicy_MatchSetOptionsType_UNSET
+			matchOpts := ocbinds.OpenconfigBgpPolicy_MatchSetOptionsType_UNSET
 			if cfgObj != nil {
 				matchOpts = cfgObj.MatchSetOptions
 			}
-			if matchOpts == ocbinds.OpenconfigRoutingPolicy_MatchSetOptionsType_UNSET && reqInfo.targetLeaf == rpolMatchSetOptionsLeaf {
+			if matchOpts == ocbinds.OpenconfigBgpPolicy_MatchSetOptionsType_UNSET && reqInfo.targetLeaf == rpolMatchSetOptionsLeaf {
 				return res, tlerr.InvalidArgsError{Format: "routing-policy community-set config match-set-options is missing in request payload"}
 			}
-			if matchOpts != ocbinds.OpenconfigRoutingPolicy_MatchSetOptionsType_UNSET {
+			if matchOpts != ocbinds.OpenconfigBgpPolicy_MatchSetOptionsType_UNSET {
 				matchAction, err := rpolMatchSetOptionsToMatchAction(matchOpts)
 				if err != nil {
 					return res, err
@@ -2332,14 +2329,14 @@ func rpolYangToDbXfmr(inParams XfmrParams) (res map[string]map[string]db.Value, 
 			}
 		}
 		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == rpolMatchSetOptionsLeaf {
-			matchOpts := ocbinds.OpenconfigRoutingPolicy_MatchSetOptionsType_UNSET
+			matchOpts := ocbinds.OpenconfigBgpPolicy_MatchSetOptionsType_UNSET
 			if cfgObj != nil {
 				matchOpts = cfgObj.MatchSetOptions
 			}
-			if matchOpts == ocbinds.OpenconfigRoutingPolicy_MatchSetOptionsType_UNSET && reqInfo.targetLeaf == rpolMatchSetOptionsLeaf {
+			if matchOpts == ocbinds.OpenconfigBgpPolicy_MatchSetOptionsType_UNSET && reqInfo.targetLeaf == rpolMatchSetOptionsLeaf {
 				return res, tlerr.InvalidArgsError{Format: "routing-policy ext-community-set config match-set-options is missing in request payload"}
 			}
-			if matchOpts != ocbinds.OpenconfigRoutingPolicy_MatchSetOptionsType_UNSET {
+			if matchOpts != ocbinds.OpenconfigBgpPolicy_MatchSetOptionsType_UNSET {
 				matchAction, err := rpolMatchSetOptionsToMatchAction(matchOpts)
 				if err != nil {
 					return res, err
@@ -2420,6 +2417,15 @@ func rpolYangToDbXfmr(inParams XfmrParams) (res map[string]map[string]db.Value, 
 		}
 		cfgObj := getRpolPolicyStmtBgpActionsCfgObj(inParams.ygRoot, reqInfo.policyName, reqInfo.stmtName, false)
 		fields := map[string]string{}
+
+		// set-med-action arrived with openconfig-bgp-policy 8.0.0 and has no
+		// CONFIG_DB mapping yet. The unmapped leaf check only guards requests at
+		// the routing-policy root, and this handler reads just the leaves it
+		// knows, so a container payload carrying set-med-action would otherwise
+		// be answered with success while the action was dropped.
+		if cfgObj != nil && cfgObj.SetMedAction != ocbinds.OpenconfigBgpPolicy_BgpSetMedAction_UNSET {
+			return res, tlerr.NotSupportedError{Format: "routing-policy statement actions bgp-actions config set-med-action has no CONFIG_DB mapping"}
+		}
 
 		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == rpolSetNextHopLeaf {
 			if nh, ok := parseRpolBgpSetNextHopValue(inParams.param); ok {
@@ -2976,11 +2982,12 @@ func rpolDbToYangXfmr(inParams XfmrParams) (err error) {
 					cfgObj.SetMed = &ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_Config_SetMed_Union_E_OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_Config_SetMed{
 						E_OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_Config_SetMed: ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_Config_SetMed_IGP,
 					}
-				} else {
-					cfgObj.SetMed = &ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_Config_SetMed_Union_String{
-						String: medVal,
-					}
 				}
+				// A row holding a signed value was written while the model
+				// still carried a string member for it, which 8.0.0 removed.
+				// Nothing in this revision can express it, so it is left out
+				// rather than reported as the bare number, which would drop the
+				// sign and claim the opposite of what is configured.
 			}
 		}
 		return nil
