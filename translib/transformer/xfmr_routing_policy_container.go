@@ -50,6 +50,7 @@ var rpolMappedPayloadLeaves = map[string]bool{
 	"policy-definitions/policy-definition/statements/statement/actions/bgp-actions/config/set-route-origin":                           true,
 	"policy-definitions/policy-definition/statements/statement/actions/bgp-actions/config/set-local-pref":                             true,
 	"policy-definitions/policy-definition/statements/statement/actions/bgp-actions/config/set-med":                                    true,
+	"policy-definitions/policy-definition/statements/statement/actions/bgp-actions/config/set-med-action":                             true,
 	"policy-definitions/policy-definition/statements/statement/actions/bgp-actions/set-community/config/method":                       true,
 	"policy-definitions/policy-definition/statements/statement/actions/bgp-actions/set-community/config/options":                      true,
 	"policy-definitions/policy-definition/statements/statement/actions/bgp-actions/set-community/inline/config/communities":           true,

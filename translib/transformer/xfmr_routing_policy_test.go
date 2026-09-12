@@ -653,20 +653,6 @@ func Test_openconfig_routing_policy_policy_definition_statement_actions_bgp_acti
 		verifyDbResult(rclient, "ROUTE_MAP|POL1|10", expectedMap, false))
 	time.Sleep(1 * time.Second)
 
-	// set-med-action came with the same revision and has no CONFIG_DB mapping
-	// yet. The unmapped leaf check only guards requests at the routing-policy
-	// root, so without an explicit refusal here a container payload carrying it
-	// would be answered with success and the action dropped.
-	expectedErr := tlerr.NotSupportedError{
-		Format: "routing-policy statement actions bgp-actions config set-med-action has no CONFIG_DB mapping",
-	}
-	t.Run("PATCH routing-policy statement bgp-actions set-med-action rejected",
-		processSetRequest(url, "{\"set-med\":10,\"set-med-action\":\"ADD\"}", "PATCH", true, expectedErr))
-	time.Sleep(1 * time.Second)
-	t.Run("Verify ROUTE_MAP kept the numeric MED after the refused action",
-		verifyDbResult(rclient, "ROUTE_MAP|POL1|10", expectedMap, false))
-	time.Sleep(1 * time.Second)
-
 	prefixedUrl = "/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition[name=POL1]/statements/statement[name=10]/actions/openconfig-bgp-policy:bgp-actions/openconfig-bgp-policy:config"
 	t.Run("PATCH routing-policy statement bgp-actions config with module-prefixed augment segments", processSetRequest(prefixedUrl, urlInputBodyJSON, "PATCH", false, nil))
 	time.Sleep(1 * time.Second)
@@ -682,6 +668,148 @@ func Test_openconfig_routing_policy_policy_definition_statement_actions_bgp_acti
 		},
 	}
 	t.Run("Verify ROUTE_MAP bgp-actions config fields cleared", verifyDbResult(rclient, "ROUTE_MAP|POL1|10", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_routing_policy_policy_definition_statement_actions_bgp_actions_set_med_action(t *testing.T) {
+	preReqMap := map[string]interface{}{
+		"ROUTE_MAP_SET": map[string]interface{}{
+			"POL1": map[string]interface{}{},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": "",
+		},
+		"ROUTE_MAP_SET": map[string]interface{}{
+			"POL1": "",
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	url := "/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition[name=POL1]/statements/statement[name=10]/actions/bgp-actions/config"
+
+	// A MED written with an action lands in set_metric_action and set_metric,
+	// the pair frrcfgd renders as "set metric +N", rather than in set_med,
+	// which can only render a bare "set metric N".
+	storedAction := func(action, value string) map[string]interface{} {
+		return map[string]interface{}{
+			"ROUTE_MAP": map[string]interface{}{
+				"POL1|10": map[string]interface{}{
+					"set_metric_action": action,
+					"set_metric":        value,
+				},
+			},
+		}
+	}
+
+	t.Run("PATCH bgp-actions config with set-med and set-med-action ADD",
+		processSetRequest(url, "{\"set-med\":10,\"set-med-action\":\"ADD\"}", "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify ROUTE_MAP holds the increment",
+		verifyDbResult(rclient, "ROUTE_MAP|POL1|10", storedAction("METRIC_ADD_VALUE", "10"), false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET bgp-actions config reports the MED and the action",
+		processGetRequest(url, nil, "{\"openconfig-bgp-policy:config\":{\"set-med\":10,\"set-med-action\":\"ADD\"}}", false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET bgp-actions set-med-action on its own",
+		processGetRequest(url+"/set-med-action", nil, "{\"openconfig-bgp-policy:set-med-action\":\"ADD\"}", false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET bgp-actions set-med reads the value out of set_metric",
+		processGetRequest(url+"/set-med", nil, "{\"openconfig-bgp-policy:set-med\":10}", false))
+	time.Sleep(1 * time.Second)
+
+	// SUBTRACT is the case the old signed string could never reach: CVL refused
+	// -10 outright, because set_med is a plain uint32.
+	t.Run("PATCH bgp-actions set-med-action to SUBTRACT on its own",
+		processSetRequest(url+"/set-med-action", "{\"openconfig-bgp-policy:set-med-action\":\"SUBTRACT\"}", "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify ROUTE_MAP kept the value and took the decrement",
+		verifyDbResult(rclient, "ROUTE_MAP|POL1|10", storedAction("METRIC_SUBTRACT_VALUE", "10"), false))
+	time.Sleep(1 * time.Second)
+
+	// The value leaf on its own keeps the action already configured.
+	t.Run("PATCH bgp-actions set-med on its own",
+		processSetRequest(url+"/set-med", "{\"openconfig-bgp-policy:set-med\":25}", "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify ROUTE_MAP took the new value under the same action",
+		verifyDbResult(rclient, "ROUTE_MAP|POL1|10", storedAction("METRIC_SUBTRACT_VALUE", "25"), false))
+	time.Sleep(1 * time.Second)
+
+	// SET is the action that means the same thing as a plain MED, and it still
+	// goes through set_metric_action, since that is what the request asked for.
+	t.Run("PATCH bgp-actions set-med-action to SET",
+		processSetRequest(url+"/set-med-action", "{\"openconfig-bgp-policy:set-med-action\":\"SET\"}", "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify ROUTE_MAP holds the plain set action",
+		verifyDbResult(rclient, "ROUTE_MAP|POL1|10", storedAction("METRIC_SET_VALUE", "25"), false))
+	time.Sleep(1 * time.Second)
+
+	// Dropping the action drops the value with it. frrcfgd reaches set_metric
+	// only through set_metric_action, so a value left behind would quietly stop
+	// being applied.
+	t.Run("DELETE bgp-actions set-med-action", processDeleteRequest(url+"/set-med-action", false))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify ROUTE_MAP has neither the action nor the value",
+		verifyDbResult(rclient, "ROUTE_MAP|POL1|10", map[string]interface{}{
+			"ROUTE_MAP": map[string]interface{}{
+				"POL1|10": map[string]interface{}{"NULL": "NULL"},
+			},
+		}, false))
+	time.Sleep(1 * time.Second)
+
+	// An action with no value anywhere to apply it to has nothing to write.
+	expectedErr := tlerr.InvalidArgsError{
+		Format: "routing-policy statement actions bgp-actions config set-med-action needs a set-med value, which neither the request nor the statement carries",
+	}
+	t.Run("PATCH bgp-actions set-med-action with no value to act on rejected",
+		processSetRequest(url+"/set-med-action", "{\"openconfig-bgp-policy:set-med-action\":\"ADD\"}", "PATCH", true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	// Writing a plain MED clears the action spelling, since frrcfgd binds both
+	// and would otherwise emit two competing set metric lines.
+	t.Run("PATCH bgp-actions config with an action, to be displaced",
+		processSetRequest(url, "{\"set-med\":30,\"set-med-action\":\"ADD\"}", "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("DELETE bgp-actions set-med", processDeleteRequest(url+"/set-med", false))
+	time.Sleep(1 * time.Second)
+	t.Run("PATCH bgp-actions set-med with no action in play",
+		processSetRequest(url+"/set-med", "{\"openconfig-bgp-policy:set-med\":40}", "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify ROUTE_MAP holds the plain MED alone",
+		verifyDbResult(rclient, "ROUTE_MAP|POL1|10", map[string]interface{}{
+			"ROUTE_MAP": map[string]interface{}{
+				"POL1|10": map[string]interface{}{
+					// The delete above took the row's last field with it, so
+					// the placeholder SONiC leaves in an otherwise empty row is
+					// still here alongside the MED written after it.
+					"NULL":    "NULL",
+					"set_med": "40",
+				},
+			},
+		}, false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET bgp-actions config reports the MED with no action",
+		processGetRequest(url, nil, "{\"openconfig-bgp-policy:config\":{\"set-med\":40}}", false))
+	time.Sleep(1 * time.Second)
+
+	// And an action written over a plain MED takes that MED as its value.
+	t.Run("PATCH bgp-actions set-med-action over a plain MED",
+		processSetRequest(url+"/set-med-action", "{\"openconfig-bgp-policy:set-med-action\":\"ADD\"}", "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify the plain MED became the increment value",
+		verifyDbResult(rclient, "ROUTE_MAP|POL1|10", map[string]interface{}{
+			"ROUTE_MAP": map[string]interface{}{
+				"POL1|10": map[string]interface{}{
+					"NULL":              "NULL",
+					"set_metric_action": "METRIC_ADD_VALUE",
+					"set_metric":        "40",
+				},
+			},
+		}, false))
 	time.Sleep(1 * time.Second)
 
 	unloadDB(db.ConfigDB, cleanupTbl)
