@@ -36,6 +36,9 @@ import (
 const (
 	rpolRouteMapSetTbl                     = "ROUTE_MAP_SET"
 	rpolRouteMapTbl                        = "ROUTE_MAP"
+	rpolMetricActionSet                    = "METRIC_SET_VALUE"
+	rpolMetricActionAdd                    = "METRIC_ADD_VALUE"
+	rpolMetricActionSubtract               = "METRIC_SUBTRACT_VALUE"
 	rpolCommunitySetTbl                    = "COMMUNITY_SET"
 	rpolExtCommunitySetTbl                 = "EXTENDED_COMMUNITY_SET"
 	rpolPrefixSetTbl                       = "PREFIX_SET"
@@ -50,6 +53,8 @@ const (
 	rpolSetOriginFld                       = "set_origin"
 	rpolSetLocalPrefFld                    = "set_local_pref"
 	rpolSetMedFld                          = "set_med"
+	rpolSetMetricActionFld                 = "set_metric_action"
+	rpolSetMetricFld                       = "set_metric"
 	rpolMatchMedFld                        = "match_med"
 	rpolMatchOriginFld                     = "match_origin"
 	rpolMatchLocalPrefFld                  = "match_local_pref"
@@ -82,6 +87,7 @@ const (
 	rpolSetRouteOriginLeaf                 = "set-route-origin"
 	rpolSetLocalPrefLeaf                   = "set-local-pref"
 	rpolSetMedLeaf                         = "set-med"
+	rpolSetMedActionLeaf                   = "set-med-action"
 	rpolMedEqLeaf                          = "med-eq"
 	rpolOriginEqLeaf                       = "origin-eq"
 	rpolLocalPrefEqLeaf                    = "local-pref-eq"
@@ -113,7 +119,7 @@ var rpolPolicyDefCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:r
 var rpolStmtNameReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/name$`)
 var rpolStmtActionsCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/actions/config(?:/(policy-result))?$`)
 var rpolStmtCondMatchPfxCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/conditions/match-prefix-set/config(?:/(prefix-set|match-set-options))?$`)
-var rpolStmtBgpActionsCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/actions/(?:[A-Za-z0-9_.-]+:)?bgp-actions/(?:[A-Za-z0-9_.-]+:)?config(?:/(?:[A-Za-z0-9_.-]+:)?(set-next-hop|set-route-origin|set-local-pref|set-med))?$`)
+var rpolStmtBgpActionsCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/actions/(?:[A-Za-z0-9_.-]+:)?bgp-actions/(?:[A-Za-z0-9_.-]+:)?config(?:/(?:[A-Za-z0-9_.-]+:)?(set-next-hop|set-route-origin|set-local-pref|set-med-action|set-med))?$`)
 var rpolStmtBgpSetCommunityReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/actions/(?:[A-Za-z0-9_.-]+:)?bgp-actions/(?:[A-Za-z0-9_.-]+:)?set-community$`)
 var rpolStmtBgpSetCommunityInlineCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/actions/(?:[A-Za-z0-9_.-]+:)?bgp-actions/(?:[A-Za-z0-9_.-]+:)?set-community/(?:[A-Za-z0-9_.-]+:)?inline/(?:[A-Za-z0-9_.-]+:)?config(?:/(?:[A-Za-z0-9_.-]+:)?(communities))?$`)
 var rpolStmtBgpSetCommunityRefCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/actions/(?:[A-Za-z0-9_.-]+:)?bgp-actions/(?:[A-Za-z0-9_.-]+:)?set-community/(?:[A-Za-z0-9_.-]+:)?reference/(?:[A-Za-z0-9_.-]+:)?config(?:/(?:[A-Za-z0-9_.-]+:)?(community-set-refs|community-set-ref))?$`)
@@ -1716,6 +1722,130 @@ func rpolDbToBgpOrigin(v string) (ocbinds.E_OpenconfigBgpPolicy_BgpOriginAttrTyp
 	}
 }
 
+// rpolSetMedActionToDb maps the OpenConfig MED action onto the CONFIG_DB
+// set_metric_action. SONiC also offers three round trip time actions, which
+// have no OpenConfig spelling, so nothing here produces them.
+func rpolSetMedActionToDb(v ocbinds.E_OpenconfigBgpPolicy_BgpSetMedAction) (string, error) {
+	switch v {
+	case ocbinds.OpenconfigBgpPolicy_BgpSetMedAction_SET:
+		return rpolMetricActionSet, nil
+	case ocbinds.OpenconfigBgpPolicy_BgpSetMedAction_ADD:
+		return rpolMetricActionAdd, nil
+	case ocbinds.OpenconfigBgpPolicy_BgpSetMedAction_SUBTRACT:
+		return rpolMetricActionSubtract, nil
+	default:
+		return "", tlerr.InvalidArgsError{Format: "unsupported routing-policy set-med-action value in request payload"}
+	}
+}
+
+// rpolDbToSetMedAction reads back what the helper above writes. A row holding
+// one of the round trip time actions reports no action, since OpenConfig has
+// nothing to call it.
+func rpolDbToSetMedAction(v string) (ocbinds.E_OpenconfigBgpPolicy_BgpSetMedAction, bool) {
+	switch strings.ToUpper(strings.TrimSpace(v)) {
+	case rpolMetricActionSet:
+		return ocbinds.OpenconfigBgpPolicy_BgpSetMedAction_SET, true
+	case rpolMetricActionAdd:
+		return ocbinds.OpenconfigBgpPolicy_BgpSetMedAction_ADD, true
+	case rpolMetricActionSubtract:
+		return ocbinds.OpenconfigBgpPolicy_BgpSetMedAction_SUBTRACT, true
+	}
+	return ocbinds.OpenconfigBgpPolicy_BgpSetMedAction_UNSET, false
+}
+
+func parseRpolSetMedActionValue(v interface{}) (ocbinds.E_OpenconfigBgpPolicy_BgpSetMedAction, bool) {
+	switch val := v.(type) {
+	case ocbinds.E_OpenconfigBgpPolicy_BgpSetMedAction:
+		if val != ocbinds.OpenconfigBgpPolicy_BgpSetMedAction_UNSET {
+			return val, true
+		}
+	case *ocbinds.E_OpenconfigBgpPolicy_BgpSetMedAction:
+		if val != nil && *val != ocbinds.OpenconfigBgpPolicy_BgpSetMedAction_UNSET {
+			return *val, true
+		}
+	case string:
+		switch strings.ToUpper(strings.TrimSpace(val)) {
+		case "SET":
+			return ocbinds.OpenconfigBgpPolicy_BgpSetMedAction_SET, true
+		case "ADD":
+			return ocbinds.OpenconfigBgpPolicy_BgpSetMedAction_ADD, true
+		case "SUBTRACT":
+			return ocbinds.OpenconfigBgpPolicy_BgpSetMedAction_SUBTRACT, true
+		}
+	}
+	return ocbinds.OpenconfigBgpPolicy_BgpSetMedAction_UNSET, false
+}
+
+// rpolSetMedFields decides which of the two CONFIG_DB spellings of a MED
+// setting a request lands in. set_metric_action paired with set_metric is what
+// frrcfgd renders as "set metric +N" and "set metric -N", while the older
+// set_med renders as a bare "set metric N" and cannot express an increment.
+// frrcfgd binds both, so a row carrying values in both would have it emit two
+// competing set metric lines for the one route-map entry. Whichever spelling a
+// request settles on therefore clears the other, the same way a set-community
+// reference clears the inline spelling.
+//
+// Either leaf may arrive on its own, so the one a request leaves out is taken
+// from the row being updated: changing the value keeps the action already
+// configured, and changing the action keeps the value.
+func rpolSetMedFields(cfgDb *db.DB, reqInfo *rpolReqInfo, medVal string, medGiven bool,
+	medAction ocbinds.E_OpenconfigBgpPolicy_BgpSetMedAction) (map[string]string, map[string]string, error) {
+	stored := db.Value{Field: map[string]string{}}
+	if cfgDb != nil {
+		if entry, err := cfgDb.GetEntry(&db.TableSpec{Name: rpolRouteMapTbl},
+			db.Key{Comp: []string{reqInfo.policyName, reqInfo.stmtName}}); err == nil {
+			stored = entry
+		}
+	}
+
+	if medAction == ocbinds.OpenconfigBgpPolicy_BgpSetMedAction_UNSET {
+		if act, ok := rpolDbToSetMedAction(stored.Field[rpolSetMetricActionFld]); ok {
+			medAction = act
+		}
+	}
+	if !medGiven {
+		for _, fld := range []string{rpolSetMetricFld, rpolSetMedFld} {
+			if v := strings.TrimSpace(stored.Field[fld]); v != "" {
+				medVal, medGiven = v, true
+				break
+			}
+		}
+	}
+
+	// Only a field that actually holds something is named for deletion, so a
+	// MED write does not carry a pointless delete for every row it touches.
+	toClear := func(flds ...string) map[string]string {
+		clear := map[string]string{}
+		for _, fld := range flds {
+			if strings.TrimSpace(stored.Field[fld]) != "" {
+				clear[fld] = ""
+			}
+		}
+		return clear
+	}
+
+	if medAction == ocbinds.OpenconfigBgpPolicy_BgpSetMedAction_UNSET {
+		// No action in the request or the row, so the plain spelling applies.
+		// medGiven is necessarily set here, since this helper is only reached
+		// when the request carries a value or an action.
+		return map[string]string{rpolSetMedFld: medVal},
+			toClear(rpolSetMetricActionFld, rpolSetMetricFld), nil
+	}
+
+	if !medGiven {
+		return nil, nil, tlerr.InvalidArgsError{Format: "routing-policy statement actions bgp-actions config set-med-action needs a set-med value, which neither the request nor the statement carries"}
+	}
+	actDb, actErr := rpolSetMedActionToDb(medAction)
+	if actErr != nil {
+		return nil, nil, actErr
+	}
+	return map[string]string{
+			rpolSetMetricActionFld: actDb,
+			rpolSetMetricFld:       medVal,
+		},
+		toClear(rpolSetMedFld), nil
+}
+
 func rpolPolicyResultToRouteOp(v ocbinds.E_OpenconfigRoutingPolicy_PolicyResultType) (string, bool) {
 	switch v {
 	case ocbinds.OpenconfigRoutingPolicy_PolicyResultType_ACCEPT_ROUTE:
@@ -2136,6 +2266,8 @@ func rpolYangToDbXfmr(inParams XfmrParams) (res map[string]map[string]db.Value, 
 				fields[rpolSetOriginFld] = ""
 				fields[rpolSetLocalPrefFld] = ""
 				fields[rpolSetMedFld] = ""
+				fields[rpolSetMetricActionFld] = ""
+				fields[rpolSetMetricFld] = ""
 			case rpolSetNextHopLeaf:
 				fields[rpolSetNextHopFld] = ""
 			case rpolSetRouteOriginLeaf:
@@ -2143,7 +2275,20 @@ func rpolYangToDbXfmr(inParams XfmrParams) (res map[string]map[string]db.Value, 
 			case rpolSetLocalPrefLeaf:
 				fields[rpolSetLocalPrefFld] = ""
 			case rpolSetMedLeaf:
+				// Both spellings go, since either may be the one holding the
+				// value this leaf reports.
 				fields[rpolSetMedFld] = ""
+				fields[rpolSetMetricActionFld] = ""
+				fields[rpolSetMetricFld] = ""
+			case rpolSetMedActionLeaf:
+				// CONFIG_DB cannot hold a value under an action it no longer
+				// has: frrcfgd reaches set_metric only through
+				// set_metric_action, so a set_metric left behind would stop
+				// being applied without saying so. Dropping the action
+				// therefore drops the MED setting with it, and a plain MED has
+				// to be written back through set-med.
+				fields[rpolSetMetricActionFld] = ""
+				fields[rpolSetMetricFld] = ""
 			default:
 				return res, tlerr.NotSupportedError{Format: "DELETE supported only for /actions/bgp-actions/config or mapped leaves under it", Path: inParams.requestUri}
 			}
@@ -2418,15 +2563,6 @@ func rpolYangToDbXfmr(inParams XfmrParams) (res map[string]map[string]db.Value, 
 		cfgObj := getRpolPolicyStmtBgpActionsCfgObj(inParams.ygRoot, reqInfo.policyName, reqInfo.stmtName, false)
 		fields := map[string]string{}
 
-		// set-med-action arrived with openconfig-bgp-policy 8.0.0 and has no
-		// CONFIG_DB mapping yet. The unmapped leaf check only guards requests at
-		// the routing-policy root, and this handler reads just the leaves it
-		// knows, so a container payload carrying set-med-action would otherwise
-		// be answered with success while the action was dropped.
-		if cfgObj != nil && cfgObj.SetMedAction != ocbinds.OpenconfigBgpPolicy_BgpSetMedAction_UNSET {
-			return res, tlerr.NotSupportedError{Format: "routing-policy statement actions bgp-actions config set-med-action has no CONFIG_DB mapping"}
-		}
-
 		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == rpolSetNextHopLeaf {
 			if nh, ok := parseRpolBgpSetNextHopValue(inParams.param); ok {
 				fields[rpolSetNextHopFld] = nh
@@ -2472,23 +2608,55 @@ func rpolYangToDbXfmr(inParams XfmrParams) (res map[string]map[string]db.Value, 
 			}
 		}
 
+		medVal, medGiven := "", false
 		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == rpolSetMedLeaf {
 			if med, ok := parseRpolBgpSetMedValue(inParams.param); ok {
-				fields[rpolSetMedFld] = med
+				medVal, medGiven = med, true
 			} else if cfgObj != nil {
 				if med, ok := parseRpolBgpSetMedValue(cfgObj.SetMed); ok {
-					fields[rpolSetMedFld] = med
+					medVal, medGiven = med, true
 				}
 			}
-			if reqInfo.targetLeaf == rpolSetMedLeaf {
-				if _, ok := fields[rpolSetMedFld]; !ok {
-					return res, tlerr.InvalidArgsError{Format: "routing-policy statement actions bgp-actions config set-med is missing in request payload"}
+			if reqInfo.targetLeaf == rpolSetMedLeaf && !medGiven {
+				return res, tlerr.InvalidArgsError{Format: "routing-policy statement actions bgp-actions config set-med is missing in request payload"}
+			}
+		}
+
+		medAction := ocbinds.OpenconfigBgpPolicy_BgpSetMedAction_UNSET
+		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == rpolSetMedActionLeaf {
+			if act, ok := parseRpolSetMedActionValue(inParams.param); ok {
+				medAction = act
+			} else if cfgObj != nil {
+				medAction = cfgObj.SetMedAction
+			}
+			if reqInfo.targetLeaf == rpolSetMedActionLeaf && medAction == ocbinds.OpenconfigBgpPolicy_BgpSetMedAction_UNSET {
+				return res, tlerr.InvalidArgsError{Format: "routing-policy statement actions bgp-actions config set-med-action is missing in request payload"}
+			}
+		}
+
+		if medGiven || medAction != ocbinds.OpenconfigBgpPolicy_BgpSetMedAction_UNSET {
+			medFields, medClear, medErr := rpolSetMedFields(inParams.dbs[db.ConfigDB], reqInfo, medVal, medGiven, medAction)
+			if medErr != nil {
+				return res, medErr
+			}
+			for fld, val := range medFields {
+				fields[fld] = val
+			}
+			if len(medClear) > 0 {
+				// The spelling being displaced cannot be cleared by writing ""
+				// into it, the way the set-community pair is: CVL type checks
+				// the value, and set_med, set_metric and set_metric_action are
+				// a uint32, a uint32 and an enum. It has to be deleted, which a
+				// DELETE sub-operation carries alongside this update.
+				subOpMap := map[db.DBNum]map[string]map[string]db.Value{
+					db.ConfigDB: makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, medClear),
 				}
+				inParams.subOpDataMap[DELETE] = &subOpMap
 			}
 		}
 
 		if len(fields) == 0 {
-			return res, tlerr.InvalidArgsError{Format: "routing-policy statement actions bgp-actions config payload missing supported fields (set-next-hop/set-route-origin/set-local-pref/set-med)"}
+			return res, tlerr.InvalidArgsError{Format: "routing-policy statement actions bgp-actions config payload missing supported fields (set-next-hop/set-route-origin/set-local-pref/set-med/set-med-action)"}
 		}
 		return makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, fields), nil
 	}
@@ -2971,9 +3139,18 @@ func rpolDbToYangXfmr(inParams XfmrParams) (err error) {
 				}
 			}
 		}
-		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == rpolSetMedLeaf {
-			if medStr, ok := entry.Field[rpolSetMedFld]; ok && strings.TrimSpace(medStr) != "" {
-				medVal := strings.TrimSpace(medStr)
+		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == rpolSetMedLeaf || reqInfo.targetLeaf == rpolSetMedActionLeaf {
+			// The row carries the MED in one spelling or the other, never both,
+			// and the action spelling is the one to read when it is present.
+			medVal := strings.TrimSpace(entry.Field[rpolSetMedFld])
+			medAction, haveAction := rpolDbToSetMedAction(entry.Field[rpolSetMetricActionFld])
+			if haveAction {
+				medVal = strings.TrimSpace(entry.Field[rpolSetMetricFld])
+			}
+			if haveAction && reqInfo.targetLeaf != rpolSetMedLeaf {
+				cfgObj.SetMedAction = medAction
+			}
+			if medVal != "" && reqInfo.targetLeaf != rpolSetMedActionLeaf {
 				if med, convErr := strconv.ParseUint(medVal, 10, 32); convErr == nil {
 					cfgObj.SetMed = &ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_Config_SetMed_Union_Uint32{
 						Uint32: uint32(med),
@@ -2985,9 +3162,9 @@ func rpolDbToYangXfmr(inParams XfmrParams) (err error) {
 				}
 				// A row holding a signed value was written while the model
 				// still carried a string member for it, which 8.0.0 removed.
-				// Nothing in this revision can express it, so it is left out
-				// rather than reported as the bare number, which would drop the
-				// sign and claim the opposite of what is configured.
+				// Such a row is left out rather than reported as the bare
+				// number, which would drop the sign and claim the opposite of
+				// what is configured. set-med-action expresses it now.
 			}
 		}
 		return nil
