@@ -79,6 +79,8 @@ const (
 	rpolCommunitySetNameLeaf               = "community-set-name"
 	rpolCommunitySetRefLeaf                = "community-set-ref"
 	rpolCommunitySetRefsLeaf               = "community-set-refs"
+	rpolSetCommunityMethodLeaf             = "method"
+	rpolSetCommunityOptionsLeaf            = "options"
 	rpolPolicyResultLeaf                   = "policy-result"
 	rpolPrefixSetLeaf                      = "prefix-set"
 	rpolAsnLeaf                            = "asn"
@@ -120,7 +122,7 @@ var rpolStmtNameReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routi
 var rpolStmtActionsCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/actions/config(?:/(policy-result))?$`)
 var rpolStmtCondMatchPfxCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/conditions/match-prefix-set/config(?:/(prefix-set|match-set-options))?$`)
 var rpolStmtBgpActionsCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/actions/(?:[A-Za-z0-9_.-]+:)?bgp-actions/(?:[A-Za-z0-9_.-]+:)?config(?:/(?:[A-Za-z0-9_.-]+:)?(set-next-hop|set-route-origin|set-local-pref|set-med-action|set-med))?$`)
-var rpolStmtBgpSetCommunityReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/actions/(?:[A-Za-z0-9_.-]+:)?bgp-actions/(?:[A-Za-z0-9_.-]+:)?set-community$`)
+var rpolStmtBgpSetCommunityReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/actions/(?:[A-Za-z0-9_.-]+:)?bgp-actions/(?:[A-Za-z0-9_.-]+:)?set-community(?:/(?:[A-Za-z0-9_.-]+:)?config(?:/(?:[A-Za-z0-9_.-]+:)?(method|options))?)?$`)
 var rpolStmtBgpSetCommunityInlineCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/actions/(?:[A-Za-z0-9_.-]+:)?bgp-actions/(?:[A-Za-z0-9_.-]+:)?set-community/(?:[A-Za-z0-9_.-]+:)?inline/(?:[A-Za-z0-9_.-]+:)?config(?:/(?:[A-Za-z0-9_.-]+:)?(communities))?$`)
 var rpolStmtBgpSetCommunityRefCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/actions/(?:[A-Za-z0-9_.-]+:)?bgp-actions/(?:[A-Za-z0-9_.-]+:)?set-community/(?:[A-Za-z0-9_.-]+:)?reference/(?:[A-Za-z0-9_.-]+:)?config(?:/(?:[A-Za-z0-9_.-]+:)?(community-set-refs|community-set-ref))?$`)
 var rpolStmtBgpSetAsPathCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/actions/(?:[A-Za-z0-9_.-]+:)?bgp-actions/(?:[A-Za-z0-9_.-]+:)?set-as-path-prepend/(?:[A-Za-z0-9_.-]+:)?config(?:/(?:[A-Za-z0-9_.-]+:)?(asn|repeat-n))?$`)
@@ -214,10 +216,14 @@ func parseRpolRequestUri(uri string) (*rpolReqInfo, error) {
 	}
 	m = rpolStmtBgpSetCommunityReqUriRe.FindStringSubmatch(uri)
 	if len(m) >= 3 {
+		leaf := ""
+		if len(m) >= 4 {
+			leaf = m[3]
+		}
 		return &rpolReqInfo{
 			policyName: m[1],
 			stmtName:   m[2],
-			targetLeaf: "",
+			targetLeaf: leaf,
 			targetPath: rpolTargetStmtBgpSetCommunity,
 		}, nil
 	}
@@ -1047,7 +1053,12 @@ func rpolSetCommunityInlineCommunitiesToSlice(cfgObj *ocbinds.OpenconfigRoutingP
 		case *ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_SetCommunity_Inline_Config_Communities_Union_Uint32:
 			out = append(out, strconv.FormatUint(uint64(v.Uint32), 10))
 		case *ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_SetCommunity_Inline_Config_Communities_Union_E_OpenconfigBgpTypes_BGP_WELL_KNOWN_STD_COMMUNITY:
-			if c, ok := rpolWellKnownStdCommunityToString(v.E_OpenconfigBgpTypes_BGP_WELL_KNOWN_STD_COMMUNITY); ok {
+			// FRR's community parser has its own keywords: NO_EXPORT is
+			// no-export to it, and NO_EXPORT_SUBCONFED is local-AS. Writing
+			// the OpenConfig identity name instead makes FRR report the whole
+			// attribute malformed, which leaves the route-map with no set
+			// clause at all.
+			if c, ok := rpolWellKnownStdCommunityToFrrString(v.E_OpenconfigBgpTypes_BGP_WELL_KNOWN_STD_COMMUNITY); ok {
 				out = append(out, c)
 			} else {
 				return nil, tlerr.InvalidArgsError{Format: "unsupported set-community inline well-known community in request payload"}
@@ -1074,42 +1085,110 @@ func rpolWellKnownStdCommunityToString(v ocbinds.E_OpenconfigBgpTypes_BGP_WELL_K
 	}
 }
 
+// rpolSetCommunityInlineEncode renders the communities as the single argument
+// frrcfgd hands to "set community {}". FRR wants them space separated with one
+// trailing "additive", and refuses the attribute outright otherwise: both a
+// comma separated list and "additive" repeated per value are reported as
+// "Malformed communities attribute", which leaves the route-map with no set
+// clause at all.
 func rpolSetCommunityInlineEncode(communities []string, additive bool) string {
-	if len(communities) == 0 {
-		return ""
-	}
-	out := make([]string, 0, len(communities))
+	out := make([]string, 0, len(communities)+1)
 	for _, c := range communities {
 		v := strings.TrimSpace(c)
 		if v == "" {
 			continue
 		}
-		if additive {
-			v += " additive"
+		out = append(out, v)
+	}
+	if len(out) == 0 {
+		return ""
+	}
+	if additive {
+		out = append(out, "additive")
+	}
+	return strings.Join(out, " ")
+}
+
+// rpolSetCommunityInlineDecode reads that argument back. Commas are treated as
+// separators as well as spaces, so a row written before the encoding was
+// corrected still reads back: those hold a comma separated list with "additive"
+// repeated on every value.
+func rpolSetCommunityInlineDecode(in string) ([]string, bool) {
+	additive := false
+	out := make([]string, 0, 4)
+	for _, v := range strings.Fields(strings.ReplaceAll(in, ",", " ")) {
+		if strings.EqualFold(v, "additive") {
+			additive = true
+			continue
 		}
 		out = append(out, v)
 	}
-	return strings.Join(out, ", ")
+	return out, additive
 }
 
-func rpolSetCommunityInlineDecode(in string) ([]string, bool) {
-	parts := strings.Split(in, ",")
-	out := make([]string, 0, len(parts))
-	additive := false
-	for _, p := range parts {
-		v := strings.TrimSpace(p)
-		if v == "" {
-			continue
-		}
-		if strings.HasSuffix(v, " additive") {
-			additive = true
-			v = strings.TrimSpace(strings.TrimSuffix(v, " additive"))
-		}
-		if v != "" {
-			out = append(out, v)
+// rpolSetCommunityInlineMemberToYang turns a stored member back into the
+// spelling the model uses, since FRR's keywords are not the OpenConfig identity
+// names. Anything unrecognised is passed through, which covers plain community
+// values and rows that already hold an identity name.
+func rpolSetCommunityInlineMemberToYang(v string) string {
+	if enum, ok := rpolFrrStringToWellKnownStdCommunity(v); ok {
+		if name, ok := rpolWellKnownStdCommunityToString(enum); ok {
+			return name
 		}
 	}
-	return out, additive
+	return v
+}
+
+// rpolSetCommunityAdditive maps the OpenConfig option onto the marker FRR
+// understands: ADD renders "set community X additive" and REPLACE renders
+// "set community X", which replaces the attribute. REMOVE has no spelling
+// CONFIG_DB can carry, because FRR removes communities only through
+// "set comm-list <name> delete" and neither ROUTE_MAP nor frrcfgd has a field
+// for it, so it is refused rather than approximated.
+func rpolSetCommunityAdditive(options ocbinds.E_OpenconfigBgpPolicy_BgpSetCommunityOptionType) (additive bool, given bool, err error) {
+	switch options {
+	case ocbinds.OpenconfigBgpPolicy_BgpSetCommunityOptionType_UNSET:
+		return false, false, nil
+	case ocbinds.OpenconfigBgpPolicy_BgpSetCommunityOptionType_ADD:
+		return true, true, nil
+	case ocbinds.OpenconfigBgpPolicy_BgpSetCommunityOptionType_REPLACE:
+		return false, true, nil
+	}
+	return false, false, tlerr.NotSupportedError{Format: "routing-policy statement actions bgp-actions set-community config options REMOVE is not supported; FRR removes communities only through \"set comm-list <name> delete\", which ROUTE_MAP has no field for"}
+}
+
+// rpolSetCommunityStored reads back what a statement already carries. options
+// has no field of its own: it is a marker on set_community_inline, so a request
+// that changes options alone re-encodes the communities that are there.
+func rpolSetCommunityStored(cfgDb *db.DB, policyName, stmtName string) (communities []string, additive bool, ref string) {
+	if cfgDb == nil {
+		return nil, false, ""
+	}
+	entry, err := cfgDb.GetEntry(&db.TableSpec{Name: rpolRouteMapTbl}, db.Key{Comp: []string{policyName, stmtName}})
+	if err != nil {
+		return nil, false, ""
+	}
+	communities, additive = rpolSetCommunityInlineDecode(entry.Field[rpolSetCommunityInlineFld])
+	return communities, additive, strings.TrimSpace(entry.Field[rpolSetCommunityRefFld])
+}
+
+// rpolSetCommunityOptionsResMap re-encodes the stored communities with a new
+// marker, which is how a change to options on its own reaches CONFIG_DB.
+func rpolSetCommunityOptionsResMap(inParams XfmrParams, reqInfo *rpolReqInfo, additive bool) (map[string]map[string]db.Value, error) {
+	stored, _, ref := rpolSetCommunityStored(inParams.dbs[db.ConfigDB], reqInfo.policyName, reqInfo.stmtName)
+	if ref != "" {
+		return nil, rpolSetCommunityOptionsRefErr(inParams)
+	}
+	if len(stored) == 0 {
+		return nil, tlerr.InvalidArgsError{Format: "routing-policy statement actions bgp-actions set-community config options is stored as a marker on the inline communities, so the communities have to be configured before options"}
+	}
+	return makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, map[string]string{
+		rpolSetCommunityInlineFld: rpolSetCommunityInlineEncode(stored, additive),
+	}), nil
+}
+
+func rpolSetCommunityOptionsRefErr(inParams XfmrParams) error {
+	return tlerr.NotSupportedError{Format: "routing-policy statement actions bgp-actions set-community config options is not supported with the REFERENCE method; ROUTE_MAP records the referenced community-set in set_community_ref and has no field to carry options alongside it", Path: inParams.requestUri}
 }
 
 func parseRpolPolicyNameValue(v interface{}) (string, bool) {
@@ -2294,10 +2373,38 @@ func rpolYangToDbXfmr(inParams XfmrParams) (res map[string]map[string]db.Value, 
 			}
 			return makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, fields), nil
 		case rpolTargetStmtBgpSetCommunity:
-			return makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, map[string]string{
-				rpolSetCommunityInlineFld: "",
-				rpolSetCommunityRefFld:    "",
-			}), nil
+			switch reqInfo.targetLeaf {
+			case "":
+				return makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, map[string]string{
+					rpolSetCommunityInlineFld: "",
+					rpolSetCommunityRefFld:    "",
+				}), nil
+			case rpolSetCommunityOptionsLeaf:
+				// Dropping options keeps the communities and takes the marker
+				// off them, which is the REPLACE form. The marker shares
+				// set_community_inline with the communities, so what is left is
+				// rewritten as an update rather than deleted.
+				stored, _, ref := rpolSetCommunityStored(inParams.dbs[db.ConfigDB], reqInfo.policyName, reqInfo.stmtName)
+				if ref != "" {
+					return res, rpolSetCommunityOptionsRefErr(inParams)
+				}
+				if len(stored) == 0 {
+					// No communities, so no marker to clear.
+					return makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, map[string]string{
+						rpolSetCommunityInlineFld: "",
+					}), nil
+				}
+				if inParams.subOpDataMap == nil {
+					return res, tlerr.InvalidArgsError{Format: "unable to rewrite set-community options for DELETE"}
+				}
+				updMap := make(RedisDbMap)
+				updMap[db.ConfigDB] = makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, map[string]string{
+					rpolSetCommunityInlineFld: rpolSetCommunityInlineEncode(stored, false),
+				})
+				inParams.subOpDataMap[UPDATE] = &updMap
+				return res, nil
+			}
+			return res, tlerr.NotSupportedError{Format: "DELETE supported only for /actions/bgp-actions/set-community, its config container, or /actions/bgp-actions/set-community/config/options", Path: inParams.requestUri}
 		case rpolTargetStmtBgpSetCommunityInlineCfg:
 			return makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, map[string]string{
 				rpolSetCommunityInlineFld: "",
@@ -2673,18 +2780,33 @@ func rpolYangToDbXfmr(inParams XfmrParams) (res map[string]map[string]db.Value, 
 		if err != nil {
 			return res, err
 		}
+		if reqInfo.targetLeaf == rpolSetCommunityMethodLeaf {
+			return res, tlerr.NotSupportedError{Format: "SET is not supported for set-community config method; ROUTE_MAP has no method field and a GET reports the method of whichever of set_community_inline and set_community_ref holds a value, so write the communities or the reference instead", Path: inParams.requestUri}
+		}
 		cfgObj := getRpolPolicyStmtBgpSetCommunityCfgObj(inParams.ygRoot, reqInfo.policyName, reqInfo.stmtName, false)
 		if cfgObj == nil {
 			return res, tlerr.InvalidArgsError{Format: "routing-policy statement actions bgp-actions set-community config is missing in request payload"}
 		}
 
-		if cfgObj.Options != ocbinds.OpenconfigBgpPolicy_BgpSetCommunityOptionType_UNSET &&
-			cfgObj.Options != ocbinds.OpenconfigBgpPolicy_BgpSetCommunityOptionType_ADD {
-			return res, tlerr.InvalidArgsError{Format: "routing-policy statement actions bgp-actions set-community config options only supports ADD"}
+		additive, optionsGiven, optErr := rpolSetCommunityAdditive(cfgObj.Options)
+		if optErr != nil {
+			return res, optErr
+		}
+		if reqInfo.targetLeaf == rpolSetCommunityOptionsLeaf && !optionsGiven {
+			return res, tlerr.InvalidArgsError{Format: "routing-policy statement actions bgp-actions set-community config options is missing in request payload"}
+		}
+
+		// options named without a method changes the marker on the communities
+		// already stored: there is no field of its own for it to land in.
+		if optionsGiven && cfgObj.Method == ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_SetCommunity_Config_Method_UNSET {
+			return rpolSetCommunityOptionsResMap(inParams, reqInfo, additive)
 		}
 
 		switch cfgObj.Method {
 		case ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_SetCommunity_Config_Method_REFERENCE:
+			if optionsGiven {
+				return res, rpolSetCommunityOptionsRefErr(inParams)
+			}
 			refCfgObj := getRpolPolicyStmtBgpSetCommunityRefCfgObj(inParams.ygRoot, reqInfo.policyName, reqInfo.stmtName, false)
 			refName, refErr := rpolSetCommunityRefName(refCfgObj)
 			if refErr != nil {
@@ -2706,10 +2828,15 @@ func rpolYangToDbXfmr(inParams XfmrParams) (res map[string]map[string]db.Value, 
 			if err != nil {
 				return res, err
 			}
+			if len(communities) == 0 && optionsGiven {
+				// options named alongside the method, with no communities of
+				// its own, applies to the communities already stored.
+				return rpolSetCommunityOptionsResMap(inParams, reqInfo, additive)
+			}
 			if len(communities) == 0 {
 				return res, tlerr.InvalidArgsError{Format: "routing-policy statement actions bgp-actions set-community inline config communities is missing in request payload"}
 			}
-			inlineValue := rpolSetCommunityInlineEncode(communities, cfgObj.Options == ocbinds.OpenconfigBgpPolicy_BgpSetCommunityOptionType_ADD)
+			inlineValue := rpolSetCommunityInlineEncode(communities, additive)
 			return makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, map[string]string{
 				rpolSetCommunityInlineFld: inlineValue,
 			}), nil
@@ -2756,7 +2883,11 @@ func rpolYangToDbXfmr(inParams XfmrParams) (res map[string]map[string]db.Value, 
 		if len(communities) == 0 {
 			return res, tlerr.InvalidArgsError{Format: "routing-policy statement actions bgp-actions set-community inline config communities is missing in request payload"}
 		}
-		inlineValue := rpolSetCommunityInlineEncode(communities, false)
+		// options lives at set-community/config, outside this subtree, so a
+		// write here keeps the marker the stored value carries rather than
+		// silently turning an ADD into a REPLACE.
+		_, storedAdditive, _ := rpolSetCommunityStored(inParams.dbs[db.ConfigDB], reqInfo.policyName, reqInfo.stmtName)
+		inlineValue := rpolSetCommunityInlineEncode(communities, storedAdditive)
 		return makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, map[string]string{
 			rpolSetCommunityInlineFld: inlineValue,
 		}), nil
@@ -3187,8 +3318,14 @@ func rpolDbToYangXfmr(inParams XfmrParams) (err error) {
 		if cfgObj == nil {
 			return tlerr.InvalidArgsError{Format: "Unable to locate routing-policy statement actions bgp-actions set-community config object in YANG tree"}
 		}
+		reportMethod := reqInfo.targetLeaf == "" || reqInfo.targetLeaf == rpolSetCommunityMethodLeaf
+		reportOptions := reqInfo.targetLeaf == "" || reqInfo.targetLeaf == rpolSetCommunityOptionsLeaf
 		if ref, ok := entry.Field[rpolSetCommunityRefFld]; ok && strings.TrimSpace(ref) != "" {
-			cfgObj.Method = ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_SetCommunity_Config_Method_REFERENCE
+			if reportMethod {
+				cfgObj.Method = ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_SetCommunity_Config_Method_REFERENCE
+			}
+			// options is not reported under REFERENCE: no field records it, so
+			// there is nothing to report.
 			refCfgObj := getRpolPolicyStmtBgpSetCommunityRefCfgObj(inParams.ygRoot, reqInfo.policyName, reqInfo.stmtName, true)
 			if refCfgObj != nil {
 				// Both spellings are reported. 6.2.0 deprecated the singular
@@ -3199,16 +3336,25 @@ func rpolDbToYangXfmr(inParams XfmrParams) (err error) {
 				refCfgObj.CommunitySetRef = ygot.String(refName)
 			}
 		} else if inline, ok := entry.Field[rpolSetCommunityInlineFld]; ok && strings.TrimSpace(inline) != "" {
-			cfgObj.Method = ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_SetCommunity_Config_Method_INLINE
+			if reportMethod {
+				cfgObj.Method = ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_SetCommunity_Config_Method_INLINE
+			}
 			decoded, additive := rpolSetCommunityInlineDecode(inline)
-			if additive {
-				cfgObj.Options = ocbinds.OpenconfigBgpPolicy_BgpSetCommunityOptionType_ADD
+			if reportOptions {
+				// A stored value without the marker renders as
+				// "set community X", which replaces the attribute, so it
+				// reports REPLACE rather than leaving options unset.
+				if additive {
+					cfgObj.Options = ocbinds.OpenconfigBgpPolicy_BgpSetCommunityOptionType_ADD
+				} else {
+					cfgObj.Options = ocbinds.OpenconfigBgpPolicy_BgpSetCommunityOptionType_REPLACE
+				}
 			}
 			inlineCfgObj := getRpolPolicyStmtBgpSetCommunityInlineCfgObj(inParams.ygRoot, reqInfo.policyName, reqInfo.stmtName, true)
 			if inlineCfgObj != nil {
 				inlineCfgObj.Communities = make([]ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_SetCommunity_Inline_Config_Communities_Union, 0, len(decoded))
 				for _, c := range decoded {
-					unionVal, err := inlineCfgObj.To_OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_SetCommunity_Inline_Config_Communities_Union(c)
+					unionVal, err := inlineCfgObj.To_OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_SetCommunity_Inline_Config_Communities_Union(rpolSetCommunityInlineMemberToYang(c))
 					if err == nil {
 						inlineCfgObj.Communities = append(inlineCfgObj.Communities, unionVal)
 					}
@@ -3247,7 +3393,7 @@ func rpolDbToYangXfmr(inParams XfmrParams) (err error) {
 		decoded, _ := rpolSetCommunityInlineDecode(inline)
 		inlineCfgObj.Communities = make([]ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_SetCommunity_Inline_Config_Communities_Union, 0, len(decoded))
 		for _, c := range decoded {
-			unionVal, err := inlineCfgObj.To_OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_SetCommunity_Inline_Config_Communities_Union(c)
+			unionVal, err := inlineCfgObj.To_OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_SetCommunity_Inline_Config_Communities_Union(rpolSetCommunityInlineMemberToYang(c))
 			if err == nil {
 				inlineCfgObj.Communities = append(inlineCfgObj.Communities, unionVal)
 			}
