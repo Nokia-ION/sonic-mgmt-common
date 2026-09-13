@@ -409,7 +409,8 @@ func rpolStmtSetTargetUris(policyName, stmtName string, stmtObj *ocbinds.Opencon
 			if setCommunity := bgpActions.SetCommunity; setCommunity != nil {
 				switch {
 				case setCommunity.Config != nil &&
-					setCommunity.Config.Method != ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_SetCommunity_Config_Method_UNSET:
+					(setCommunity.Config.Method != ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_SetCommunity_Config_Method_UNSET ||
+						setCommunity.Config.Options != ocbinds.OpenconfigBgpPolicy_BgpSetCommunityOptionType_UNSET):
 					// The set-community node resolves the inline or reference
 					// method itself, so it covers both of its child configs.
 					uris = append(uris, rpolStmtBgpSetCommunityUri(policyName, stmtName))

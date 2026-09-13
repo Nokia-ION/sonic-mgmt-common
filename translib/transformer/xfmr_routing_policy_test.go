@@ -539,10 +539,12 @@ func Test_openconfig_routing_policy_policy_definition_statement_actions_bgp_acti
 	t.Run("PATCH routing-policy statement actions bgp set-community inline config", processSetRequest(url, urlInputBodyJSON, "PATCH", false, nil))
 	time.Sleep(1 * time.Second)
 
+	// Stored in the form FRR's parser accepts: space separated, and NO_EXPORT
+	// written as the keyword FRR knows it by.
 	expectedMap := map[string]interface{}{
 		"ROUTE_MAP": map[string]interface{}{
 			"POL1|10": map[string]interface{}{
-				"set_community_inline": "65001:100, NO_EXPORT",
+				"set_community_inline": "65001:100 no-export",
 			},
 		},
 	}
@@ -1994,6 +1996,231 @@ func Test_openconfig_routing_policy_statement_actions_bgp_set_community_refs(t *
 				},
 			},
 		}, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+// options at set-community/config is served for the two forms CONFIG_DB can
+// carry. ROUTE_MAP has no field of its own for options: frrcfgd renders
+// set_community_inline straight into "set community {}", so ADD is the additive
+// marker on that value and REPLACE is its absence. A request that changes
+// options alone therefore re-encodes the communities already stored. REMOVE is
+// refused rather than approximated, because FRR removes communities only
+// through "set comm-list <name> delete" and neither ROUTE_MAP nor frrcfgd has a
+// field for that.
+func Test_openconfig_routing_policy_statement_actions_bgp_set_community_options(t *testing.T) {
+	var urlInputBodyJSON string
+
+	preReqMap := map[string]interface{}{
+		"ROUTE_MAP_SET": map[string]interface{}{
+			"POL1": map[string]interface{}{"NULL": "NULL"},
+		},
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": map[string]interface{}{
+				"set_community_inline": "65001:100",
+			},
+			// A statement with no communities, to show there is nothing for the
+			// marker to sit on.
+			"POL1|20": map[string]interface{}{"NULL": "NULL"},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": "",
+			"POL1|20": "",
+		},
+		"ROUTE_MAP_SET": map[string]interface{}{
+			"POL1": "",
+		},
+		"COMMUNITY_SET": map[string]interface{}{
+			"CS1": "",
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	setCommUrl := "/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition[name=POL1]" +
+		"/statements/statement[name=10]/actions/bgp-actions/set-community"
+	cfgUrl := setCommUrl + "/config"
+	optionsUrl := cfgUrl + "/options"
+
+	storedInline := func(value string) map[string]interface{} {
+		return map[string]interface{}{
+			"ROUTE_MAP": map[string]interface{}{
+				"POL1|10": map[string]interface{}{
+					"set_community_inline": value,
+				},
+			},
+		}
+	}
+
+	// A stored value with no marker renders as "set community 65001:100", which
+	// replaces the attribute, so it reads back as REPLACE rather than as no
+	// options at all.
+	t.Run("GET options reports REPLACE for an unmarked value",
+		processGetRequest(optionsUrl, nil, `{"openconfig-bgp-policy:options":"REPLACE"}`, false))
+	time.Sleep(1 * time.Second)
+
+	urlInputBodyJSON = `{"openconfig-bgp-policy:options":"ADD"}`
+	t.Run("PATCH options ADD", processSetRequest(optionsUrl, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify ADD marked the communities already stored",
+		verifyDbResult(rclient, "ROUTE_MAP|POL1|10", storedInline("65001:100 additive"), false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET options reports ADD",
+		processGetRequest(optionsUrl, nil, `{"openconfig-bgp-policy:options":"ADD"}`, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET the config container reports the method alongside options",
+		processGetRequest(cfgUrl, nil,
+			`{"openconfig-bgp-policy:config":{"method":"INLINE","options":"ADD"}}`, false))
+	time.Sleep(1 * time.Second)
+
+	urlInputBodyJSON = `{"openconfig-bgp-policy:options":"REPLACE"}`
+	t.Run("PATCH options REPLACE", processSetRequest(optionsUrl, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify REPLACE took the marker off",
+		verifyDbResult(rclient, "ROUTE_MAP|POL1|10", storedInline("65001:100"), false))
+	time.Sleep(1 * time.Second)
+
+	removeErr := tlerr.NotSupportedError{
+		Format: `routing-policy statement actions bgp-actions set-community config options REMOVE is not supported; FRR removes communities only through "set comm-list <name> delete", which ROUTE_MAP has no field for`,
+	}
+	urlInputBodyJSON = `{"openconfig-bgp-policy:options":"REMOVE"}`
+	t.Run("PATCH options REMOVE rejected",
+		processSetRequest(optionsUrl, urlInputBodyJSON, "PATCH", true, removeErr))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify the refused REMOVE left the stored value alone",
+		verifyDbResult(rclient, "ROUTE_MAP|POL1|10", storedInline("65001:100"), false))
+	time.Sleep(1 * time.Second)
+
+	// options also arrives at the container, alongside the method and the
+	// communities it applies to.
+	urlInputBodyJSON = `{"config":{"method":"INLINE","options":"ADD"},"inline":{"config":{"communities":["65001:200"]}}}`
+	t.Run("PATCH set-community with options ADD",
+		processSetRequest(setCommUrl, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify the container write marked its own communities",
+		verifyDbResult(rclient, "ROUTE_MAP|POL1|10", storedInline("65001:200 additive"), false))
+	time.Sleep(1 * time.Second)
+
+	// The inline config carries no options of its own, so a write there keeps
+	// the marker rather than silently turning an ADD into a REPLACE.
+	urlInputBodyJSON = `{"communities":["65001:300"]}`
+	t.Run("PATCH the inline config on its own",
+		processSetRequest(setCommUrl+"/inline/config", urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify the inline write kept the marker",
+		verifyDbResult(rclient, "ROUTE_MAP|POL1|10", storedInline("65001:300 additive"), false))
+	time.Sleep(1 * time.Second)
+
+	// Dropping options keeps the communities and takes the marker off them,
+	// which is the REPLACE form.
+	t.Run("DELETE options", processDeleteRequest(optionsUrl, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify the delete left the communities unmarked",
+		verifyDbResult(rclient, "ROUTE_MAP|POL1|10", storedInline("65001:300"), false))
+	time.Sleep(1 * time.Second)
+
+	// The stored value is the single argument frrcfgd hands to
+	// "set community {}", so several communities are space separated with one
+	// trailing marker, and a well-known community is written as the keyword FRR
+	// knows it by. A comma, or a marker repeated per value, is malformed to FRR
+	// and leaves the route-map with no set clause at all.
+	urlInputBodyJSON = `{"config":{"method":"INLINE","options":"ADD"},"inline":{"config":{"communities":["65001:100","NO_EXPORT"]}}}`
+	t.Run("PATCH several communities including a well-known one",
+		processSetRequest(setCommUrl, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify the stored value is the form FRR accepts",
+		verifyDbResult(rclient, "ROUTE_MAP|POL1|10", storedInline("65001:100 no-export additive"), false))
+	time.Sleep(1 * time.Second)
+
+	// The keyword goes back out as the identity name the model uses.
+	t.Run("GET the inline config reports the identity name",
+		processGetRequest(setCommUrl+"/inline/config", nil,
+			`{"openconfig-bgp-policy:config":{"communities":["65001:100","NO_EXPORT"]}}`, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET options reports ADD alongside several communities",
+		processGetRequest(optionsUrl, nil, `{"openconfig-bgp-policy:options":"ADD"}`, false))
+	time.Sleep(1 * time.Second)
+
+	// A row written before the encoding was corrected holds a comma separated
+	// list with the marker repeated on every value, and still reads back.
+	loadDB(db.ConfigDB, map[string]interface{}{
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": map[string]interface{}{
+				"set_community_inline": "65001:100 additive, no-export additive",
+			},
+		},
+	})
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET a row in the superseded encoding still reports its communities",
+		processGetRequest(setCommUrl+"/inline/config", nil,
+			`{"openconfig-bgp-policy:config":{"communities":["65001:100","NO_EXPORT"]}}`, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET a row in the superseded encoding still reports ADD",
+		processGetRequest(optionsUrl, nil, `{"openconfig-bgp-policy:options":"ADD"}`, false))
+	time.Sleep(1 * time.Second)
+
+	// Rewriting options normalises that row onto the current encoding.
+	urlInputBodyJSON = `{"openconfig-bgp-policy:options":"REPLACE"}`
+	t.Run("PATCH options REPLACE over the superseded encoding",
+		processSetRequest(optionsUrl, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify the rewrite normalised the stored value",
+		verifyDbResult(rclient, "ROUTE_MAP|POL1|10", storedInline("65001:100 no-export"), false))
+	time.Sleep(1 * time.Second)
+
+	// method is inferred from whichever field holds a value, so a write at that
+	// leaf has nothing to change.
+	methodErr := tlerr.NotSupportedError{
+		Format: "SET is not supported for set-community config method; ROUTE_MAP has no method field and a GET reports the method of whichever of set_community_inline and set_community_ref holds a value, so write the communities or the reference instead",
+	}
+	urlInputBodyJSON = `{"openconfig-bgp-policy:method":"INLINE"}`
+	t.Run("PATCH the method leaf rejected",
+		processSetRequest(cfgUrl+"/method", urlInputBodyJSON, "PATCH", true, methodErr))
+	time.Sleep(1 * time.Second)
+
+	emptyErr := tlerr.InvalidArgsError{
+		Format: "routing-policy statement actions bgp-actions set-community config options is stored as a marker on the inline communities, so the communities have to be configured before options",
+	}
+	emptyOptionsUrl := "/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition[name=POL1]" +
+		"/statements/statement[name=20]/actions/bgp-actions/set-community/config/options"
+	urlInputBodyJSON = `{"openconfig-bgp-policy:options":"ADD"}`
+	t.Run("PATCH options with no communities stored rejected",
+		processSetRequest(emptyOptionsUrl, urlInputBodyJSON, "PATCH", true, emptyErr))
+	time.Sleep(1 * time.Second)
+
+	// Under REFERENCE there is no field to carry options at all, so it is
+	// refused rather than accepted and dropped.
+	urlInputBodyJSON = `{"config":{"method":"REFERENCE"},"reference":{"config":{"community-set-refs":["CS1"]}}}`
+	t.Run("PATCH set-community naming a reference",
+		processSetRequest(setCommUrl, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	refErr := tlerr.NotSupportedError{
+		Format: "routing-policy statement actions bgp-actions set-community config options is not supported with the REFERENCE method; ROUTE_MAP records the referenced community-set in set_community_ref and has no field to carry options alongside it",
+	}
+	urlInputBodyJSON = `{"openconfig-bgp-policy:options":"ADD"}`
+	t.Run("PATCH options under the REFERENCE method rejected",
+		processSetRequest(optionsUrl, urlInputBodyJSON, "PATCH", true, refErr))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET the config container reports no options under REFERENCE",
+		processGetRequest(cfgUrl, nil, `{"openconfig-bgp-policy:config":{"method":"REFERENCE"}}`, false))
 	time.Sleep(1 * time.Second)
 
 	unloadDB(db.ConfigDB, cleanupTbl)
