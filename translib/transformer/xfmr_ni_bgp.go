@@ -224,8 +224,11 @@ func matchNiBgpRequestUri(uri string) (*niBgpReqInfo, error) {
 		}, nil
 	}
 
+	// The message names what this handler serves rather than the global config
+	// alone, since every node of the protocol instance is routed here and a
+	// path that is not one of them arrives here too.
 	return nil, tlerr.InvalidArgsError{
-		Format: "unsupported path for network-instance BGP global config mapping: " + uri,
+		Format: "unsupported path under the network-instance BGP protocol instance: " + uri,
 	}
 }
 

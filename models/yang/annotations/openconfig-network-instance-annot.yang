@@ -13,9 +13,34 @@ module openconfig-network-instance-annot {
     // Mark these ancestor lists as virtual tables so the translib parent-table
     // existence check (verifyParentTableOc) does not reject the request before
     // the BGP global config transformer runs.
+    //
+    // The three levels enclosing every mapped subtree are bound to a dispatch
+    // of their own. A GET there answers with everything this module maps under
+    // a network instance, and a SET or a DELETE is refused, neither having one
+    // meaning at a level owned by four transformers. Every descendant that
+    // maps something carries its own deviation, and translib gives the nearest
+    // one precedence, so this binding does not claim them.
+    deviation /oc-netinst:network-instances {
+      deviate add {
+          sonic-ext:virtual-table "true";
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "ni_container_xfmr";
+      }
+    }
+
     deviation /oc-netinst:network-instances/oc-netinst:network-instance {
       deviate add {
           sonic-ext:virtual-table "true";
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "ni_container_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols {
+      deviate add {
+          sonic-ext:virtual-table "true";
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "ni_container_xfmr";
       }
     }
 
