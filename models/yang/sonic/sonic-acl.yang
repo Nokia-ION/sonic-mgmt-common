@@ -306,6 +306,113 @@ module sonic-acl {
 			}
 		}
 
+		container ACL_PORT_SET {
+
+			description
+				"Named L4 port sets that ACL rules match on, holding the
+				CONFIG_DB form of the OpenConfig
+				/defined-sets/port-sets/port-set list.
+
+				An ACL_RULE carries a single L4 port match, so a set has to
+				resolve to exactly one port or one contiguous range. The
+				management layer resolves the set and writes the result to the
+				referring rule's L4_SRC_PORT/L4_DST_PORT or
+				L4_SRC_PORT_RANGE/L4_DST_PORT_RANGE field, so orchagent never
+				reads this table.";
+
+			list ACL_PORT_SET_LIST {
+				key "name";
+
+				leaf name {
+					type string {
+						pattern '[a-zA-Z0-9]{1}([-a-zA-Z0-9_]{1,63})' {
+							error-app-tag port-set-name-invalid;
+						}
+					}
+				}
+
+				leaf DESCRIPTION {
+					type string {
+						length 1..255 {
+							error-app-tag port-set-description-invalid-length;
+						}
+					}
+				}
+
+				leaf-list PORTS {
+					description
+						"Ports to match, each a single port or an inclusive
+						range written as <lower>-<higher>.
+
+						Only one entry is supported, because it has to fit in
+						the single L4 port match of the referring ACL_RULE. The
+						limit is not expressed as max-elements 1: CVL validates
+						a leaf-list update against the merged view of the
+						request and the current row, so replacing the single
+						entry looks to it like a second one being added. The
+						management layer, which owns this table, rejects a set
+						holding more than one entry instead.";
+					type string {
+						pattern "[0-9]{1,5}(-[0-9]{1,5})?" {
+							error-app-tag port-set-ports-invalid;
+						}
+					}
+				}
+			}
+		}
+
+		container ACL_RULE_PORT_SET {
+
+			description
+				"Port set references of ACL rules, one entry per rule that
+				matches on a port set rather than on a literal port.
+
+				The reference cannot be kept on the ACL_RULE itself: orchagent
+				drops a rule outright when it carries a field it does not
+				know. It is kept here so a read of the rule can report which
+				set it matches, and so the rules referring to a set can be
+				found and rewritten when the set changes. The management layer
+				owns this table.";
+
+			list ACL_RULE_PORT_SET_LIST {
+				key "aclname rulename";
+
+				leaf aclname {
+					type string {
+						pattern '[a-zA-Z0-9]{1}([-a-zA-Z0-9_]{1,63})' {
+							error-app-tag aclname-invalid;
+						}
+					}
+				}
+
+				leaf rulename {
+					type string {
+						pattern '[a-zA-Z0-9]{1}([-a-zA-Z0-9_]{1,63})' {
+							error-app-tag rulename-invalid;
+						}
+					}
+				}
+
+				leaf SRC_PORT_SET {
+					description
+						"Port set resolved into the rule's L4 source port
+						match.";
+					type leafref {
+						path "../../../ACL_PORT_SET/ACL_PORT_SET_LIST/name";
+					}
+				}
+
+				leaf DST_PORT_SET {
+					description
+						"Port set resolved into the rule's L4 destination port
+						match.";
+					type leafref {
+						path "../../../ACL_PORT_SET/ACL_PORT_SET_LIST/name";
+					}
+				}
+			}
+		}
+
 		container ACL_TABLE_TYPE {
 
 			description
