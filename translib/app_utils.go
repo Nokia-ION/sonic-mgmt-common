@@ -37,6 +37,58 @@ import (
 	"github.com/openconfig/ygot/ytypes"
 )
 
+// stripWildcardListKeys rewrites a request URI so that a list element whose keys
+// are all "*" carries no keys at all. The two mean the same thing - every
+// instance of that list - but only the keyless form can be served: ygot binds a
+// request URI by creating the target node, and it cannot turn "*" into a typed
+// key such as a uint32, so a wildcard fails the request outright with
+// "unable to convert \"*\" to uint32".
+//
+// An element with a mix of concrete and wildcard keys is left untouched. Dropping
+// only part of a key set would leave a partially keyed list that the binder
+// cannot create either, so there is nothing to gain by rewriting it.
+//
+// Returns the rewritten URI and whether anything changed.
+func stripWildcardListKeys(uri string) (string, bool) {
+	// Only the structured form is asked for: ygot.PathToString below renders the
+	// deprecated Element slice whenever it is set, so a key cleared from Elem
+	// would be rebuilt from the string form and the rewrite would be a no-op.
+	gPath, err := ygot.StringToPath(uri, ygot.StructuredPath)
+	if err != nil {
+		return uri, false
+	}
+
+	changed := false
+	for _, elem := range gPath.Elem {
+		if len(elem.Key) == 0 {
+			continue
+		}
+		allWildcard := true
+		for _, v := range elem.Key {
+			if v != "*" {
+				allWildcard = false
+				break
+			}
+		}
+		if allWildcard {
+			elem.Key = nil
+			changed = true
+		}
+	}
+
+	if !changed {
+		return uri, false
+	}
+
+	newUri, err := ygot.PathToString(gPath)
+	if err != nil {
+		log.Warningf("stripWildcardListKeys: cannot rebuild uri from %s: %v", uri, err)
+		return uri, false
+	}
+
+	return newUri, true
+}
+
 func getYangPathFromUri(uri string) (string, error) {
 	var path *gnmi.Path
 	var err error
