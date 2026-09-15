@@ -140,9 +140,16 @@ type AclApp struct {
 
 	aclTs  *db.TableSpec
 	ruleTs *db.TableSpec
+	refTs  *db.TableSpec
 
 	aclTableMap  map[string]db.Value
 	ruleTableMap map[string]map[string]db.Value
+
+	// Port set references of the rules in the request, keyed by acl name and
+	// rule name. On a write these describe what the payload asked for; on a
+	// read they hold the ACL_RULE_PORT_SET rows.
+	rulePortSetMap map[string]map[string]*rulePortSetInfo
+	rulePortSetRef map[string]map[string]db.Value
 
 	// Counters are read outside the ConfigDB handle passed to processCommon.
 	countersDb  *db.DB
@@ -156,7 +163,7 @@ func init() {
 		&appInfo{appType: reflect.TypeOf(AclApp{}),
 			ygotRootType:  reflect.TypeOf(ocbinds.OpenconfigAcl_Acl{}),
 			isNative:      false,
-			tablesToWatch: []*db.TableSpec{&db.TableSpec{Name: ACL_TABLE}, &db.TableSpec{Name: RULE_TABLE}}})
+			tablesToWatch: []*db.TableSpec{&db.TableSpec{Name: ACL_TABLE}, &db.TableSpec{Name: RULE_TABLE}, &db.TableSpec{Name: RULE_PORT_SET_TABLE}}})
 
 	if err != nil {
 		log.Fatal("Register ACL app module with App Interface failed with error=", err)
@@ -164,7 +171,7 @@ func init() {
 
 	err = addModel(&ModelData{Name: "openconfig-acl",
 		Org: "OpenConfig working group",
-		Ver: "1.0.2"})
+		Ver: "1.3.3"})
 	if err != nil {
 		log.Fatal("Adding model data to appinterface failed with error=", err)
 	}
@@ -177,9 +184,12 @@ func (app *AclApp) initialize(data appData) {
 
 	app.aclTs = &db.TableSpec{Name: ACL_TABLE}
 	app.ruleTs = &db.TableSpec{Name: RULE_TABLE}
+	app.refTs = &db.TableSpec{Name: RULE_PORT_SET_TABLE}
 
 	app.aclTableMap = make(map[string]db.Value)
 	app.ruleTableMap = make(map[string]map[string]db.Value)
+	app.rulePortSetMap = make(map[string]map[string]*rulePortSetInfo)
+	app.rulePortSetRef = make(map[string]map[string]db.Value)
 }
 
 func (app *AclApp) getAppRootObject() *ocbinds.OpenconfigAcl_Acl {
@@ -283,7 +293,9 @@ func (app *AclApp) translateCRUCommon(d *db.DB, opcode int) ([]db.WatchKeys, err
 	log.Info("translateCRUCommon:acl:path =", app.pathInfo.Template)
 
 	app.convertOCAclsToInternal()
-	app.convertOCAclRulesToInternal(d)
+	if err = app.convertOCAclRulesToInternal(d); err != nil {
+		return keys, err
+	}
 	app.convertOCAclBindingsToInternal()
 
 	return keys, err
@@ -333,6 +345,9 @@ func (app *AclApp) processCommon(d *db.DB, opcode int) error {
 							err = d.ModEntry(app.ruleTs, db.Key{Comp: []string{aclKey, ruleKey}}, app.ruleTableMap[aclKey][ruleKey])
 						case DELETE:
 							if *app.ygotTarget == entrySet {
+								if err = app.deleteRulePortSetRefs(d, aclKey, ruleKey); err != nil {
+									return err
+								}
 								err = d.DeleteEntry(app.ruleTs, db.Key{Comp: []string{aclKey, ruleKey}})
 							} else if isRuleNodeSubtree {
 								err = app.handleRuleFieldsDeletion(d, aclKey, ruleKey)
@@ -387,6 +402,11 @@ func (app *AclApp) processCommon(d *db.DB, opcode int) error {
 							}
 						}
 						if *app.ygotTarget == aclSet || isAclEntriesSubtree {
+							// The rules are recreated below, so their references
+							// are rebuilt by syncRulePortSetRefs.
+							if err = app.deleteAclPortSetRefs(d, aclKey); err != nil {
+								return err
+							}
 							err = d.DeleteKeys(app.ruleTs, db.Key{Comp: []string{aclKey + TABLE_SEPARATOR + "RULE_*"}})
 							if err != nil {
 								return err
@@ -409,12 +429,18 @@ func (app *AclApp) processCommon(d *db.DB, opcode int) error {
 						}
 					case DELETE:
 						if *app.ygotTarget == aclSet {
+							if err = app.deleteAclPortSetRefs(d, aclKey); err != nil {
+								return err
+							}
 							err = d.DeleteKeys(app.ruleTs, db.Key{Comp: []string{aclKey + TABLE_SEPARATOR + "*"}})
 							if err != nil {
 								return err
 							}
 							err = d.DeleteEntry(app.aclTs, db.Key{Comp: []string{aclKey}})
 						} else if isAclEntriesSubtree {
+							if err = app.deleteAclPortSetRefs(d, aclKey); err != nil {
+								return err
+							}
 							err = d.DeleteKeys(app.ruleTs, db.Key{Comp: []string{aclKey + TABLE_SEPARATOR + "RULE_*"}})
 						} else {
 							nodeInfo, err := getTargetNodeYangSchema(app.pathInfo.Path, (*app.ygotRoot).(*ocbinds.Device))
@@ -476,6 +502,12 @@ func (app *AclApp) processCommon(d *db.DB, opcode int) error {
 		err = tlerr.NotSupported("URL %s is not supported", app.pathInfo.Template)
 	}
 
+	// The rules are in the transaction by now, so their port set references can
+	// be brought in line with them.
+	if err == nil && (opcode == CREATE || opcode == REPLACE || opcode == UPDATE) {
+		err = app.syncRulePortSetRefs(d, opcode)
+	}
+
 	return err
 }
 
@@ -497,6 +529,12 @@ func (app *AclApp) processCommonToplevelPath(d *db.DB, acl *ocbinds.OpenconfigAc
 		if err != nil {
 			return err
 		}
+		// Every rule is gone, so no reference can still be pointing at a port
+		// set. The rules created below get theirs from syncRulePortSetRefs.
+		err = d.DeleteTable(app.refTs)
+		if err != nil {
+			return err
+		}
 		err = app.setAclDataInConfigDb(d, app.aclTableMap, true)
 		if err != nil {
 			return err
@@ -509,6 +547,10 @@ func (app *AclApp) processCommonToplevelPath(d *db.DB, acl *ocbinds.OpenconfigAc
 		}
 		err = app.setAclRuleDataInConfigDb(d, app.ruleTableMap, false)
 	case DELETE:
+		err = d.DeleteTable(app.refTs)
+		if err != nil {
+			return err
+		}
 		err = d.DeleteTable(app.ruleTs)
 		if err != nil {
 			return err
@@ -545,6 +587,15 @@ func (app *AclApp) convertDBAclRulesToInternal(dbCl *db.DB, aclName string, seqI
 				app.ruleTableMap[aclName] = make(map[string]db.Value)
 			}
 			app.ruleTableMap[aclName][ruleName] = ruleData
+
+			// A rule matching on a port set holds the port the set resolved to,
+			// so the set it came from has to be read from its own table.
+			if refs := rulePortSetRefs(dbCl, aclName, ruleName); refs.IsPopulated() {
+				if app.rulePortSetRef[aclName] == nil {
+					app.rulePortSetRef[aclName] = make(map[string]db.Value)
+				}
+				app.rulePortSetRef[aclName][ruleName] = refs
+			}
 		}
 	} else {
 		ruleKeys, err := dbCl.GetKeys(app.ruleTs)
@@ -759,6 +810,19 @@ func (app *AclApp) convertInternalToOCAclRuleProperties(aclName string, ruleName
 				entrySet.Actions.Config.ForwardingAction = ocbinds.OpenconfigAcl_FORWARDING_ACTION_DROP
 				entrySet.Actions.State.ForwardingAction = ocbinds.OpenconfigAcl_FORWARDING_ACTION_DROP
 			}
+		}
+	}
+
+	// The L4 port match above is the port a set resolved to. Report the set it
+	// came from, which is held in ACL_RULE_PORT_SET.
+	if refs, ok := app.rulePortSetRef[aclName][ruleName]; ok {
+		if srcSet := (&refs).Get(RULE_SRC_PORT_SET); len(srcSet) > 0 {
+			entrySet.Transport.Config.SourcePortSet = &srcSet
+			entrySet.Transport.State.SourcePortSet = &srcSet
+		}
+		if dstSet := (&refs).Get(RULE_DST_PORT_SET); len(dstSet) > 0 {
+			entrySet.Transport.Config.DestinationPortSet = &dstSet
+			entrySet.Transport.State.DestinationPortSet = &dstSet
 		}
 	}
 
@@ -1261,7 +1325,7 @@ func (app *AclApp) convertOCAclsToInternal() {
 	}
 }
 
-func (app *AclApp) convertOCAclRulesToInternal(d *db.DB) {
+func (app *AclApp) convertOCAclRulesToInternal(d *db.DB) error {
 	acl := app.getAppRootObject()
 	if acl != nil {
 		app.ruleTableMap = make(map[string]map[string]db.Value)
@@ -1281,7 +1345,16 @@ func (app *AclApp) convertOCAclRulesToInternal(d *db.DB) {
 						entrySet := aclSet.AclEntries.AclEntry[seqId]
 						ruleName := "RULE_" + strconv.Itoa(int(seqId))
 						app.ruleTableMap[aclKey][ruleName] = db.Value{Field: map[string]string{}}
-						convertOCAclRuleToInternalAclRule(app.ruleTableMap[aclKey][ruleName], seqId, aclKey, aclSet.Type, entrySet)
+						portSets, err := convertOCAclRuleToInternalAclRule(d, app.ruleTableMap[aclKey][ruleName], seqId, aclKey, aclSet.Type, entrySet)
+						if err != nil {
+							return err
+						}
+						if portSets != nil {
+							if app.rulePortSetMap[aclKey] == nil {
+								app.rulePortSetMap[aclKey] = make(map[string]*rulePortSetInfo)
+							}
+							app.rulePortSetMap[aclKey][ruleName] = portSets
+						}
 						// caclmgrd uses PACKET_ACTION directly as the iptables
 						// jump target (-j ACCEPT/DROP), so a control-plane "accept"
 						// must be ACCEPT rather than the data-plane SAI "FORWARD".
@@ -1298,6 +1371,8 @@ func (app *AclApp) convertOCAclRulesToInternal(d *db.DB) {
 			}
 		}
 	}
+
+	return nil
 }
 
 func (app *AclApp) convertOCAclBindingsToInternal() {
@@ -1361,7 +1436,7 @@ func (app *AclApp) createDefaultDenyAclRule(d *db.DB, aclName string, rulesInfo 
 	rulesInfo["DEFAULT_RULE"].Field["IP_TYPE"] = "ANY"
 }
 
-func convertOCAclRuleToInternalAclRule(ruleData db.Value, seqId uint32, aclName string, aclType ocbinds.E_OpenconfigAcl_ACL_TYPE, rule *ocbinds.OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry) {
+func convertOCAclRuleToInternalAclRule(d *db.DB, ruleData db.Value, seqId uint32, aclName string, aclType ocbinds.E_OpenconfigAcl_ACL_TYPE, rule *ocbinds.OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry) (*rulePortSetInfo, error) {
 	ruleIndex := seqId
 	ruleData.Field["PRIORITY"] = strconv.FormatInt(int64(MAX_PRIORITY-ruleIndex), 10)
 	// Rule Description is not supported in Sonic. So commenting this out.
@@ -1380,9 +1455,14 @@ func convertOCAclRuleToInternalAclRule(ruleData db.Value, seqId uint32, aclName 
 	} /*else if ocbinds.OpenconfigAcl_ACL_TYPE_ACL_MIXED == aclType {
 	  } */
 
-	convertOCToInternalTransport(ruleData, aclName, ruleIndex, rule)
+	portSets, err := convertOCToInternalTransport(d, ruleData, aclName, ruleIndex, rule)
+	if err != nil {
+		return nil, err
+	}
 	convertOCToInternalInputInterface(ruleData, aclName, ruleIndex, rule)
 	convertOCToInternalInputAction(ruleData, aclName, ruleIndex, rule)
+
+	return portSets, nil
 }
 
 func convertOCToInternalL2(ruleData db.Value, aclName string, ruleIndex uint32, rule *ocbinds.OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry) {
@@ -1531,9 +1611,13 @@ func convertOCToInternalIPv6(ruleData db.Value, aclName string, ruleIndex uint32
 	ruleData.Field["IP_TYPE"] = "IPV6ANY"
 }
 
-func convertOCToInternalTransport(ruleData db.Value, aclName string, ruleIndex uint32, rule *ocbinds.OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry) {
-	if rule.Transport == nil {
-		return
+func convertOCToInternalTransport(d *db.DB, ruleData db.Value, aclName string, ruleIndex uint32, rule *ocbinds.OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry) (*rulePortSetInfo, error) {
+	if rule.Transport == nil || rule.Transport.Config == nil {
+		return nil, nil
+	}
+	portSets := &rulePortSetInfo{
+		srcLiteral: rule.Transport.Config.SourcePort != nil,
+		dstLiteral: rule.Transport.Config.DestinationPort != nil,
 	}
 	if rule.Transport.Config.SourcePort != nil && util.IsTypeStructPtr(reflect.TypeOf(rule.Transport.Config.SourcePort)) {
 		sourceportType := reflect.TypeOf(rule.Transport.Config.SourcePort).Elem()
@@ -1565,6 +1649,36 @@ func convertOCToInternalTransport(ruleData db.Value, aclName string, ruleIndex u
 		}
 	}
 
+	// A port set is resolved here and the rule keeps the port it resolved to:
+	// orchagent drops a rule that carries a field it does not know, so the set
+	// name cannot travel with it. The reference is recorded separately, in
+	// ACL_RULE_PORT_SET.
+	if rule.Transport.Config.SourcePortSet != nil {
+		if portSets.srcLiteral {
+			return nil, tlerr.InvalidArgs(
+				"source-port and source-port-set cannot both be set on rule %d of %s", ruleIndex, aclName)
+		}
+		portVal, err := portSetMatch(d, *rule.Transport.Config.SourcePortSet)
+		if err != nil {
+			return nil, err
+		}
+		setRulePortMatch(ruleData, true, portVal)
+		portSets.srcSet = *rule.Transport.Config.SourcePortSet
+	}
+
+	if rule.Transport.Config.DestinationPortSet != nil {
+		if portSets.dstLiteral {
+			return nil, tlerr.InvalidArgs(
+				"destination-port and destination-port-set cannot both be set on rule %d of %s", ruleIndex, aclName)
+		}
+		portVal, err := portSetMatch(d, *rule.Transport.Config.DestinationPortSet)
+		if err != nil {
+			return nil, err
+		}
+		setRulePortMatch(ruleData, false, portVal)
+		portSets.dstSet = *rule.Transport.Config.DestinationPortSet
+	}
+
 	var tcpFlags uint32 = 0x00
 	if len(rule.Transport.Config.TcpFlags) > 0 {
 		for _, flag := range rule.Transport.Config.TcpFlags {
@@ -1591,6 +1705,8 @@ func convertOCToInternalTransport(ruleData db.Value, aclName string, ruleIndex u
 		fmt.Fprintf(&b, "0x%0.2x/0x%0.2x", tcpFlags, tcpFlags)
 		ruleData.Field["TCP_FLAGS"] = b.String()
 	}
+
+	return portSets, nil
 }
 
 func convertOCToInternalInputInterface(ruleData db.Value, aclName string, ruleIndex uint32, rule *ocbinds.OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry) {
@@ -1622,6 +1738,9 @@ func (app *AclApp) handleRuleFieldsDeletion(d *db.DB, aclKey string, ruleKey str
 	if err != nil {
 		return err
 	}
+	// Port set references live in their own table, so they are cleared after the
+	// rule fields have been written.
+	var clearRefs []string
 	if nodeInfo.IsLeaf() {
 		switch nodeInfo.Name {
 		case "description":
@@ -1660,13 +1779,16 @@ func (app *AclApp) handleRuleFieldsDeletion(d *db.DB, aclKey string, ruleKey str
 			} else if strings.Contains(app.pathInfo.Path, "icmpv6/config") {
 				(&ruleEntry).Remove("ICMPV6_CODE")
 			}
-			// transport
-		case "source-port":
-			(&ruleEntry).Remove("L4_SRC_PORT")
-			(&ruleEntry).Remove("L4_SRC_PORT_RANGE")
-		case "destination-port":
-			(&ruleEntry).Remove("L4_DST_PORT")
-			(&ruleEntry).Remove("L4_DST_PORT_RANGE")
+			// transport. Deleting the port match takes the port set it was
+			// resolved from with it; deleting the reference takes the match.
+		case "source-port", "source-port-set":
+			(&ruleEntry).Remove(L4_SRC_PORT)
+			(&ruleEntry).Remove(L4_SRC_PORT_RANGE)
+			clearRefs = append(clearRefs, RULE_SRC_PORT_SET)
+		case "destination-port", "destination-port-set":
+			(&ruleEntry).Remove(L4_DST_PORT)
+			(&ruleEntry).Remove(L4_DST_PORT_RANGE)
+			clearRefs = append(clearRefs, RULE_DST_PORT_SET)
 			// actions
 		case "forwarding-action":
 			(&ruleEntry).Remove("PACKET_ACTION")
@@ -1712,11 +1834,12 @@ func (app *AclApp) handleRuleFieldsDeletion(d *db.DB, aclKey string, ruleKey str
 			(&ruleEntry).Remove("ICMPV6_TYPE")
 			(&ruleEntry).Remove("ICMPV6_CODE")
 		case "OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry_Transport", "OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry_Transport_Config":
-			(&ruleEntry).Remove("L4_SRC_PORT")
-			(&ruleEntry).Remove("L4_SRC_PORT_RANGE")
-			(&ruleEntry).Remove("L4_DST_PORT")
-			(&ruleEntry).Remove("L4_DST_PORT_RANGE")
+			(&ruleEntry).Remove(L4_SRC_PORT)
+			(&ruleEntry).Remove(L4_SRC_PORT_RANGE)
+			(&ruleEntry).Remove(L4_DST_PORT)
+			(&ruleEntry).Remove(L4_DST_PORT_RANGE)
 			(&ruleEntry).Remove("TCP_FLAGS")
+			clearRefs = append(clearRefs, RULE_SRC_PORT_SET, RULE_DST_PORT_SET)
 		case "OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry_InputInterface", "OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry_InputInterface_InterfaceRef", "OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry_InputInterface_InterfaceRef_Config":
 			(&ruleEntry).Remove("IN_PORTS")
 		case "OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry_Actions", "OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry_Actions_Config":
@@ -1731,8 +1854,121 @@ func (app *AclApp) handleRuleFieldsDeletion(d *db.DB, aclKey string, ruleKey str
 		log.Error("This yang type is not handled currently")
 	}
 	err = d.SetEntry(app.ruleTs, asKey(aclKey, ruleKey), ruleEntry)
+	if err != nil {
+		return err
+	}
+
+	if len(clearRefs) > 0 {
+		err = app.clearRulePortSetRefs(d, aclKey, ruleKey, clearRefs...)
+	}
 
 	return err
+}
+
+// rulePortSetInfo records what a rule's payload said about its L4 port match, so
+// the ACL_RULE_PORT_SET references can be brought in line once the rule itself
+// has been written.
+type rulePortSetInfo struct {
+	srcSet     string // port set the source port match was resolved from
+	dstSet     string // port set the destination port match was resolved from
+	srcLiteral bool   // payload carried a literal source port
+	dstLiteral bool   // payload carried a literal destination port
+}
+
+// syncRulePortSetRefs updates the port set references of the rules the request
+// touched. A reference goes away when the rule stops matching on a set, either
+// because it was rewritten without one or because it now matches a literal port.
+func (app *AclApp) syncRulePortSetRefs(d *db.DB, opcode int) error {
+	for aclKey, rules := range app.ruleTableMap {
+		for ruleKey := range rules {
+			if ruleKey == "DEFAULT_RULE" {
+				continue
+			}
+
+			existing := rulePortSetRefs(d, aclKey, ruleKey)
+			refs := db.Value{Field: map[string]string{}}
+			// An update merges into the rule, so the references it says nothing
+			// about have to survive it.
+			if opcode == UPDATE && existing.IsPopulated() {
+				refs = existing.Copy()
+			}
+
+			if info := app.rulePortSetMap[aclKey][ruleKey]; info != nil {
+				if info.srcSet != "" {
+					refs.Field[RULE_SRC_PORT_SET] = info.srcSet
+				} else if info.srcLiteral {
+					(&refs).Remove(RULE_SRC_PORT_SET)
+				}
+				if info.dstSet != "" {
+					refs.Field[RULE_DST_PORT_SET] = info.dstSet
+				} else if info.dstLiteral {
+					(&refs).Remove(RULE_DST_PORT_SET)
+				}
+			}
+
+			key := db.Key{Comp: []string{aclKey, ruleKey}}
+			switch {
+			case len(refs.Field) == 0:
+				if existing.IsPopulated() {
+					if err := d.DeleteEntry(app.refTs, key); err != nil {
+						return err
+					}
+				}
+			case !existing.Equals(&refs):
+				if err := d.SetEntry(app.refTs, key, refs); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// deleteRulePortSetRefs removes the port set references of one rule.
+func (app *AclApp) deleteRulePortSetRefs(d *db.DB, aclKey, ruleKey string) error {
+	refs := rulePortSetRefs(d, aclKey, ruleKey)
+	if !refs.IsPopulated() {
+		return nil
+	}
+	return d.DeleteEntry(app.refTs, db.Key{Comp: []string{aclKey, ruleKey}})
+}
+
+// deleteAclPortSetRefs removes the port set references of every rule of an ACL.
+func (app *AclApp) deleteAclPortSetRefs(d *db.DB, aclKey string) error {
+	keys, err := d.GetKeys(app.refTs)
+	if err != nil {
+		return err
+	}
+
+	for _, key := range keys {
+		if key.Len() > 0 && key.Get(0) == aclKey {
+			if err := d.DeleteEntry(app.refTs, key); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+// clearRulePortSetRefs removes the named references of a rule, and the row along
+// with them when nothing is left to point at.
+func (app *AclApp) clearRulePortSetRefs(d *db.DB, aclKey, ruleKey string, fields ...string) error {
+	refs := rulePortSetRefs(d, aclKey, ruleKey)
+	if !refs.IsPopulated() {
+		return nil
+	}
+
+	for _, field := range fields {
+		(&refs).Remove(field)
+	}
+
+	key := db.Key{Comp: []string{aclKey, ruleKey}}
+	if len(refs.Field) == 0 {
+		return d.DeleteEntry(app.refTs, key)
+	}
+	return d.SetEntry(app.refTs, key, refs)
 }
 
 func (app *AclApp) setAclDataInConfigDb(d *db.DB, aclData map[string]db.Value, createFlag bool) error {
