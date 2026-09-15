@@ -26,6 +26,8 @@ import (
 	"testing"
 
 	db "github.com/Azure/sonic-mgmt-common/translib/db"
+	"github.com/Azure/sonic-mgmt-common/translib/path"
+	"github.com/openconfig/ygot/ygot"
 )
 
 func init() {
@@ -585,6 +587,139 @@ func Test_AclApp_Subscribe(t *testing.T) {
 				tv.VerifyTarget(rPath, ruleTableNInfo(aName, aType, r.ruleId, r.fields))
 			})
 		}
+	}
+}
+
+// A subscription that leaves the rule key as a wildcard makes translib resolve
+// the notification path through processSubscribe, and it then checks that the
+// result still matches what the client asked for. The acl-set name cannot be
+// recovered from the CONFIG_DB key when it contains a dash, so the requested
+// name has to be carried through untouched or every notification is dropped.
+func Test_AclApp_ProcessSubscribe(t *testing.T) {
+	const dbKey = "ACL_12_IPV4_ACL_IPV4"
+
+	d := getConfigDb()
+	if d == nil {
+		t.Fatal("cannot connect to CONFIG_DB")
+	}
+	defer d.DeleteDB()
+
+	aclTs := &db.TableSpec{Name: ACL_TABLE}
+	if err := d.SetEntry(aclTs, asKey(dbKey),
+		db.Value{Field: map[string]string{ACL_TYPE: SONIC_ACL_TYPE_IPV4}}); err != nil {
+		t.Fatalf("cannot create %s: %v", dbKey, err)
+	}
+	t.Cleanup(func() { d.DeleteEntry(aclTs, asKey(dbKey)) })
+
+	app := &AclApp{}
+	tests := []struct {
+		name      string
+		template  string
+		wantName  string
+		wantSeqId string
+	}{{
+		name:      "requested_name_with_dash_is_preserved",
+		template:  "/openconfig-acl:acl/acl-sets/acl-set[name=ACL-12-IPV4][type=ACL_IPV4]/acl-entries/acl-entry[sequence-id=*]",
+		wantName:  "ACL-12-IPV4",
+		wantSeqId: "10",
+	}, {
+		name:      "wildcard_name_is_resolved_from_db",
+		template:  "/openconfig-acl:acl/acl-sets/acl-set[name=*][type=*]/acl-entries/acl-entry[sequence-id=*]",
+		wantName:  "ACL_12_IPV4",
+		wantSeqId: "10",
+	}}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			reqPath, err := ygot.StringToPath(tc.template, ygot.StructuredPath, ygot.StringSlicePath)
+			if err != nil {
+				t.Fatalf("bad template %s: %v", tc.template, err)
+			}
+
+			resp, err := app.processSubscribe(processSubRequest{
+				path:  path.Clone(reqPath),
+				dbno:  db.ConfigDB,
+				table: &db.TableSpec{Name: RULE_TABLE},
+				key:   db.NewKey(dbKey, "RULE_10"),
+				dbs:   getReadOnlyDB(),
+			})
+			if err != nil {
+				t.Fatalf("processSubscribe: %v", err)
+			}
+
+			if got := resp.path.Elem[2].Key["name"]; got != tc.wantName {
+				t.Errorf("name = %q, want %q", got, tc.wantName)
+			}
+			if got := resp.path.Elem[4].Key["sequence-id"]; got != tc.wantSeqId {
+				t.Errorf("sequence-id = %q, want %q", got, tc.wantSeqId)
+			}
+			if path.HasWildcardKey(resp.path) {
+				t.Errorf("unresolved wildcard in %s", path.String(resp.path))
+			}
+			// This is the check translib applies before sending a notification.
+			if !path.Matches(resp.path, reqPath) {
+				t.Errorf("resolved path %s does not match requested template %s",
+					path.String(resp.path), tc.template)
+			}
+		})
+	}
+
+	t.Run("default_rule_is_not_an_acl_entry", func(t *testing.T) {
+		reqPath, err := ygot.StringToPath(tests[0].template, ygot.StructuredPath, ygot.StringSlicePath)
+		if err != nil {
+			t.Fatalf("bad template: %v", err)
+		}
+		_, err = app.processSubscribe(processSubRequest{
+			path:  path.Clone(reqPath),
+			dbno:  db.ConfigDB,
+			table: &db.TableSpec{Name: RULE_TABLE},
+			key:   db.NewKey(dbKey, "DEFAULT_RULE"),
+			dbs:   getReadOnlyDB(),
+		})
+		if err == nil {
+			t.Error("DEFAULT_RULE accepted as an acl-entry")
+		}
+	})
+}
+
+func Test_StripWildcardListKeys(t *testing.T) {
+	tests := []struct {
+		uri         string
+		want        string
+		wantChanged bool
+	}{{
+		uri:         "/openconfig-acl:acl/acl-sets/acl-set[name=ACL1][type=ACL_IPV4]/acl-entries/acl-entry[sequence-id=*]",
+		want:        "/openconfig-acl:acl/acl-sets/acl-set[name=ACL1][type=ACL_IPV4]/acl-entries/acl-entry",
+		wantChanged: true,
+	}, {
+		uri:         "/openconfig-acl:acl/acl-sets/acl-set[name=*][type=*]/acl-entries",
+		want:        "/openconfig-acl:acl/acl-sets/acl-set/acl-entries",
+		wantChanged: true,
+	}, {
+		// Half a key set cannot be served either way, so it is left as is.
+		uri:         "/openconfig-acl:acl/acl-sets/acl-set[name=ACL1][type=*]",
+		want:        "/openconfig-acl:acl/acl-sets/acl-set[name=ACL1][type=*]",
+		wantChanged: false,
+	}, {
+		uri:         "/openconfig-acl:acl/acl-sets/acl-set[name=ACL1][type=ACL_IPV4]",
+		want:        "/openconfig-acl:acl/acl-sets/acl-set[name=ACL1][type=ACL_IPV4]",
+		wantChanged: false,
+	}, {
+		uri:         "/openconfig-acl:acl/acl-sets",
+		want:        "/openconfig-acl:acl/acl-sets",
+		wantChanged: false,
+	}}
+
+	for _, tc := range tests {
+		t.Run(tc.uri, func(t *testing.T) {
+			got, changed := stripWildcardListKeys(tc.uri)
+			if changed != tc.wantChanged {
+				t.Errorf("changed = %v, want %v", changed, tc.wantChanged)
+			}
+			if got != tc.want {
+				t.Errorf("uri = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

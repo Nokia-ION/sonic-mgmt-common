@@ -479,6 +479,15 @@ func Get(req GetRequest) (GetResponse, error) {
 
 	log.Info("Received Get request for path = ", path)
 
+	// Serve a fully wildcarded list key as the equivalent keyless request, which
+	// already returns every instance of the list. Rewriting it here keeps the
+	// binder, the app's path info and the response extraction working off the
+	// same path.
+	if p, ok := stripWildcardListKeys(path); ok {
+		log.Info("Get: wildcard list keys removed, serving path = ", p)
+		path = p
+	}
+
 	app, appInfo, err := getAppModule(path, req.ClientVersion)
 
 	if err != nil {
