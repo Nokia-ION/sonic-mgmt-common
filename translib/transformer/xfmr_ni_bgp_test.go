@@ -95,8 +95,8 @@ func Test_openconfig_network_instance_bgp_global_as(t *testing.T) {
 	time.Sleep(1 * time.Second)
 	unloadDB(db.ConfigDB, map[string]interface{}{"BGP_GLOBALS": map[string]interface{}{"blue": ""}})
 
-	expectedInvalidProtoErr := tlerr.InvalidArgsError{
-		Format: "unsupported path for network-instance BGP global config mapping: /openconfig-network-instance:network-instances/network-instance[name=default]/protocols/protocol[identifier=STATIC][name=static]/bgp/global/config/as",
+	expectedInvalidProtoErr := tlerr.NotSupportedError{
+		Format: "unsupported path under the network-instance STATIC protocol instance: /openconfig-network-instance:network-instances/network-instance[name=default]/protocols/protocol[identifier=STATIC][name=static]/bgp/global/config/as",
 	}
 	url = "/openconfig-network-instance:network-instances/network-instance[name=default]/protocols/protocol[identifier=STATIC][name=static]/bgp/global/config/as"
 	urlInputBodyJSON = "{\"openconfig-network-instance:as\":65300}"
@@ -2817,8 +2817,8 @@ func Test_openconfig_network_instance_bgp_container_non_bgp_protocol_rejected(t 
 
 	urlInputBodyJSON := `{"neighbor":[` +
 		`{"neighbor-address":"20.0.0.1","config":{"enabled":true}}]}`
-	expectedErr := tlerr.InvalidArgsError{
-		Format: "unsupported path for network-instance BGP global config mapping: " + staticProtoUrl + "/bgp/neighbors",
+	expectedErr := tlerr.NotSupportedError{
+		Format: "unsupported path under the network-instance STATIC protocol instance: " + staticProtoUrl + "/bgp/neighbors",
 	}
 	t.Run("PATCH BGP container path under non-BGP protocol rejected",
 		processSetRequest(staticProtoUrl+"/bgp/neighbors", urlInputBodyJSON, "PATCH", true, expectedErr))
@@ -2827,6 +2827,202 @@ func Test_openconfig_network_instance_bgp_container_non_bgp_protocol_rejected(t 
 	t.Run("GET BGP container path under non-BGP protocol rejected",
 		processGetRequest(staticProtoUrl+"/bgp/neighbors", nil, "", true))
 	time.Sleep(1 * time.Second)
+}
+
+// The levels enclosing every mapped subtree had no mapping of their own, so a
+// GET on them read {} while each of their children answered on its own. Each
+// level is asserted with the same rows in place, since what a client reads at
+// the top has to be the same data the children report.
+const niContainerNiUrl = "/openconfig-network-instance:network-instances/network-instance[name=default]"
+const niContainerRootUrl = "/openconfig-network-instance:network-instances"
+
+func niContainerTestRows() (map[string]interface{}, map[string]interface{}) {
+	return map[string]interface{}{
+			"BGP_GLOBALS": map[string]interface{}{
+				"default": map[string]interface{}{
+					"local_asn": "65200",
+					"router_id": "2.2.2.2",
+				},
+			},
+			"BGP_NEIGHBOR": map[string]interface{}{
+				"default|20.0.0.1": map[string]interface{}{
+					"admin_status": "up",
+					"asn":          "65300",
+				},
+			},
+			"STATIC_ROUTE": map[string]interface{}{
+				"10.9.0.0/16": map[string]interface{}{
+					"nexthop": "20.0.0.9",
+				},
+			},
+			"ROUTE_REDISTRIBUTE": map[string]interface{}{
+				"default|static|bgp|ipv4": map[string]interface{}{
+					"route_map": "TRM-RED",
+				},
+			},
+		}, map[string]interface{}{
+			"ROUTE_REDISTRIBUTE": map[string]interface{}{"default|static|bgp|ipv4": ""},
+			"STATIC_ROUTE":       map[string]interface{}{"10.9.0.0/16": ""},
+			"BGP_NEIGHBOR":       map[string]interface{}{"default|20.0.0.1": ""},
+			"BGP_GLOBALS":        map[string]interface{}{"default": ""},
+		}
+}
+
+func Test_openconfig_network_instance_container_get(t *testing.T) {
+	preReqMap, cleanupTbl := niContainerTestRows()
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	bgpProtoJSON := `{"bgp":{"global":{"config":{"as":65200,"router-id":"2.2.2.2"}},` +
+		`"neighbors":{"neighbor":[{"config":{"enabled":true,"peer-as":65300},"neighbor-address":"20.0.0.1"}]}},` +
+		`"identifier":"openconfig-policy-types:BGP","name":"bgp"}`
+	staticProtoJSON := `{"identifier":"openconfig-policy-types:STATIC","name":"static",` +
+		`"static-routes":{"static":[{"config":{"prefix":"10.9.0.0/16"},` +
+		`"next-hops":{"next-hop":[{"config":{"index":"20.0.0.9","next-hop":"20.0.0.9"},"index":"20.0.0.9"}]},` +
+		`"prefix":"10.9.0.0/16"}]}}`
+	protocolsJSON := `{"protocol":[` + bgpProtoJSON + `,` + staticProtoJSON + `]}`
+	tableConnJSON := `{"table-connection":[{"address-family":"openconfig-types:IPV4",` +
+		`"config":{"address-family":"openconfig-types:IPV4","dst-protocol":"openconfig-policy-types:BGP",` +
+		`"import-policy":["TRM-RED"],"src-protocol":"openconfig-policy-types:STATIC"},` +
+		`"dst-protocol":"openconfig-policy-types:BGP","src-protocol":"openconfig-policy-types:STATIC",` +
+		`"state":{"address-family":"openconfig-types:IPV4","dst-protocol":"openconfig-policy-types:BGP",` +
+		`"import-policy":["TRM-RED"],"src-protocol":"openconfig-policy-types:STATIC"}}]}`
+	niJSON := `{"name":"default","protocols":` + protocolsJSON + `,"table-connections":` + tableConnJSON + `}`
+
+	// Both protocol instances this module maps, from the container that holds
+	// them. The static routes come from the transformer that owns them, which
+	// the BGP protocol dispatch would never have reached.
+	expectedGetJSON := `{"openconfig-network-instance:protocols":` + protocolsJSON + `}`
+	t.Run("GET network-instance protocols container",
+		processGetRequest(niContainerNiUrl+"/protocols", nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	expectedGetJSON = `{"openconfig-network-instance:network-instance":[` + niJSON + `]}`
+	t.Run("GET network-instance list instance",
+		processGetRequest(niContainerNiUrl, nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	expectedGetJSON = `{"openconfig-network-instance:network-instances":{"network-instance":[` + niJSON + `]}}`
+	t.Run("GET network-instances container",
+		processGetRequest(niContainerRootUrl, nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_network_instance_container_set_not_supported(t *testing.T) {
+	preReqMap, cleanupTbl := niContainerTestRows()
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	// A network-instance level spans four subtrees with four owners, and
+	// CONFIG_DB holds no row for the network instance itself, so a write there
+	// is refused by a message saying so rather than accepted and dropped.
+	expectedErr := tlerr.NotSupportedError{
+		Format: "SET is not supported at a network-instance container level; set a mapped child path instead",
+	}
+
+	urlInputBodyJSON := `{"protocol":[{"identifier":"openconfig-policy-types:BGP","name":"bgp",` +
+		`"bgp":{"global":{"config":{"as":65400}}}}]}`
+	t.Run("PATCH network-instance protocols container rejected",
+		processSetRequest(niContainerNiUrl+"/protocols", urlInputBodyJSON, "PATCH", true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	urlInputBodyJSON = `{"name":"default","protocols":{"protocol":[` +
+		`{"identifier":"openconfig-policy-types:BGP","name":"bgp","bgp":{"global":{"config":{"as":65400}}}}]}}`
+	t.Run("PATCH network-instance list instance rejected",
+		processSetRequest(niContainerNiUrl, urlInputBodyJSON, "PATCH", true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	urlInputBodyJSON = `{"network-instance":[{"name":"default","protocols":{"protocol":[` +
+		`{"identifier":"openconfig-policy-types:BGP","name":"bgp","bgp":{"global":{"config":{"as":65400}}}}]}}]}`
+	t.Run("PATCH network-instances container rejected",
+		processSetRequest(niContainerRootUrl, urlInputBodyJSON, "PATCH", true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	// A node of a network instance that this module maps nothing under. It used
+	// to be refused by the BGP global parser, describing global config for a
+	// path that is not about it.
+	urlInputBodyJSON = `{"name":"default","enabled":true}`
+	t.Run("PATCH unmapped network-instance node rejected",
+		processSetRequest(niContainerNiUrl+"/config", urlInputBodyJSON, "PATCH", true,
+			tlerr.NotSupportedError{Format: "unsupported network-instance path: " + niContainerNiUrl + "/config"}))
+	time.Sleep(1 * time.Second)
+
+	// The refusals must leave the rows they spanned alone.
+	expectedMap := map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": map[string]interface{}{
+				"local_asn": "65200",
+				"router_id": "2.2.2.2",
+			},
+		},
+	}
+	t.Run("Verify BGP_GLOBALS unchanged after the refused container writes",
+		verifyDbResult(rclient, "BGP_GLOBALS|default", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_network_instance_container_delete_not_supported(t *testing.T) {
+	preReqMap, cleanupTbl := niContainerTestRows()
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	// This is the destructive one: honoured, a DELETE here would remove the
+	// whole network instance, and it used to be accepted and do nothing.
+	expectedErr := tlerr.NotSupportedError{
+		Format: "DELETE is not supported at a network-instance container level; delete a mapped child path or a list instance instead",
+	}
+	t.Run("DELETE network-instances container rejected",
+		processDeleteRequest(niContainerRootUrl, true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	t.Run("DELETE network-instance list instance rejected",
+		processDeleteRequest(niContainerNiUrl, true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	t.Run("DELETE network-instance protocols container rejected",
+		processDeleteRequest(niContainerNiUrl+"/protocols", true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": map[string]interface{}{
+				"local_asn": "65200",
+				"router_id": "2.2.2.2",
+			},
+		},
+	}
+	t.Run("Verify BGP_GLOBALS retained after the refused container deletes",
+		verifyDbResult(rclient, "BGP_GLOBALS|default", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"BGP_NEIGHBOR": map[string]interface{}{
+			"default|20.0.0.1": map[string]interface{}{
+				"admin_status": "up",
+				"asn":          "65300",
+			},
+		},
+	}
+	t.Run("Verify BGP_NEIGHBOR retained after the refused container deletes",
+		verifyDbResult(rclient, "BGP_NEIGHBOR|default|20.0.0.1", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"ROUTE_REDISTRIBUTE": map[string]interface{}{
+			"default|static|bgp|ipv4": map[string]interface{}{
+				"route_map": "TRM-RED",
+			},
+		},
+	}
+	t.Run("Verify ROUTE_REDISTRIBUTE retained after the refused container deletes",
+		verifyDbResult(rclient, "ROUTE_REDISTRIBUTE|default|static|bgp|ipv4", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
 }
 
 func Test_openconfig_network_instance_bgp_peer_group_config_container_set(t *testing.T) {
