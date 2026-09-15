@@ -1158,6 +1158,175 @@ func Test_openconfig_routing_policy_container_get(t *testing.T) {
 	unloadDB(db.ConfigDB, cleanupTbl)
 }
 
+// A GET naming one list instance must answer with that instance alone. The
+// container GET walks every mapped node in CONFIG_DB, so with siblings present
+// an unfiltered walk answers a request for one statement with the whole list.
+func Test_openconfig_routing_policy_container_get_list_instance(t *testing.T) {
+	preReqMap := map[string]interface{}{
+		"ROUTE_MAP_SET": map[string]interface{}{
+			"POL1": map[string]interface{}{"NULL": "NULL"},
+			"POL2": map[string]interface{}{"NULL": "NULL"},
+		},
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": map[string]interface{}{
+				"route_operation": "permit",
+				"set_med":         "110",
+			},
+			"POL1|20": map[string]interface{}{
+				"route_operation": "deny",
+			},
+			"POL2|10": map[string]interface{}{
+				"route_operation": "permit",
+			},
+		},
+		"COMMUNITY_SET": map[string]interface{}{
+			"COMM1": map[string]interface{}{"set_type": "STANDARD"},
+			"COMM2": map[string]interface{}{"set_type": "STANDARD"},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": "",
+			"POL1|20": "",
+			"POL2|10": "",
+		},
+		"ROUTE_MAP_SET": map[string]interface{}{
+			"POL1": "",
+			"POL2": "",
+		},
+		"COMMUNITY_SET": map[string]interface{}{
+			"COMM1": "",
+			"COMM2": "",
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	stmt10JSON := `{"actions":{"openconfig-bgp-policy:bgp-actions":{"config":{"set-med":110}},` +
+		`"config":{"policy-result":"ACCEPT_ROUTE"}},"config":{"name":"10"},"name":"10"}`
+	stmt20JSON := `{"actions":{"config":{"policy-result":"REJECT_ROUTE"}},"config":{"name":"20"},"name":"20"}`
+	pol1JSON := `{"config":{"name":"POL1"},"name":"POL1","statements":{"statement":[` +
+		stmt10JSON + `,` + stmt20JSON + `]}}`
+	pol2Stmt := `{"actions":{"config":{"policy-result":"ACCEPT_ROUTE"}},"config":{"name":"10"},"name":"10"}`
+	pol2JSON := `{"config":{"name":"POL2"},"name":"POL2","statements":{"statement":[` + pol2Stmt + `]}}`
+
+	pol1Url := rpolContainerUrl + "/policy-definitions/policy-definition[name=POL1]"
+
+	expectedGetJSON := `{"openconfig-routing-policy:statement":[` + stmt20JSON + `]}`
+	t.Run("GET statement list instance returns only that statement",
+		processGetRequest(pol1Url+"/statements/statement[name=20]", nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	expectedGetJSON = `{"openconfig-routing-policy:statement":[` + stmt10JSON + `]}`
+	t.Run("GET the other statement list instance",
+		processGetRequest(pol1Url+"/statements/statement[name=10]", nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	// The list itself still reports every sibling.
+	expectedGetJSON = `{"openconfig-routing-policy:statement":[` + stmt10JSON + `,` + stmt20JSON + `]}`
+	t.Run("GET statement list returns both statements",
+		processGetRequest(pol1Url+"/statements/statement", nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	expectedGetJSON = `{"openconfig-routing-policy:policy-definition":[` + pol2JSON + `]}`
+	t.Run("GET policy-definition list instance returns only that policy",
+		processGetRequest(rpolContainerUrl+"/policy-definitions/policy-definition[name=POL2]", nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	expectedGetJSON = `{"openconfig-routing-policy:policy-definition":[` + pol1JSON + `,` + pol2JSON + `]}`
+	t.Run("GET policy-definition list returns both policies",
+		processGetRequest(rpolContainerUrl+"/policy-definitions/policy-definition", nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	expectedGetJSON = `{"openconfig-bgp-policy:community-set":[` +
+		`{"community-set-name":"COMM2","config":{"community-set-name":"COMM2"}}]}`
+	t.Run("GET community-set list instance returns only that set",
+		processGetRequest(rpolContainerUrl+"/defined-sets/bgp-defined-sets/community-sets/community-set[community-set-name=COMM2]",
+			nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	// A node inside the named instance is answered from that instance.
+	expectedGetJSON = `{"openconfig-routing-policy:config":{"policy-result":"REJECT_ROUTE"}}`
+	t.Run("GET actions config under the named statement",
+		processGetRequest(pol1Url+"/statements/statement[name=20]/actions/config", nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	// Filtering must not prune a request that asks for the whole subtree.
+	definedSetsJSON := `{"openconfig-bgp-policy:bgp-defined-sets":{"community-sets":{"community-set":[` +
+		`{"community-set-name":"COMM1","config":{"community-set-name":"COMM1"}},` +
+		`{"community-set-name":"COMM2","config":{"community-set-name":"COMM2"}}]}}}`
+	expectedGetJSON = `{"openconfig-routing-policy:routing-policy":{"defined-sets":` + definedSetsJSON +
+		`,"policy-definitions":{"policy-definition":[` + pol1JSON + `,` + pol2JSON + `]}}}`
+	t.Run("GET routing-policy container still reports everything",
+		processGetRequest(rpolContainerUrl, nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+// A mapped node stands for the row a handler reads, not for the node the
+// response carries, and the two are not always the same branch: the prefix-set
+// config URI is what fills the prefixes list. A GET aimed at prefixes must
+// therefore still reach that node, while a GET naming one prefix-set must not
+// answer with another.
+func Test_openconfig_routing_policy_prefix_set_get_levels(t *testing.T) {
+	preReqMap := map[string]interface{}{
+		"PREFIX_SET": map[string]interface{}{
+			"PS1": map[string]interface{}{"mode": "IPv4"},
+			"PS2": map[string]interface{}{"mode": "IPv4"},
+		},
+		"PREFIX": map[string]interface{}{
+			"PS1|5|10.11.0.0/16|exact":   map[string]interface{}{"action": "permit"},
+			"PS1|10|10.12.0.0/16|17..24": map[string]interface{}{"action": "permit"},
+			"PS2|5|10.21.0.0/16|exact":   map[string]interface{}{"action": "permit"},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"PREFIX": map[string]interface{}{
+			"PS1|5|10.11.0.0/16|exact":   "",
+			"PS1|10|10.12.0.0/16|17..24": "",
+			"PS2|5|10.21.0.0/16|exact":   "",
+		},
+		"PREFIX_SET": map[string]interface{}{
+			"PS1": "",
+			"PS2": "",
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	pfxSetsUrl := "/openconfig-routing-policy:routing-policy/defined-sets/prefix-sets"
+	ps1Url := pfxSetsUrl + "/prefix-set[name=PS1]"
+	ps2Url := pfxSetsUrl + "/prefix-set[name=PS2]"
+
+	ps1PrefixesJSON := `{"prefix":[` +
+		`{"config":{"ip-prefix":"10.11.0.0/16","masklength-range":"exact"},` +
+		`"ip-prefix":"10.11.0.0/16","masklength-range":"exact"},` +
+		`{"config":{"ip-prefix":"10.12.0.0/16","masklength-range":"17..24"},` +
+		`"ip-prefix":"10.12.0.0/16","masklength-range":"17..24"}]}`
+	ps2PrefixesJSON := `{"prefix":[` +
+		`{"config":{"ip-prefix":"10.21.0.0/16","masklength-range":"exact"},` +
+		`"ip-prefix":"10.21.0.0/16","masklength-range":"exact"}]}`
+
+	t.Run("GET the prefixes container under a named prefix-set",
+		processGetRequest(ps1Url+"/prefixes", nil,
+			`{"openconfig-routing-policy:prefixes":`+ps1PrefixesJSON+`}`, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET the prefixes container of the other prefix-set",
+		processGetRequest(ps2Url+"/prefixes", nil,
+			`{"openconfig-routing-policy:prefixes":`+ps2PrefixesJSON+`}`, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET the prefix-set list instance carries its own prefixes",
+		processGetRequest(ps1Url, nil,
+			`{"openconfig-routing-policy:prefix-set":[{"config":{"mode":"IPV4","name":"PS1"},`+
+				`"name":"PS1","prefixes":`+ps1PrefixesJSON+`}]}`, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
 func Test_openconfig_routing_policy_container_unmapped_payload_rejected(t *testing.T) {
 	preReqMap := map[string]interface{}{
 		"ROUTE_MAP_SET": map[string]interface{}{
