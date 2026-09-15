@@ -114,6 +114,10 @@ func rpolStmtBgpSetCommunityInlineCfgUri(policyName, stmtName string) string {
 	return rpolStmtUriPrefix(policyName, stmtName) + "/actions/bgp-actions/set-community/inline/config"
 }
 
+func rpolStmtBgpSetCommunityRefCfgUri(policyName, stmtName string) string {
+	return rpolStmtUriPrefix(policyName, stmtName) + "/actions/bgp-actions/set-community/reference/config"
+}
+
 func rpolStmtBgpSetAsPathCfgUri(policyName, stmtName string) string {
 	return rpolStmtUriPrefix(policyName, stmtName) + "/actions/bgp-actions/set-as-path-prepend/config"
 }
@@ -416,6 +420,13 @@ func rpolStmtSetTargetUris(policyName, stmtName string, stmtObj *ocbinds.Opencon
 					uris = append(uris, rpolStmtBgpSetCommunityUri(policyName, stmtName))
 				case setCommunity.Inline != nil && setCommunity.Inline.Config != nil && len(setCommunity.Inline.Config.Communities) > 0:
 					uris = append(uris, rpolStmtBgpSetCommunityInlineCfgUri(policyName, stmtName))
+				case setCommunity.Reference != nil && setCommunity.Reference.Config != nil &&
+					(setCommunity.Reference.Config.CommunitySetRef != nil ||
+						len(setCommunity.Reference.Config.CommunitySetRefs) > 0):
+					// A payload anchored at the reference node names no method,
+					// so the set-community node above has nothing to resolve and
+					// the referenced set has to be mapped from here.
+					uris = append(uris, rpolStmtBgpSetCommunityRefCfgUri(policyName, stmtName))
 				}
 			}
 			if setAsPath := bgpActions.SetAsPathPrepend; setAsPath != nil && setAsPath.Config != nil {
@@ -576,6 +587,61 @@ func buildRpolContainerResMap(inParams XfmrParams, ygRoot *ygot.GoStruct) (map[s
 		res = mergeDbResMapFields(res, part)
 	}
 	return res, nil
+}
+
+// rpolListInstanceDeleteResMap answers a DELETE whose target is a list instance
+// itself rather than a node under it. Every leaf-level URI shape requires a
+// child node, so an instance URI is classified as container level, which is the
+// right answer for a GET or a SET: both are served by walking the whole
+// instance. A DELETE has an exact meaning there, and it is the same row removal
+// that the config and name spellings of that instance already perform.
+func rpolListInstanceDeleteResMap(inParams XfmrParams) (map[string]map[string]db.Value, bool, error) {
+	uri := inParams.requestUri
+	if m := rpolStmtInstanceReqUriRe.FindStringSubmatch(uri); len(m) == 3 {
+		return makeRpolRouteMapResMap(m[1], m[2], nil), true, nil
+	}
+	if m := rpolPolicyDefInstanceReqUriRe.FindStringSubmatch(uri); len(m) == 2 {
+		return rpolDeletePolicyDefResMap(inParams.dbs[db.ConfigDB], m[1]), true, nil
+	}
+	if m := rpolCommunitySetInstanceReqUriRe.FindStringSubmatch(uri); len(m) == 2 {
+		return makeRpolCommunitySetResMap(m[1], nil), true, nil
+	}
+	if m := rpolExtCommunitySetInstanceReqUriRe.FindStringSubmatch(uri); len(m) == 2 {
+		return makeRpolExtCommunitySetResMap(m[1], nil), true, nil
+	}
+	if m := rpolPrefixSetInstanceReqUriRe.FindStringSubmatch(uri); len(m) == 2 {
+		return rpolDeletePrefixSetResMap(inParams.dbs[db.ConfigDB], m[1]), true, nil
+	}
+	if m := rpolPrefixEntryInstanceReqUriRe.FindStringSubmatch(uri); len(m) == 4 {
+		res, err := rpolDeletePrefixEntryResMap(inParams.dbs[db.ConfigDB], &rpolReqInfo{
+			prefixSetName:   m[1],
+			ipPrefix:        m[2],
+			masklengthRange: m[3],
+		})
+		return res, true, err
+	}
+	return nil, false, nil
+}
+
+// rpolDeletePolicyDefResMap removes a policy together with the statements it
+// holds. The ROUTE_MAP rows are keyed by the policy name and would otherwise be
+// left behind under a policy that no longer exists.
+func rpolDeletePolicyDefResMap(cfgDb *db.DB, policyName string) map[string]map[string]db.Value {
+	res := makeRpolRouteMapSetResMap(policyName, nil)
+	if cfgDb == nil {
+		return res
+	}
+	keys, err := cfgDb.GetKeys(&db.TableSpec{Name: rpolRouteMapTbl})
+	if err != nil {
+		return res
+	}
+	for _, k := range keys {
+		if len(k.Comp) != 2 || k.Comp[0] != policyName {
+			continue
+		}
+		res = mergeDbResMap(res, makeRpolRouteMapResMap(k.Comp[0], k.Comp[1], nil))
+	}
+	return res
 }
 
 // populateRpolContainerFromDb fills the routing-policy subtree by replaying the
