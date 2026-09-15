@@ -137,6 +137,17 @@ var rpolExtCommunitySetReqUriRe = regexp.MustCompile(`^/openconfig-routing-polic
 var rpolPrefixSetReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/defined-sets/(?:[A-Za-z0-9_.-]+:)?prefix-sets/(?:[A-Za-z0-9_.-]+:)?prefix-set\[(?:[A-Za-z0-9_.-]+:)?name=([^\]]+)\]/(?:(?:[A-Za-z0-9_.-]+:)?name|(?:[A-Za-z0-9_.-]+:)?config(?:/(?:[A-Za-z0-9_.-]+:)?(name|mode))?)$`)
 var rpolPrefixEntryReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/defined-sets/(?:[A-Za-z0-9_.-]+:)?prefix-sets/(?:[A-Za-z0-9_.-]+:)?prefix-set\[(?:[A-Za-z0-9_.-]+:)?name=([^\]]+)\]/(?:[A-Za-z0-9_.-]+:)?prefixes/(?:[A-Za-z0-9_.-]+:)?prefix\[(?:[A-Za-z0-9_.-]+:)?ip-prefix=([^\]]+)\]\[(?:[A-Za-z0-9_.-]+:)?masklength-range=([^\]]+)\]/(?:(?:[A-Za-z0-9_.-]+:)?ip-prefix|(?:[A-Za-z0-9_.-]+:)?masklength-range|(?:[A-Za-z0-9_.-]+:)?config(?:/(?:[A-Za-z0-9_.-]+:)?(ip-prefix|masklength-range))?)$`)
 
+// A DELETE can name a list instance itself, carrying none of the child nodes
+// the shapes above require. Such a URI is classified as container level, since
+// a GET or a SET on one is answered by walking the whole instance, so the
+// DELETE path recognises these shapes on their own.
+var rpolPolicyDefInstanceReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]$`)
+var rpolStmtInstanceReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]$`)
+var rpolCommunitySetInstanceReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/defined-sets/(?:[A-Za-z0-9_.-]+:)?bgp-defined-sets/(?:[A-Za-z0-9_.-]+:)?community-sets/(?:[A-Za-z0-9_.-]+:)?community-set\[(?:[A-Za-z0-9_.-]+:)?community-set-name=([^\]]+)\]$`)
+var rpolExtCommunitySetInstanceReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/defined-sets/(?:[A-Za-z0-9_.-]+:)?bgp-defined-sets/(?:[A-Za-z0-9_.-]+:)?ext-community-sets/(?:[A-Za-z0-9_.-]+:)?ext-community-set\[(?:[A-Za-z0-9_.-]+:)?ext-community-set-name=([^\]]+)\]$`)
+var rpolPrefixSetInstanceReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/defined-sets/(?:[A-Za-z0-9_.-]+:)?prefix-sets/(?:[A-Za-z0-9_.-]+:)?prefix-set\[(?:[A-Za-z0-9_.-]+:)?name=([^\]]+)\]$`)
+var rpolPrefixEntryInstanceReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/defined-sets/(?:[A-Za-z0-9_.-]+:)?prefix-sets/(?:[A-Za-z0-9_.-]+:)?prefix-set\[(?:[A-Za-z0-9_.-]+:)?name=([^\]]+)\]/(?:[A-Za-z0-9_.-]+:)?prefixes/(?:[A-Za-z0-9_.-]+:)?prefix\[(?:[A-Za-z0-9_.-]+:)?ip-prefix=([^\]]+)\]\[(?:[A-Za-z0-9_.-]+:)?masklength-range=([^\]]+)\]$`)
+
 type rpolReqInfo struct {
 	policyName       string
 	stmtName         string
@@ -2288,7 +2299,10 @@ func rpolYangToDbXfmr(inParams XfmrParams) (res map[string]map[string]db.Value, 
 
 	if inParams.oper == DELETE {
 		if reqInfo.targetPath == rpolTargetRoot {
-			return res, tlerr.NotSupportedError{Format: "DELETE is not supported at routing-policy container level; delete mapped child paths or list instances instead", Path: inParams.requestUri}
+			if instRes, handled, instErr := rpolListInstanceDeleteResMap(inParams); handled {
+				return instRes, instErr
+			}
+			return res, tlerr.NotSupportedError{Format: "DELETE is not supported at a routing-policy container level; delete a list instance or a mapped child path instead", Path: inParams.requestUri}
 		}
 		if reqInfo.targetPath == rpolTargetPolicyDefCfg {
 			return makeRpolRouteMapSetResMap(reqInfo.policyName, nil), nil

@@ -1385,7 +1385,7 @@ func Test_openconfig_routing_policy_container_delete_not_supported(t *testing.T)
 	time.Sleep(1 * time.Second)
 
 	expectedErr := tlerr.NotSupportedError{
-		Format: "DELETE is not supported at routing-policy container level; delete mapped child paths or list instances instead",
+		Format: "DELETE is not supported at a routing-policy container level; delete a list instance or a mapped child path instead",
 	}
 	t.Run("DELETE routing-policy container rejected", processDeleteRequest(rpolContainerUrl, true, expectedErr))
 	time.Sleep(1 * time.Second)
@@ -1403,6 +1403,253 @@ func Test_openconfig_routing_policy_container_delete_not_supported(t *testing.T)
 	}
 	t.Run("Verify ROUTE_MAP retained after rejected container delete",
 		verifyDbResult(rclient, "ROUTE_MAP|POL1|10", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+// A payload anchored at the set-community reference node carries no method, so
+// the set-community node above it has nothing to resolve and the referenced set
+// has to be mapped from the reference node itself. The container walk used to
+// skip the reference subtree, which reported the request applied and wrote
+// nothing.
+func Test_openconfig_routing_policy_set_community_reference_container_set(t *testing.T) {
+	var urlInputBodyJSON string
+
+	preReqMap := map[string]interface{}{
+		"ROUTE_MAP_SET": map[string]interface{}{
+			"POL1": map[string]interface{}{"NULL": "NULL"},
+		},
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": map[string]interface{}{"route_operation": "permit"},
+		},
+		"COMMUNITY_SET": map[string]interface{}{
+			"CS1": map[string]interface{}{"set_type": "STANDARD"},
+			"CS2": map[string]interface{}{"set_type": "STANDARD"},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": "",
+		},
+		"ROUTE_MAP_SET": map[string]interface{}{
+			"POL1": "",
+		},
+		"COMMUNITY_SET": map[string]interface{}{
+			"CS1": "",
+			"CS2": "",
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	setCommUrl := "/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition[name=POL1]" +
+		"/statements/statement[name=10]/actions/bgp-actions/set-community"
+	refUrl := setCommUrl + "/reference"
+
+	storedRef := func(name string) map[string]interface{} {
+		return map[string]interface{}{
+			"ROUTE_MAP": map[string]interface{}{
+				"POL1|10": map[string]interface{}{
+					"route_operation": "permit",
+					// Writing a reference clears the inline spelling, which
+					// leaves that field present and empty rather than absent.
+					"set_community_inline": "",
+					"set_community_ref":    name,
+				},
+			},
+		}
+	}
+
+	urlInputBodyJSON = `{"config":{"community-set-refs":["CS1"]}}`
+	t.Run("PATCH set-community reference container with the leaf-list",
+		processSetRequest(refUrl, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify the reference container payload reached set_community_ref",
+		verifyDbResult(rclient, "ROUTE_MAP|POL1|10", storedRef("CS1"), false))
+	time.Sleep(1 * time.Second)
+
+	urlInputBodyJSON = `{"config":{"community-set-ref":"CS2"}}`
+	t.Run("PATCH set-community reference container with the singular leaf",
+		processSetRequest(refUrl, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify the singular leaf reached set_community_ref",
+		verifyDbResult(rclient, "ROUTE_MAP|POL1|10", storedRef("CS2"), false))
+	time.Sleep(1 * time.Second)
+
+	// One level up, at set-community, the same subtree is refused rather than
+	// dropped. That node resolves the method itself, and a payload naming
+	// neither a method nor inline communities does not say which branch it
+	// means.
+	urlInputBodyJSON = `{"reference":{"config":{"community-set-refs":["CS1"]}}}`
+	expectedErr := tlerr.InvalidArgsError{
+		Format: "routing-policy statement actions bgp-actions set-community config is missing in request payload",
+	}
+	t.Run("PATCH set-community carrying a methodless reference subtree rejected",
+		processSetRequest(setCommUrl, urlInputBodyJSON, "PATCH", true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify the rejected payload left the stored reference alone",
+		verifyDbResult(rclient, "ROUTE_MAP|POL1|10", storedRef("CS2"), false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+// A DELETE naming a list instance has to remove that instance. Every
+// leaf-level URI shape requires a child node, so an instance URI is classified
+// as container level, where DELETE used to be refused by a message that told
+// the caller to delete a list instance.
+func Test_openconfig_routing_policy_list_instance_delete(t *testing.T) {
+	preReqMap := map[string]interface{}{
+		"ROUTE_MAP_SET": map[string]interface{}{
+			"POL1": map[string]interface{}{"NULL": "NULL"},
+			"POL2": map[string]interface{}{"NULL": "NULL"},
+		},
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": map[string]interface{}{"route_operation": "permit"},
+			"POL1|20": map[string]interface{}{"route_operation": "deny"},
+			"POL2|10": map[string]interface{}{"route_operation": "permit"},
+		},
+		"COMMUNITY_SET": map[string]interface{}{
+			"CS1": map[string]interface{}{"set_type": "STANDARD"},
+		},
+		"EXTENDED_COMMUNITY_SET": map[string]interface{}{
+			"EC1": map[string]interface{}{"set_type": "STANDARD"},
+		},
+		"PREFIX_SET": map[string]interface{}{
+			"PS1": map[string]interface{}{"mode": "IPv4"},
+		},
+		"PREFIX": map[string]interface{}{
+			"PS1|5|10.1.0.0/16|exact":   map[string]interface{}{"action": "permit"},
+			"PS1|10|10.2.0.0/16|17..24": map[string]interface{}{"action": "permit"},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"PREFIX": map[string]interface{}{
+			"PS1|5|10.1.0.0/16|exact":   "",
+			"PS1|10|10.2.0.0/16|17..24": "",
+		},
+		"PREFIX_SET": map[string]interface{}{
+			"PS1": "",
+		},
+		"EXTENDED_COMMUNITY_SET": map[string]interface{}{
+			"EC1": "",
+		},
+		"COMMUNITY_SET": map[string]interface{}{
+			"CS1": "",
+		},
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": "",
+			"POL1|20": "",
+			"POL2|10": "",
+		},
+		"ROUTE_MAP_SET": map[string]interface{}{
+			"POL1": "",
+			"POL2": "",
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	definedSetsUrl := rpolContainerUrl + "/defined-sets"
+	policyUrl := rpolContainerUrl + "/policy-definitions/policy-definition[name=POL1]"
+	gone := func(table, key string) map[string]interface{} {
+		return map[string]interface{}{
+			table: map[string]interface{}{
+				key: map[string]interface{}{},
+			},
+		}
+	}
+
+	t.Run("DELETE routing-policy statement list instance",
+		processDeleteRequest(policyUrl+"/statements/statement[name=20]", false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify the named statement row is gone",
+		verifyDbResult(rclient, "ROUTE_MAP|POL1|20", gone("ROUTE_MAP", "POL1|20"), false))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": map[string]interface{}{"route_operation": "permit"},
+		},
+	}
+	t.Run("Verify the sibling statement survived",
+		verifyDbResult(rclient, "ROUTE_MAP|POL1|10", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	// A policy holds its statements, so removing the policy removes them too.
+	// A ROUTE_MAP row left behind would sit under a policy that no longer
+	// exists.
+	t.Run("DELETE routing-policy policy-definition list instance",
+		processDeleteRequest(policyUrl, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify the policy row is gone",
+		verifyDbResult(rclient, "ROUTE_MAP_SET|POL1", gone("ROUTE_MAP_SET", "POL1"), false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify the statement the policy held went with it",
+		verifyDbResult(rclient, "ROUTE_MAP|POL1|10", gone("ROUTE_MAP", "POL1|10"), false))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"ROUTE_MAP": map[string]interface{}{
+			"POL2|10": map[string]interface{}{"route_operation": "permit"},
+		},
+	}
+	t.Run("Verify the other policy was left alone",
+		verifyDbResult(rclient, "ROUTE_MAP|POL2|10", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("DELETE routing-policy community-set list instance",
+		processDeleteRequest(definedSetsUrl+"/bgp-defined-sets/community-sets/community-set[community-set-name=CS1]", false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify the community-set row is gone",
+		verifyDbResult(rclient, "COMMUNITY_SET|CS1", gone("COMMUNITY_SET", "CS1"), false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("DELETE routing-policy ext-community-set list instance",
+		processDeleteRequest(definedSetsUrl+"/bgp-defined-sets/ext-community-sets/ext-community-set[ext-community-set-name=EC1]", false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify the ext-community-set row is gone",
+		verifyDbResult(rclient, "EXTENDED_COMMUNITY_SET|EC1", gone("EXTENDED_COMMUNITY_SET", "EC1"), false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("DELETE routing-policy prefix list instance",
+		processDeleteRequest(definedSetsUrl+"/prefix-sets/prefix-set[name=PS1]"+
+			"/prefixes/prefix[ip-prefix=10.2.0.0/16][masklength-range=17..24]", false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify the named prefix row is gone",
+		verifyDbResult(rclient, "PREFIX|PS1|10|10.2.0.0/16|17..24", gone("PREFIX", "PS1|10|10.2.0.0/16|17..24"), false))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"PREFIX": map[string]interface{}{
+			"PS1|5|10.1.0.0/16|exact": map[string]interface{}{"action": "permit"},
+		},
+	}
+	t.Run("Verify the sibling prefix survived",
+		verifyDbResult(rclient, "PREFIX|PS1|5|10.1.0.0/16|exact", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	// A prefix-set holds its prefixes the same way a policy holds statements.
+	t.Run("DELETE routing-policy prefix-set list instance",
+		processDeleteRequest(definedSetsUrl+"/prefix-sets/prefix-set[name=PS1]", false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify the prefix-set row is gone",
+		verifyDbResult(rclient, "PREFIX_SET|PS1", gone("PREFIX_SET", "PS1"), false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify the prefix the set held went with it",
+		verifyDbResult(rclient, "PREFIX|PS1|5|10.1.0.0/16|exact", gone("PREFIX", "PS1|5|10.1.0.0/16|exact"), false))
 	time.Sleep(1 * time.Second)
 
 	unloadDB(db.ConfigDB, cleanupTbl)
