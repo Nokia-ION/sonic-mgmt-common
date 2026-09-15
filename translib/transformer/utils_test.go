@@ -38,7 +38,16 @@ type queryParamsUT struct {
 }
 
 func checkErr(t *testing.T, err error, expErr error) {
-	if err.Error() != expErr.Error() {
+	// An errorCase caller passes a nil expErr when any error will do.
+	if expErr == nil {
+		if err == nil {
+			t.Fatalf("Error nil, Expect an error")
+		}
+		return
+	}
+	if err == nil {
+		t.Fatalf("Error nil, Expect Err: %v", expErr)
+	} else if err.Error() != expErr.Error() {
 		t.Fatalf("Error %v, Expect Err: %v", err, expErr)
 	} else if reflect.TypeOf(err) != reflect.TypeOf(expErr) {
 		t.Fatalf("Error type %T, Expect Err Type: %T", err, expErr)
