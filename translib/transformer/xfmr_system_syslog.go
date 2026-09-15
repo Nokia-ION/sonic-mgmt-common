@@ -684,7 +684,7 @@ var YangToDb_remote_servers_list_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPa
 	isListOp := targetUriPath == SYSLOG_SERVERS_PATH ||
 		(targetUriPath == SYSLOG_SERVER_PATH && targetKey == "")
 	isServerOp := targetUriPath == SYSLOG_SERVER_PATH && targetKey != ""
-	isSelectorOp := strings.Contains(targetUriPath, "/selectors/")
+	isSelectorOp := strings.Contains(targetUriPath, "/selectors")
 	isConfigOp := strings.HasSuffix(targetUriPath, "/config") ||
 		strings.HasSuffix(targetUriPath, "/host")
 	if inParams.oper == DELETE {
@@ -713,6 +713,17 @@ var YangToDb_remote_servers_list_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPa
 				if fac, ok := entry.Field[SYSLOG_FIELD_FACILITY]; ok {
 					fields[SYSLOG_FIELD_FACILITY] = fac
 				}
+			case strings.HasSuffix(targetUriPath, "/selectors"),
+				strings.HasSuffix(targetUriPath, "/selector"),
+				strings.HasSuffix(targetUriPath, "/selector/config"):
+				// DELETE selectors container, selector list instance, or
+				// selector/config: clear facility+severity only.
+				if sev, ok := entry.Field[SYSLOG_FIELD_SEVERITY]; ok {
+					fields[SYSLOG_FIELD_SEVERITY] = sev
+				}
+				if fac, ok := entry.Field[SYSLOG_FIELD_FACILITY]; ok {
+					fields[SYSLOG_FIELD_FACILITY] = fac
+				}
 			default:
 				return nil, tlerr.InvalidArgsError{
 					Format: fmt.Sprintf("Unsupported selector DELETE on %s", inParams.uri),
@@ -736,6 +747,10 @@ var YangToDb_remote_servers_list_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPa
 			case strings.HasSuffix(targetUriPath, "/network-instance"):
 				if vrf, ok := entry.Field[SYSLOG_FIELD_VRF]; ok {
 					fields[SYSLOG_FIELD_VRF] = vrf
+				}
+			case strings.HasSuffix(targetUriPath, "/remote-port"):
+				if port, ok := entry.Field[SYSLOG_FIELD_PORT]; ok {
+					fields[SYSLOG_FIELD_PORT] = port
 				}
 			default:
 				return nil, tlerr.InvalidArgsError{
