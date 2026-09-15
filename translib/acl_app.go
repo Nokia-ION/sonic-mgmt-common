@@ -32,6 +32,7 @@ import (
 	"github.com/Azure/sonic-mgmt-common/translib/tlerr"
 
 	log "github.com/golang/glog"
+	"github.com/openconfig/gnmi/proto/gnmi"
 	"github.com/openconfig/ygot/util"
 	"github.com/openconfig/ygot/ygot"
 )
@@ -2131,10 +2132,17 @@ func (app *AclApp) processSubscribe(req processSubRequest) (processSubResponse, 
 
 		_, aclTypeStr := convertSonicAclTypeToOC(req.entry.Get(ACL_TYPE))
 		aclName := strings.TrimSuffix(req.key.Get(0), "_"+aclTypeStr)
-		path.SetKeyAt(resp.path, 2, "name", aclName)
-		path.SetKeyAt(resp.path, 2, "type", aclTypeStr)
+		resolveKeyAt(resp.path, 2, "name", aclName)
+		resolveKeyAt(resp.path, 2, "type", aclTypeStr)
 
 	case RULE_TABLE:
+		ruleName := req.key.Get(1)
+		if !strings.HasPrefix(ruleName, "RULE_") {
+			// The default-deny rule translib maintains itself has no
+			// sequence-id, and the read path leaves it out of acl-entries too.
+			return resp, tlerr.New("Not an acl-entry: %s", ruleName)
+		}
+
 		aclName := req.key.Get(0)
 		aclEntry, err := req.dbs[db.ConfigDB].GetEntry(&db.TableSpec{Name: ACL_TABLE}, asKey(aclName))
 		if err != nil {
@@ -2143,13 +2151,32 @@ func (app *AclApp) processSubscribe(req processSubRequest) (processSubResponse, 
 
 		_, aclTypeStr := convertSonicAclTypeToOC(aclEntry.Get(ACL_TYPE))
 		aclName = strings.TrimSuffix(aclName, "_"+aclTypeStr)
-		path.SetKeyAt(resp.path, 2, "name", aclName)
-		path.SetKeyAt(resp.path, 2, "type", aclTypeStr)
-		path.SetKeyAt(resp.path, 4, "sequence-id", strings.TrimPrefix(req.key.Get(1), "RULE_"))
+		resolveKeyAt(resp.path, 2, "name", aclName)
+		resolveKeyAt(resp.path, 2, "type", aclTypeStr)
+		resolveKeyAt(resp.path, 4, "sequence-id", strings.TrimPrefix(ruleName, "RULE_"))
 
 	default:
 		return resp, tlerr.New("Unknown table: %s", req.table.Name)
 	}
 
 	return resp, nil
+}
+
+// resolveKeyAt fills a key the subscribe path template left as a wildcard, and
+// leaves a key the client spelled out alone.
+//
+// The value derived from the DB key is only an approximation of what was asked
+// for: a dash is not allowed in a SONiC table name, so an acl-set named
+// "ACL-12-IPV4" is stored as "ACL_12_IPV4" and reads back with underscores.
+// Overwriting the requested name with that form makes translib's check that the
+// resolved path still matches the requested template fail, and the notification
+// is dropped - which is how a subscription carrying a wildcard rule key ended up
+// reporting nothing at all for such an acl-set.
+func resolveKeyAt(p *gnmi.Path, index int, name, value string) {
+	if index < path.Len(p) {
+		if cur, ok := p.Elem[index].Key[name]; ok && cur != "*" {
+			return
+		}
+	}
+	path.SetKeyAt(p, index, name, value)
 }
