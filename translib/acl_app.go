@@ -340,8 +340,14 @@ func (app *AclApp) processCommon(d *db.DB, opcode int) error {
 								log.Errorf("processCommon: Given CREATE path %s not handled", targetUriPath)
 							}
 						case REPLACE:
+							if err = app.clearStaleRulePortMatch(d, aclKey, ruleKey, app.ruleTableMap[aclKey][ruleKey]); err != nil {
+								return err
+							}
 							err = d.SetEntry(app.ruleTs, db.Key{Comp: []string{aclKey, ruleKey}}, app.ruleTableMap[aclKey][ruleKey])
 						case UPDATE:
+							if err = app.clearStaleRulePortMatch(d, aclKey, ruleKey, app.ruleTableMap[aclKey][ruleKey]); err != nil {
+								return err
+							}
 							err = d.ModEntry(app.ruleTs, db.Key{Comp: []string{aclKey, ruleKey}}, app.ruleTableMap[aclKey][ruleKey])
 						case DELETE:
 							if *app.ygotTarget == entrySet {
@@ -1865,6 +1871,38 @@ func (app *AclApp) handleRuleFieldsDeletion(d *db.DB, aclKey string, ruleKey str
 	return err
 }
 
+// clearStaleRulePortMatch removes the L4 port match a rule is moving away from,
+// so a rule can go from a port to a range and back.
+//
+// The plain port and the range are a yang choice, and the one that is no longer
+// used has to be removed in a request of its own: CVL validates a write against
+// the merged view of the request and the current row, so clearing and setting
+// the two halves at once looks to it like a rule matching on a port and on a
+// range at the same time.
+func (app *AclApp) clearStaleRulePortMatch(d *db.DB, aclKey, ruleKey string, ruleData db.Value) error {
+	existing, err := d.GetEntry(app.ruleTs, asKey(aclKey, ruleKey))
+	if err != nil || !existing.IsPopulated() {
+		return nil
+	}
+
+	stale := db.Value{Field: map[string]string{}}
+	for _, isSrc := range []bool{true, false} {
+		port, portRange := rulePortFields(isSrc)
+		switch {
+		case (&ruleData).Has(port) && (&existing).Has(portRange):
+			stale.Field[portRange] = ""
+		case (&ruleData).Has(portRange) && (&existing).Has(port):
+			stale.Field[port] = ""
+		}
+	}
+
+	if !stale.IsPopulated() {
+		return nil
+	}
+
+	return d.DeleteEntryFields(app.ruleTs, asKey(aclKey, ruleKey), stale)
+}
+
 // rulePortSetInfo records what a rule's payload said about its L4 port match, so
 // the ACL_RULE_PORT_SET references can be brought in line once the rule itself
 // has been written.
@@ -2014,6 +2052,9 @@ func (app *AclApp) setAclRuleDataInConfigDb(d *db.DB, ruleData map[string]map[st
 				}
 			} else {
 				if existingRuleEntry.IsPopulated() && ruleName != "DEFAULT_RULE" {
+					if err := app.clearStaleRulePortMatch(d, aclName, ruleName, ruleData[aclName][ruleName]); err != nil {
+						return err
+					}
 					err := d.ModEntry(app.ruleTs, db.Key{Comp: []string{aclName, ruleName}}, ruleData[aclName][ruleName])
 					if err != nil {
 						return err

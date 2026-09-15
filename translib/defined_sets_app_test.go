@@ -291,6 +291,37 @@ func Test_DefinedSetsApp_PortSetRules(t *testing.T) {
 	t.Run("Delete_Acl", processDeleteRequest(aclUrl))
 }
 
+// Test_DefinedSetsApp_SwitchPortSets moves a rule from a port set holding a
+// range to one holding a single port, which changes which half of the rule's L4
+// port choice is used.
+func Test_DefinedSetsApp_SwitchPortSets(t *testing.T) {
+	rangeSetUrl := portSetsUrl + "[name=RANGE-SET]"
+	portSetUrl := portSetsUrl + "[name=PORT-SET]"
+	aclUrl := "/openconfig-acl:acl/acl-sets/acl-set[name=MyACL7][type=ACL_IPV4]"
+	ruleUrl := aclUrl + "/acl-entries/acl-entry[sequence-id=9]"
+
+	t.Run("Create_Range_Set", processSetRequest(rangeSetUrl, rangePortSetCreateJson, "POST", false))
+	t.Run("Create_Port_Set", processSetRequest(portSetUrl, singlePortSetCreateJson, "POST", false))
+	t.Run("Create_Acl", processSetRequest(aclUrl, aclForPortSetCreateJson, "POST", false))
+
+	t.Run("Create_Rule_Matching_Range_Set", processSetRequest(ruleUrl, ruleRangeSetPostJson, "POST", false))
+	t.Run("Verify_Range_Match", verifyRuleFields("MyACL7_ACL_IPV4", "RULE_9",
+		map[string]string{L4_DST_PORT_RANGE: "901-921", L4_DST_PORT: ""}))
+
+	t.Run("Match_On_Single_Port_Set_Instead", processSetRequest(ruleUrl+"/transport/config",
+		rulePortSetUpdateJson, "PATCH", false))
+	t.Run("Verify_Port_Match", verifyRuleFields("MyACL7_ACL_IPV4", "RULE_9",
+		map[string]string{L4_DST_PORT: "80", L4_DST_PORT_RANGE: ""}))
+	t.Run("Verify_New_Reference", processGetRequest(ruleUrl+"/transport/config/destination-port-set",
+		rulePortSetRefGetJson, false))
+	// The rule no longer matches on the range set, so that one is free to go.
+	t.Run("Delete_Range_Set", processDeleteRequest(rangeSetUrl))
+	t.Run("Delete_Port_Set_Still_In_Use", processSetRequestErr(portSetUrl, "", "DELETE"))
+
+	t.Run("Delete_Acl", processDeleteRequest(aclUrl))
+	t.Run("Delete_Port_Set", processDeleteRequest(portSetUrl))
+}
+
 // Test_DefinedSetsApp_PortSetRefCleanup checks that deleting a rule or its ACL
 // takes the port set references with it, leaving the set free to be deleted.
 func Test_DefinedSetsApp_PortSetRefCleanup(t *testing.T) {
@@ -356,6 +387,16 @@ var portSetInvertedRangeCreateJson string = "{\"config\":{\"name\":\"BAD-RANGE\"
 var aclForPortSetCreateJson string = "{\"config\":{\"name\":\"MyACL7\",\"type\":\"ACL_IPV4\",\"description\":\"Acl matching on a port set\"}}"
 
 var rulePortSetPostJson string = "{\"sequence-id\":9,\"config\":{\"sequence-id\":9},\"ipv4\":{\"config\":{\"protocol\":\"IP_TCP\"}},\"transport\":{\"config\":{\"destination-port-set\":\"DST-PORTS-TEST\"}},\"actions\":{\"config\":{\"forwarding-action\":\"ACCEPT\"}}}"
+
+var rangePortSetCreateJson string = "{\"config\":{\"name\":\"RANGE-SET\",\"port\":[\"901..921\"]}}"
+
+var singlePortSetCreateJson string = "{\"config\":{\"name\":\"PORT-SET\",\"port\":[80]}}"
+
+var ruleRangeSetPostJson string = "{\"sequence-id\":9,\"config\":{\"sequence-id\":9},\"ipv4\":{\"config\":{\"protocol\":\"IP_TCP\"}},\"transport\":{\"config\":{\"destination-port-set\":\"RANGE-SET\"}},\"actions\":{\"config\":{\"forwarding-action\":\"ACCEPT\"}}}"
+
+var rulePortSetUpdateJson string = "{\"destination-port-set\":\"PORT-SET\"}"
+
+var rulePortSetRefGetJson string = "{\"openconfig-acl:destination-port-set\":\"PORT-SET\"}"
 
 var ruleUnknownPortSetPostJson string = "{\"sequence-id\":9,\"config\":{\"sequence-id\":9},\"transport\":{\"config\":{\"destination-port-set\":\"NO-SUCH-SET\"}},\"actions\":{\"config\":{\"forwarding-action\":\"ACCEPT\"}}}"
 

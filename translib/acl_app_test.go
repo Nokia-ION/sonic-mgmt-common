@@ -308,6 +308,35 @@ func Test_AclApp_AclEgressBindingOperations(t *testing.T) {
 	t.Run("Verify_One_Acl_Delete", processGetRequest(aclUrl, "", true))
 }
 
+// Test_AclApp_SwitchPortMatch moves a rule between a single L4 port and a port
+// range, in both directions. The two are a yang choice, so the one being left
+// behind has to be cleared as the other one is set.
+func Test_AclApp_SwitchPortMatch(t *testing.T) {
+	aclUrl := "/openconfig-acl:acl/acl-sets/acl-set[name=MyACL5][type=ACL_IPV4]"
+	ruleUrl := aclUrl + "/acl-entries/acl-entry[sequence-id=8]"
+	transportUrl := ruleUrl + "/transport/config"
+
+	t.Run("Create_One_Acl_Without_Rule", processSetRequest(aclUrl, oneAclCreateJsonRequest, "POST", false))
+	t.Run("Create_One_Rule", processSetRequest(ruleUrl, requestOneRulePostJson, "POST", false))
+	t.Run("Verify_Rule_Ports", verifyRuleFields("MyACL5_ACL_IPV4", "RULE_8", map[string]string{
+		"L4_SRC_PORT": "101", "L4_DST_PORT": "100",
+		"L4_SRC_PORT_RANGE": "", "L4_DST_PORT_RANGE": ""}))
+
+	t.Run("Update_Ports_To_Ranges", processSetRequest(transportUrl, rulePortRangesUpdateJson, "PATCH", false))
+	t.Run("Verify_Ranges", verifyRuleFields("MyACL5_ACL_IPV4", "RULE_8", map[string]string{
+		"L4_SRC_PORT_RANGE": "801-811", "L4_DST_PORT_RANGE": "901-921",
+		"L4_SRC_PORT": "", "L4_DST_PORT": ""}))
+	t.Run("Verify_Ranges_Read_Back", processGetRequest(transportUrl, rulePortRangesGetJson, false))
+
+	t.Run("Update_Ranges_Back_To_Ports", processSetRequest(transportUrl, rulePortsUpdateJson, "PATCH", false))
+	t.Run("Verify_Ports", verifyRuleFields("MyACL5_ACL_IPV4", "RULE_8", map[string]string{
+		"L4_SRC_PORT": "22", "L4_DST_PORT": "80",
+		"L4_SRC_PORT_RANGE": "", "L4_DST_PORT_RANGE": ""}))
+
+	t.Run("Delete_One_Acl", processDeleteRequest(aclUrl))
+	t.Run("Verify_One_Acl_Delete", processGetRequest(aclUrl, "", true))
+}
+
 func Test_AclApp_GetOperationsFromMultipleTreeLevels(t *testing.T) {
 	aclUrl := "/openconfig-acl:acl/acl-sets/acl-set[name=MyACL5][type=ACL_IPV4]"
 	ruleUrl := "/openconfig-acl:acl/acl-sets/acl-set[name=MyACL5][type=ACL_IPV4]/acl-entries/acl-entry[sequence-id=8]"
@@ -782,6 +811,12 @@ var requestOneRulePatchJson string = "{\"acl-entry\": [{\"sequence-id\": 8,\"con
 var responseOneRuleJson string = "{\"openconfig-acl:acl-entry\":[{\"actions\":{\"config\":{\"forwarding-action\":\"openconfig-acl:ACCEPT\"},\"state\":{\"forwarding-action\":\"openconfig-acl:ACCEPT\"}},\"config\":{\"sequence-id\":8},\"ipv4\":{\"config\":{\"destination-address\":\"5.5.5.5/24\",\"protocol\":\"openconfig-packet-match-types:IP_TCP\",\"source-address\":\"4.4.4.4/24\"},\"state\":{\"destination-address\":\"5.5.5.5/24\",\"protocol\":\"openconfig-packet-match-types:IP_TCP\",\"source-address\":\"4.4.4.4/24\"}},\"sequence-id\":8,\"state\":{\"matched-octets\":\"0\",\"matched-packets\":\"0\",\"sequence-id\":8},\"transport\":{\"config\":{\"destination-port\":100,\"source-port\":101,\"tcp-flags\":[\"openconfig-packet-match-types:TCP_FIN\",\"openconfig-packet-match-types:TCP_ACK\"]},\"state\":{\"destination-port\":100,\"source-port\":101,\"tcp-flags\":[\"openconfig-packet-match-types:TCP_FIN\",\"openconfig-packet-match-types:TCP_ACK\"]}}}]}"
 
 var responseOneRulePatchJson string = "{\"openconfig-acl:acl-entry\":[{\"actions\":{\"config\":{\"forwarding-action\":\"openconfig-acl:ACCEPT\"},\"state\":{\"forwarding-action\":\"openconfig-acl:ACCEPT\"}},\"config\":{\"sequence-id\":8},\"ipv4\":{\"config\":{\"destination-address\":\"15.5.15.5/24\",\"protocol\":\"openconfig-packet-match-types:IP_L2TP\",\"source-address\":\"4.8.4.8/24\"},\"state\":{\"destination-address\":\"15.5.15.5/24\",\"protocol\":\"openconfig-packet-match-types:IP_L2TP\",\"source-address\":\"4.8.4.8/24\"}},\"sequence-id\":8,\"state\":{\"matched-octets\":\"0\",\"matched-packets\":\"0\",\"sequence-id\":8},\"transport\":{\"config\":{\"destination-port\":100,\"source-port\":101,\"tcp-flags\":[\"openconfig-packet-match-types:TCP_FIN\",\"openconfig-packet-match-types:TCP_RST\",\"openconfig-packet-match-types:TCP_ACK\",\"openconfig-packet-match-types:TCP_ECE\"]},\"state\":{\"destination-port\":100,\"source-port\":101,\"tcp-flags\":[\"openconfig-packet-match-types:TCP_FIN\",\"openconfig-packet-match-types:TCP_RST\",\"openconfig-packet-match-types:TCP_ACK\",\"openconfig-packet-match-types:TCP_ECE\"]}}}]}"
+
+var rulePortRangesUpdateJson string = "{\"source-port\":\"801..811\",\"destination-port\":\"901..921\"}"
+
+var rulePortsUpdateJson string = "{\"source-port\":22,\"destination-port\":80}"
+
+var rulePortRangesGetJson string = "{\"openconfig-acl:config\":{\"destination-port\":\"901..921\",\"source-port\":\"801..811\",\"tcp-flags\":[\"openconfig-packet-match-types:TCP_FIN\",\"openconfig-packet-match-types:TCP_ACK\"]}}"
 
 var emptyAclDescriptionJson string = "{\"openconfig-acl:description\":\"\"}"
 var emptyRuleDscpJson string = "{\"openconfig-acl:dscp\":0}"
