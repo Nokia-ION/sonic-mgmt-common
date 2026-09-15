@@ -931,6 +931,51 @@ func TestYangToDb_Syslog_Servers(t *testing.T) {
 			},
 		},
 		{
+			name: "DELETE selector list instance clears facility and severity only",
+			op:   DELETE,
+			uri:  SYSLOG_SERVER_PATH + "/selectors/selector[facility=LOCAL1][severity=DEBUG]",
+			key:  syslogTestHost3,
+			ygRoot: func() *ocbinds.Device {
+				return newSyslogDevice(nil)
+			},
+			serverState: map[string]db.Value{
+				syslogTestHost3: {Field: map[string]string{
+					nullKey:               nullKey,
+					SYSLOG_FIELD_PORT:     "514",
+					SYSLOG_FIELD_PROTOCOL: "udp",
+					SYSLOG_FIELD_SOURCE:   "10.0.0.15",
+					SYSLOG_FIELD_SEVERITY: "debug",
+					SYSLOG_FIELD_FACILITY: "local1",
+				}},
+			},
+			wantMap: map[string]map[string]db.Value{
+				SYSLOG_SERVER_TABLE_NAME: {
+					syslogTestHost3: {Field: map[string]string{
+						SYSLOG_FIELD_SEVERITY: "debug",
+						SYSLOG_FIELD_FACILITY: "local1",
+					}},
+				},
+			},
+		},
+		{
+			name: "DELETE selector state is unsupported",
+			op:   DELETE,
+			uri:  SYSLOG_SERVER_PATH + "/selectors/selector[facility=LOCAL1][severity=DEBUG]/state",
+			key:  syslogTestHost3,
+			ygRoot: func() *ocbinds.Device {
+				return newSyslogDevice(nil)
+			},
+			serverState: map[string]db.Value{
+				syslogTestHost3: {Field: map[string]string{
+					nullKey:               nullKey,
+					SYSLOG_FIELD_PORT:     "514",
+					SYSLOG_FIELD_SEVERITY: "debug",
+					SYSLOG_FIELD_FACILITY: "local1",
+				}},
+			},
+			wantErr: true,
+		},
+		{
 			name: "DELETE selector facility clears per-server facility only",
 			op:   DELETE,
 			uri:  SYSLOG_SERVER_PATH + "/selectors/selector[facility=LOCAL1][severity=NOTICE]/config/facility",
@@ -976,6 +1021,31 @@ func TestYangToDb_Syslog_Servers(t *testing.T) {
 				SYSLOG_SERVER_TABLE_NAME: {
 					syslogTestHost3: {Field: map[string]string{
 						SYSLOG_FIELD_SOURCE: "10.0.0.15",
+					}},
+				},
+			},
+		},
+		{
+			name: "DELETE config remote-port clears per-server port only",
+			op:   DELETE,
+			uri:  SYSLOG_SERVER_PATH + "/config/remote-port",
+			key:  syslogTestHost3,
+			ygRoot: func() *ocbinds.Device {
+				return newSyslogDevice(nil)
+			},
+			serverState: map[string]db.Value{
+				syslogTestHost3: {Field: map[string]string{
+					nullKey:               nullKey,
+					SYSLOG_FIELD_PORT:     "514",
+					SYSLOG_FIELD_PROTOCOL: "udp",
+					SYSLOG_FIELD_SOURCE:   "10.0.0.15",
+					SYSLOG_FIELD_VRF:      "mgmt",
+				}},
+			},
+			wantMap: map[string]map[string]db.Value{
+				SYSLOG_SERVER_TABLE_NAME: {
+					syslogTestHost3: {Field: map[string]string{
+						SYSLOG_FIELD_PORT: "514",
 					}},
 				},
 			},
