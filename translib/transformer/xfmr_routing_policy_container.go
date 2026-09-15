@@ -587,6 +587,9 @@ func populateRpolContainerFromDb(inParams XfmrParams, ygRoot *ygot.GoStruct) err
 		return tlerr.InvalidArgsError{Format: "ConfigDB nil for routing-policy mapping"}
 	}
 	for _, uri := range rpolContainerGetTargetUris(cfgDb) {
+		if !rpolNodeServesRequest(inParams.requestUri, uri) {
+			continue
+		}
 		subParams, err := rpolNodeParams(inParams, ygRoot, uri)
 		if err != nil {
 			return err
@@ -596,6 +599,120 @@ func populateRpolContainerFromDb(inParams XfmrParams, ygRoot *ygot.GoStruct) err
 		}
 	}
 	return nil
+}
+
+// rpolNodeServesRequest reports whether a mapped node has to be populated for
+// this request. The enumeration above walks every mapped node in the
+// datastore, so without this test a request naming one list instance is
+// answered with its siblings as well.
+//
+// A node URI names the row a handler reads, not the node the response carries,
+// and the two need not be the same branch: the prefix-set config URI is what
+// fills that set's prefixes list. Branches that diverge by name are therefore
+// left to the pruning translib already does by path, and only a key naming a
+// different instance of the same list rules a node out here.
+func rpolNodeServesRequest(requestUri, nodeUri string) bool {
+	reqElems := rpolNormalizedPathElems(requestUri)
+	nodeElems := rpolNormalizedPathElems(nodeUri)
+	depth := len(reqElems)
+	if len(nodeElems) < depth {
+		// The node sits above the requested one. It is still populated, so
+		// that the list instances on the way down keep their key leaves.
+		depth = len(nodeElems)
+	}
+	for i := 0; i < depth; i++ {
+		if reqElems[i].name != nodeElems[i].name {
+			return true
+		}
+		if rpolKeysConflict(reqElems[i], nodeElems[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// rpolKeysConflict reports whether two elements name the same list but
+// different instances of it. Only the keys the request spells out are
+// compared, so that a request naming a list with no key at all still covers
+// every instance, and a key the node does not carry is not a disagreement.
+func rpolKeysConflict(reqElem, nodeElem rpolPathElem) bool {
+	for key, want := range reqElem.keys {
+		if got, ok := nodeElem.keys[key]; ok && got != want {
+			return true
+		}
+	}
+	return false
+}
+
+type rpolPathElem struct {
+	name string
+	keys map[string]string
+}
+
+// rpolNormalizedPathElems splits a URI into path elements and drops the module
+// prefix from every element name and key name, so that a request written with
+// prefixes compares equal to the URIs this file builds without them.
+func rpolNormalizedPathElems(uri string) []rpolPathElem {
+	elems := SplitPath(uri)
+	out := make([]rpolPathElem, 0, len(elems))
+	for _, elem := range elems {
+		if elem == "" {
+			continue
+		}
+		out = append(out, rpolNormalizePathElem(elem))
+	}
+	return out
+}
+
+func rpolNormalizePathElem(elem string) rpolPathElem {
+	name, keys := elem, ""
+	if i := strings.IndexByte(elem, '['); i >= 0 {
+		name, keys = elem[:i], elem[i:]
+	}
+	out := rpolPathElem{name: rpolStripModulePrefix(name)}
+	for _, pred := range rpolKeyPredicates(keys) {
+		eq := strings.IndexByte(pred, '=')
+		if eq < 0 {
+			continue
+		}
+		if out.keys == nil {
+			out.keys = make(map[string]string, 2)
+		}
+		out.keys[rpolStripModulePrefix(pred[:eq])] = strings.Trim(pred[eq+1:], `"'`)
+	}
+	return out
+}
+
+func rpolStripModulePrefix(name string) string {
+	if i := strings.IndexByte(name, ':'); i >= 0 {
+		return name[i+1:]
+	}
+	return name
+}
+
+// rpolKeyPredicates returns the contents of each key predicate of an element,
+// so that a multi-key element such as a prefix entry compares key by key.
+func rpolKeyPredicates(keys string) []string {
+	var out []string
+	depth, start := 0, -1
+	for i := 0; i < len(keys); i++ {
+		switch keys[i] {
+		case '[':
+			if depth == 0 {
+				start = i + 1
+			}
+			depth++
+		case ']':
+			if depth > 0 {
+				depth--
+			}
+			if depth == 0 && start >= 0 {
+				out = append(out, keys[start:i])
+				start = -1
+			}
+		}
+	}
+	return out
 }
 
 // rpolNodeParams returns inParams retargeted at a single mapped node. param is
