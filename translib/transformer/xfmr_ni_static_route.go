@@ -277,8 +277,11 @@ func matchNiStaticRouteRequestUri(uri string) (*niStaticRouteReqInfo, error) {
 			targetPathKind: niStaticRouteTargetProtocolRoot,
 		}, nil
 	}
+	// Named after what this handler serves, the protocol instance, rather than
+	// the static routes alone: every node of the instance is routed here, so a
+	// path that is not one of them arrives here too.
 	return nil, tlerr.NotSupportedError{
-		Format: "unsupported path for network-instance static route mapping: " + uri,
+		Format: "unsupported path under the network-instance STATIC protocol instance: " + uri,
 		Path:   uri,
 	}
 }
@@ -1284,7 +1287,7 @@ var YangToDb_ni_static_route_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPa
 	case niStaticRouteTargetNextHopInst, niStaticRouteTargetNextHopCfg:
 		return niStaticRouteSetNextHop(inParams, reqInfo)
 	}
-	return res, tlerr.NotSupportedError{Format: "unsupported path for network-instance static route mapping", Path: inParams.requestUri}
+	return res, tlerr.NotSupportedError{Format: "unsupported path under the network-instance STATIC protocol instance", Path: inParams.requestUri}
 }
 
 // niStaticRouteSetNextHop merges one next-hop into the comma separated
