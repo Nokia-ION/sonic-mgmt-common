@@ -1242,21 +1242,143 @@ func uint32FromParam(param interface{}) *uint32 {
 	return nil
 }
 
+func rstpIntfConfigFromParam(param interface{}) *ocbinds.OpenconfigSpanningTree_Stp_Rstp_Interfaces_Interface_Config {
+	switch v := param.(type) {
+	case *ocbinds.OpenconfigSpanningTree_Stp_Rstp_Interfaces_Interface_Config:
+		return v
+	case ocbinds.OpenconfigSpanningTree_Stp_Rstp_Interfaces_Interface_Config:
+		return &v
+	}
+	return nil
+}
+
+func rstpNumericUint8(param interface{}) *uint8 {
+	switch v := param.(type) {
+	case *uint8:
+		return v
+	case uint8:
+		return &v
+	case int:
+		if v >= 0 && v <= 255 {
+			u := uint8(v)
+			return &u
+		}
+	case float64:
+		if v >= 0 && v <= 255 {
+			u := uint8(v)
+			return &u
+		}
+	}
+	return nil
+}
+
+func rstpNumericUint32(param interface{}) *uint32 {
+	switch v := param.(type) {
+	case *uint32:
+		return v
+	case uint32:
+		return &v
+	case int:
+		if v >= 0 {
+			u := uint32(v)
+			return &u
+		}
+	case float64:
+		if v >= 0 {
+			u := uint32(v)
+			return &u
+		}
+	}
+	return nil
+}
+
+func rstpMapLeaf(param map[string]interface{}, names ...string) interface{} {
+	for _, name := range names {
+		if raw, ok := param[name]; ok {
+			return raw
+		}
+	}
+	return nil
+}
+
+func rstpPriorityValueFromParam(param interface{}) *uint8 {
+	if prio := rstpNumericUint8(param); prio != nil {
+		return prio
+	}
+	if cfg := rstpIntfConfigFromParam(param); cfg != nil {
+		return cfg.PortPriority
+	}
+	m, ok := param.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	if nested, ok := rstpMapLeaf(m, "openconfig-spanning-tree:config", "config").(map[string]interface{}); ok {
+		if prio := rstpPriorityValueFromParam(nested); prio != nil {
+			return prio
+		}
+	}
+	return rstpPriorityValueFromParam(rstpMapLeaf(m, "port-priority", "openconfig-spanning-tree:port-priority"))
+}
+
+func rstpCostValueFromParam(param interface{}) *uint32 {
+	if cost := rstpNumericUint32(param); cost != nil {
+		return cost
+	}
+	if cfg := rstpIntfConfigFromParam(param); cfg != nil {
+		return cfg.Cost
+	}
+	m, ok := param.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	if nested, ok := rstpMapLeaf(m, "openconfig-spanning-tree:config", "config").(map[string]interface{}); ok {
+		if cost := rstpCostValueFromParam(nested); cost != nil {
+			return cost
+		}
+	}
+	return rstpCostValueFromParam(rstpMapLeaf(m, "cost", "openconfig-spanning-tree:cost"))
+}
+
+func rstpPriorityFromRequest(inParams XfmrParams, ifName, targetUriPath string) *uint8 {
+	if prio := rstpPriorityValueFromParam(inParams.param); prio != nil {
+		return prio
+	}
+	leafPath := targetUriPath == STP_RSTP_INTF_CONFIG+"/port-priority"
+	cfg := rstpIntfConfigFromRoot(inParams, ifName)
+	if cfg == nil || cfg.PortPriority == nil {
+		return nil
+	}
+	// ygot empty-tree default is 0. Do not clobber existing port priority when
+	// SET is cost (or the whole config container) unless the leaf itself is targeted.
+	if !leafPath && *cfg.PortPriority == 0 {
+		return nil
+	}
+	if leafPath || shouldMapStpRstpIntfConfigLeaf(targetUriPath, "port-priority") {
+		return cfg.PortPriority
+	}
+	return nil
+}
+
+func rstpCostFromRequest(inParams XfmrParams, ifName, targetUriPath string) *uint32 {
+	if cost := rstpCostValueFromParam(inParams.param); cost != nil {
+		return cost
+	}
+	cfg := rstpIntfConfigFromRoot(inParams, ifName)
+	if cfg != nil && cfg.Cost != nil && shouldMapStpRstpIntfConfigLeaf(targetUriPath, "cost") {
+		return cfg.Cost
+	}
+	return nil
+}
+
 func rstpIntfConfigFieldsFromRequest(inParams XfmrParams, ifName, targetUriPath string) map[string]string {
 	fields := make(map[string]string)
-	cfg := rstpIntfConfigFromRoot(inParams, ifName)
-
 	if shouldMapStpRstpIntfConfigLeaf(targetUriPath, "port-priority") {
-		if cfg != nil && cfg.PortPriority != nil {
-			fields["priority"] = strconv.FormatUint(uint64(*cfg.PortPriority), 10)
-		} else if prio := uint8FromParam(inParams.param); prio != nil {
+		if prio := rstpPriorityFromRequest(inParams, ifName, targetUriPath); prio != nil {
 			fields["priority"] = strconv.FormatUint(uint64(*prio), 10)
 		}
 	}
 	if shouldMapStpRstpIntfConfigLeaf(targetUriPath, "cost") {
-		if cfg != nil && cfg.Cost != nil {
-			fields["path_cost"] = strconv.FormatUint(uint64(*cfg.Cost), 10)
-		} else if cost := uint32FromParam(inParams.param); cost != nil {
+		if cost := rstpCostFromRequest(inParams, ifName, targetUriPath); cost != nil {
 			fields["path_cost"] = strconv.FormatUint(uint64(*cost), 10)
 		}
 	}
@@ -1641,16 +1763,18 @@ var YangToDb_stp_rstp_port_priority_xfmr FieldXfmrYangToDb = func(inParams XfmrP
 		return res, err
 	}
 	ifName := rstpIntfNameFromParams(inParams)
-	cfg := rstpIntfConfigFromRoot(inParams, ifName)
-	if cfg != nil && cfg.PortPriority != nil {
-		res["priority"] = strconv.FormatUint(uint64(*cfg.PortPriority), 10)
-		return res, nil
+	targetUriPath, _, _ := XfmrRemoveXPATHPredicates(inParams.requestUri)
+	if targetUriPath == "" {
+		targetUriPath, _, _ = XfmrRemoveXPATHPredicates(inParams.uri)
 	}
-	if prio := uint8FromParam(inParams.param); prio != nil {
+	if prio := rstpPriorityFromRequest(inParams, ifName, targetUriPath); prio != nil {
 		res["priority"] = strconv.FormatUint(uint64(*prio), 10)
 		return res, nil
 	}
-	return res, errors.New("port-priority is required")
+	if strings.HasSuffix(targetUriPath, "/port-priority") {
+		return res, errors.New("port-priority is required")
+	}
+	return res, nil
 }
 
 var DbToYang_stp_rstp_port_priority_xfmr FieldXfmrDbtoYang = func(inParams XfmrParams) (map[string]interface{}, error) {
@@ -1692,16 +1816,18 @@ var YangToDb_stp_rstp_port_cost_xfmr FieldXfmrYangToDb = func(inParams XfmrParam
 		return res, err
 	}
 	ifName := rstpIntfNameFromParams(inParams)
-	cfg := rstpIntfConfigFromRoot(inParams, ifName)
-	if cfg != nil && cfg.Cost != nil {
-		res["path_cost"] = strconv.FormatUint(uint64(*cfg.Cost), 10)
-		return res, nil
+	targetUriPath, _, _ := XfmrRemoveXPATHPredicates(inParams.requestUri)
+	if targetUriPath == "" {
+		targetUriPath, _, _ = XfmrRemoveXPATHPredicates(inParams.uri)
 	}
-	if cost := uint32FromParam(inParams.param); cost != nil {
+	if cost := rstpCostFromRequest(inParams, ifName, targetUriPath); cost != nil {
 		res["path_cost"] = strconv.FormatUint(uint64(*cost), 10)
 		return res, nil
 	}
-	return res, errors.New("cost is required")
+	if strings.HasSuffix(targetUriPath, "/cost") {
+		return res, errors.New("cost is required")
+	}
+	return res, nil
 }
 
 var DbToYang_stp_rstp_port_cost_xfmr FieldXfmrDbtoYang = func(inParams XfmrParams) (map[string]interface{}, error) {

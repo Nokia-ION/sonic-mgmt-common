@@ -113,4 +113,24 @@ func TestRstpIntfConfigFieldsZeroPriority(t *testing.T) {
 	if fields["path_cost"] != "2000" {
 		t.Fatalf("path_cost=%q, want 2000", fields["path_cost"])
 	}
+	if _, ok := fields["priority"]; ok {
+		t.Fatalf("cost leaf SET must not write priority, got %v", fields)
+	}
+}
+
+func TestRstpIntfConfigFieldsCostDoesNotWriteDefaultPriority(t *testing.T) {
+	inParams := XfmrParams{param: map[string]interface{}{"cost": float64(1000)}}
+	fields := rstpIntfConfigFieldsFromRequest(inParams, "Ethernet4", STP_RSTP_INTF_CONFIG)
+	if fields["path_cost"] != "1000" {
+		t.Fatalf("path_cost=%q, want 1000", fields["path_cost"])
+	}
+	if _, ok := fields["priority"]; ok {
+		t.Fatalf("cost-only config SET must not write priority 0, got %v", fields)
+	}
+
+	inParams.param = map[string]interface{}{"port-priority": float64(10), "cost": float64(1000)}
+	fields = rstpIntfConfigFieldsFromRequest(inParams, "Ethernet4", STP_RSTP_INTF_CONFIG)
+	if fields["priority"] != "10" || fields["path_cost"] != "1000" {
+		t.Fatalf("fields=%v, want priority=10 path_cost=1000", fields)
+	}
 }
