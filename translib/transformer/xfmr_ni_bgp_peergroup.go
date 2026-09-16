@@ -62,6 +62,9 @@ const (
 	niBgpPgTargetAfCfg     = "peer-group-af-config"
 	niBgpPgAfiSafiNameLeaf = "afi-safi-name"
 	niBgpPgEnabledLeaf     = "enabled"
+	// Held per address family, the same field the neighbor AF rows carry.
+	niBgpPgSendCommTypeLeaf = "send-community-type"
+	niBgpPgSendCommFld      = "send_community"
 )
 
 // niBgpPgUriPfx names a peer-group list instance, which every path below it
@@ -74,7 +77,7 @@ var niBgpPgAfV4PfxReqUriRe = regexp.MustCompile(niBgpPgUriPfx + `/afi-safis/afi-
 var niBgpPgAfV6PfxReqUriRe = regexp.MustCompile(niBgpPgUriPfx + `/afi-safis/afi-safi(?:\[afi-safi-name=(?:IPV6_UNICAST|ipv6-unicast)\])?/ipv6-unicast/prefix-limit/config(?:/(max-prefixes))?$`)
 var niBgpPgAfApplyReqUriRe = regexp.MustCompile(niBgpPgUriPfx + `/afi-safis/afi-safi\[afi-safi-name=([^\]]+)\]/apply-policy/config(?:/(export-policy|import-policy))?$`)
 
-var niBgpPgAfCfgReqUriRe = regexp.MustCompile(niBgpPgUriPfx + `/afi-safis/afi-safi\[afi-safi-name=([^\]]+)\]/config(?:/(afi-safi-name|enabled))?$`)
+var niBgpPgAfCfgReqUriRe = regexp.MustCompile(niBgpPgUriPfx + `/afi-safis/afi-safi\[afi-safi-name=([^\]]+)\]/config(?:/(afi-safi-name|enabled|send-community-type))?$`)
 
 // The afi-safi key leaf below the list instance repeats a key already in the
 // URI, so it resolves to the same row as the instance itself.
@@ -625,6 +628,17 @@ func parseNiBgpPgEnabledFromParam(param interface{}) (*bool, bool) {
 func niBgpPgAfCfgFields(inParams XfmrParams, reqInfo *niBgpPgReqInfo) (map[string]string, error) {
 	fields := map[string]string{}
 	switch reqInfo.targetLeaf {
+	case niBgpPgSendCommTypeLeaf:
+		cfgObj := getNiBgpPeerGroupAfCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.protoName, reqInfo.peerGroupName, reqInfo.afiSafi, false)
+		var fromTree []ocbinds.E_OpenconfigBgp_CommunityType
+		if cfgObj != nil {
+			fromTree = cfgObj.SendCommunityType
+		}
+		comm, err := niBgpSendCommunityTypeToField(inParams.param, fromTree, "peer-group")
+		if err != nil {
+			return nil, err
+		}
+		fields[niBgpPgSendCommFld] = comm
 	case niBgpPgEnabledLeaf:
 		enabled, ok := parseNiBgpPgEnabledFromParam(inParams.param)
 		if !ok {
@@ -643,6 +657,13 @@ func niBgpPgAfCfgFields(inParams XfmrParams, reqInfo *niBgpPgReqInfo) (map[strin
 			break
 		}
 		cfgObj := getNiBgpPeerGroupAfCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.protoName, reqInfo.peerGroupName, reqInfo.afiSafi, false)
+		if cfgObj != nil && len(cfgObj.SendCommunityType) > 0 {
+			comm, err := niBgpSendCommunityTypeToField(nil, cfgObj.SendCommunityType, "peer-group")
+			if err != nil {
+				return nil, err
+			}
+			fields[niBgpPgSendCommFld] = comm
+		}
 		if cfgObj != nil && cfgObj.Enabled != nil {
 			fields[niBgpPgAdminStatusFld] = niBgpPgEnabledToAdminStatus(*cfgObj.Enabled)
 			break
@@ -1034,12 +1055,19 @@ var YangToDb_ni_bgp_pg_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) 
 			return makeNiBgpPgAfResMap(reqInfo.niName, reqInfo.peerGroupName, reqInfo.afiSafi, nil), nil
 		case niBgpPgTargetAfCfg:
 			switch reqInfo.targetLeaf {
-			case "", niBgpPgAfiSafiNameLeaf, niBgpPgEnabledLeaf:
-				// admin_status is the only field this container maps, and the
-				// key leaf below it names the row rather than a field of it.
+			case "":
+				// Both fields this container maps. The key leaf below it names
+				// the row rather than a field of it.
+				return makeNiBgpPgAfResMap(reqInfo.niName, reqInfo.peerGroupName, reqInfo.afiSafi, map[string]string{
+					niBgpPgAdminStatusFld: "",
+					niBgpPgSendCommFld:    "",
+				}), nil
+			case niBgpPgAfiSafiNameLeaf, niBgpPgEnabledLeaf:
 				return makeNiBgpPgAfResMap(reqInfo.niName, reqInfo.peerGroupName, reqInfo.afiSafi, map[string]string{niBgpPgAdminStatusFld: ""}), nil
+			case niBgpPgSendCommTypeLeaf:
+				return makeNiBgpPgAfResMap(reqInfo.niName, reqInfo.peerGroupName, reqInfo.afiSafi, map[string]string{niBgpPgSendCommFld: ""}), nil
 			default:
-				return res, tlerr.NotSupportedError{Format: "DELETE supported only for /peer-groups/peer-group/afi-safis/afi-safi/config or its enabled leaf", Path: inParams.requestUri}
+				return res, tlerr.NotSupportedError{Format: "DELETE supported only for /peer-groups/peer-group/afi-safis/afi-safi/config or its enabled and send-community-type leaves", Path: inParams.requestUri}
 			}
 		case niBgpPgTargetAfPfxCfg:
 			switch reqInfo.targetLeaf {
@@ -1306,6 +1334,11 @@ var DbToYang_ni_bgp_pg_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) 
 		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == niBgpPgEnabledLeaf {
 			if enabled, ok := niBgpPgAdminStatusToEnabled(afEntry.Field[niBgpPgAdminStatusFld]); ok {
 				afCfgObj.Enabled = enabled
+			}
+		}
+		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == niBgpPgSendCommTypeLeaf {
+			if comm, ok := niBgpSendCommunityTypeFromDb(afEntry.Field[niBgpPgSendCommFld]); ok {
+				afCfgObj.SendCommunityType = comm
 			}
 		}
 		return nil
