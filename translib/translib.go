@@ -164,13 +164,12 @@ func init() {
 func Create(req SetRequest) (SetResponse, error) {
 	var keys []db.WatchKeys
 	var resp SetResponse
-	path, payload, err := resolveRootSetRequest(req.Path, req.Payload)
-	if err != nil {
-		resp.ErrSrc = AppErr
-		return resp, err
+	req, done, early, err := rewriteOrBulkRootSet(req, CREATE)
+	if done {
+		return early, err
 	}
-	req.Path = path
-	req.Payload = payload
+	path := req.Path
+	payload := req.Payload
 	if !isAuthorizedForSet(req) {
 		return resp, tlerr.AuthorizationError{
 			Format: "User is unauthorized for Create Operation",
@@ -242,13 +241,12 @@ func Create(req SetRequest) (SetResponse, error) {
 func Update(req SetRequest) (SetResponse, error) {
 	var keys []db.WatchKeys
 	var resp SetResponse
-	path, payload, err := resolveRootSetRequest(req.Path, req.Payload)
-	if err != nil {
-		resp.ErrSrc = AppErr
-		return resp, err
+	req, done, early, err := rewriteOrBulkRootSet(req, UPDATE)
+	if done {
+		return early, err
 	}
-	req.Path = path
-	req.Payload = payload
+	path := req.Path
+	payload := req.Payload
 	if !isAuthorizedForSet(req) {
 		return resp, tlerr.AuthorizationError{
 			Format: "User is unauthorized for Update Operation",
@@ -321,13 +319,12 @@ func Replace(req SetRequest) (SetResponse, error) {
 	var err error
 	var keys []db.WatchKeys
 	var resp SetResponse
-	path, payload, err := resolveRootSetRequest(req.Path, req.Payload)
-	if err != nil {
-		resp.ErrSrc = AppErr
-		return resp, err
+	req, done, early, err := rewriteOrBulkRootSet(req, REPLACE)
+	if done {
+		return early, err
 	}
-	req.Path = path
-	req.Payload = payload
+	path := req.Path
+	payload := req.Payload
 	if !isAuthorizedForSet(req) {
 		return resp, tlerr.AuthorizationError{
 			Format: "User is unauthorized for Replace Operation",
@@ -585,6 +582,12 @@ func Bulk(req BulkRequest) (BulkResponse, error) {
 
 	resp := BulkResponse{}
 
+	expanded, err := expandBulkRootSet(req)
+	if err != nil {
+		return resp, err
+	}
+	req.Request = expanded
+
 	if !isAuthorizedForBulk(req) {
 		return resp, tlerr.AuthorizationError{
 			Format: "User is unauthorized for Action Operation",
@@ -615,14 +618,6 @@ func Bulk(req BulkRequest) (BulkResponse, error) {
 		path := req.Request[i].Entry.Path
 		operation := req.Request[i].Operation
 		payload := req.Request[i].Entry.Payload
-
-		if operation != DELETE {
-			path, payload, err = resolveRootSetRequest(path, payload)
-			if err != nil {
-				errSrc = AppErr
-				goto BulkError
-			}
-		}
 
 		log.Infof("Bulk Request operation: %v received with path = %v", req.Request[i].Operation, path)
 
