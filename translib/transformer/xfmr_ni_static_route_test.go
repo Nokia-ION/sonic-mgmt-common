@@ -786,3 +786,118 @@ func Test_openconfig_network_instance_static_route_next_hop_rejected_payloads(t 
 		verifyDbResult(rclient, "STATIC_ROUTE|default|2004::/64", map[string]interface{}{}, false))
 	time.Sleep(1 * time.Second)
 }
+
+func Test_openconfig_network_instance_static_route_config_set_tag(t *testing.T) {
+	var url, urlInputBodyJSON string
+
+	// Two next-hops, so that the fan-out has something to fan out to.
+	preReqMap := map[string]interface{}{
+		"STATIC_ROUTE": map[string]interface{}{
+			"default|172.16.9.0/24": map[string]interface{}{
+				"nexthop": "30.0.0.1,30.0.0.2",
+				"ifname":  ",",
+			},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"STATIC_ROUTE": map[string]interface{}{
+			"default|172.16.9.0/24": "",
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	staticUrl := "/openconfig-network-instance:network-instances/network-instance[name=default]/protocols/protocol[identifier=STATIC][name=static]/static-routes/static[prefix=172.16.9.0/24]"
+	url = staticUrl + "/config/set-tag"
+
+	// The tag is a property of the route, so it lands on every next-hop.
+	urlInputBodyJSON = "{\"openconfig-network-instance:set-tag\":100}"
+	t.Run("PATCH static route config set-tag", processSetRequest(url, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"STATIC_ROUTE": map[string]interface{}{
+			"default|172.16.9.0/24": map[string]interface{}{
+				"nexthop": "30.0.0.1,30.0.0.2",
+				"tag":     "100,100",
+			},
+		},
+	}
+	t.Run("Verify the tag landed once per next-hop", verifyDbResult(rclient, "STATIC_ROUTE|default|172.16.9.0/24", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	expectedGetJSON := "{\"openconfig-network-instance:set-tag\":100}"
+	t.Run("GET static route config set-tag", processGetRequest(url, nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	// The hex-string member of the union is converted rather than refused,
+	// since CONFIG_DB and FRR both hold the decimal.
+	urlInputBodyJSON = "{\"openconfig-network-instance:set-tag\":\"ff\"}"
+	t.Run("PATCH static route config set-tag as a hex-string", processSetRequest(url, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"STATIC_ROUTE": map[string]interface{}{
+			"default|172.16.9.0/24": map[string]interface{}{
+				"tag": "255,255",
+			},
+		},
+	}
+	t.Run("Verify the hex-string arrived as decimal", verifyDbResult(rclient, "STATIC_ROUTE|default|172.16.9.0/24", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	// FRR takes 1 through 4294967295, and 0 is how it spells no tag at all.
+	urlInputBodyJSON = "{\"openconfig-network-instance:set-tag\":0}"
+	t.Run("PATCH static route config set-tag zero is refused",
+		processSetRequest(url, urlInputBodyJSON, "PATCH", true, tlerr.InvalidArgsError{
+			Format: "static route set-tag accepts 1 through 4294967295, since that is the range FRR takes"}))
+	time.Sleep(1 * time.Second)
+
+	// A next-hop added afterwards has to inherit the tag. Were it padded with
+	// an empty element, the tag list would be shorter than the next-hop list
+	// and FRR would program nothing for the route at all.
+	nhUrl := staticUrl + "/next-hops/next-hop[index=30.0.0.3]/config/next-hop"
+	urlInputBodyJSON = "{\"openconfig-network-instance:next-hop\":\"30.0.0.3\"}"
+	t.Run("PATCH a third next-hop onto the tagged route",
+		processSetRequest(nhUrl, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"STATIC_ROUTE": map[string]interface{}{
+			"default|172.16.9.0/24": map[string]interface{}{
+				"nexthop": "30.0.0.1,30.0.0.2,30.0.0.3",
+				"tag":     "255,255,255",
+			},
+		},
+	}
+	t.Run("Verify the new next-hop inherited the tag", verifyDbResult(rclient, "STATIC_ROUTE|default|172.16.9.0/24", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	// A delete of the leaf takes the tag and leaves the route.
+	t.Run("DELETE static route config set-tag", processDeleteRequest(url, false))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"STATIC_ROUTE": map[string]interface{}{
+			"default|172.16.9.0/24": map[string]interface{}{
+				"nexthop": "30.0.0.1,30.0.0.2,30.0.0.3",
+			},
+		},
+	}
+	t.Run("Verify the tag is gone and the route is not", verifyDbResult(rclient, "STATIC_ROUTE|default|172.16.9.0/24", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_network_instance_static_route_set_tag_without_next_hop(t *testing.T) {
+	// A route with no next-hop has nowhere to carry a tag: FRR takes the tag
+	// on each route line, and a tag list that does not match the next-hop
+	// list in length programs nothing at all. A blackhole route does carry
+	// one, so the case here is a route with no next-hop of any kind.
+	url := "/openconfig-network-instance:network-instances/network-instance[name=default]/protocols/protocol[identifier=STATIC][name=static]/static-routes/static[prefix=172.16.7.0/24]/config/set-tag"
+	t.Run("PATCH set-tag on a route with no next-hop is refused",
+		processSetRequest(url, "{\"openconfig-network-instance:set-tag\":100}", "PATCH", true, tlerr.InvalidArgsError{
+			Format: "static route 172.16.7.0/24 has no next-hop to carry a tag; FRR takes the tag on each route line, so a next-hop has to exist first"}))
+	time.Sleep(1 * time.Second)
+}
