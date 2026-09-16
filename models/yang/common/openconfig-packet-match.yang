@@ -14,8 +14,6 @@ module openconfig-packet-match {
   import openconfig-extensions { prefix oc-ext; }
   import openconfig-mpls-types { prefix oc-mpls; }
   import openconfig-defined-sets { prefix oc-sets; }
-  // Local addition, see the ICMP groupings below.
-  import openconfig-icmpv6-types { prefix oc-icmpv6-types; }
 
   // meta
   organization "OpenConfig working group";
@@ -340,8 +338,6 @@ module openconfig-packet-match {
         uses ipv4-protocol-fields-config;
         uses ipv4-protocol-fields-state;
       }
-
-      uses ip-icmpv4-header-fields-top;
     }
   }
 
@@ -425,123 +421,6 @@ module openconfig-packet-match {
 
         uses ipv6-protocol-fields-config;
         uses ipv6-protocol-fields-state;
-      }
-
-      uses ip-icmpv6-header-fields-top;
-    }
-  }
-
-  // ICMP match fields. Local addition: upstream added these in
-  // openconfig-packet-match 2.1.0, which also removed the tcp-flags leaf this
-  // bundle still serves, so they are carried here until the bundle moves to
-  // 2.x. Both the containers and their position under ipv4/ipv6 match what
-  // upstream 2.1.0 defines, so the block can be dropped wholesale on that
-  // upgrade. The only deliberate difference is ICMPv4 type/code, see below.
-  grouping ip-icmpv6-header-fields-config {
-    description
-      "Collection of ICMPv6 header fields that can be used to set up a
-      match filter.";
-
-    leaf type {
-      type identityref {
-        base oc-icmpv6-types:TYPE;
-      }
-      description
-        "ICMPv6 type to be matched.";
-      reference
-        "RFC 4443: Internet Control Message Protocol (ICMPv6)
-                   for Internet Protocol Version 6 (IPv6) Specification.";
-    }
-
-    leaf code {
-      type identityref {
-        base oc-icmpv6-types:CODE;
-      }
-      description
-        "ICMPv6 code to be matched.";
-      reference
-        "RFC 4443: Internet Control Message Protocol (ICMPv6)
-                   for Internet Protocol Version 6 (IPv6) Specification.";
-    }
-  }
-
-  grouping ip-icmpv6-header-fields-top {
-    description
-      "Top grouping for ICMPv6 filtering";
-
-    container icmpv6 {
-      description
-        "Top container for ICMPv6 filtering";
-
-      container config {
-        description
-          "Configuration attributes for ICMPv6 filtering";
-
-        uses ip-icmpv6-header-fields-config;
-      }
-
-      container state {
-        description
-          "State attributes for ICMPv6 filtering";
-        config false;
-
-        uses ip-icmpv6-header-fields-config;
-      }
-    }
-  }
-
-  grouping ip-icmpv4-header-fields-config {
-    description
-      "Collection of ICMPv4 header fields that can be used to set up a
-      match filter, so that, for example, ICMP redirects can be dropped
-      while echo requests are permitted.";
-
-    // Upstream types these as an identityref on openconfig-icmpv4-types,
-    // which this bundle does not carry. They stay as the plain numeric
-    // values carried on the wire, which is also how they are stored in the
-    // SONiC ACL_RULE ICMP_TYPE and ICMP_CODE fields. Moving to the upstream
-    // identityref changes what clients may send, so it is left for the 2.x
-    // upgrade.
-    leaf type {
-      type uint8;
-      description
-        "ICMPv4 type to be matched, as the numeric value defined by IANA,
-        for example 5 for Redirect or 8 for Echo Request.";
-      reference
-        "RFC 792: Internet Control Message Protocol.";
-    }
-
-    leaf code {
-      type uint8;
-      description
-        "ICMPv4 code to be matched, as the numeric value defined by IANA
-        within the message type.";
-      reference
-        "RFC 792: Internet Control Message Protocol.";
-    }
-  }
-
-  grouping ip-icmpv4-header-fields-top {
-    description
-      "Top grouping for ICMPv4 filtering";
-
-    container icmpv4 {
-      description
-        "Top container for ICMPv4 filtering";
-
-      container config {
-        description
-          "Configuration attributes for ICMPv4 filtering";
-
-        uses ip-icmpv4-header-fields-config;
-      }
-
-      container state {
-        description
-          "State attributes for ICMPv4 filtering";
-        config false;
-
-        uses ip-icmpv4-header-fields-config;
       }
     }
   }

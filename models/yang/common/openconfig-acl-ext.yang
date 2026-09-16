@@ -8,6 +8,7 @@ module openconfig-acl-ext {
 
   import openconfig-acl { prefix oc-acl; }
   import openconfig-extensions { prefix oc-ext; }
+  import openconfig-icmpv6-types { prefix oc-icmpv6-types; }
 
   organization "OpenConfig working group";
 
@@ -17,15 +18,29 @@ module openconfig-acl-ext {
 
   description
     "This module adds extensions to the base OpenConfig ACL model
-    (openconfig-acl) to support control-plane / management ACLs, i.e. the
-    'restrict-access' security filter that limits which sources may open a
-    management connection (SSH, SNMP, NTP, ...) to the device. The base
-    openconfig-acl model (v1.0.2) has no /acl/control-plane container, so this
-    marks an existing acl-set as a control-plane list and enumerates the
-    management services it protects. It maps to the SONiC CONFIG_DB ACL_TABLE
-    of type CTRLPLANE with a 'services' binding, enforced by caclmgrd.";
+    (openconfig-acl) for match and classification capabilities the version of
+    the base model carried by this bundle does not define. It covers:
 
-  oc-ext:openconfig-version "0.1.0";
+    - Control-plane / management ACLs, i.e. the 'restrict-access' security
+      filter that limits which sources may open a management connection (SSH,
+      SNMP, NTP, ...) to the device. openconfig-acl has no /acl/control-plane
+      container, so this marks an existing acl-set as a control-plane list and
+      enumerates the management services it protects. It maps to the SONiC
+      CONFIG_DB ACL_TABLE of type CTRLPLANE with a 'services' binding,
+      enforced by caclmgrd.
+
+    - ICMPv4 and ICMPv6 type/code match fields on an acl-entry, mapping to the
+      SONiC CONFIG_DB ACL_RULE fields ICMP_TYPE, ICMP_CODE and ICMPV6_TYPE.
+      The ICMPv6 code leaf is defined here for symmetry with ICMPv4 and with
+      upstream, but is not yet translated to ICMPV6_CODE.";
+
+  oc-ext:openconfig-version "0.2.0";
+
+  revision "2026-09-16" {
+    description
+      "Add ICMPv4 and ICMPv6 type/code match fields to an acl-entry.";
+    reference "0.2.0";
+  }
 
   revision "2026-08-14" {
     description
@@ -72,6 +87,140 @@ module openconfig-acl-ext {
       "Adds control-plane / management ACL operational state to the base
       acl-set model.";
     uses acl-set-control-plane-config;
+  }
+
+  // ICMP match fields.
+  //
+  // Upstream defines these in openconfig-packet-match 2.1.0, which also drops
+  // the tcp-flags leaf this bundle still serves, so the bundle cannot move to
+  // that release yet. The containers and their position under an acl-entry's
+  // ipv4 and ipv6 match what upstream defines, so once the bundle carries
+  // openconfig-packet-match 2.x these groupings and augments can be deleted
+  // and the standard ones adopted without moving any node: only the module a
+  // client names them with changes.
+  grouping ip-icmpv4-header-fields-config {
+    description
+      "Collection of ICMPv4 header fields that can be used to set up a match
+      filter, so that, for example, ICMP redirects can be dropped while echo
+      requests are permitted.";
+
+    // Upstream types these as an identityref on openconfig-icmpv4-types, which
+    // this bundle does not carry. They stay as the plain numeric values
+    // carried on the wire, which is also how they are stored in the SONiC
+    // ACL_RULE ICMP_TYPE and ICMP_CODE fields.
+    leaf type {
+      type uint8;
+      description
+        "ICMPv4 type to be matched, as the numeric value defined by IANA, for
+        example 5 for Redirect or 8 for Echo Request.";
+      reference
+        "RFC 792: Internet Control Message Protocol.";
+    }
+
+    leaf code {
+      type uint8;
+      description
+        "ICMPv4 code to be matched, as the numeric value defined by IANA
+        within the message type.";
+      reference
+        "RFC 792: Internet Control Message Protocol.";
+    }
+  }
+
+  grouping ip-icmpv4-header-fields-top {
+    description
+      "Top grouping for ICMPv4 filtering";
+
+    container icmpv4 {
+      description
+        "Top container for ICMPv4 filtering";
+
+      container config {
+        description
+          "Configuration attributes for ICMPv4 filtering";
+
+        uses ip-icmpv4-header-fields-config;
+      }
+
+      container state {
+        description
+          "State attributes for ICMPv4 filtering";
+        config false;
+
+        uses ip-icmpv4-header-fields-config;
+      }
+    }
+  }
+
+  grouping ip-icmpv6-header-fields-config {
+    description
+      "Collection of ICMPv6 header fields that can be used to set up a match
+      filter.";
+
+    leaf type {
+      type identityref {
+        base oc-icmpv6-types:TYPE;
+      }
+      description
+        "ICMPv6 type to be matched.";
+      reference
+        "RFC 4443: Internet Control Message Protocol (ICMPv6)
+                   for Internet Protocol Version 6 (IPv6) Specification.";
+    }
+
+    leaf code {
+      type identityref {
+        base oc-icmpv6-types:CODE;
+      }
+      description
+        "ICMPv6 code to be matched. Not yet translated to the SONiC ACL_RULE
+        ICMPV6_CODE field, so setting it currently has no effect on the
+        installed rule.";
+      reference
+        "RFC 4443: Internet Control Message Protocol (ICMPv6)
+                   for Internet Protocol Version 6 (IPv6) Specification.";
+    }
+  }
+
+  grouping ip-icmpv6-header-fields-top {
+    description
+      "Top grouping for ICMPv6 filtering";
+
+    container icmpv6 {
+      description
+        "Top container for ICMPv6 filtering";
+
+      container config {
+        description
+          "Configuration attributes for ICMPv6 filtering";
+
+        uses ip-icmpv6-header-fields-config;
+      }
+
+      container state {
+        description
+          "State attributes for ICMPv6 filtering";
+        config false;
+
+        uses ip-icmpv6-header-fields-config;
+      }
+    }
+  }
+
+  augment "/oc-acl:acl/oc-acl:acl-sets/oc-acl:acl-set/oc-acl:acl-entries"
+        + "/oc-acl:acl-entry/oc-acl:ipv4" {
+    description
+      "Adds ICMPv4 type/code match fields to an acl-entry, alongside the base
+      IPv4 match fields.";
+    uses ip-icmpv4-header-fields-top;
+  }
+
+  augment "/oc-acl:acl/oc-acl:acl-sets/oc-acl:acl-set/oc-acl:acl-entries"
+        + "/oc-acl:acl-entry/oc-acl:ipv6" {
+    description
+      "Adds ICMPv6 type/code match fields to an acl-entry, alongside the base
+      IPv6 match fields.";
+    uses ip-icmpv6-header-fields-top;
   }
 
 }

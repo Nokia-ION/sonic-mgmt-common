@@ -1552,7 +1552,7 @@ func convertOCToInternalIPv4(ruleData db.Value, aclName string, ruleIndex uint32
 			ruleData.Field["DST_IP"] = *rule.Ipv4.Config.DestinationAddress
 		}
 	}
-	// openconfig-packet-match ICMPv4 type/code match (SONiC ICMP_TYPE and
+	// openconfig-acl-ext ICMPv4 type/code match (SONiC ICMP_TYPE and
 	// ICMP_CODE). Both are the numeric values, so no identity map is needed.
 	// Restricting ICMP means pairing these with IP_PROTOCOL 1 and a drop
 	// action, for example to drop ICMP redirects (type 5).
@@ -1604,9 +1604,9 @@ func convertOCToInternalIPv6(ruleData db.Value, aclName string, ruleIndex uint32
 			ruleData.Field["DST_FLOWLABEL"] = strconv.FormatInt(int64(*rule.Ipv6.Config.DestinationFlowLabel), 10)
 		}
 	}
-	// openconfig-packet-match: ICMPv6 type match (SONiC ICMPV6_TYPE). The
-	// standard model uses an identityref (openconfig-icmpv6-types); map it to
-	// the numeric ICMPv6 type. ICMPv6 code mapping is a follow-up.
+	// openconfig-acl-ext: ICMPv6 type match (SONiC ICMPV6_TYPE). The leaf keeps
+	// the standard openconfig-icmpv6-types identityref; map it to the numeric
+	// ICMPv6 type. ICMPv6 code mapping is a follow-up.
 	if rule.Ipv6.Icmpv6 != nil && rule.Ipv6.Icmpv6.Config != nil {
 		if rule.Ipv6.Icmpv6.Config.Type != ocbinds.OpenconfigIcmpv6Types_TYPE_UNSET {
 			if num, ok := ICMPV6_TYPE_MAP[rule.Ipv6.Icmpv6.Config.Type]; ok {
