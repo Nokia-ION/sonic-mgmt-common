@@ -10,6 +10,7 @@ import (
 	pathutil "github.com/Azure/sonic-mgmt-common/translib/path"
 	"github.com/Azure/sonic-mgmt-common/translib/tlerr"
 	log "github.com/golang/glog"
+	"github.com/openconfig/goyang/pkg/yang"
 	"github.com/openconfig/ygot/ygot"
 )
 
@@ -179,18 +180,21 @@ func deriveSetOpFromKey(key string, inner json.RawMessage) (derivedSetOp, error)
 	return derivedSetOp{Path: derived, Payload: []byte(inner)}, nil
 }
 
-// rewriteOrBulkRootSet expands a SET path from the payload. If more than one
-// top-level key is present, the ops are applied as a Bulk transaction and
-// done is true. Otherwise req is rewritten in place and done is false.
+// rewriteOrBulkRootSet expands a SET path from the payload. Origin-only
+// payloads are split per top-level module. UPDATE/REPLACE then expand YANG
+// lists in the payload into keyed instance paths. More than one derived op,
+// or any list expansion, is applied as a Bulk transaction (done is true) so
+// a missing instance can fall back to REPLACE per entry. Otherwise req is
+// rewritten in place and done is false.
 func rewriteOrBulkRootSet(req SetRequest, operation int) (reqOut SetRequest, done bool, resp SetResponse, err error) {
-	ops, err := expandRootSetRequest(req.Path, req.Payload)
+	ops, needBulk, err := expandSetOps(req.Path, req.Payload, operation)
 	if err != nil {
 		return req, true, SetResponse{ErrSrc: AppErr}, err
 	}
 	if len(ops) == 0 {
 		return req, true, SetResponse{ErrSrc: AppErr}, tlerr.InvalidArgs("root-path SET payload is empty")
 	}
-	if len(ops) > 1 {
+	if needBulk {
 		resp, err = applyRootSetAsBulk(req, ops, operation)
 		return req, true, resp, err
 	}
@@ -234,7 +238,8 @@ func applyRootSetAsBulk(req SetRequest, ops []derivedSetOp, operation int) (SetR
 }
 
 // expandBulkRootSet expands origin-only non-DELETE entries into one Bulk
-// entry per payload key, preserving request order.
+// entry per payload key (and, for UPDATE/REPLACE, per YANG list instance),
+// preserving request order.
 func expandBulkRootSet(req BulkRequest) ([]BulkRequestEntry, error) {
 	var out []BulkRequestEntry
 	for i := range req.Request {
@@ -243,7 +248,7 @@ func expandBulkRootSet(req BulkRequest) ([]BulkRequestEntry, error) {
 			out = append(out, entry)
 			continue
 		}
-		ops, err := expandRootSetRequest(entry.Entry.Path, entry.Entry.Payload)
+		ops, _, err := expandSetOps(entry.Entry.Path, entry.Entry.Payload, entry.Operation)
 		if err != nil {
 			return nil, err
 		}
@@ -255,4 +260,354 @@ func expandBulkRootSet(req BulkRequest) ([]BulkRequestEntry, error) {
 		}
 	}
 	return out, nil
+}
+
+// expandSetOps derives SET targets from an origin payload and, for
+// UPDATE/REPLACE, from YANG lists in that payload. needBulk is true when more
+// than one op is produced or when a list was expanded to keyed instances.
+func expandSetOps(path string, payload []byte, operation int) ([]derivedSetOp, bool, error) {
+	ops, err := expandRootSetRequest(path, payload)
+	if err != nil {
+		return nil, false, err
+	}
+	needBulk := len(ops) > 1
+	if operation != UPDATE && operation != REPLACE {
+		return ops, needBulk, nil
+	}
+
+	var out []derivedSetOp
+	for _, op := range ops {
+		expanded, changed, err := expandListInstances(op.Path, op.Payload)
+		if err != nil {
+			return nil, false, err
+		}
+		if changed {
+			needBulk = true
+			for _, e := range expanded {
+				log.Infof("list-instance SET derived path %s from payload under %s", e.Path, op.Path)
+			}
+		}
+		out = append(out, expanded...)
+	}
+	if len(out) == 0 {
+		return nil, false, tlerr.InvalidArgs("SET payload is empty")
+	}
+	return out, needBulk, nil
+}
+
+func expandListInstances(path string, payload []byte) ([]derivedSetOp, bool, error) {
+	passthrough := []derivedSetOp{{Path: path, Payload: payload}}
+	if len(bytes.TrimSpace(payload)) == 0 {
+		return passthrough, false, nil
+	}
+
+	entry, err := yangEntryForURI(path)
+	if err != nil || entry == nil {
+		return passthrough, false, nil
+	}
+
+	if entry.IsList() && !uriHasListKeys(path) {
+		return expandWholeListPayload(path, entry, payload)
+	}
+	if entry.IsContainer() || (entry.IsList() && uriHasListKeys(path)) {
+		return expandContainerListPayload(path, entry, payload)
+	}
+	return passthrough, false, nil
+}
+
+func expandWholeListPayload(listPath string, listEntry *yang.Entry, payload []byte) ([]derivedSetOp, bool, error) {
+	insts, err := parseListInstances(payload)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(insts) == 0 {
+		return []derivedSetOp{{Path: listPath, Payload: payload}}, false, nil
+	}
+	ops, err := keyedOpsForListInstances(listPath, listEntry, insts)
+	if err != nil {
+		return nil, false, err
+	}
+	return ops, true, nil
+}
+
+func expandContainerListPayload(path string, entry *yang.Entry, payload []byte) ([]derivedSetOp, bool, error) {
+	keys, err := parseTopLevelJSONObject(payload)
+	if err != nil {
+		return []derivedSetOp{{Path: path, Payload: payload}}, false, nil
+	}
+
+	var leftover []jsonObjectKey
+	var ops []derivedSetOp
+	changed := false
+	for _, k := range keys {
+		child := yangChildByJSONName(entry, k.Key)
+		if child != nil && child.IsList() {
+			insts, err := parseListInstances(k.Value)
+			if err != nil {
+				return nil, false, err
+			}
+			if len(insts) == 0 {
+				leftover = append(leftover, k)
+				continue
+			}
+			listPath, err := joinYangURI(path, k.Key)
+			if err != nil {
+				return nil, false, err
+			}
+			instOps, err := keyedOpsForListInstances(listPath, child, insts)
+			if err != nil {
+				return nil, false, err
+			}
+			ops = append(ops, instOps...)
+			changed = true
+			continue
+		}
+		if child != nil && child.IsContainer() {
+			childPath, err := joinYangURI(path, k.Key)
+			if err != nil {
+				return nil, false, err
+			}
+			subOps, subChanged, err := expandListInstances(childPath, k.Value)
+			if err != nil {
+				return nil, false, err
+			}
+			if subChanged {
+				ops = append(ops, subOps...)
+				changed = true
+				continue
+			}
+		}
+		leftover = append(leftover, k)
+	}
+
+	if !changed {
+		return []derivedSetOp{{Path: path, Payload: payload}}, false, nil
+	}
+	if len(leftover) > 0 {
+		left, err := marshalJSONObjectKeys(leftover)
+		if err != nil {
+			return nil, false, err
+		}
+		ops = append([]derivedSetOp{{Path: path, Payload: left}}, ops...)
+	}
+	return ops, true, nil
+}
+
+func keyedOpsForListInstances(listPath string, listEntry *yang.Entry, insts []json.RawMessage) ([]derivedSetOp, error) {
+	ops := make([]derivedSetOp, 0, len(insts))
+	for _, inst := range insts {
+		keyed, err := keyedListInstanceURI(listPath, listEntry, inst)
+		if err != nil {
+			return nil, err
+		}
+		ops = append(ops, derivedSetOp{Path: keyed, Payload: []byte(inst)})
+	}
+	return ops, nil
+}
+
+func keyedListInstanceURI(listPath string, listEntry *yang.Entry, instance json.RawMessage) (string, error) {
+	keyVals, err := listInstanceKeyValues(listEntry, instance)
+	if err != nil {
+		return "", err
+	}
+	gpath, err := ygot.StringToPath(listPath, ygot.StructuredPath)
+	if err != nil || gpath == nil || len(gpath.GetElem()) == 0 {
+		return "", tlerr.InvalidArgs("invalid list path %s: %v", listPath, err)
+	}
+	last := gpath.Elem[len(gpath.Elem)-1]
+	last.Key = keyVals
+
+	pv := pathutil.NewPathValidator(&pathutil.AppendModulePrefix{})
+	if err := pv.Validate(gpath); err != nil {
+		return "", tlerr.InvalidArgs("cannot form list instance path under %s: %v", listPath, err)
+	}
+	derived, err := ygot.PathToString(gpath)
+	if err != nil {
+		return "", tlerr.InvalidArgs("cannot convert list instance path under %s: %v", listPath, err)
+	}
+	if !strings.HasPrefix(derived, "/") {
+		derived = "/" + derived
+	}
+	return derived, nil
+}
+
+func listInstanceKeyValues(listEntry *yang.Entry, instance json.RawMessage) (map[string]string, error) {
+	if listEntry == nil || strings.TrimSpace(listEntry.Key) == "" {
+		return nil, tlerr.InvalidArgs("YANG list %s has no keys", yangNodeName(listEntry))
+	}
+	fields, err := parseTopLevelJSONObject(instance)
+	if err != nil {
+		return nil, tlerr.InvalidArgs("YANG list %s instance must be a JSON object", yangNodeName(listEntry))
+	}
+	byName := make(map[string]json.RawMessage, len(fields))
+	for _, f := range fields {
+		byName[localJSONName(f.Key)] = f.Value
+	}
+	vals := make(map[string]string)
+	for _, keyName := range strings.Fields(listEntry.Key) {
+		raw, ok := byName[keyName]
+		if !ok {
+			return nil, tlerr.InvalidArgs("list %s instance missing key leaf %q", yangNodeName(listEntry), keyName)
+		}
+		s, err := jsonScalarString(raw)
+		if err != nil {
+			return nil, tlerr.InvalidArgs("list %s key leaf %q is not a scalar: %v", yangNodeName(listEntry), keyName, err)
+		}
+		vals[keyName] = s
+	}
+	return vals, nil
+}
+
+func parseListInstances(payload []byte) ([]json.RawMessage, error) {
+	trim := bytes.TrimSpace(payload)
+	if len(trim) == 0 || bytes.Equal(trim, []byte("null")) {
+		return nil, nil
+	}
+	if trim[0] == '{' {
+		return []json.RawMessage{json.RawMessage(append([]byte(nil), trim...))}, nil
+	}
+	if trim[0] != '[' {
+		return nil, tlerr.InvalidArgs("YANG list payload must be a JSON array or object")
+	}
+
+	dec := json.NewDecoder(bytes.NewReader(trim))
+	tok, err := dec.Token()
+	if err != nil {
+		return nil, tlerr.InvalidArgs("YANG list payload must be a JSON array")
+	}
+	delim, ok := tok.(json.Delim)
+	if !ok || delim != '[' {
+		return nil, tlerr.InvalidArgs("YANG list payload must be a JSON array")
+	}
+	var insts []json.RawMessage
+	for dec.More() {
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err != nil {
+			return nil, tlerr.InvalidArgs("YANG list payload must be a JSON array")
+		}
+		insts = append(insts, raw)
+	}
+	if _, err := dec.Token(); err != nil {
+		return nil, tlerr.InvalidArgs("YANG list payload must be a JSON array")
+	}
+	return insts, nil
+}
+
+func yangEntryForURI(uri string) (*yang.Entry, error) {
+	if ygSchema == nil || ygSchema.RootSchema() == nil {
+		return nil, tlerr.InternalError{Format: "YANG schema not initialized"}
+	}
+	gpath, err := ygot.StringToPath(uri, ygot.StructuredPath)
+	if err != nil {
+		return nil, err
+	}
+	pv := pathutil.NewPathValidator(&pathutil.AppendModulePrefix{})
+	if err := pv.Validate(gpath); err != nil {
+		return nil, err
+	}
+	entry := ygSchema.RootSchema()
+	for _, elem := range gpath.GetElem() {
+		child := yangChildByJSONName(entry, elem.GetName())
+		if child == nil {
+			return nil, tlerr.InvalidArgs("no YANG node %q under %s", elem.GetName(), uri)
+		}
+		entry = child
+	}
+	return entry, nil
+}
+
+func yangChildByJSONName(entry *yang.Entry, jsonName string) *yang.Entry {
+	if entry == nil || entry.Dir == nil {
+		return nil
+	}
+	name := localJSONName(jsonName)
+	if ch := entry.Dir[name]; ch != nil {
+		return ch
+	}
+	for _, ch := range entry.Dir {
+		if ch != nil && ch.Name == name {
+			return ch
+		}
+	}
+	return nil
+}
+
+func joinYangURI(parent, childJSONName string) (string, error) {
+	parent = strings.TrimRight(parent, "/")
+	child := strings.Trim(childJSONName, "/")
+	uri := parent + "/" + child
+	gpath, err := ygot.StringToPath(uri, ygot.StructuredPath)
+	if err != nil {
+		return "", tlerr.InvalidArgs("invalid path %s: %v", uri, err)
+	}
+	pv := pathutil.NewPathValidator(&pathutil.AppendModulePrefix{})
+	if err := pv.Validate(gpath); err != nil {
+		return "", tlerr.InvalidArgs("invalid path %s: %v", uri, err)
+	}
+	derived, err := ygot.PathToString(gpath)
+	if err != nil {
+		return "", tlerr.InvalidArgs("cannot convert path %s: %v", uri, err)
+	}
+	if !strings.HasPrefix(derived, "/") {
+		derived = "/" + derived
+	}
+	return derived, nil
+}
+
+func marshalJSONObjectKeys(keys []jsonObjectKey) ([]byte, error) {
+	var b bytes.Buffer
+	b.WriteByte('{')
+	for i, k := range keys {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		keyJSON, err := json.Marshal(k.Key)
+		if err != nil {
+			return nil, err
+		}
+		b.Write(keyJSON)
+		b.WriteByte(':')
+		b.Write(k.Value)
+	}
+	b.WriteByte('}')
+	return b.Bytes(), nil
+}
+
+func jsonScalarString(raw json.RawMessage) (string, error) {
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s, nil
+	}
+	var n json.Number
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&n); err == nil {
+		return n.String(), nil
+	}
+	var b bool
+	if err := json.Unmarshal(raw, &b); err == nil {
+		if b {
+			return "true", nil
+		}
+		return "false", nil
+	}
+	return "", tlerr.InvalidArgs("JSON value is not a scalar")
+}
+
+func localJSONName(name string) string {
+	if i := strings.LastIndex(name, ":"); i >= 0 {
+		return name[i+1:]
+	}
+	return name
+}
+
+func uriHasListKeys(path string) bool {
+	return strings.Contains(path, "[")
+}
+
+func yangNodeName(entry *yang.Entry) string {
+	if entry == nil {
+		return ""
+	}
+	return entry.Name
 }
