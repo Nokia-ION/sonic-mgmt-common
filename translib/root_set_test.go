@@ -160,6 +160,135 @@ func TestExpandBulkRootSetMultipleKeys(t *testing.T) {
 	}
 }
 
+func TestExpandSetOpsPortChannelListFromOrigin(t *testing.T) {
+	payload := []byte(`{
+  "openconfig-interfaces:interfaces": {
+    "interface": [
+      {
+        "config": {
+          "name": "PortChannel100",
+          "type": "iana-if-type:ieee8023adLag"
+        },
+        "name": "PortChannel100",
+        "openconfig-if-aggregate:aggregation": {
+          "config": {
+            "lag-type": "LACP"
+          }
+        }
+      }
+    ]
+  }
+}`)
+	ops, needBulk, err := expandSetOps("/", payload, UPDATE)
+	if err != nil {
+		t.Fatalf("expandSetOps: %v", err)
+	}
+	if !needBulk {
+		t.Fatal("expected Bulk for list-instance expansion")
+	}
+	if len(ops) != 1 {
+		t.Fatalf("got %d ops, want 1", len(ops))
+	}
+	wantPath := "/openconfig-interfaces:interfaces/interface[name=PortChannel100]"
+	if ops[0].Path != wantPath {
+		t.Errorf("path = %s, want %s", ops[0].Path, wantPath)
+	}
+	if strings.Contains(string(ops[0].Payload), `"interface"`) {
+		t.Errorf("instance payload still wrapped in interface list: %s", ops[0].Payload)
+	}
+	if !strings.Contains(string(ops[0].Payload), `"PortChannel100"`) {
+		t.Errorf("instance payload missing PortChannel100: %s", ops[0].Payload)
+	}
+}
+
+func TestExpandSetOpsMixedInterfaceList(t *testing.T) {
+	payload := []byte(`{
+  "interface": [
+    {"name": "Ethernet46", "config": {"name": "Ethernet46", "type": "iana-if-type:ethernetCsmacd"}},
+    {"name": "PortChannel100", "config": {"name": "PortChannel100", "type": "iana-if-type:ieee8023adLag"}}
+  ]
+}`)
+	ops, changed, err := expandListInstances("/openconfig-interfaces:interfaces", payload)
+	if err != nil {
+		t.Fatalf("expandListInstances: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected list expansion")
+	}
+	if len(ops) != 2 {
+		t.Fatalf("got %d ops, want 2", len(ops))
+	}
+	if ops[0].Path != "/openconfig-interfaces:interfaces/interface[name=Ethernet46]" {
+		t.Errorf("ops[0].Path = %s", ops[0].Path)
+	}
+	if ops[1].Path != "/openconfig-interfaces:interfaces/interface[name=PortChannel100]" {
+		t.Errorf("ops[1].Path = %s", ops[1].Path)
+	}
+}
+
+func TestExpandSetOpsLacpNestedList(t *testing.T) {
+	payload := []byte(`{
+  "interfaces": {
+    "interface": [
+      {"name": "PortChannel10", "config": {"name": "PortChannel10"}}
+    ]
+  }
+}`)
+	ops, changed, err := expandListInstances("/openconfig-lacp:lacp", payload)
+	if err != nil {
+		t.Fatalf("expandListInstances: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected nested list expansion")
+	}
+	if len(ops) != 1 {
+		t.Fatalf("got %d ops, want 1", len(ops))
+	}
+	want := "/openconfig-lacp:lacp/interfaces/interface[name=PortChannel10]"
+	if ops[0].Path != want {
+		t.Errorf("path = %s, want %s", ops[0].Path, want)
+	}
+}
+
+func TestExpandSetOpsLldpUnchanged(t *testing.T) {
+	payload := []byte(`{"config":{"enabled":true}}`)
+	ops, needBulk, err := expandSetOps("/openconfig-lldp:lldp", payload, UPDATE)
+	if err != nil {
+		t.Fatalf("expandSetOps: %v", err)
+	}
+	if needBulk {
+		t.Fatal("did not expect Bulk for leaf-only payload")
+	}
+	if len(ops) != 1 || ops[0].Path != "/openconfig-lldp:lldp" {
+		t.Fatalf("ops = %+v", ops)
+	}
+}
+
+func TestExpandSetOpsMissingListKey(t *testing.T) {
+	payload := []byte(`{"interface":[{"config":{"name":"PortChannel100"}}]}`)
+	_, _, err := expandListInstances("/openconfig-interfaces:interfaces", payload)
+	if err == nil {
+		t.Fatal("expected error for missing list key")
+	}
+	if !strings.Contains(err.Error(), "missing key leaf") {
+		t.Errorf("error %q, want missing key leaf", err)
+	}
+}
+
+func TestExpandSetOpsCreateSkipsListExpansion(t *testing.T) {
+	payload := []byte(`{"openconfig-interfaces:interfaces":{"interface":[{"name":"PortChannel100"}]}}`)
+	ops, needBulk, err := expandSetOps("/", payload, CREATE)
+	if err != nil {
+		t.Fatalf("expandSetOps: %v", err)
+	}
+	if needBulk {
+		t.Fatal("CREATE should not Bulk-expand a single module key")
+	}
+	if len(ops) != 1 || ops[0].Path != "/openconfig-interfaces:interfaces" {
+		t.Fatalf("CREATE should stay at the container, got %+v", ops)
+	}
+}
+
 func TestRootSetUnMarshallAfterDerive(t *testing.T) {
 	payload := []byte(`{"openconfig-lldp:lldp":{"config":{"enabled":true}}}`)
 	path, inner, err := resolveRootSetRequest("/", payload)
