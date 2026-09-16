@@ -1566,7 +1566,7 @@ func Test_openconfig_network_instance_bgp_peer_group_afi_safi_apply_policy_impor
 	unloadDB(db.ConfigDB, cleanupTbl)
 }
 
-func Test_openconfig_network_instance_bgp_neighbor_send_community(t *testing.T) {
+func Test_openconfig_network_instance_bgp_neighbor_send_community_deprecated(t *testing.T) {
 	var url, urlInputBodyJSON string
 
 	preReqMap := map[string]interface{}{
@@ -1581,8 +1581,77 @@ func Test_openconfig_network_instance_bgp_neighbor_send_community(t *testing.T) 
 			},
 		},
 		"BGP_NEIGHBOR_AF": map[string]interface{}{
-			"default|20.0.0.1|ipv4_unicast": map[string]interface{}{},
-			"default|20.0.0.1|ipv6_unicast": map[string]interface{}{},
+			"default|20.0.0.1|ipv4_unicast": map[string]interface{}{
+				"send_community": "standard",
+			},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"BGP_NEIGHBOR_AF": map[string]interface{}{
+			"default|20.0.0.1|ipv4_unicast": "",
+		},
+		"BGP_NEIGHBOR": map[string]interface{}{
+			"default|20.0.0.1": "",
+		},
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": "",
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	// openconfig-bgp 9.4.0 deprecated this leaf in favour of the
+	// per-address-family leaf-list, and it is no longer served. It is still in
+	// the schema, so a request reaches the transformer and is refused by a
+	// message naming what replaced it.
+	url = "/openconfig-network-instance:network-instances/network-instance[name=default]/protocols/protocol[identifier=BGP][name=bgp]/bgp/neighbors/neighbor[neighbor-address=20.0.0.1]/config/send-community"
+	urlInputBodyJSON = "{\"openconfig-network-instance:send-community\":\"STANDARD\"}"
+	t.Run("PATCH neighbor send-community is refused",
+		processSetRequest(url, urlInputBodyJSON, "PATCH", true, tlerr.NotSupportedError{
+			Format: "send-community on the neighbor config container is deprecated and not served; use afi-safis/afi-safi/config/send-community-type"}))
+	time.Sleep(1 * time.Second)
+
+	t.Run("DELETE neighbor send-community is refused",
+		processDeleteRequest(url, true, tlerr.NotSupportedError{
+			Format: "send-community on the neighbor config container is deprecated and not served; use afi-safis/afi-safi/config/send-community-type"}))
+	time.Sleep(1 * time.Second)
+
+	// The refused write left the address family's own value alone.
+	expectedMap := map[string]interface{}{
+		"BGP_NEIGHBOR_AF": map[string]interface{}{
+			"default|20.0.0.1|ipv4_unicast": map[string]interface{}{
+				"send_community": "standard",
+			},
+		},
+	}
+	t.Run("Verify BGP_NEIGHBOR_AF send_community untouched",
+		verifyDbResult(rclient, "BGP_NEIGHBOR_AF|default|20.0.0.1|ipv4_unicast", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_network_instance_bgp_neighbor_afi_safi_send_community_type(t *testing.T) {
+	var url, urlInputBodyJSON string
+
+	preReqMap := map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": map[string]interface{}{
+				"local_asn": "65100",
+			},
+		},
+		"BGP_NEIGHBOR": map[string]interface{}{
+			"default|20.0.0.1": map[string]interface{}{
+				"asn": "65200",
+			},
+		},
+		"BGP_NEIGHBOR_AF": map[string]interface{}{
+			"default|20.0.0.1|ipv4_unicast": map[string]interface{}{
+				"admin_status": "up",
+			},
+			"default|20.0.0.1|ipv6_unicast": map[string]interface{}{
+				"admin_status": "up",
+			},
 		},
 	}
 	cleanupTbl := map[string]interface{}{
@@ -1600,38 +1669,166 @@ func Test_openconfig_network_instance_bgp_neighbor_send_community(t *testing.T) 
 	loadDB(db.ConfigDB, preReqMap)
 	time.Sleep(1 * time.Second)
 
-	url = "/openconfig-network-instance:network-instances/network-instance[name=default]/protocols/protocol[identifier=BGP][name=bgp]/bgp/neighbors/neighbor[neighbor-address=20.0.0.1]/config/send-community"
-	urlInputBodyJSON = "{\"openconfig-network-instance:send-community\":\"STANDARD\"}"
-	t.Run("PATCH network-instance BGP neighbor send-community", processSetRequest(url, urlInputBodyJSON, "PATCH", false, nil))
+	v4 := "/openconfig-network-instance:network-instances/network-instance[name=default]/protocols/protocol[identifier=BGP][name=bgp]/bgp/neighbors/neighbor[neighbor-address=20.0.0.1]/afi-safis/afi-safi[afi-safi-name=IPV4_UNICAST]/config/send-community-type"
+	v6 := "/openconfig-network-instance:network-instances/network-instance[name=default]/protocols/protocol[identifier=BGP][name=bgp]/bgp/neighbors/neighbor[neighbor-address=20.0.0.1]/afi-safis/afi-safi[afi-safi-name=IPV6_UNICAST]/config/send-community-type"
+
+	url = v4
+	urlInputBodyJSON = "{\"openconfig-network-instance:send-community-type\":[\"STANDARD\"]}"
+	t.Run("PATCH neighbor IPv4 send-community-type", processSetRequest(url, urlInputBodyJSON, "PATCH", false, nil))
 	time.Sleep(1 * time.Second)
 
 	expectedMap := map[string]interface{}{
 		"BGP_NEIGHBOR_AF": map[string]interface{}{
 			"default|20.0.0.1|ipv4_unicast": map[string]interface{}{
-				"send_community": "standard",
-			},
-			"default|20.0.0.1|ipv6_unicast": map[string]interface{}{
+				"admin_status":   "up",
 				"send_community": "standard",
 			},
 		},
 	}
-	t.Run("Verify BGP_NEIGHBOR_AF send_community mapping", verifyDbResult(rclient, "BGP_NEIGHBOR_AF|default|20.0.0.1|ipv4_unicast", expectedMap, false))
+	t.Run("Verify BGP_NEIGHBOR_AF IPv4 send_community", verifyDbResult(rclient, "BGP_NEIGHBOR_AF|default|20.0.0.1|ipv4_unicast", expectedMap, false))
 	time.Sleep(1 * time.Second)
 
-	expectedGetJSON := "{\"openconfig-network-instance:send-community\":\"STANDARD\"}"
-	t.Run("GET network-instance BGP neighbor send-community", processGetRequest(url, nil, expectedGetJSON, false))
-	time.Sleep(1 * time.Second)
-
-	t.Run("DELETE network-instance BGP neighbor send-community", processDeleteRequest(url, false))
+	// LARGE is the value openconfig-bgp-types could not express before the
+	// 9.6.0 uplift, and CONFIG_DB and FRR have always taken it.
+	url = v6
+	urlInputBodyJSON = "{\"openconfig-network-instance:send-community-type\":[\"LARGE\"]}"
+	t.Run("PATCH neighbor IPv6 send-community-type LARGE", processSetRequest(url, urlInputBodyJSON, "PATCH", false, nil))
 	time.Sleep(1 * time.Second)
 
 	expectedMap = map[string]interface{}{
 		"BGP_NEIGHBOR_AF": map[string]interface{}{
-			"default|20.0.0.1|ipv4_unicast": map[string]interface{}{},
-			"default|20.0.0.1|ipv6_unicast": map[string]interface{}{},
+			"default|20.0.0.1|ipv6_unicast": map[string]interface{}{
+				"admin_status":   "up",
+				"send_community": "large",
+			},
 		},
 	}
-	t.Run("Verify BGP_NEIGHBOR_AF send_community cleared", verifyDbResult(rclient, "BGP_NEIGHBOR_AF|default|20.0.0.1|ipv4_unicast", expectedMap, false))
+	t.Run("Verify BGP_NEIGHBOR_AF IPv6 send_community large", verifyDbResult(rclient, "BGP_NEIGHBOR_AF|default|20.0.0.1|ipv6_unicast", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	// The two families hold their own value, which is the whole point of the
+	// leaf moving under afi-safi.
+	expectedMap = map[string]interface{}{
+		"BGP_NEIGHBOR_AF": map[string]interface{}{
+			"default|20.0.0.1|ipv4_unicast": map[string]interface{}{
+				"admin_status":   "up",
+				"send_community": "standard",
+			},
+		},
+	}
+	t.Run("Verify the IPv4 row is unchanged by the IPv6 write", verifyDbResult(rclient, "BGP_NEIGHBOR_AF|default|20.0.0.1|ipv4_unicast", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	expectedGetJSON := "{\"openconfig-network-instance:send-community-type\":[\"openconfig-bgp:STANDARD\"]}"
+	t.Run("GET neighbor IPv4 send-community-type", processGetRequest(v4, nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	// One field per address family cannot hold a list, so a request naming two
+	// community types is refused rather than truncated to the first.
+	urlInputBodyJSON = "{\"openconfig-network-instance:send-community-type\":[\"STANDARD\",\"EXTENDED\"]}"
+	t.Run("PATCH neighbor send-community-type with two values is refused",
+		processSetRequest(v4, urlInputBodyJSON, "PATCH", true, tlerr.NotSupportedError{
+			Format: "BGP neighbor send-community-type accepts one community type, since CONFIG_DB holds a single send_community per address family, and the request carries 2"}))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"BGP_NEIGHBOR_AF": map[string]interface{}{
+			"default|20.0.0.1|ipv4_unicast": map[string]interface{}{
+				"admin_status":   "up",
+				"send_community": "standard",
+			},
+		},
+	}
+	t.Run("Verify the refused list left the row alone", verifyDbResult(rclient, "BGP_NEIGHBOR_AF|default|20.0.0.1|ipv4_unicast", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("DELETE neighbor IPv4 send-community-type", processDeleteRequest(v4, false))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"BGP_NEIGHBOR_AF": map[string]interface{}{
+			"default|20.0.0.1|ipv4_unicast": map[string]interface{}{
+				"admin_status": "up",
+			},
+		},
+	}
+	t.Run("Verify BGP_NEIGHBOR_AF IPv4 send_community cleared", verifyDbResult(rclient, "BGP_NEIGHBOR_AF|default|20.0.0.1|ipv4_unicast", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_network_instance_bgp_peer_group_afi_safi_send_community_type(t *testing.T) {
+	var url, urlInputBodyJSON string
+
+	preReqMap := map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": map[string]interface{}{
+				"local_asn": "65100",
+			},
+		},
+		"BGP_PEER_GROUP": map[string]interface{}{
+			"default|PG1": map[string]interface{}{
+				"asn": "65300",
+			},
+		},
+		"BGP_PEER_GROUP_AF": map[string]interface{}{
+			"default|PG1|ipv4_unicast": map[string]interface{}{
+				"admin_status": "up",
+			},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"BGP_PEER_GROUP_AF": map[string]interface{}{
+			"default|PG1|ipv4_unicast": "",
+		},
+		"BGP_PEER_GROUP": map[string]interface{}{
+			"default|PG1": "",
+		},
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": "",
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	url = "/openconfig-network-instance:network-instances/network-instance[name=default]/protocols/protocol[identifier=BGP][name=bgp]/bgp/peer-groups/peer-group[peer-group-name=PG1]/afi-safis/afi-safi[afi-safi-name=IPV4_UNICAST]/config/send-community-type"
+	urlInputBodyJSON = "{\"openconfig-network-instance:send-community-type\":[\"EXTENDED\"]}"
+	t.Run("PATCH peer-group send-community-type", processSetRequest(url, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"BGP_PEER_GROUP_AF": map[string]interface{}{
+			"default|PG1|ipv4_unicast": map[string]interface{}{
+				"admin_status":   "up",
+				"send_community": "extended",
+			},
+		},
+	}
+	t.Run("Verify BGP_PEER_GROUP_AF send_community", verifyDbResult(rclient, "BGP_PEER_GROUP_AF|default|PG1|ipv4_unicast", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	expectedGetJSON := "{\"openconfig-network-instance:send-community-type\":[\"openconfig-bgp:EXTENDED\"]}"
+	t.Run("GET peer-group send-community-type", processGetRequest(url, nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	urlInputBodyJSON = "{\"openconfig-network-instance:send-community-type\":[\"STANDARD\",\"LARGE\"]}"
+	t.Run("PATCH peer-group send-community-type with two values is refused",
+		processSetRequest(url, urlInputBodyJSON, "PATCH", true, tlerr.NotSupportedError{
+			Format: "BGP peer-group send-community-type accepts one community type, since CONFIG_DB holds a single send_community per address family, and the request carries 2"}))
+	time.Sleep(1 * time.Second)
+
+	t.Run("DELETE peer-group send-community-type", processDeleteRequest(url, false))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"BGP_PEER_GROUP_AF": map[string]interface{}{
+			"default|PG1|ipv4_unicast": map[string]interface{}{
+				"admin_status": "up",
+			},
+		},
+	}
+	t.Run("Verify BGP_PEER_GROUP_AF send_community cleared", verifyDbResult(rclient, "BGP_PEER_GROUP_AF|default|PG1|ipv4_unicast", expectedMap, false))
 	time.Sleep(1 * time.Second)
 
 	unloadDB(db.ConfigDB, cleanupTbl)
@@ -3694,17 +3891,18 @@ func Test_openconfig_network_instance_bgp_neighbor_config_container_delete(t *te
 		verifyDbResult(rclient, "BGP_NEIGHBOR|default|20.0.0.1", expectedMap, false))
 	time.Sleep(1 * time.Second)
 
-	// send-community is the one leaf of the config container that lands in
-	// BGP_NEIGHBOR_AF, so the delete reaches that row too without disturbing
-	// the address family itself.
+	// The config container maps no field in BGP_NEIGHBOR_AF now that
+	// send-community is not served there, so the address family keeps its own
+	// send-community-type through a delete of the neighbor config.
 	expectedMap = map[string]interface{}{
 		"BGP_NEIGHBOR_AF": map[string]interface{}{
 			"default|20.0.0.1|ipv4_unicast": map[string]interface{}{
-				"admin_status": "up",
+				"admin_status":   "up",
+				"send_community": "both",
 			},
 		},
 	}
-	t.Run("Verify BGP_NEIGHBOR_AF send_community cleared by config container DELETE",
+	t.Run("Verify BGP_NEIGHBOR_AF send_community survives the config container DELETE",
 		verifyDbResult(rclient, "BGP_NEIGHBOR_AF|default|20.0.0.1|ipv4_unicast", expectedMap, false))
 	time.Sleep(1 * time.Second)
 
