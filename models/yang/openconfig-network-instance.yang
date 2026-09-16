@@ -966,6 +966,9 @@ module openconfig-network-instance {
     }
 
     uses oc-rpol:apply-policy-import-config;
+    // routing-policy 3.4.2 moved default-import-policy out of the
+    // grouping above and into one of its own.
+    uses oc-rpol:default-policy-import-config;
   }
 
   grouping network-instance-config {
