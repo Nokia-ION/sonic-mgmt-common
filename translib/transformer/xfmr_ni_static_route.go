@@ -25,6 +25,7 @@ import (
 	"regexp"
 	"runtime/debug"
 	"sort"
+	"strconv"
 	"strings"
 
 	log "github.com/golang/glog"
@@ -49,6 +50,7 @@ const (
 	niStaticRouteNexthopVrfFld = "nexthop-vrf"
 	niStaticRouteDistanceFld   = "distance"
 	niStaticRouteAdvertiseFld  = "advertise"
+	niStaticRouteTagFld        = "tag"
 
 	niStaticRouteTargetProtocolRoot = "static-protocol-root"
 	niStaticRouteTargetRoutesRoot   = "static-routes-root"
@@ -59,6 +61,7 @@ const (
 	niStaticRouteTargetNextHopCfg   = "static-route-next-hop-config"
 
 	niStaticRoutePrefixLeaf  = "prefix"
+	niStaticRouteSetTagLeaf  = "set-tag"
 	niStaticRouteIndexLeaf   = "index"
 	niStaticRouteNextHopLeaf = "next-hop"
 
@@ -92,7 +95,7 @@ var niStaticRouteProtoInstanceReqUriRe = regexp.MustCompile(niStaticRouteUriPfx 
 var niStaticRoutesRootReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/static-routes$`)
 var niStaticRouteInstReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/static-routes/static\[prefix=([^\]]+)\]$`)
 var niStaticRouteKeyLeafReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/static-routes/static\[prefix=([^\]]+)\]/prefix$`)
-var niStaticRouteCfgReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/static-routes/static\[prefix=([^\]]+)\]/config(?:/(prefix))?$`)
+var niStaticRouteCfgReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/static-routes/static\[prefix=([^\]]+)\]/config(?:/(prefix|set-tag))?$`)
 var niStaticRouteListReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/static-routes/static$`)
 var niStaticRouteNhsRootReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/static-routes/static\[prefix=([^\]]+)\]/next-hops(?:/next-hop)?$`)
 var niStaticRouteNhInstReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/static-routes/static\[prefix=([^\]]+)\]/next-hops/next-hop\[index=([^\]]+)\]$`)
@@ -292,6 +295,7 @@ func matchNiStaticRouteRequestUri(uri string) (*niStaticRouteReqInfo, error) {
 var niStaticRouteMappedPayloadLeaves = map[string]bool{
 	"static/prefix":                             true,
 	"static/config/prefix":                      true,
+	"static/config/set-tag":                     true,
 	"static/next-hops/next-hop/index":           true,
 	"static/next-hops/next-hop/config/index":    true,
 	"static/next-hops/next-hop/config/next-hop": true,
@@ -308,6 +312,7 @@ var niStaticRouteNhFieldOrder = []string{
 	niStaticRouteNexthopVrfFld,
 	niStaticRouteDistanceFld,
 	niStaticRouteAdvertiseFld,
+	niStaticRouteTagFld,
 }
 
 // The padding of a next-hop that leaves an attribute unset is the default the
@@ -371,6 +376,156 @@ func niStaticRouteDecodeNextHops(entry db.Value) []map[string]string {
 	return entries
 }
 
+// niStaticRouteSetTagFields renders a set-tag request into the row fields that
+// carry it. The tag describes the route, so it is written into every next-hop
+// position: FRR keeps one tag per prefix, and it programs nothing at all when
+// the tag list is a different length to the next-hop list.
+func niStaticRouteSetTagFields(inParams XfmrParams, s *ygot.GoStruct, reqInfo *niStaticRouteReqInfo) (map[string]string, error) {
+	// A subtree transformer is handed the struct that contains the leaf rather
+	// than the leaf's value, so the tag is taken from whichever struct carries
+	// it: the one passed as the param, or the one built from the request.
+	var raw interface{}
+	if cfg, ok := inParams.param.(*ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_StaticRoutes_Static_Config); ok && cfg != nil && cfg.SetTag != nil {
+		raw = cfg.SetTag
+	} else if cfgObj := getNiStaticRouteCfgObj(s, reqInfo.niName, reqInfo.protoName, reqInfo.prefix, false); cfgObj != nil && cfgObj.SetTag != nil {
+		raw = cfgObj.SetTag
+	}
+	if raw == nil {
+		if reqInfo.targetLeaf == niStaticRouteSetTagLeaf {
+			return nil, tlerr.InvalidArgsError{Format: "static route set-tag is missing in request payload"}
+		}
+		return nil, nil
+	}
+	tag, err := niStaticRouteTagToDb(raw)
+	if err != nil {
+		return nil, err
+	}
+	existing := niStaticRouteEntryOrEmpty(inParams.dbs[db.ConfigDB], reqInfo.niName, reqInfo.prefix)
+	entries := niStaticRouteDecodeNextHops(existing)
+	if len(entries) == 0 {
+		return nil, tlerr.InvalidArgsError{
+			Format: "static route " + reqInfo.prefix + " has no next-hop to carry a tag; FRR takes the tag on each route line, so a next-hop has to exist first",
+		}
+	}
+	for _, e := range entries {
+		e[niStaticRouteTagFld] = tag
+	}
+	return niStaticRouteEncodeNextHops(entries, existing, reqInfo.prefix), nil
+}
+
+// niStaticRouteSetTagToYang reports the route's tag, when its next-hops agree
+// on one. The decimal the row holds is reported as the uint32 member of the
+// union, which is the spelling FRR and CONFIG_DB use; a request may also send
+// the hex-string member, and that is converted on the way in.
+func niStaticRouteSetTagToYang(cfgObj *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_StaticRoutes_Static_Config, entry db.Value) {
+	tag, ok := niStaticRouteUniformTag(entry)
+	if !ok {
+		return
+	}
+	n, err := strconv.ParseUint(tag, 10, 32)
+	if err != nil {
+		return
+	}
+	cfgObj.SetTag = &ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_StaticRoutes_Static_Config_SetTag_Union_Uint32{Uint32: uint32(n)}
+}
+
+// niStaticRouteTagOf reports the tag of a route: the one value its next-hops
+// agree on, whether that comes from the next-hops being written or from the
+// stored row. An empty answer means the route carries no tag.
+func niStaticRouteTagOf(entries []map[string]string, existing db.Value) string {
+	for _, e := range entries {
+		if v := strings.TrimSpace(e[niStaticRouteTagFld]); v != "" {
+			return v
+		}
+	}
+	for _, v := range strings.Split(existing.Field[niStaticRouteTagFld], ",") {
+		if v = strings.TrimSpace(v); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// niStaticRouteUniformTag reports the tag every next-hop of a stored route
+// carries, and whether they all carry it. A row whose positions disagree is
+// not describable by the route-level leaf: FRR would have kept whichever value
+// it applied last, so nothing is reported rather than one of them.
+func niStaticRouteUniformTag(entry db.Value) (string, bool) {
+	raw := strings.TrimSpace(entry.Field[niStaticRouteTagFld])
+	if raw == "" {
+		return "", false
+	}
+	first := ""
+	for _, v := range strings.Split(raw, ",") {
+		v = strings.TrimSpace(v)
+		if v == "" || v == "0" {
+			return "", false
+		}
+		if first == "" {
+			first = v
+		} else if v != first {
+			return "", false
+		}
+	}
+	return first, first != ""
+}
+
+// niStaticRouteTagToDb renders what a request carries for set-tag into the
+// decimal FRR takes. The leaf is a union of uint32 and hex-string, so the hex
+// spelling is converted rather than refused, and a GET reports the decimal.
+func niStaticRouteTagToDb(v interface{}) (string, error) {
+	unsupported := func() error {
+		return tlerr.InvalidArgsError{
+			Format: fmt.Sprintf("static route set-tag carries an unsupported value of type %T", v),
+		}
+	}
+	var n uint64
+	switch val := v.(type) {
+	case nil:
+		return "", unsupported()
+	case *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_StaticRoutes_Static_Config_SetTag_Union_Uint32:
+		if val == nil {
+			return "", unsupported()
+		}
+		n = uint64(val.Uint32)
+	case *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_StaticRoutes_Static_Config_SetTag_Union_String:
+		if val == nil {
+			return "", unsupported()
+		}
+		parsed, err := strconv.ParseUint(strings.ReplaceAll(strings.TrimSpace(val.String), ":", ""), 16, 32)
+		if err != nil {
+			return "", tlerr.InvalidArgsError{Format: "static route set-tag is not a valid hex-string: " + val.String}
+		}
+		n = parsed
+	case uint32:
+		n = uint64(val)
+	case float64:
+		if val < 0 || val != float64(uint64(val)) {
+			return "", unsupported()
+		}
+		n = uint64(val)
+	case string:
+		s := strings.TrimSpace(val)
+		parsed, err := strconv.ParseUint(s, 10, 32)
+		if err != nil {
+			hex, hexErr := strconv.ParseUint(strings.ReplaceAll(s, ":", ""), 16, 32)
+			if hexErr != nil {
+				return "", unsupported()
+			}
+			parsed = hex
+		}
+		n = parsed
+	default:
+		return "", unsupported()
+	}
+	if n == 0 || n > 4294967295 {
+		return "", tlerr.InvalidArgsError{
+			Format: "static route set-tag accepts 1 through 4294967295, since that is the range FRR takes",
+		}
+	}
+	return strconv.FormatUint(n, 10), nil
+}
+
 // niStaticRouteEncodeNextHops renders the next-hops back into the comma
 // separated row attributes, keeping every list aligned. A field that neither
 // the next-hops nor the stored row carry is left out rather than introduced,
@@ -390,6 +545,12 @@ func niStaticRouteEncodeNextHops(entries []map[string]string, existing db.Value,
 			continue
 		}
 		padding := niStaticRouteNhFieldDefault[fld]
+		if fld == niStaticRouteTagFld {
+			// A tag describes the route, and FRR programs nothing at all when
+			// the tag list is shorter than the next-hop list, so a next-hop
+			// that arrives without one inherits the route's.
+			padding = niStaticRouteTagOf(entries, existing)
+		}
 		if fld == niStaticRouteNexthopFld {
 			// An interface only next-hop is stored as the unspecified address
 			// of the address family of the prefix.
@@ -1168,6 +1329,7 @@ func populateNiStaticRouteHierToYangFromDb(cfgDb *db.DB, ygRoot *ygot.GoStruct, 
 		rtObj.Prefix = &routePrefix
 		if rtObj.Config != nil {
 			rtObj.Config.Prefix = &routePrefix
+			niStaticRouteSetTagToYang(rtObj.Config, entry)
 		}
 		if err := populateNiStaticRouteNextHopsToYang(ygRoot, niName, protoName, p, entry, ""); err != nil {
 			return err
@@ -1221,8 +1383,15 @@ var YangToDb_ni_static_route_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPa
 		switch reqInfo.targetPathKind {
 		case niStaticRouteTargetProtocolRoot, niStaticRouteTargetRoutesRoot:
 			return res, tlerr.NotSupportedError{Format: "DELETE is not supported at static routes container level; delete a static route instance instead", Path: inParams.requestUri}
-		case niStaticRouteTargetRouteInst, niStaticRouteTargetRouteCfg:
+		case niStaticRouteTargetRouteCfg:
+			if reqInfo.targetLeaf == niStaticRouteSetTagLeaf {
+				// Only the tag, which lives in the row the route shares with its
+				// next-hops rather than being the route's identity.
+				return makeNiStaticRouteResMap(reqInfo.niName, reqInfo.prefix, map[string]string{niStaticRouteTagFld: ""}), nil
+			}
 			// prefix is the CONFIG_DB key, so clearing it removes the route.
+			return makeNiStaticRouteResMap(reqInfo.niName, reqInfo.prefix, nil), nil
+		case niStaticRouteTargetRouteInst:
 			return makeNiStaticRouteResMap(reqInfo.niName, reqInfo.prefix, nil), nil
 		case niStaticRouteTargetNextHopsRoot:
 			return res, tlerr.NotSupportedError{
@@ -1283,7 +1452,15 @@ var YangToDb_ni_static_route_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPa
 		if err := niStaticRouteCheckPayloadPrefix(inParams, reqInfo); err != nil {
 			return res, err
 		}
-		return makeNiStaticRouteResMap(reqInfo.niName, reqInfo.prefix, map[string]string{}), nil
+		fields, tagErr := niStaticRouteSetTagFields(inParams, wrappedRoot, reqInfo)
+		if tagErr != nil {
+			return res, tagErr
+		}
+		if fields == nil {
+			// A payload naming the route without its tag still asks for the row.
+			fields = map[string]string{}
+		}
+		return makeNiStaticRouteResMap(reqInfo.niName, reqInfo.prefix, fields), nil
 	case niStaticRouteTargetNextHopInst, niStaticRouteTargetNextHopCfg:
 		return niStaticRouteSetNextHop(inParams, reqInfo)
 	}
@@ -1399,7 +1576,8 @@ var DbToYang_ni_static_route_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrPa
 		}
 		return populateNiStaticRouteHierToYangFromDb(cfgDb, wrappedRoot, reqInfo.niName, reqInfo.protoName, reqInfo.prefix)
 	case niStaticRouteTargetRouteCfg:
-		if _, err := niStaticRouteEntryFromDb(cfgDb, reqInfo.niName, reqInfo.prefix); err != nil {
+		entry, err := niStaticRouteEntryFromDb(cfgDb, reqInfo.niName, reqInfo.prefix)
+		if err != nil {
 			return err
 		}
 		cfgObj := getNiStaticRouteCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.protoName, reqInfo.prefix, true)
@@ -1409,6 +1587,9 @@ var DbToYang_ni_static_route_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrPa
 		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == niStaticRoutePrefixLeaf {
 			routePrefix := reqInfo.prefix
 			cfgObj.Prefix = &routePrefix
+		}
+		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == niStaticRouteSetTagLeaf {
+			niStaticRouteSetTagToYang(cfgObj, entry)
 		}
 		return nil
 	case niStaticRouteTargetNextHopsRoot, niStaticRouteTargetNextHopInst, niStaticRouteTargetNextHopCfg:
