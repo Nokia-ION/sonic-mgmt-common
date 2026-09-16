@@ -27,8 +27,8 @@
     + Mark a node as deprecated
   -->
   <yang-bundle-version>
-    <Major>1</Major>
-    <Minor>3</Minor>
+    <Major>2</Major>
+    <Minor>0</Minor>
     <Patch>0</Patch>
   </yang-bundle-version>
 

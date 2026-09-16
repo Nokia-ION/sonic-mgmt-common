@@ -418,6 +418,52 @@ func Test_AclApp_IPv6AclAndRule(t *testing.T) {
 	t.Run("Verify_One_Acl_Delete", processGetRequest(aclUrl, "", true))
 }
 
+// Test_AclApp_IcmpMatch covers the ICMPv4 and ICMPv6 type/code match fields.
+// openconfig-acl-ext augments them into an acl-entry's ipv4 and ipv6 containers
+// instead of openconfig-packet-match, so a client may name the container either
+// plainly or qualified with the extension module; both must reach the same
+// ACL_RULE fields.
+func Test_AclApp_IcmpMatch(t *testing.T) {
+	aclUrl := "/openconfig-acl:acl/acl-sets/acl-set[name=MyACL8][type=ACL_IPV4]"
+	ruleUrl := aclUrl + "/acl-entries/acl-entry[sequence-id=8]"
+	icmpUrl := ruleUrl + "/ipv4/icmpv4"
+
+	t.Run("Create_Acl", processSetRequest(aclUrl, icmpv4AclCreateJson, "POST", false))
+	t.Run("Create_Rule_With_Icmpv4_Match", processSetRequest(ruleUrl, icmpv4RuleCreateJson, "POST", false))
+	t.Run("Verify_Icmpv4_Match", verifyRuleFields("MyACL8_ACL_IPV4", "RULE_8", map[string]string{
+		"IP_PROTOCOL": "1", "ICMP_TYPE": "5", "ICMP_CODE": "1"}))
+	t.Run("Read_Back_Icmpv4_Match", processGetRequest(icmpUrl+"/config", icmpv4ConfigGetJson, false))
+
+	qualifiedUrl := ruleUrl + "/ipv4/openconfig-acl-ext:icmpv4/config"
+	t.Run("Update_Icmpv4_Type_Module_Qualified", processSetRequest(qualifiedUrl, icmpv4TypeUpdateJson, "PATCH", false))
+	t.Run("Verify_Icmpv4_Type_Update", verifyRuleFields("MyACL8_ACL_IPV4", "RULE_8", map[string]string{
+		"ICMP_TYPE": "8", "ICMP_CODE": "1"}))
+
+	t.Run("Delete_Icmpv4_Match", processDeleteRequest(icmpUrl))
+	t.Run("Verify_Icmpv4_Match_Is_Gone", verifyRuleFields("MyACL8_ACL_IPV4", "RULE_8", map[string]string{
+		"ICMP_TYPE": "", "ICMP_CODE": ""}))
+
+	t.Run("Delete_Acl", processDeleteRequest(aclUrl))
+	t.Run("Verify_Acl_Delete", processGetRequest(aclUrl, "", true))
+
+	aclv6Url := "/openconfig-acl:acl/acl-sets/acl-set[name=MyACL9][type=ACL_IPV6]"
+	rulev6Url := aclv6Url + "/acl-entries/acl-entry[sequence-id=6]"
+
+	t.Run("Create_IPv6_Acl", processSetRequest(aclv6Url, icmpv6AclCreateJson, "POST", false))
+	t.Run("Create_Rule_With_Icmpv6_Match", processSetRequest(rulev6Url, icmpv6RuleCreateJson, "POST", false))
+	// The icmpv6 type is an openconfig-icmpv6-types identity, mapped to the
+	// numeric ICMPv6 message type: ECHO_REPLY is 129.
+	t.Run("Verify_Icmpv6_Match", verifyRuleFields("MyACL9_ACL_IPV6", "RULE_6", map[string]string{
+		"IP_PROTOCOL": "58", "ICMPV6_TYPE": "129"}))
+
+	t.Run("Delete_Icmpv6_Match", processDeleteRequest(rulev6Url+"/ipv6/icmpv6"))
+	t.Run("Verify_Icmpv6_Match_Is_Gone", verifyRuleFields("MyACL9_ACL_IPV6", "RULE_6", map[string]string{
+		"ICMPV6_TYPE": ""}))
+
+	t.Run("Delete_IPv6_Acl", processDeleteRequest(aclv6Url))
+	t.Run("Verify_IPv6_Acl_Delete", processGetRequest(aclv6Url, "", true))
+}
+
 func Test_AclApp_L2AclAndRule(t *testing.T) {
 	t.Skip("AclApp does not support L2 ACLs")
 
@@ -817,6 +863,16 @@ var rulePortRangesUpdateJson string = "{\"source-port\":\"801..811\",\"destinati
 var rulePortsUpdateJson string = "{\"source-port\":22,\"destination-port\":80}"
 
 var rulePortRangesGetJson string = "{\"openconfig-acl:config\":{\"destination-port\":\"901..921\",\"source-port\":\"801..811\",\"tcp-flags\":[\"openconfig-packet-match-types:TCP_FIN\",\"openconfig-packet-match-types:TCP_ACK\"]}}"
+
+// ICMP match test data. The icmpv4/icmpv6 containers come from
+// openconfig-acl-ext, so they read back qualified with that module.
+var icmpv4AclCreateJson string = "{\"config\":{\"name\":\"MyACL8\",\"type\":\"ACL_IPV4\",\"description\":\"ICMPv4 match\"}}"
+var icmpv4RuleCreateJson string = "{\"sequence-id\":8,\"config\":{\"sequence-id\":8},\"ipv4\":{\"config\":{\"protocol\":\"IP_ICMP\"},\"icmpv4\":{\"config\":{\"type\":5,\"code\":1}}},\"actions\":{\"config\":{\"forwarding-action\":\"DROP\"}}}"
+var icmpv4ConfigGetJson string = "{\"openconfig-acl-ext:config\":{\"code\":1,\"type\":5}}"
+var icmpv4TypeUpdateJson string = "{\"type\":8}"
+
+var icmpv6AclCreateJson string = "{\"config\":{\"name\":\"MyACL9\",\"type\":\"ACL_IPV6\",\"description\":\"ICMPv6 match\"}}"
+var icmpv6RuleCreateJson string = "{\"sequence-id\":6,\"config\":{\"sequence-id\":6},\"ipv6\":{\"config\":{\"protocol\":58},\"icmpv6\":{\"config\":{\"type\":\"openconfig-icmpv6-types:ECHO_REPLY\"}}},\"actions\":{\"config\":{\"forwarding-action\":\"DROP\"}}}"
 
 var emptyAclDescriptionJson string = "{\"openconfig-acl:description\":\"\"}"
 var emptyRuleDscpJson string = "{\"openconfig-acl:dscp\":0}"
