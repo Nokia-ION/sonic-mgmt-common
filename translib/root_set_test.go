@@ -250,6 +250,65 @@ func TestExpandSetOpsLacpNestedList(t *testing.T) {
 	}
 }
 
+func TestExpandSetOpsKeyedEthernetWithSubinterfacesUnchanged(t *testing.T) {
+	path := "/openconfig-interfaces:interfaces/interface[name=Ethernet52]"
+	payload := []byte(`{
+  "openconfig-interfaces:config": {
+    "description": "dutate-2",
+    "name": "Ethernet52",
+    "type": "iana-if-type:ethernetCsmacd"
+  },
+  "openconfig-interfaces:name": "Ethernet52",
+  "openconfig-interfaces:subinterfaces": {
+    "subinterface": [
+      {
+        "config": {"index": 0},
+        "index": 0,
+        "openconfig-if-ip:ipv4": {
+          "addresses": {
+            "address": [
+              {"config": {"ip": "10.1.2.253", "prefix-length": 30}, "ip": "10.1.2.253"}
+            ]
+          }
+        }
+      }
+    ]
+  }
+}`)
+	ops, needBulk, err := expandSetOps(path, payload, UPDATE)
+	if err != nil {
+		t.Fatalf("expandSetOps: %v", err)
+	}
+	if needBulk {
+		t.Fatal("keyed interface SET must not Bulk-expand nested lists")
+	}
+	if len(ops) != 1 || ops[0].Path != path {
+		t.Fatalf("ops = %+v, want passthrough of %s", ops, path)
+	}
+	if !strings.Contains(string(ops[0].Payload), `"subinterface"`) {
+		t.Errorf("nested subinterface list was stripped: %s", ops[0].Payload)
+	}
+}
+
+func TestExpandSetOpsKeyedSubinterfacesContainerUnchanged(t *testing.T) {
+	path := "/openconfig-interfaces:interfaces/interface[name=Ethernet52]/subinterfaces"
+	payload := []byte(`{
+  "subinterface": [
+    {"index": 0, "config": {"index": 0}}
+  ]
+}`)
+	ops, changed, err := expandListInstances(path, payload)
+	if err != nil {
+		t.Fatalf("expandListInstances: %v", err)
+	}
+	if changed {
+		t.Fatal("SET under a keyed parent must not expand nested lists")
+	}
+	if len(ops) != 1 || ops[0].Path != path {
+		t.Fatalf("ops = %+v, want passthrough of %s", ops, path)
+	}
+}
+
 func TestExpandSetOpsLldpUnchanged(t *testing.T) {
 	payload := []byte(`{"config":{"enabled":true}}`)
 	ops, needBulk, err := expandSetOps("/openconfig-lldp:lldp", payload, UPDATE)

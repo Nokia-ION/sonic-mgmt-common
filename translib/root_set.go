@@ -182,10 +182,11 @@ func deriveSetOpFromKey(key string, inner json.RawMessage) (derivedSetOp, error)
 
 // rewriteOrBulkRootSet expands a SET path from the payload. Origin-only
 // payloads are split per top-level module. UPDATE/REPLACE then expand YANG
-// lists in the payload into keyed instance paths. More than one derived op,
-// or any list expansion, is applied as a Bulk transaction (done is true) so
-// a missing instance can fall back to REPLACE per entry. Otherwise req is
-// rewritten in place and done is false.
+// lists in the payload into keyed instance paths, but only when the SET URI
+// has no list keys yet. More than one derived op, or any list expansion, is
+// applied as a Bulk transaction (done is true) so a missing instance can
+// fall back to REPLACE per entry. Otherwise req is rewritten in place and
+// done is false.
 func rewriteOrBulkRootSet(req SetRequest, operation int) (reqOut SetRequest, done bool, resp SetResponse, err error) {
 	ops, needBulk, err := expandSetOps(req.Path, req.Payload, operation)
 	if err != nil {
@@ -238,8 +239,8 @@ func applyRootSetAsBulk(req SetRequest, ops []derivedSetOp, operation int) (SetR
 }
 
 // expandBulkRootSet expands origin-only non-DELETE entries into one Bulk
-// entry per payload key (and, for UPDATE/REPLACE, per YANG list instance),
-// preserving request order.
+// entry per payload key (and, for UPDATE/REPLACE, per YANG list instance
+// when the URI has no list keys), preserving request order.
 func expandBulkRootSet(req BulkRequest) ([]BulkRequestEntry, error) {
 	var out []BulkRequestEntry
 	for i := range req.Request {
@@ -263,8 +264,9 @@ func expandBulkRootSet(req BulkRequest) ([]BulkRequestEntry, error) {
 }
 
 // expandSetOps derives SET targets from an origin payload and, for
-// UPDATE/REPLACE, from YANG lists in that payload. needBulk is true when more
-// than one op is produced or when a list was expanded to keyed instances.
+// UPDATE/REPLACE, from YANG lists in that payload when the URI has no list
+// keys. needBulk is true when more than one op is produced or when a list
+// was expanded to keyed instances.
 func expandSetOps(path string, payload []byte, operation int) ([]derivedSetOp, bool, error) {
 	ops, err := expandRootSetRequest(path, payload)
 	if err != nil {
@@ -300,16 +302,22 @@ func expandListInstances(path string, payload []byte) ([]derivedSetOp, bool, err
 	if len(bytes.TrimSpace(payload)) == 0 {
 		return passthrough, false, nil
 	}
+	// Once any parent list instance is named in the URI, nested lists stay
+	// on that path as merge UPDATE/REPLACE. Expanding them to keyed Bulk
+	// ops can turn UPDATE into REPLACE (for example a new IP on Ethernet).
+	if uriHasListKeys(path) {
+		return passthrough, false, nil
+	}
 
 	entry, err := yangEntryForURI(path)
 	if err != nil || entry == nil {
 		return passthrough, false, nil
 	}
 
-	if entry.IsList() && !uriHasListKeys(path) {
+	if entry.IsList() {
 		return expandWholeListPayload(path, entry, payload)
 	}
-	if entry.IsContainer() || (entry.IsList() && uriHasListKeys(path)) {
+	if entry.IsContainer() {
 		return expandContainerListPayload(path, entry, payload)
 	}
 	return passthrough, false, nil
