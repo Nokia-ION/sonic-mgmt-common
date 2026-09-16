@@ -204,29 +204,29 @@ func parseNiBgpNbrStateRequestUri(uri string) (*niBgpNbrStateReqInfo, error) {
 // niBgpNbrSessionStateFromFrr maps the FSM state string that FRR reports in
 // "show bgp summary json", and that bgpmon copies verbatim into STATE_DB, onto
 // the OpenConfig session-state enumeration.
-func niBgpNbrSessionStateFromFrr(state string) (ocbinds.E_OpenconfigBgp_Bgp_Neighbors_Neighbor_State_SessionState, bool) {
+func niBgpNbrSessionStateFromFrr(state string) (ocbinds.E_OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Neighbors_Neighbor_State_SessionState, bool) {
 	s := strings.ToLower(strings.TrimSpace(state))
 	switch {
 	// FRR qualifies the down state with the reason it is down, for example
 	// "Idle (Admin)" when the peer is shut down.
 	case strings.HasPrefix(s, "idle"):
-		return ocbinds.OpenconfigBgp_Bgp_Neighbors_Neighbor_State_SessionState_IDLE, true
+		return ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Neighbors_Neighbor_State_SessionState_IDLE, true
 	case s == "connect":
-		return ocbinds.OpenconfigBgp_Bgp_Neighbors_Neighbor_State_SessionState_CONNECT, true
+		return ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Neighbors_Neighbor_State_SessionState_CONNECT, true
 	case s == "active":
-		return ocbinds.OpenconfigBgp_Bgp_Neighbors_Neighbor_State_SessionState_ACTIVE, true
+		return ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Neighbors_Neighbor_State_SessionState_ACTIVE, true
 	case s == "opensent":
-		return ocbinds.OpenconfigBgp_Bgp_Neighbors_Neighbor_State_SessionState_OPENSENT, true
+		return ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Neighbors_Neighbor_State_SessionState_OPENSENT, true
 	case s == "openconfirm":
-		return ocbinds.OpenconfigBgp_Bgp_Neighbors_Neighbor_State_SessionState_OPENCONFIRM, true
+		return ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Neighbors_Neighbor_State_SessionState_OPENCONFIRM, true
 	case s == "established":
-		return ocbinds.OpenconfigBgp_Bgp_Neighbors_Neighbor_State_SessionState_ESTABLISHED, true
+		return ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Neighbors_Neighbor_State_SessionState_ESTABLISHED, true
 	// Clearing and Deleted are FRR teardown states with no OpenConfig
 	// counterpart. The session is down in both, which IDLE conveys.
 	case s == "clearing", s == "deleted":
-		return ocbinds.OpenconfigBgp_Bgp_Neighbors_Neighbor_State_SessionState_IDLE, true
+		return ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Neighbors_Neighbor_State_SessionState_IDLE, true
 	}
-	return ocbinds.OpenconfigBgp_Bgp_Neighbors_Neighbor_State_SessionState_UNSET, false
+	return ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Neighbors_Neighbor_State_SessionState_UNSET, false
 }
 
 // niBgpNbrAppliedIsFresh reports whether bgpmon's last successful scrape is

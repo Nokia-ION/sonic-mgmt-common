@@ -1599,19 +1599,19 @@ func populateNiBgpHierToYangFromDb(cfgDb *db.DB, ygRoot *ygot.GoStruct, niName, 
 			if tmCfg != nil {
 				if crStr, ok := nbrEntry.Field[niBgpNbrConnRetryFld]; ok && strings.TrimSpace(crStr) != "" {
 					if crVal, convErr := strconv.ParseUint(strings.TrimSpace(crStr), 10, 64); convErr == nil {
-						cr := float64(uint16(crVal))
+						cr := uint16(crVal)
 						tmCfg.ConnectRetry = &cr
 					}
 				}
 				if holdStr, ok := nbrEntry.Field[niBgpNbrHoldTimeFld]; ok && strings.TrimSpace(holdStr) != "" {
 					if holdVal, convErr := strconv.ParseUint(strings.TrimSpace(holdStr), 10, 64); convErr == nil {
-						hold := float64(uint16(holdVal))
+						hold := uint16(holdVal)
 						tmCfg.HoldTime = &hold
 					}
 				}
 				if keepStr, ok := nbrEntry.Field[niBgpNbrKeepaliveFld]; ok && strings.TrimSpace(keepStr) != "" {
 					if keepVal, convErr := strconv.ParseUint(strings.TrimSpace(keepStr), 10, 64); convErr == nil {
-						keep := float64(uint16(keepVal))
+						keep := uint16(keepVal)
 						tmCfg.KeepaliveInterval = &keep
 					}
 				}
@@ -1696,13 +1696,13 @@ func populateNiBgpHierToYangFromDb(cfgDb *db.DB, ygRoot *ygot.GoStruct, niName, 
 			if tmCfg != nil {
 				if keepStr, ok := pgEntry.Field[niBgpPgKeepaliveFld]; ok && strings.TrimSpace(keepStr) != "" {
 					if keepVal, convErr := strconv.ParseUint(strings.TrimSpace(keepStr), 10, 64); convErr == nil {
-						keep := float64(uint16(keepVal))
+						keep := uint16(keepVal)
 						tmCfg.KeepaliveInterval = &keep
 					}
 				}
 				if holdStr, ok := pgEntry.Field[niBgpPgHoldTimeFld]; ok && strings.TrimSpace(holdStr) != "" {
 					if holdVal, convErr := strconv.ParseUint(strings.TrimSpace(holdStr), 10, 64); convErr == nil {
-						hold := float64(uint16(holdVal))
+						hold := uint16(holdVal)
 						tmCfg.HoldTime = &hold
 					}
 				}

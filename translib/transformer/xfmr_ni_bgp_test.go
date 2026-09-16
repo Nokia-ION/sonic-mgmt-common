@@ -2506,7 +2506,7 @@ func Test_openconfig_network_instance_bgp_container_hierarchical_set(t *testing.
 		`"global":{"config":{"as":65200,"router-id":"2.2.2.2"}},` +
 		`"neighbors":{"neighbor":[{"neighbor-address":"20.0.0.1","config":{"enabled":true,"peer-group":"PG1"}}]},` +
 		`"peer-groups":{"peer-group":[{"peer-group-name":"PG1","config":{"peer-as":65300},` +
-		`"timers":{"config":{"hold-time":"90","keepalive-interval":"15"}}}]}}}`
+		`"timers":{"config":{"hold-time":90,"keepalive-interval":15}}}]}}}`
 	t.Run("PATCH network-instance BGP container with nested global, neighbor and peer-group payload",
 		processSetRequest(niBgpProtoUrl, urlInputBodyJSON, "PATCH", false, nil))
 	time.Sleep(1 * time.Second)
@@ -2607,7 +2607,7 @@ func Test_openconfig_network_instance_bgp_container_neighbor_timers_and_auth_pas
 	urlInputBodyJSON := `{` +
 		`"neighbors":{"neighbor":[{"neighbor-address":"20.0.0.1",` +
 		`"config":{"neighbor-address":"20.0.0.1","auth-password":"Sonic123"},` +
-		`"timers":{"config":{"connect-retry":"43","hold-time":"99","keepalive-interval":"33"}}}]}}`
+		`"timers":{"config":{"connect-retry":43,"hold-time":99,"keepalive-interval":33}}}]}}`
 	t.Run("PATCH network-instance BGP container with neighbor timers and auth-password",
 		processSetRequest(niBgpProtoUrl+"/bgp", urlInputBodyJSON, "PATCH", false, nil))
 	time.Sleep(1 * time.Second)
@@ -2671,7 +2671,7 @@ func Test_openconfig_network_instance_bgp_container_get(t *testing.T) {
 	globalJSON := `{"config":{"as":65200,"router-id":"2.2.2.2"}}`
 	neighborEntryJSON := `{"config":{"enabled":true,"peer-group":"PG1"},"neighbor-address":"20.0.0.1"}`
 	peerGroupEntryJSON := `{"config":{"peer-as":65300},"peer-group-name":"PG1",` +
-		`"timers":{"config":{"hold-time":"90","keepalive-interval":"15"}}}`
+		`"timers":{"config":{"hold-time":90,"keepalive-interval":15}}}`
 
 	expectedGetJSON := `{"openconfig-network-instance:bgp":{"global":` + globalJSON +
 		`,"neighbors":{"neighbor":[` + neighborEntryJSON + `]}` +
@@ -2734,7 +2734,7 @@ func Test_openconfig_network_instance_bgp_container_unmapped_payload_rejected(t 
 
 	urlInputBodyJSON := `{"openconfig-network-instance:bgp":{"neighbors":{"neighbor":[` +
 		`{"neighbor-address":"20.0.0.1","config":{"peer-group":"PG1"},` +
-		`"timers":{"config":{"minimum-advertisement-interval":"30"}}}]}}}`
+		`"timers":{"config":{"minimum-advertisement-interval":30}}}]}}}`
 	expectedErr := tlerr.NotSupportedError{
 		Format: "BGP container payload carries leaves that have no CONFIG_DB mapping: bgp/neighbors/neighbor[20.0.0.1]/timers/config/minimum-advertisement-interval",
 	}
@@ -3069,7 +3069,7 @@ func Test_openconfig_network_instance_bgp_peer_group_config_container_set(t *tes
 	time.Sleep(1 * time.Second)
 
 	// A request at the timers config container carries either or both timers.
-	urlInputBodyJSON = `{"hold-time":"90","keepalive-interval":"30"}`
+	urlInputBodyJSON = `{"hold-time":90,"keepalive-interval":30}`
 	t.Run("PATCH BGP peer-group timers config container",
 		processSetRequest(pgUrl+"/timers/config", urlInputBodyJSON, "PATCH", false, nil))
 	time.Sleep(1 * time.Second)
