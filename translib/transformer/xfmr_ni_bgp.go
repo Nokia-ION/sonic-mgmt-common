@@ -309,7 +309,6 @@ var niBgpMappedPayloadLeaves = map[string]bool{
 	"neighbors/neighbor/config/enabled":                                                       true,
 	"neighbors/neighbor/config/peer-as":                                                       true,
 	"neighbors/neighbor/config/peer-group":                                                    true,
-	"neighbors/neighbor/config/send-community":                                                true,
 	"neighbors/neighbor/config/auth-password":                                                 true,
 	"neighbors/neighbor/timers/config/connect-retry":                                          true,
 	"neighbors/neighbor/timers/config/hold-time":                                              true,
@@ -318,6 +317,7 @@ var niBgpMappedPayloadLeaves = map[string]bool{
 	"neighbors/neighbor/afi-safis/afi-safi/afi-safi-name":                                     true,
 	"neighbors/neighbor/afi-safis/afi-safi/config/afi-safi-name":                              true,
 	"neighbors/neighbor/afi-safis/afi-safi/config/enabled":                                    true,
+	"neighbors/neighbor/afi-safis/afi-safi/config/send-community-type":                        true,
 	"neighbors/neighbor/afi-safis/afi-safi/apply-policy/config/import-policy":                 true,
 	"neighbors/neighbor/afi-safis/afi-safi/apply-policy/config/export-policy":                 true,
 	"peer-groups/peer-group/peer-group-name":                                                  true,
@@ -328,6 +328,7 @@ var niBgpMappedPayloadLeaves = map[string]bool{
 	"peer-groups/peer-group/afi-safis/afi-safi/afi-safi-name":                                 true,
 	"peer-groups/peer-group/afi-safis/afi-safi/config/afi-safi-name":                          true,
 	"peer-groups/peer-group/afi-safis/afi-safi/config/enabled":                                true,
+	"peer-groups/peer-group/afi-safis/afi-safi/config/send-community-type":                    true,
 	"peer-groups/peer-group/afi-safis/afi-safi/apply-policy/config/export-policy":             true,
 	"peer-groups/peer-group/afi-safis/afi-safi/apply-policy/config/import-policy":             true,
 	"peer-groups/peer-group/afi-safis/afi-safi/ipv4-unicast/prefix-limit/config/max-prefixes": true,
@@ -1309,11 +1310,11 @@ func wrapNiBgpRootAsDevice(s *ygot.GoStruct, niName, protoName string) (*ygot.Go
 	return &wrappedRoot, nil
 }
 
-func buildNiBgpHierResMap(s *ygot.GoStruct, niName, protoName string) map[string]map[string]db.Value {
+func buildNiBgpHierResMap(s *ygot.GoStruct, niName, protoName string) (map[string]map[string]db.Value, error) {
 	res := make(map[string]map[string]db.Value)
 	bgpObj := getNiBgpProtoObj(s, niName, protoName, false)
 	if bgpObj == nil {
-		return res
+		return res, nil
 	}
 
 	if bgpObj.Global != nil {
@@ -1383,13 +1384,6 @@ func buildNiBgpHierResMap(s *ygot.GoStruct, niName, protoName string) map[string
 			// A payload may name a list instance while setting no mapped leaf
 			// under it; that still asks for the row itself to exist.
 			res = mergeDbResMapFields(res, makeNiBgpNbrResMap(niName, nbrAddr, nbrFields))
-			if nbrObj.Config != nil {
-				if comm, ok := niBgpNbrSendCommunityToDb(nbrObj.Config.SendCommunity); ok {
-					res = mergeDbResMapFields(res, ensureNiBgpNbrParentRow(makeNiBgpNbrAfResMap(niName, nbrAddr, map[string]string{
-						niBgpNbrSendCommFld: comm,
-					}), niName, nbrAddr))
-				}
-			}
 			if nbrObj.AsPathOptions != nil && nbrObj.AsPathOptions.Config != nil && nbrObj.AsPathOptions.Config.AllowOwnAs != nil {
 				allowOwnAs := *nbrObj.AsPathOptions.Config.AllowOwnAs
 				if allowOwnAs == 0 {
@@ -1421,6 +1415,13 @@ func buildNiBgpHierResMap(s *ygot.GoStruct, niName, protoName string) map[string
 						enabled = *afiObj.Config.Enabled
 					}
 					afFields[niBgpNbrAdminStatus] = niBgpNbrEnabledToAdminStatus(enabled)
+					if afiObj.Config != nil && len(afiObj.Config.SendCommunityType) > 0 {
+						comm, err := niBgpSendCommunityTypeToField(nil, afiObj.Config.SendCommunityType, "neighbor")
+						if err != nil {
+							return res, err
+						}
+						afFields[niBgpNbrSendCommFld] = comm
+					}
 					if afiObj.ApplyPolicy != nil && afiObj.ApplyPolicy.Config != nil {
 						if importPolicy, ok := niBgpFirstPolicyName(afiObj.ApplyPolicy.Config.ImportPolicy); ok {
 							afFields[niBgpNbrRouteMapInFld] = importPolicy
@@ -1469,9 +1470,17 @@ func buildNiBgpHierResMap(s *ygot.GoStruct, niName, protoName string) map[string
 					if afiObj.Config != nil && afiObj.Config.Enabled != nil {
 						pgAfEnabled = *afiObj.Config.Enabled
 					}
-					res = mergeDbResMapFields(res, makeNiBgpPgAfResMap(niName, pgName, afiSafi, map[string]string{
+					pgAfFields := map[string]string{
 						niBgpPgAdminStatusFld: niBgpPgEnabledToAdminStatus(pgAfEnabled),
-					}))
+					}
+					if afiObj.Config != nil && len(afiObj.Config.SendCommunityType) > 0 {
+						comm, err := niBgpSendCommunityTypeToField(nil, afiObj.Config.SendCommunityType, "peer-group")
+						if err != nil {
+							return res, err
+						}
+						pgAfFields[niBgpPgSendCommFld] = comm
+					}
+					res = mergeDbResMapFields(res, makeNiBgpPgAfResMap(niName, pgName, afiSafi, pgAfFields))
 					if afiObj.Ipv4Unicast != nil && afiObj.Ipv4Unicast.PrefixLimit != nil && afiObj.Ipv4Unicast.PrefixLimit.Config != nil && afiObj.Ipv4Unicast.PrefixLimit.Config.MaxPrefixes != nil {
 						res = mergeDbResMapFields(res, makeNiBgpPgAfResMap(niName, pgName, niBgpPgAfiSafiIPv4, map[string]string{
 							niBgpPgMaxPfxLimitFld: strconv.FormatUint(uint64(*afiObj.Ipv4Unicast.PrefixLimit.Config.MaxPrefixes), 10),
@@ -1499,7 +1508,7 @@ func buildNiBgpHierResMap(s *ygot.GoStruct, niName, protoName string) map[string
 		}
 	}
 
-	return res
+	return res, nil
 }
 
 func populateNiBgpHierToYangFromDb(cfgDb *db.DB, ygRoot *ygot.GoStruct, niName, protoName string) error {
@@ -1641,11 +1650,6 @@ func populateNiBgpHierToYangFromDb(cfgDb *db.DB, ygRoot *ygot.GoStruct, niName, 
 					}
 				}
 			}
-			if comm, ok := niBgpNbrSendCommunityFromDb(nbrAfEntry.Field[niBgpNbrSendCommFld]); ok {
-				if nbrCfg := getNiBgpNbrCfgObj(ygRoot, niName, protoName, nbrAddr, true); nbrCfg != nil {
-					nbrCfg.SendCommunity = comm
-				}
-			}
 			if imp, ok := nbrAfEntry.Field[niBgpNbrRouteMapInFld]; ok && strings.TrimSpace(imp) != "" {
 				applyCfg := getNiBgpNbrAfApplyPolicyCfgObj(ygRoot, niName, protoName, nbrAddr, afi, true)
 				if applyCfg != nil {
@@ -1666,6 +1670,9 @@ func populateNiBgpHierToYangFromDb(cfgDb *db.DB, ygRoot *ygot.GoStruct, niName, 
 					if en, ok := niBgpNbrAdminStatusToEnabled(status); ok {
 						afCfg.Enabled = en
 					}
+				}
+				if comm, ok := niBgpSendCommunityTypeFromDb(nbrAfEntry.Field[niBgpNbrSendCommFld]); ok {
+					afCfg.SendCommunityType = comm
 				}
 			}
 		}
@@ -1729,6 +1736,9 @@ func populateNiBgpHierToYangFromDb(cfgDb *db.DB, ygRoot *ygot.GoStruct, niName, 
 				}
 				if en, ok := niBgpPgAdminStatusToEnabled(pgAfEntry.Field[niBgpPgAdminStatusFld]); ok {
 					afCfg.Enabled = en
+				}
+				if comm, ok := niBgpSendCommunityTypeFromDb(pgAfEntry.Field[niBgpPgSendCommFld]); ok {
+					afCfg.SendCommunityType = comm
 				}
 			}
 			if maxStr, ok := pgAfEntry.Field[niBgpPgMaxPfxLimitFld]; ok && strings.TrimSpace(maxStr) != "" {
@@ -1836,7 +1846,11 @@ var YangToDb_ni_bgp_global_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPara
 				Path:   inParams.requestUri,
 			}
 		}
-		res = buildNiBgpHierResMap(wrappedRoot, reqInfo.niName, reqInfo.protoName)
+		hierRes, hierErr := buildNiBgpHierResMap(wrappedRoot, reqInfo.niName, reqInfo.protoName)
+		if hierErr != nil {
+			return res, hierErr
+		}
+		res = hierRes
 		if len(res) == 0 {
 			return res, tlerr.InvalidArgsError{Format: "BGP container payload does not include currently supported mapped fields"}
 		}
