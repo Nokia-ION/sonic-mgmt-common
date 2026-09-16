@@ -715,7 +715,7 @@ func parseNiBgpNbrTimerFromParam(param interface{}) (*uint16, bool) {
 func niBgpNbrTimerField(inParams XfmrParams, reqInfo *niBgpNbrReqInfo) (string, *uint16, error) {
 	tmObj := getNiBgpNbrTimersCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.protoName, reqInfo.neighborAddr, false)
 	var fld string
-	var payloadVal *float64
+	var payloadVal *uint16
 	switch reqInfo.targetLeaf {
 	case niBgpNbrConnectRetryLeaf:
 		fld = niBgpNbrConnRetryFld
@@ -739,7 +739,7 @@ func niBgpNbrTimerField(inParams XfmrParams, reqInfo *niBgpNbrReqInfo) (string, 
 	if payloadVal == nil {
 		return "", nil, tlerr.InvalidArgsError{Format: "BGP neighbor " + reqInfo.targetLeaf + " is missing in request payload"}
 	}
-	timer := uint16(*payloadVal)
+	timer := *payloadVal
 	return fld, &timer, nil
 }
 
@@ -1610,13 +1610,13 @@ var YangToDb_ni_bgp_nbr_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 			fields := map[string]string{}
 			if tmObj := getNiBgpNbrTimersCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.protoName, reqInfo.neighborAddr, false); tmObj != nil {
 				if tmObj.ConnectRetry != nil {
-					fields[niBgpNbrConnRetryFld] = strconv.FormatUint(uint64(uint16(*tmObj.ConnectRetry)), 10)
+					fields[niBgpNbrConnRetryFld] = strconv.FormatUint(uint64(*tmObj.ConnectRetry), 10)
 				}
 				if tmObj.HoldTime != nil {
-					fields[niBgpNbrHoldTimeFld] = strconv.FormatUint(uint64(uint16(*tmObj.HoldTime)), 10)
+					fields[niBgpNbrHoldTimeFld] = strconv.FormatUint(uint64(*tmObj.HoldTime), 10)
 				}
 				if tmObj.KeepaliveInterval != nil {
-					fields[niBgpNbrKeepaliveFld] = strconv.FormatUint(uint64(uint16(*tmObj.KeepaliveInterval)), 10)
+					fields[niBgpNbrKeepaliveFld] = strconv.FormatUint(uint64(*tmObj.KeepaliveInterval), 10)
 				}
 			}
 			if len(fields) == 0 {
@@ -1824,7 +1824,7 @@ var DbToYang_ni_bgp_nbr_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams)
 				if err != nil {
 					return err
 				}
-				iv := float64(uint16(ival))
+				iv := uint16(ival)
 				tmObj.ConnectRetry = &iv
 			}
 		}
@@ -1835,7 +1835,7 @@ var DbToYang_ni_bgp_nbr_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams)
 				if err != nil {
 					return err
 				}
-				iv := float64(uint16(ival))
+				iv := uint16(ival)
 				tmObj.HoldTime = &iv
 			}
 		}
@@ -1846,7 +1846,7 @@ var DbToYang_ni_bgp_nbr_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams)
 				if err != nil {
 					return err
 				}
-				iv := float64(uint16(ival))
+				iv := uint16(ival)
 				tmObj.KeepaliveInterval = &iv
 			}
 		}
