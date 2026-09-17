@@ -30,9 +30,8 @@ module openconfig-acl-ext {
       enforced by caclmgrd.
 
     - ICMPv4 and ICMPv6 type/code match fields on an acl-entry, mapping to the
-      SONiC CONFIG_DB ACL_RULE fields ICMP_TYPE, ICMP_CODE and ICMPV6_TYPE.
-      The ICMPv6 code leaf is defined here for symmetry with ICMPv4 and with
-      upstream, but is not yet translated to ICMPV6_CODE.";
+      SONiC CONFIG_DB ACL_RULE fields ICMP_TYPE, ICMP_CODE, ICMPV6_TYPE and
+      ICMPV6_CODE.";
 
   oc-ext:openconfig-version "0.2.0";
 
@@ -173,9 +172,9 @@ module openconfig-acl-ext {
         base oc-icmpv6-types:CODE;
       }
       description
-        "ICMPv6 code to be matched. Not yet translated to the SONiC ACL_RULE
-        ICMPV6_CODE field, so setting it currently has no effect on the
-        installed rule.";
+        "ICMPv6 code to be matched. An ICMPv6 code is only meaningful within a
+        message type, so the type must be set alongside it and must be the one
+        the code belongs to.";
       reference
         "RFC 4443: Internet Control Message Protocol (ICMPv6)
                    for Internet Protocol Version 6 (IPv6) Specification.";
