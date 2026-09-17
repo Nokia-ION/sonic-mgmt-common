@@ -396,21 +396,32 @@ func niStaticRouteSetTagFields(inParams XfmrParams, s *ygot.GoStruct, reqInfo *n
 		}
 		return nil, nil
 	}
-	tag, err := niStaticRouteTagToDb(raw)
-	if err != nil {
-		return nil, err
-	}
 	existing := niStaticRouteEntryOrEmpty(inParams.dbs[db.ConfigDB], reqInfo.niName, reqInfo.prefix)
 	entries := niStaticRouteDecodeNextHops(existing)
+	if err := niStaticRouteApplyTag(entries, reqInfo.prefix, raw); err != nil {
+		return nil, err
+	}
+	return niStaticRouteEncodeNextHops(entries, existing, reqInfo.prefix), nil
+}
+
+// niStaticRouteApplyTag puts a route's tag on each of its next-hops. FRR keeps
+// one tag per prefix and takes it on every route line, so a route with no
+// next-hop has nowhere to carry one, and a tag list of a different length to
+// the next-hop list programs none of the route at all.
+func niStaticRouteApplyTag(entries []map[string]string, prefix string, raw interface{}) error {
+	tag, err := niStaticRouteTagToDb(raw)
+	if err != nil {
+		return err
+	}
 	if len(entries) == 0 {
-		return nil, tlerr.InvalidArgsError{
-			Format: "static route " + reqInfo.prefix + " has no next-hop to carry a tag; FRR takes the tag on each route line, so a next-hop has to exist first",
+		return tlerr.InvalidArgsError{
+			Format: "static route " + prefix + " has no next-hop to carry a tag; FRR takes the tag on each route line, so a next-hop has to exist first",
 		}
 	}
 	for _, e := range entries {
 		e[niStaticRouteTagFld] = tag
 	}
-	return niStaticRouteEncodeNextHops(entries, existing, reqInfo.prefix), nil
+	return nil
 }
 
 // niStaticRouteSetTagToYang reports the route's tag, when its next-hops agree
@@ -1241,6 +1252,18 @@ func buildNiStaticRouteHierResMap(cfgDb *db.DB, s *ygot.GoStruct, niName, protoN
 				entries = niStaticRouteUpsertNextHop(entries, index, nh)
 				changed = true
 			}
+		}
+
+		// The tag arrives in the same payload as the next-hops that have to
+		// carry it, so it is applied once those have been merged in. Without
+		// this the request was accepted and the tag quietly dropped, since
+		// this arm sets invokeCRUSubtreeOnce and nothing else revisits the
+		// leaf.
+		if rtObj.Config != nil && rtObj.Config.SetTag != nil {
+			if err := niStaticRouteApplyTag(entries, prefix, rtObj.Config.SetTag); err != nil {
+				return res, err
+			}
+			changed = true
 		}
 
 		fields := map[string]string{}
