@@ -12,6 +12,7 @@ module openconfig-local-routing {
   import openconfig-policy-types { prefix oc-pt; }
   import openconfig-extensions { prefix oc-ext; }
   import openconfig-interfaces { prefix oc-if; }
+  import openconfig-bfd { prefix oc-bfd; }
 
   // meta
   organization "OpenConfig working group";
@@ -42,7 +43,33 @@ module openconfig-local-routing {
     protocol-specific policy after importing the route into the
     protocol for distribution (again via routing policy).";
 
-  oc-ext:openconfig-version "1.0.2";
+  oc-ext:openconfig-version "2.0.1";
+
+  revision "2022-11-01" {
+    description
+      "Update static route nexthop index description.";
+    reference "2.0.1";
+  }
+
+  revision "2022-05-10" {
+    description
+      "Removal of top-level /local-routes, description update to
+      static route metric, addition of static/aggregate route
+      preference, addition of aggregate route metric.";
+    reference "2.0.0";
+  }
+
+  revision "2020-03-24" {
+    description
+      "Add bfd support without augmentation.";
+    reference "1.2.0";
+  }
+
+  revision "2020-03-24" {
+    description
+      "Add a description statement to static routes.";
+    reference "1.1.0";
+  }
 
   revision "2018-11-21" {
     description
@@ -106,7 +133,7 @@ module openconfig-local-routing {
 
   grouping local-generic-settings {
     description
-      "Generic options that can be set on local routes When
+      "Generic options that can be set on local routes when
       they are defined";
 
     leaf set-tag {
@@ -115,6 +142,45 @@ module openconfig-local-routing {
         "Set a generic tag value on the route. This tag can be
         used for filtering routes that are distributed to other
         routing protocols.";
+    }
+
+    leaf description {
+      type string;
+      description
+        "An optional textual description for the route.";
+    }
+  }
+
+  grouping local-common-route-attributes {
+    description
+      "Common route attributes that can be set on static route next-hops
+      as well as aggregate routes.";
+
+    leaf metric {
+      type uint32;
+      description
+        "A metric (or cost) which is utilized to specify the order of
+        selection of the next-hop entry.  The lower the metric, the more
+        preferable the prefix entry is.  When this value is not
+        specified, the metric is inherited from the default metric of
+        the implementation for static route entries.  When multiple
+        next-hops are specified for a static route, the metric is
+        utilized to determine which of the next-hops to be installed in
+        the RIB.  When multiple next-hops have the same metric (be it
+        specified, or simply the default) then these next-hops should
+        all be installed in the RIB.";
+    }
+
+    leaf preference {
+      type uint32;
+      description
+        "Administrative Distance (preference) of the entry.  The
+        preference defines the order of selection when multiple
+        sources (protocols, static, etc.) contribute to the same
+        prefix entry.  The lower the preference, the more preferable the
+        prefix is.  When this value is not specified, the preference is
+        inherited from the default preference of the implementation for
+        static routes.";
     }
   }
 
@@ -149,7 +215,8 @@ module openconfig-local-routing {
         "An user-specified identifier utilised to uniquely reference
         the next-hop entry in the next-hop list. The value of this
         index has no semantic meaning other than for referencing
-        the entry.";
+        the entry.  It is observed that implementations typically
+        only support a numeric value for this string. ";
     }
 
     leaf next-hop {
@@ -167,23 +234,6 @@ module openconfig-local-routing {
         interface.";
     }
 
-    leaf metric {
-      type uint32;
-      description
-        "A metric which is utilised to specify the preference of
-        the next-hop entry when it is injected into the RIB. The
-        lower the metric, the more preferable the prefix is. When
-        this value is not specified the metric is inherited from
-        the default metric utilised for static routes within the
-        network instance that the static routes are being
-        instantiated. When multiple next-hops are specified for a
-        static route, the metric is utilised to determine which of
-        the next-hops is to be installed in the RIB. When multiple
-        next-hops have the same metric (be it specified, or simply
-        the default) then these next-hops should all be installed
-        in the RIB";
-    }
-
     leaf recurse {
       type boolean;
       default false;
@@ -198,6 +248,8 @@ module openconfig-local-routing {
         restricted to being via the interface specified - and
         recursion is hence disabled.";
     }
+
+    uses local-common-route-attributes;
   }
 
   grouping local-static-nexthop-state {
@@ -289,6 +341,7 @@ module openconfig-local-routing {
               uses local-static-nexthop-state;
             }
 
+            uses oc-bfd:bfd-enable;
             uses oc-if:interface-ref;
           }
         }
@@ -319,7 +372,7 @@ module openconfig-local-routing {
     }
 
     uses local-generic-settings;
-
+    uses local-common-route-attributes;
   }
 
   grouping local-aggregate-state {
@@ -371,48 +424,5 @@ module openconfig-local-routing {
       }
     }
   }
-
-  grouping local-routes-config {
-    description
-      "Configuration data for locally defined routes";
-  }
-
-  grouping local-routes-state {
-    description
-      "Operational state data for locally defined routes";
-  }
-
-  grouping local-routes-top {
-    description
-      "Top-level grouping for local routes";
-
-    container local-routes {
-      description
-        "Top-level container for local routes";
-
-      container config {
-        description
-          "Configuration data for locally defined routes";
-
-        uses local-routes-config;
-      }
-
-      container state {
-
-        config false;
-
-        description
-          "Operational state data for locally defined routes";
-
-        uses local-routes-config;
-        uses local-routes-state;
-      }
-
-      uses local-static-top;
-      uses local-aggregate-top;
-    }
-  }
-
-  uses local-routes-top;
 
 }
