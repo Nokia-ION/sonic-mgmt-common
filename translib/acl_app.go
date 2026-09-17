@@ -80,8 +80,8 @@ var IP_PROTOCOL_MAP = map[ocbinds.E_OpenconfigPacketMatchTypes_IP_PROTOCOL]uint8
 }
 
 // ICMPV6_TYPE_MAP maps the standard openconfig-icmpv6-types TYPE identities to
-// their numeric ICMPv6 message type (SONiC ACL_RULE ICMPV6_TYPE). ICMPv6 code
-// (subcode) mapping is handled separately as a follow-up.
+// their numeric ICMPv6 message type (SONiC ACL_RULE ICMPV6_TYPE). The codes of
+// a type are in ICMPV6_CODE_MAP below.
 var ICMPV6_TYPE_MAP = map[ocbinds.E_OpenconfigIcmpv6Types_TYPE]uint8{
 	ocbinds.OpenconfigIcmpv6Types_TYPE_DESTINATION_UNREACHABLE:              1,
 	ocbinds.OpenconfigIcmpv6Types_TYPE_PACKET_TOO_BIG:                       2,
@@ -120,6 +120,110 @@ var ICMPV6_TYPE_MAP = map[ocbinds.E_OpenconfigIcmpv6Types_TYPE]uint8{
 	ocbinds.OpenconfigIcmpv6Types_TYPE_MPL_CONTROL:                          159,
 	ocbinds.OpenconfigIcmpv6Types_TYPE_EXT_ECHO_REQUEST:                     160,
 	ocbinds.OpenconfigIcmpv6Types_TYPE_EXT_ECHO_REPLY:                       161,
+}
+
+// icmpv6Code is what an openconfig-icmpv6-types CODE identity stands for: the
+// number carried in the ICMPv6 header, and the message type it belongs to. An
+// ICMPv6 code only has a meaning within its type, so the type is what makes
+// the number unambiguous: code 1 reads as "administratively prohibited" under
+// DESTINATION_UNREACHABLE but as "fragment reassembly time exceeded" under
+// TIME_EXCEEDED.
+type icmpv6Code struct {
+	num uint8
+	typ ocbinds.E_OpenconfigIcmpv6Types_TYPE
+}
+
+// ICMPV6_CODE_MAP maps the standard openconfig-icmpv6-types CODE identities to
+// their numeric ICMPv6 code (SONiC ACL_RULE ICMPV6_CODE) and owning type.
+//
+// Only the leaves of the identity tree are here. The model groups the codes of
+// a type under a per-type identity (DST_UNREACHABLE_CODE and friends), and
+// those are derived from CODE as well, so a client can name one even though it
+// stands for a whole group rather than a code. Leaving them out of the map is
+// what lets the write path turn them away.
+var ICMPV6_CODE_MAP = map[ocbinds.E_OpenconfigIcmpv6Types_CODE]icmpv6Code{
+	// Type 1, destination unreachable.
+	ocbinds.OpenconfigIcmpv6Types_CODE_DST_UNREACHABLE_NO_ROUTE_TO_DST:        {0, ocbinds.OpenconfigIcmpv6Types_TYPE_DESTINATION_UNREACHABLE},
+	ocbinds.OpenconfigIcmpv6Types_CODE_DST_UNREACHABLE_DST_ADMIN_PROHIBITED:   {1, ocbinds.OpenconfigIcmpv6Types_TYPE_DESTINATION_UNREACHABLE},
+	ocbinds.OpenconfigIcmpv6Types_CODE_DST_UNREACHABLE_BEYOND_SCOPE_OF_SRC:    {2, ocbinds.OpenconfigIcmpv6Types_TYPE_DESTINATION_UNREACHABLE},
+	ocbinds.OpenconfigIcmpv6Types_CODE_DST_UNREACHABLE_ADDR:                   {3, ocbinds.OpenconfigIcmpv6Types_TYPE_DESTINATION_UNREACHABLE},
+	ocbinds.OpenconfigIcmpv6Types_CODE_DST_UNREACHABLE_PORT:                   {4, ocbinds.OpenconfigIcmpv6Types_TYPE_DESTINATION_UNREACHABLE},
+	ocbinds.OpenconfigIcmpv6Types_CODE_DST_UNREACHABLE_SRC_ADDR_FAILED_POLICY: {5, ocbinds.OpenconfigIcmpv6Types_TYPE_DESTINATION_UNREACHABLE},
+	ocbinds.OpenconfigIcmpv6Types_CODE_DST_UNREACHABLE_REJECT_ROUTE_TO_DST:    {6, ocbinds.OpenconfigIcmpv6Types_TYPE_DESTINATION_UNREACHABLE},
+	ocbinds.OpenconfigIcmpv6Types_CODE_DST_UNREACHABLE_ERR_IN_SRC_ROUTING_HDR: {7, ocbinds.OpenconfigIcmpv6Types_TYPE_DESTINATION_UNREACHABLE},
+	ocbinds.OpenconfigIcmpv6Types_CODE_DST_UNREACHABLE_HDRS_TOO_LONG:          {8, ocbinds.OpenconfigIcmpv6Types_TYPE_DESTINATION_UNREACHABLE},
+
+	// Type 2, packet too big. Type 3, time exceeded.
+	ocbinds.OpenconfigIcmpv6Types_CODE_PACKET_TOO_BIG_NO_CODE:            {0, ocbinds.OpenconfigIcmpv6Types_TYPE_PACKET_TOO_BIG},
+	ocbinds.OpenconfigIcmpv6Types_CODE_TIME_EXCEEDED_HOP_LIMIT:           {0, ocbinds.OpenconfigIcmpv6Types_TYPE_TIME_EXCEEDED},
+	ocbinds.OpenconfigIcmpv6Types_CODE_TIME_EXCEEDED_FRAGMENT_REASSEMBLY: {1, ocbinds.OpenconfigIcmpv6Types_TYPE_TIME_EXCEEDED},
+
+	// Type 4, parameter problem.
+	ocbinds.OpenconfigIcmpv6Types_CODE_PARAM_PROBLEM_ERR_HDR_FIELD:              {0, ocbinds.OpenconfigIcmpv6Types_TYPE_PARAMETER_PROBLEM},
+	ocbinds.OpenconfigIcmpv6Types_CODE_PARAM_PROBLEM_UNRECOGNIZED_NET_HDR_TYPE:  {1, ocbinds.OpenconfigIcmpv6Types_TYPE_PARAMETER_PROBLEM},
+	ocbinds.OpenconfigIcmpv6Types_CODE_PARAM_PROBLEM_UNRECOGNIZED_IPV6_OPT:      {2, ocbinds.OpenconfigIcmpv6Types_TYPE_PARAMETER_PROBLEM},
+	ocbinds.OpenconfigIcmpv6Types_CODE_PARAM_PROBLEM_INCOMPLETE_HDR_CHAIN:       {3, ocbinds.OpenconfigIcmpv6Types_TYPE_PARAMETER_PROBLEM},
+	ocbinds.OpenconfigIcmpv6Types_CODE_PARAM_PROBLEM_SR_UPPER_HDR_ERR:           {4, ocbinds.OpenconfigIcmpv6Types_TYPE_PARAMETER_PROBLEM},
+	ocbinds.OpenconfigIcmpv6Types_CODE_PARAM_PROBLEM_UNRECOGNIZED_NEXT_HDR_TYPE: {5, ocbinds.OpenconfigIcmpv6Types_TYPE_PARAMETER_PROBLEM},
+	ocbinds.OpenconfigIcmpv6Types_CODE_PARAM_PROBLEM_EXT_HDR_TOO_BIG:            {6, ocbinds.OpenconfigIcmpv6Types_TYPE_PARAMETER_PROBLEM},
+	ocbinds.OpenconfigIcmpv6Types_CODE_PARAM_PROBLEM_EXT_HDR_CHAIN_TOO_LONG:     {7, ocbinds.OpenconfigIcmpv6Types_TYPE_PARAMETER_PROBLEM},
+	ocbinds.OpenconfigIcmpv6Types_CODE_PARAM_PROBLEM_TOO_MANY_EXT_HDRS:          {8, ocbinds.OpenconfigIcmpv6Types_TYPE_PARAMETER_PROBLEM},
+	ocbinds.OpenconfigIcmpv6Types_CODE_PARAM_PROBLEM_TOO_MANY_OPTS:              {9, ocbinds.OpenconfigIcmpv6Types_TYPE_PARAMETER_PROBLEM},
+	ocbinds.OpenconfigIcmpv6Types_CODE_PARAM_PROBLEM_OPT_TOO_BIG:                {10, ocbinds.OpenconfigIcmpv6Types_TYPE_PARAMETER_PROBLEM},
+
+	// Types that carry no code, so only the value 0 is defined for them.
+	ocbinds.OpenconfigIcmpv6Types_CODE_ECHO_REQUEST_NO_CODE:                         {0, ocbinds.OpenconfigIcmpv6Types_TYPE_ECHO_REQUEST},
+	ocbinds.OpenconfigIcmpv6Types_CODE_ECHO_REPLY_NO_CODE:                           {0, ocbinds.OpenconfigIcmpv6Types_TYPE_ECHO_REPLY},
+	ocbinds.OpenconfigIcmpv6Types_CODE_MULTICAST_LISTENER_QUERY_NO_CODE:             {0, ocbinds.OpenconfigIcmpv6Types_TYPE_MULTICAST_LISTENER_QUERY},
+	ocbinds.OpenconfigIcmpv6Types_CODE_MULTICAST_LISTENER_REPORT_NO_CODE:            {0, ocbinds.OpenconfigIcmpv6Types_TYPE_MULTICAST_LISTENER_REPORT},
+	ocbinds.OpenconfigIcmpv6Types_CODE_MULTICAST_LISTENER_DONE_NO_CODE:              {0, ocbinds.OpenconfigIcmpv6Types_TYPE_MULTICAST_LISTENER_DONE},
+	ocbinds.OpenconfigIcmpv6Types_CODE_ROUTER_SOLICITATION_NO_CODE:                  {0, ocbinds.OpenconfigIcmpv6Types_TYPE_ROUTER_SOLICITATION},
+	ocbinds.OpenconfigIcmpv6Types_CODE_ROUTER_ADVERTISEMENT_NO_CODE:                 {0, ocbinds.OpenconfigIcmpv6Types_TYPE_ROUTER_ADVERTISEMENT},
+	ocbinds.OpenconfigIcmpv6Types_CODE_NEIGHBOR_SOLICITATION_NO_CODE:                {0, ocbinds.OpenconfigIcmpv6Types_TYPE_NEIGHBOR_SOLICITATION},
+	ocbinds.OpenconfigIcmpv6Types_CODE_NEIGHBOR_ADVERTISEMENT_NO_CODE:               {0, ocbinds.OpenconfigIcmpv6Types_TYPE_NEIGHBOR_ADVERTISEMENT},
+	ocbinds.OpenconfigIcmpv6Types_CODE_REDIRECT_NO_CODE:                             {0, ocbinds.OpenconfigIcmpv6Types_TYPE_REDIRECT},
+	ocbinds.OpenconfigIcmpv6Types_CODE_INVERSE_NEIGHBOR_SOLICITATION_NO_CODE:        {0, ocbinds.OpenconfigIcmpv6Types_TYPE_INVERSE_NEIGHBOR_SOLICITATION},
+	ocbinds.OpenconfigIcmpv6Types_CODE_INVERSE_NEIGHBOR_ADVERTISEMENT_NO_CODE:       {0, ocbinds.OpenconfigIcmpv6Types_TYPE_INVERSE_NEIGHBOR_ADVERTISEMENT},
+	ocbinds.OpenconfigIcmpv6Types_CODE_HOME_AGENT_ADDRESS_DISCOVERY_REQUEST_NO_CODE: {0, ocbinds.OpenconfigIcmpv6Types_TYPE_HOME_AGENT_ADDRESS_DISCOVERY_REQUEST},
+	ocbinds.OpenconfigIcmpv6Types_CODE_HOME_AGENT_ADDRESS_DISCOVERY_REPLY_NO_CODE:   {0, ocbinds.OpenconfigIcmpv6Types_TYPE_HOME_AGENT_ADDRESS_DISCOVERY_REPLY},
+	ocbinds.OpenconfigIcmpv6Types_CODE_MOBILE_PREFIX_SOLICITATION_NO_CODE:           {0, ocbinds.OpenconfigIcmpv6Types_TYPE_MOBILE_PREFIX_SOLICITATION},
+	ocbinds.OpenconfigIcmpv6Types_CODE_MOBILE_PREFIX_ADVERTISEMENT_NO_CODE:          {0, ocbinds.OpenconfigIcmpv6Types_TYPE_MOBILE_PREFIX_ADVERTISEMENT},
+
+	// Type 138, router renumbering. The sequence number reset is code 255, not
+	// the 2 its position in the identity list would suggest.
+	ocbinds.OpenconfigIcmpv6Types_CODE_RENUMBERING_COMMAND:       {0, ocbinds.OpenconfigIcmpv6Types_TYPE_RENUNBERING},
+	ocbinds.OpenconfigIcmpv6Types_CODE_RENUNBERING_RESULT:        {1, ocbinds.OpenconfigIcmpv6Types_TYPE_RENUNBERING},
+	ocbinds.OpenconfigIcmpv6Types_CODE_RENUNBERING_SEQ_NUM_RESET: {255, ocbinds.OpenconfigIcmpv6Types_TYPE_RENUNBERING},
+
+	// Types 139 and 140, node information query and response.
+	ocbinds.OpenconfigIcmpv6Types_CODE_NODE_INFORMATION_QUERY_IPV6_ADDR:  {0, ocbinds.OpenconfigIcmpv6Types_TYPE_NODE_INFORMATION_QUERY},
+	ocbinds.OpenconfigIcmpv6Types_CODE_NODE_INFORMATION_QUERY_NAME:       {1, ocbinds.OpenconfigIcmpv6Types_TYPE_NODE_INFORMATION_QUERY},
+	ocbinds.OpenconfigIcmpv6Types_CODE_NODE_INFORMATION_QUERY_IPV4_ADDR:  {2, ocbinds.OpenconfigIcmpv6Types_TYPE_NODE_INFORMATION_QUERY},
+	ocbinds.OpenconfigIcmpv6Types_CODE_NODE_INFORMATION_RESPONSE_SUCCESS: {0, ocbinds.OpenconfigIcmpv6Types_TYPE_NODE_INFORMATION_RESPONSE},
+	ocbinds.OpenconfigIcmpv6Types_CODE_NODE_INFORMATION_RESPONSE_REFUSED: {1, ocbinds.OpenconfigIcmpv6Types_TYPE_NODE_INFORMATION_RESPONSE},
+	ocbinds.OpenconfigIcmpv6Types_CODE_NODE_INFORMATION_RESPONSE_UNKNOWN: {2, ocbinds.OpenconfigIcmpv6Types_TYPE_NODE_INFORMATION_RESPONSE},
+
+	// Types 157 and 158, duplicate address request and confirmation. The model
+	// names the confirmation codes after "reply" while the type identity is
+	// DUPLICATE_ADDRESS_CONFIRMATION.
+	ocbinds.OpenconfigIcmpv6Types_CODE_DUPLICATE_ADDRESS_REQUEST_DAR:          {0, ocbinds.OpenconfigIcmpv6Types_TYPE_DUPLICATE_ADDRESS_REQUEST},
+	ocbinds.OpenconfigIcmpv6Types_CODE_DUPLICATE_ADDRESS_REQUEST_EDAR_ROVR64:  {1, ocbinds.OpenconfigIcmpv6Types_TYPE_DUPLICATE_ADDRESS_REQUEST},
+	ocbinds.OpenconfigIcmpv6Types_CODE_DUPLICATE_ADDRESS_REQUEST_EDAR_ROVR128: {2, ocbinds.OpenconfigIcmpv6Types_TYPE_DUPLICATE_ADDRESS_REQUEST},
+	ocbinds.OpenconfigIcmpv6Types_CODE_DUPLICATE_ADDRESS_REQUEST_EDAR_ROVR192: {3, ocbinds.OpenconfigIcmpv6Types_TYPE_DUPLICATE_ADDRESS_REQUEST},
+	ocbinds.OpenconfigIcmpv6Types_CODE_DUPLICATE_ADDRESS_REQUEST_EDAR_ROVR256: {4, ocbinds.OpenconfigIcmpv6Types_TYPE_DUPLICATE_ADDRESS_REQUEST},
+	ocbinds.OpenconfigIcmpv6Types_CODE_DUPLICATE_ADDRESS_REPLY_DAC:            {0, ocbinds.OpenconfigIcmpv6Types_TYPE_DUPLICATE_ADDRESS_CONFIRMATION},
+	ocbinds.OpenconfigIcmpv6Types_CODE_DUPLICATE_ADDRESS_REPLY_EDAC_ROVR64:    {1, ocbinds.OpenconfigIcmpv6Types_TYPE_DUPLICATE_ADDRESS_CONFIRMATION},
+	ocbinds.OpenconfigIcmpv6Types_CODE_DUPLICATE_ADDRESS_REPLY_EDAC_ROVR128:   {2, ocbinds.OpenconfigIcmpv6Types_TYPE_DUPLICATE_ADDRESS_CONFIRMATION},
+	ocbinds.OpenconfigIcmpv6Types_CODE_DUPLICATE_ADDRESS_REPLY_EDAC_ROVR192:   {3, ocbinds.OpenconfigIcmpv6Types_TYPE_DUPLICATE_ADDRESS_CONFIRMATION},
+	ocbinds.OpenconfigIcmpv6Types_CODE_DUPLICATE_ADDRESS_REPLY_EDAC_ROVR256:   {4, ocbinds.OpenconfigIcmpv6Types_TYPE_DUPLICATE_ADDRESS_CONFIRMATION},
+
+	// Types 160 and 161, extended echo request and reply.
+	ocbinds.OpenconfigIcmpv6Types_CODE_EXT_ECHO_REQUEST_NO_ERROR:                  {0, ocbinds.OpenconfigIcmpv6Types_TYPE_EXT_ECHO_REQUEST},
+	ocbinds.OpenconfigIcmpv6Types_CODE_EXT_ECHO_REPLY_NO_ERROR:                    {0, ocbinds.OpenconfigIcmpv6Types_TYPE_EXT_ECHO_REPLY},
+	ocbinds.OpenconfigIcmpv6Types_CODE_EXT_ECHO_REPLY_MALFORMED_QUERY:             {1, ocbinds.OpenconfigIcmpv6Types_TYPE_EXT_ECHO_REPLY},
+	ocbinds.OpenconfigIcmpv6Types_CODE_EXT_ECHO_REPLY_NO_SUCH_INTERFACE:           {2, ocbinds.OpenconfigIcmpv6Types_TYPE_EXT_ECHO_REPLY},
+	ocbinds.OpenconfigIcmpv6Types_CODE_EXT_ECHO_REPLY_NO_SUCH_TABLE_ENTRY:         {3, ocbinds.OpenconfigIcmpv6Types_TYPE_EXT_ECHO_REPLY},
+	ocbinds.OpenconfigIcmpv6Types_CODE_EXT_ECHO_REPLY_MULTIPLE_INTF_SATISFY_QUERY: {4, ocbinds.OpenconfigIcmpv6Types_TYPE_EXT_ECHO_REPLY},
 }
 
 var ETHERTYPE_MAP = map[ocbinds.E_OpenconfigPacketMatchTypes_ETHERTYPE]uint32{
@@ -293,7 +397,7 @@ func (app *AclApp) translateCRUCommon(d *db.DB, opcode int) ([]db.WatchKeys, err
 	log.Info("translateCRUCommon:acl:path =", app.pathInfo.Template)
 
 	app.convertOCAclsToInternal()
-	if err = app.convertOCAclRulesToInternal(d); err != nil {
+	if err = app.convertOCAclRulesToInternal(d, opcode); err != nil {
 		return keys, err
 	}
 	app.convertOCAclBindingsToInternal()
@@ -922,6 +1026,28 @@ func (app *AclApp) convertInternalToOCAclRuleProperties(aclName string, ruleName
 				} else {
 					log.Warningf("acl %s rule %s: ICMPV6_TYPE %d has no openconfig-icmpv6-types identity; omitted from GET", aclName, ruleName, num)
 				}
+			} else if "ICMPV6_CODE" == ruleKey {
+				// A code number only names an identity alongside its type, so
+				// read ICMPV6_TYPE straight from the rule: the iteration order
+				// over the fields is undefined, and the type may not have been
+				// seen yet.
+				num, err := strconv.ParseUint(ruleData.Get(ruleKey), 10, 8)
+				if err != nil {
+					log.Warningf("acl %s rule %s: bad ICMPV6_CODE %q: %v", aclName, ruleName, ruleData.Get(ruleKey), err)
+					continue
+				}
+				typeNum, err := strconv.ParseUint(ruleData.Get("ICMPV6_TYPE"), 10, 8)
+				if err != nil {
+					log.Warningf("acl %s rule %s: ICMPV6_CODE %d has no usable ICMPV6_TYPE to resolve it against; omitted from GET", aclName, ruleName, num)
+					continue
+				}
+				if id := getIcmpv6CodeId(getIcmpv6TypeId(uint8(typeNum)), uint8(num)); id != ocbinds.OpenconfigIcmpv6Types_CODE_UNSET {
+					aclIcmpv6EmptyTree(entrySet.Ipv6)
+					entrySet.Ipv6.Icmpv6.Config.Code = id
+					entrySet.Ipv6.Icmpv6.State.Code = id
+				} else {
+					log.Warningf("acl %s rule %s: ICMPV6_TYPE %d code %d has no openconfig-icmpv6-types identity; omitted from GET", aclName, ruleName, typeNum, num)
+				}
 			}
 		}
 	} else if aclType == ocbinds.OpenconfigAcl_ACL_TYPE_ACL_L2 {
@@ -1331,7 +1457,7 @@ func (app *AclApp) convertOCAclsToInternal() {
 	}
 }
 
-func (app *AclApp) convertOCAclRulesToInternal(d *db.DB) error {
+func (app *AclApp) convertOCAclRulesToInternal(d *db.DB, opcode int) error {
 	acl := app.getAppRootObject()
 	if acl != nil {
 		app.ruleTableMap = make(map[string]map[string]db.Value)
@@ -1351,7 +1477,7 @@ func (app *AclApp) convertOCAclRulesToInternal(d *db.DB) error {
 						entrySet := aclSet.AclEntries.AclEntry[seqId]
 						ruleName := "RULE_" + strconv.Itoa(int(seqId))
 						app.ruleTableMap[aclKey][ruleName] = db.Value{Field: map[string]string{}}
-						portSets, err := convertOCAclRuleToInternalAclRule(d, app.ruleTableMap[aclKey][ruleName], seqId, aclKey, aclSet.Type, entrySet)
+						portSets, err := convertOCAclRuleToInternalAclRule(d, app.ruleTableMap[aclKey][ruleName], seqId, aclKey, aclSet.Type, entrySet, opcode)
 						if err != nil {
 							return err
 						}
@@ -1442,7 +1568,7 @@ func (app *AclApp) createDefaultDenyAclRule(d *db.DB, aclName string, rulesInfo 
 	rulesInfo["DEFAULT_RULE"].Field["IP_TYPE"] = "ANY"
 }
 
-func convertOCAclRuleToInternalAclRule(d *db.DB, ruleData db.Value, seqId uint32, aclName string, aclType ocbinds.E_OpenconfigAcl_ACL_TYPE, rule *ocbinds.OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry) (*rulePortSetInfo, error) {
+func convertOCAclRuleToInternalAclRule(d *db.DB, ruleData db.Value, seqId uint32, aclName string, aclType ocbinds.E_OpenconfigAcl_ACL_TYPE, rule *ocbinds.OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry, opcode int) (*rulePortSetInfo, error) {
 	ruleIndex := seqId
 	ruleData.Field["PRIORITY"] = strconv.FormatInt(int64(MAX_PRIORITY-ruleIndex), 10)
 	// Rule Description is not supported in Sonic. So commenting this out.
@@ -1455,7 +1581,9 @@ func convertOCAclRuleToInternalAclRule(d *db.DB, ruleData db.Value, seqId uint32
 	if ocbinds.OpenconfigAcl_ACL_TYPE_ACL_IPV4 == aclType {
 		convertOCToInternalIPv4(ruleData, aclName, ruleIndex, rule)
 	} else if ocbinds.OpenconfigAcl_ACL_TYPE_ACL_IPV6 == aclType {
-		convertOCToInternalIPv6(ruleData, aclName, ruleIndex, rule)
+		if err := convertOCToInternalIPv6(d, ruleData, aclName, ruleIndex, rule, opcode); err != nil {
+			return nil, err
+		}
 	} else if ocbinds.OpenconfigAcl_ACL_TYPE_ACL_L2 == aclType {
 		convertOCToInternalL2(ruleData, aclName, ruleIndex, rule)
 	} /*else if ocbinds.OpenconfigAcl_ACL_TYPE_ACL_MIXED == aclType {
@@ -1567,9 +1695,9 @@ func convertOCToInternalIPv4(ruleData db.Value, aclName string, ruleIndex uint32
 	ruleData.Field["IP_TYPE"] = "IPV4ANY"
 }
 
-func convertOCToInternalIPv6(ruleData db.Value, aclName string, ruleIndex uint32, rule *ocbinds.OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry) {
+func convertOCToInternalIPv6(d *db.DB, ruleData db.Value, aclName string, ruleIndex uint32, rule *ocbinds.OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry, opcode int) error {
 	if rule.Ipv6 == nil {
-		return
+		return nil
 	}
 	// ipv6/config and ipv6/icmpv6 are sibling containers, so a subtree write
 	// that only touches icmpv6 leaves Config nil; guard the config-field
@@ -1604,17 +1732,119 @@ func convertOCToInternalIPv6(ruleData db.Value, aclName string, ruleIndex uint32
 			ruleData.Field["DST_FLOWLABEL"] = strconv.FormatInt(int64(*rule.Ipv6.Config.DestinationFlowLabel), 10)
 		}
 	}
-	// openconfig-acl-ext: ICMPv6 type match (SONiC ICMPV6_TYPE). The leaf keeps
-	// the standard openconfig-icmpv6-types identityref; map it to the numeric
-	// ICMPv6 type. ICMPv6 code mapping is a follow-up.
+	// openconfig-acl-ext: ICMPv6 type/code match (SONiC ICMPV6_TYPE and
+	// ICMPV6_CODE). Both leaves keep the standard openconfig-icmpv6-types
+	// identityrefs; map them to the numeric type and code.
 	if rule.Ipv6.Icmpv6 != nil && rule.Ipv6.Icmpv6.Config != nil {
-		if rule.Ipv6.Icmpv6.Config.Type != ocbinds.OpenconfigIcmpv6Types_TYPE_UNSET {
-			if num, ok := ICMPV6_TYPE_MAP[rule.Ipv6.Icmpv6.Config.Type]; ok {
-				ruleData.Field["ICMPV6_TYPE"] = strconv.FormatInt(int64(num), 10)
-			}
+		if err := setRuleIcmpv6TypeCode(d, ruleData, aclName, ruleIndex, rule.Ipv6.Icmpv6.Config, opcode); err != nil {
+			return err
 		}
 	}
 	ruleData.Field["IP_TYPE"] = "IPV6ANY"
+	return nil
+}
+
+// setRuleIcmpv6TypeCode maps the icmpv6 type/code match onto the SONiC ACL_RULE
+// ICMPV6_TYPE and ICMPV6_CODE fields.
+//
+// An ICMPv6 code is only meaningful inside a message type, and neither the
+// identity tree nor CVL can express that pairing, so it is checked here.
+// Without the check a rule could be installed matching a type/code combination
+// no packet carries, which matches nothing while reading back as configured.
+//
+// The check is against the rule the request leaves behind rather than the
+// request alone, because CREATE and UPDATE merge into the ACL_RULE row that is
+// already there: a request may set the code and leave the type in place, or set
+// the type over a code that is already stored. Only REPLACE writes the row
+// whole, so only there is the payload the entire rule.
+func setRuleIcmpv6TypeCode(d *db.DB, ruleData db.Value, aclName string, ruleIndex uint32,
+	config *ocbinds.OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry_Ipv6_Icmpv6_Config, opcode int) error {
+
+	reqType, reqCode := config.Type, config.Code
+	if reqType == ocbinds.OpenconfigIcmpv6Types_TYPE_UNSET && reqCode == ocbinds.OpenconfigIcmpv6Types_CODE_UNSET {
+		return nil
+	}
+
+	// The per-type grouping identities (DST_UNREACHABLE_CODE and friends) are
+	// derived from CODE as well, so a client can name one, but they stand for a
+	// group of codes rather than a code and have no number to install.
+	reqCodeInfo, reqCodeOk := ICMPV6_CODE_MAP[reqCode]
+	if reqCode != ocbinds.OpenconfigIcmpv6Types_CODE_UNSET && !reqCodeOk {
+		return tlerr.InvalidArgs(
+			"icmpv6 code %s does not name a single ICMPv6 code on rule %d of %s",
+			icmpv6CodeName(reqCode), ruleIndex, aclName)
+	}
+
+	// The type the rule ends up with. A CREATE or UPDATE that names only the
+	// code keeps the type already stored, so that is the one to check against.
+	effType := reqType
+	storedCode, haveStoredCode := uint8(0), false
+	if opcode != REPLACE {
+		stored, err := d.GetEntry(&db.TableSpec{Name: RULE_TABLE},
+			db.Key{Comp: []string{aclName, "RULE_" + strconv.Itoa(int(ruleIndex))}})
+		if err == nil && stored.IsPopulated() {
+			if effType == ocbinds.OpenconfigIcmpv6Types_TYPE_UNSET {
+				if n, perr := strconv.ParseUint(stored.Get("ICMPV6_TYPE"), 10, 8); perr == nil {
+					effType = getIcmpv6TypeId(uint8(n))
+				}
+			}
+			if n, perr := strconv.ParseUint(stored.Get("ICMPV6_CODE"), 10, 8); perr == nil {
+				storedCode, haveStoredCode = uint8(n), true
+			}
+		}
+	}
+
+	if reqCodeOk {
+		// Compare the identity the client named, not its number: the same
+		// number is a different code under each type, so a code of the wrong
+		// type whose number happens to be valid under the configured one would
+		// otherwise be stored as a code the client never asked for.
+		if effType == ocbinds.OpenconfigIcmpv6Types_TYPE_UNSET {
+			return tlerr.InvalidArgs(
+				"icmpv6 code %s needs the icmpv6 type %s to be set on rule %d of %s",
+				icmpv6CodeName(reqCode), icmpv6TypeName(reqCodeInfo.typ), ruleIndex, aclName)
+		}
+		if reqCodeInfo.typ != effType {
+			return tlerr.InvalidArgs(
+				"icmpv6 code %s is a code of type %s, not of the configured type %s, on rule %d of %s",
+				icmpv6CodeName(reqCode), icmpv6TypeName(reqCodeInfo.typ), icmpv6TypeName(effType),
+				ruleIndex, aclName)
+		}
+	} else if haveStoredCode && reqType != ocbinds.OpenconfigIcmpv6Types_TYPE_UNSET {
+		// Changing only the type would leave the stored code beside a type it
+		// does not belong to, matching a combination no packet carries.
+		if getIcmpv6CodeId(effType, storedCode) == ocbinds.OpenconfigIcmpv6Types_CODE_UNSET {
+			return tlerr.InvalidArgs(
+				"icmpv6 code %d already on rule %d of %s is not a code of type %s; set or delete the code with the type",
+				storedCode, ruleIndex, aclName, icmpv6TypeName(effType))
+		}
+	}
+
+	if reqType != ocbinds.OpenconfigIcmpv6Types_TYPE_UNSET {
+		if num, ok := ICMPV6_TYPE_MAP[reqType]; ok {
+			ruleData.Field["ICMPV6_TYPE"] = strconv.FormatInt(int64(num), 10)
+		}
+	}
+	if reqCodeOk {
+		ruleData.Field["ICMPV6_CODE"] = strconv.FormatInt(int64(reqCodeInfo.num), 10)
+	}
+	return nil
+}
+
+// icmpv6TypeName and icmpv6CodeName render an identity as the name a client
+// used, so an error names the value that was rejected rather than its ordinal.
+func icmpv6TypeName(t ocbinds.E_OpenconfigIcmpv6Types_TYPE) string {
+	if def, ok := t.ΛMap()["E_OpenconfigIcmpv6Types_TYPE"][int64(t)]; ok {
+		return def.Name
+	}
+	return strconv.FormatInt(int64(t), 10)
+}
+
+func icmpv6CodeName(c ocbinds.E_OpenconfigIcmpv6Types_CODE) string {
+	if def, ok := c.ΛMap()["E_OpenconfigIcmpv6Types_CODE"][int64(c)]; ok {
+		return def.Name
+	}
+	return strconv.FormatInt(int64(c), 10)
 }
 
 func convertOCToInternalTransport(d *db.DB, ruleData db.Value, aclName string, ruleIndex uint32, rule *ocbinds.OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry) (*rulePortSetInfo, error) {
@@ -2128,6 +2358,21 @@ func getIcmpv6TypeId(num uint8) ocbinds.E_OpenconfigIcmpv6Types_TYPE {
 		}
 	}
 	return ocbinds.OpenconfigIcmpv6Types_TYPE_UNSET
+}
+
+// getIcmpv6CodeId recovers the CODE identity for a numeric code. The same
+// number stands for a different code under each type, so the type selects which
+// identity it names.
+func getIcmpv6CodeId(typ ocbinds.E_OpenconfigIcmpv6Types_TYPE, num uint8) ocbinds.E_OpenconfigIcmpv6Types_CODE {
+	if typ == ocbinds.OpenconfigIcmpv6Types_TYPE_UNSET {
+		return ocbinds.OpenconfigIcmpv6Types_CODE_UNSET
+	}
+	for k, v := range ICMPV6_CODE_MAP {
+		if v.typ == typ && v.num == num {
+			return k
+		}
+	}
+	return ocbinds.OpenconfigIcmpv6Types_CODE_UNSET
 }
 
 func getTransportSrcDestPorts(portVal string, portType string) interface{} {

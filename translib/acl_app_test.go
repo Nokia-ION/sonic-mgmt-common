@@ -456,9 +456,50 @@ func Test_AclApp_IcmpMatch(t *testing.T) {
 	t.Run("Verify_Icmpv6_Match", verifyRuleFields("MyACL9_ACL_IPV6", "RULE_6", map[string]string{
 		"IP_PROTOCOL": "58", "ICMPV6_TYPE": "129"}))
 
+	// An ICMPv6 code is an identity of its type, so the pair travels together:
+	// under DESTINATION_UNREACHABLE (type 1), port unreachable is code 4.
+	icmpv6ConfigUrl := rulev6Url + "/ipv6/icmpv6/config"
+	t.Run("Set_Icmpv6_Type_And_Code", processSetRequest(icmpv6ConfigUrl, icmpv6TypeCodeJson, "PATCH", false))
+	t.Run("Verify_Icmpv6_Type_And_Code", verifyRuleFields("MyACL9_ACL_IPV6", "RULE_6", map[string]string{
+		"ICMPV6_TYPE": "1", "ICMPV6_CODE": "4"}))
+	t.Run("Read_Back_Icmpv6_Type_And_Code", processGetRequest(icmpv6ConfigUrl, icmpv6TypeCodeGetJson, false))
+
+	// A code alone is enough once the rule already carries the type it belongs
+	// to: an update merges into the ACL_RULE row rather than replacing it.
+	t.Run("Update_Icmpv6_Code_Alone", processSetRequest(icmpv6ConfigUrl, icmpv6CodeOnlyJson, "PATCH", false))
+	t.Run("Verify_Icmpv6_Code_Alone", verifyRuleFields("MyACL9_ACL_IPV6", "RULE_6", map[string]string{
+		"ICMPV6_TYPE": "1", "ICMPV6_CODE": "1"}))
+
+	// A code of a different type than the configured one would install a rule
+	// matching a combination no packet carries. TIME_EXCEEDED_HOP_LIMIT is
+	// code 0 of type 3, and 0 is also a valid code of type 1, so this is
+	// rejected on the identity rather than on the number.
+	t.Run("Reject_Icmpv6_Code_Of_Other_Type", processSetRequestErr(icmpv6ConfigUrl, icmpv6MismatchedCodeJson, "PATCH"))
+	// The per-type grouping identities name a group of codes, not a code.
+	t.Run("Reject_Icmpv6_Code_Group_Identity", processSetRequestErr(icmpv6ConfigUrl, icmpv6GroupCodeJson, "PATCH"))
+	// Moving the type out from under a stored code would leave the two
+	// mismatched: ECHO_REPLY has only code 0, and the rule carries code 1.
+	t.Run("Reject_Icmpv6_Type_Leaving_Stale_Code", processSetRequestErr(icmpv6ConfigUrl, icmpv6TypeOnlyJson, "PATCH"))
+	// A rejected request must not have disturbed the rule.
+	t.Run("Verify_Icmpv6_Match_Unchanged", verifyRuleFields("MyACL9_ACL_IPV6", "RULE_6", map[string]string{
+		"ICMPV6_TYPE": "1", "ICMPV6_CODE": "1"}))
+
+	// A code on a rule with no type at all has nothing to be interpreted
+	// against, so it is refused rather than matching that number under every
+	// type.
+	rulev6NoTypeUrl := aclv6Url + "/acl-entries/acl-entry[sequence-id=7]"
+	t.Run("Create_Rule_Without_Icmpv6_Type", processSetRequest(rulev6NoTypeUrl, icmpv6RuleNoTypeJson, "POST", false))
+	t.Run("Reject_Icmpv6_Code_Without_Type", processSetRequestErr(rulev6NoTypeUrl+"/ipv6/icmpv6/config", icmpv6CodeOnlyJson, "PATCH"))
+	t.Run("Verify_No_Icmpv6_Code_Written", verifyRuleFields("MyACL9_ACL_IPV6", "RULE_7", map[string]string{
+		"ICMPV6_TYPE": "", "ICMPV6_CODE": ""}))
+
+	t.Run("Delete_Icmpv6_Code_Only", processDeleteRequest(rulev6Url+"/ipv6/icmpv6/config/code"))
+	t.Run("Verify_Icmpv6_Code_Is_Gone", verifyRuleFields("MyACL9_ACL_IPV6", "RULE_6", map[string]string{
+		"ICMPV6_TYPE": "1", "ICMPV6_CODE": ""}))
+
 	t.Run("Delete_Icmpv6_Match", processDeleteRequest(rulev6Url+"/ipv6/icmpv6"))
 	t.Run("Verify_Icmpv6_Match_Is_Gone", verifyRuleFields("MyACL9_ACL_IPV6", "RULE_6", map[string]string{
-		"ICMPV6_TYPE": ""}))
+		"ICMPV6_TYPE": "", "ICMPV6_CODE": ""}))
 
 	t.Run("Delete_IPv6_Acl", processDeleteRequest(aclv6Url))
 	t.Run("Verify_IPv6_Acl_Delete", processGetRequest(aclv6Url, "", true))
@@ -873,6 +914,22 @@ var icmpv4TypeUpdateJson string = "{\"type\":8}"
 
 var icmpv6AclCreateJson string = "{\"config\":{\"name\":\"MyACL9\",\"type\":\"ACL_IPV6\",\"description\":\"ICMPv6 match\"}}"
 var icmpv6RuleCreateJson string = "{\"sequence-id\":6,\"config\":{\"sequence-id\":6},\"ipv6\":{\"config\":{\"protocol\":58},\"icmpv6\":{\"config\":{\"type\":\"openconfig-icmpv6-types:ECHO_REPLY\"}}},\"actions\":{\"config\":{\"forwarding-action\":\"DROP\"}}}"
+
+// DESTINATION_UNREACHABLE is type 1 and DST_UNREACHABLE_PORT its code 4.
+var icmpv6TypeCodeJson string = "{\"type\":\"openconfig-icmpv6-types:DESTINATION_UNREACHABLE\",\"code\":\"openconfig-icmpv6-types:DST_UNREACHABLE_PORT\"}"
+var icmpv6TypeCodeGetJson string = "{\"openconfig-acl-ext:config\":{\"code\":\"openconfig-icmpv6-types:DST_UNREACHABLE_PORT\",\"type\":\"openconfig-icmpv6-types:DESTINATION_UNREACHABLE\"}}"
+
+// TIME_EXCEEDED_HOP_LIMIT is a code of type 3, not of DESTINATION_UNREACHABLE.
+var icmpv6MismatchedCodeJson string = "{\"type\":\"openconfig-icmpv6-types:DESTINATION_UNREACHABLE\",\"code\":\"openconfig-icmpv6-types:TIME_EXCEEDED_HOP_LIMIT\"}"
+
+// DST_UNREACHABLE_DST_ADMIN_PROHIBITED is code 1 of DESTINATION_UNREACHABLE.
+var icmpv6CodeOnlyJson string = "{\"code\":\"openconfig-icmpv6-types:DST_UNREACHABLE_DST_ADMIN_PROHIBITED\"}"
+var icmpv6TypeOnlyJson string = "{\"type\":\"openconfig-icmpv6-types:ECHO_REPLY\"}"
+var icmpv6RuleNoTypeJson string = "{\"sequence-id\":7,\"config\":{\"sequence-id\":7},\"ipv6\":{\"config\":{\"protocol\":58}},\"actions\":{\"config\":{\"forwarding-action\":\"DROP\"}}}"
+
+// DST_UNREACHABLE_CODE is the identity the type's codes are grouped under, so
+// it names a group rather than a single code.
+var icmpv6GroupCodeJson string = "{\"type\":\"openconfig-icmpv6-types:DESTINATION_UNREACHABLE\",\"code\":\"openconfig-icmpv6-types:DST_UNREACHABLE_CODE\"}"
 
 var emptyAclDescriptionJson string = "{\"openconfig-acl:description\":\"\"}"
 var emptyRuleDscpJson string = "{\"openconfig-acl:dscp\":0}"
