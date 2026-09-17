@@ -658,3 +658,59 @@ func Test_openconfig_network_instance_bgp_neighbor_stats_invalid_values_rejected
 	time.Sleep(1 * time.Second)
 	unloadNiBgpNbrStats("11.0.0.155")
 }
+
+func Test_openconfig_network_instance_bgp_neighbor_state_supported_capabilities(t *testing.T) {
+	// What the DUT's established session actually negotiates: route refresh,
+	// and multiprotocol for the two unicast families. Its 4-byte AS and
+	// graceful restart are advertised only, so bgpmon leaves them out and the
+	// leaf-list does not claim them.
+	applied := niBgpNbrAppliedRow()
+	applied["supported_capabilities@"] = "MPBGP,ROUTE_REFRESH"
+	loadNiBgpNbrState("11.0.0.155", "Established")
+	loadNiBgpNbrApplied("11.0.0.155", applied)
+
+	url := niBgpNbrStateUrl + "/supported-capabilities"
+	expectedGetJSON := `{"openconfig-network-instance:supported-capabilities":` +
+		`["openconfig-bgp-types:MPBGP","openconfig-bgp-types:ROUTE_REFRESH"]}`
+	t.Run("GET BGP neighbor state supported-capabilities", processGetRequest(url, nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	unloadNiBgpNbrApplied("11.0.0.155")
+	unloadNiBgpNbrState("11.0.0.155")
+}
+
+func Test_openconfig_network_instance_bgp_neighbor_state_supported_capabilities_absent(t *testing.T) {
+	// A session that has negotiated nothing carries no field, and the leaf-list
+	// is then absent rather than empty: an empty list would claim the session
+	// negotiated none of them, which is a different statement from not knowing.
+	loadNiBgpNbrState("11.0.0.155", "Established")
+	loadNiBgpNbrApplied("11.0.0.155", niBgpNbrAppliedRow())
+
+	url := niBgpNbrStateUrl + "/supported-capabilities"
+	t.Run("GET supported-capabilities with nothing negotiated", processGetRequest(url, nil, "{}", false))
+	time.Sleep(1 * time.Second)
+
+	unloadNiBgpNbrApplied("11.0.0.155")
+	unloadNiBgpNbrState("11.0.0.155")
+}
+
+func Test_openconfig_network_instance_bgp_neighbor_state_supported_capabilities_unknown_skipped(t *testing.T) {
+	// OpenConfig names six capabilities and no more, so a session can
+	// negotiate one this leaf-list cannot express. An element that maps to no
+	// identity is skipped and logged: refusing the read would deny the caller
+	// the capabilities that do map because of one that does not.
+	applied := niBgpNbrAppliedRow()
+	applied["supported_capabilities@"] = "MPBGP,NOT_A_CAPABILITY,ROUTE_REFRESH"
+	loadNiBgpNbrState("11.0.0.155", "Established")
+	loadNiBgpNbrApplied("11.0.0.155", applied)
+
+	url := niBgpNbrStateUrl + "/supported-capabilities"
+	expectedGetJSON := `{"openconfig-network-instance:supported-capabilities":` +
+		`["openconfig-bgp-types:MPBGP","openconfig-bgp-types:ROUTE_REFRESH"]}`
+	t.Run("GET supported-capabilities reports the elements that map",
+		processGetRequest(url, nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	unloadNiBgpNbrApplied("11.0.0.155")
+	unloadNiBgpNbrState("11.0.0.155")
+}
