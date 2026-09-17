@@ -26,6 +26,8 @@ import (
 	"strings"
 	"time"
 
+	log "github.com/golang/glog"
+
 	"github.com/Azure/sonic-mgmt-common/translib/db"
 	"github.com/Azure/sonic-mgmt-common/translib/ocbinds"
 	"github.com/Azure/sonic-mgmt-common/translib/tlerr"
@@ -59,6 +61,9 @@ const (
 	niBgpNbrAppliedPeerGrpFld   = "peer_group"
 	niBgpNbrAppliedLocalAddrFld = "local_address"
 	niBgpNbrAppliedRmtAddrFld   = "remote_address"
+	// The negotiated capabilities, as a list; the trailing @ is SONiC's
+	// mark for a field holding one.
+	niBgpNbrAppliedSuppCapsFld = "supported_capabilities@"
 
 	// The per-session counters come from the same scrape as the applied row,
 	// published as BGP_NEIGH_STATS|<network-instance>|<neighbor-address>. They
@@ -88,6 +93,7 @@ const (
 	niBgpNbrPeerGrpLeaf      = "peer-group"
 	niBgpNbrLocalAddrLeaf    = "local-address"
 	niBgpNbrRmtAddrLeaf      = "remote-address"
+	niBgpNbrSuppCapsLeaf     = "supported-capabilities"
 	niBgpNbrEstTransLeaf     = "established-transitions"
 	niBgpNbrLastEstLeaf      = "last-established"
 	niBgpNbrUpdateLeaf       = "UPDATE"
@@ -106,7 +112,7 @@ const (
 )
 
 var niBgpNbrStateReqUriRe = regexp.MustCompile(niBgpNbrStateUriPfx +
-	`/state(?:/(session-state|enabled|neighbor-address|peer-as|peer-group|established-transitions|last-established))?$`)
+	`/state(?:/(session-state|enabled|neighbor-address|peer-as|peer-group|established-transitions|last-established|supported-capabilities))?$`)
 
 // The message counters sit two levels below the state container, split by
 // direction, so they need a pattern of their own rather than another
@@ -132,10 +138,11 @@ const niBgpNbrStateUriPfx = `^/openconfig-network-instance:network-instances/net
 // producer field. The transport leaves are not listed because they hang below
 // the transport container rather than off the state container.
 var niBgpNbrAppliedFldForLeaf = map[string]string{
-	niBgpNbrEnabledLeaf: niBgpNbrAppliedEnabledFld,
-	niBgpNbrNbrAddrLeaf: niBgpNbrAppliedNbrAddrFld,
-	niBgpNbrPeerAsLeaf:  niBgpNbrAppliedPeerAsFld,
-	niBgpNbrPeerGrpLeaf: niBgpNbrAppliedPeerGrpFld,
+	niBgpNbrEnabledLeaf:  niBgpNbrAppliedEnabledFld,
+	niBgpNbrNbrAddrLeaf:  niBgpNbrAppliedNbrAddrFld,
+	niBgpNbrPeerAsLeaf:   niBgpNbrAppliedPeerAsFld,
+	niBgpNbrPeerGrpLeaf:  niBgpNbrAppliedPeerGrpFld,
+	niBgpNbrSuppCapsLeaf: niBgpNbrAppliedSuppCapsFld,
 }
 
 // niBgpNbrAppliedFldForTransportLeaf maps the transport state leaves onto their
@@ -457,6 +464,35 @@ func niBgpNbrLastEstToNanos(epochSecs uint64, neighborAddr string) (uint64, erro
 	return epochSecs * niBgpNbrLastEstNsPerSec, nil
 }
 
+// niBgpNbrCapabilityFromToken maps one element of the producer's capability
+// list onto the OpenConfig identity it names.
+//
+// openconfig-bgp-types defines six identities for BGP_CAPABILITY and no more,
+// upstream master included, so this leaf-list cannot express anything else. A
+// session may well negotiate a capability outside them, extendedMessage and
+// enhancedRouteRefresh being the common ones, and the producer drops those
+// because the model gives them nowhere to go. That is a limit of the model
+// rather than of the mapping, and it is why an unrecognised element is skipped
+// rather than refused: the alternative denies a caller the capabilities that
+// can be named on account of one that cannot.
+func niBgpNbrCapabilityFromToken(token string) (ocbinds.E_OpenconfigBgpTypes_BGP_CAPABILITY, bool) {
+	switch strings.ToUpper(strings.TrimSpace(token)) {
+	case "MPBGP":
+		return ocbinds.OpenconfigBgpTypes_BGP_CAPABILITY_MPBGP, true
+	case "ROUTE_REFRESH":
+		return ocbinds.OpenconfigBgpTypes_BGP_CAPABILITY_ROUTE_REFRESH, true
+	case "ASN32":
+		return ocbinds.OpenconfigBgpTypes_BGP_CAPABILITY_ASN32, true
+	case "GRACEFUL_RESTART":
+		return ocbinds.OpenconfigBgpTypes_BGP_CAPABILITY_GRACEFUL_RESTART, true
+	case "ADD_PATHS":
+		return ocbinds.OpenconfigBgpTypes_BGP_CAPABILITY_ADD_PATHS, true
+	case "EXTENDED_NEXTHOP_ENCODING":
+		return ocbinds.OpenconfigBgpTypes_BGP_CAPABILITY_EXTENDED_NEXTHOP_ENCODING, true
+	}
+	return ocbinds.OpenconfigBgpTypes_BGP_CAPABILITY_UNSET, false
+}
+
 // niBgpNbrAppliedStr returns a trimmed applied field, and whether it carries a
 // value. An empty field is treated as absent, so that a leaf is left unset
 // rather than reported as an empty string.
@@ -504,6 +540,29 @@ func populateNiBgpNbrAppliedStateLeaves(stateObj *ocbinds.OpenconfigNetworkInsta
 		if raw, ok := niBgpNbrAppliedStr(entry, niBgpNbrAppliedPeerGrpFld); ok {
 			pg := raw
 			stateObj.PeerGroup = &pg
+		}
+	}
+	if wants(niBgpNbrSuppCapsLeaf) {
+		if raw, ok := niBgpNbrAppliedStr(entry, niBgpNbrAppliedSuppCapsFld); ok {
+			var caps []ocbinds.E_OpenconfigBgpTypes_BGP_CAPABILITY
+			for _, token := range strings.Split(raw, ",") {
+				if strings.TrimSpace(token) == "" {
+					continue
+				}
+				capability, ok := niBgpNbrCapabilityFromToken(token)
+				if !ok {
+					// Logged rather than returned: the capabilities that do map
+					// are still worth reporting, and this is how a producer
+					// writing a name this build does not know becomes visible.
+					log.Warningf("%s.%s carries element %q for neighbor %s, which is not an OpenConfig BGP capability identity; skipping it",
+						niBgpNbrAppliedTbl, niBgpNbrAppliedSuppCapsFld, token, neighborAddr)
+					continue
+				}
+				caps = append(caps, capability)
+			}
+			if len(caps) > 0 {
+				stateObj.SupportedCapabilities = caps
+			}
 		}
 	}
 	return nil

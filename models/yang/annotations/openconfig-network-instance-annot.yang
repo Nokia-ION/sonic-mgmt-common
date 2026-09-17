@@ -387,6 +387,13 @@ module openconfig-network-instance-annot {
       }
     }
 
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:bgp/oc-netinst:neighbors/oc-netinst:neighbor/oc-netinst:state/oc-netinst:supported-capabilities {
+      deviate add {
+          sonic-ext:db-name "STATE_DB";
+          sonic-ext:subtree-transformer "ni_bgp_nbr_state_xfmr";
+      }
+    }
+
     // The per-session counters come from BGP_NEIGH_STATS, written by the same
     // bgpmon scrape that fills BGP_NEIGH_APPLIED. They are annotated onto the
     // same transformer for the same reason as the applied leaves: they share
