@@ -65,6 +65,11 @@ const (
 	niStaticRouteIndexLeaf   = "index"
 	niStaticRouteNextHopLeaf = "next-hop"
 
+	niStaticRoutePreferenceLeaf = "preference"
+	// FRR takes an administrative distance of 1 to 255 on a route line, which
+	// is the range the STATIC_ROUTE distance field holds too.
+	niStaticRoutePreferenceMax = 255
+
 	// Next-hop kinds as spelled by the OpenConfig next-hop leaf and, for the
 	// list key, by the index of the next-hop.
 	niStaticRouteDropToken      = "DROP"
@@ -100,7 +105,7 @@ var niStaticRouteListReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/stati
 var niStaticRouteNhsRootReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/static-routes/static\[prefix=([^\]]+)\]/next-hops(?:/next-hop)?$`)
 var niStaticRouteNhInstReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/static-routes/static\[prefix=([^\]]+)\]/next-hops/next-hop\[index=([^\]]+)\]$`)
 var niStaticRouteNhKeyLeafReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/static-routes/static\[prefix=([^\]]+)\]/next-hops/next-hop\[index=([^\]]+)\]/index$`)
-var niStaticRouteNhCfgReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/static-routes/static\[prefix=([^\]]+)\]/next-hops/next-hop\[index=([^\]]+)\]/config(?:/(index|next-hop))?$`)
+var niStaticRouteNhCfgReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/static-routes/static\[prefix=([^\]]+)\]/next-hops/next-hop\[index=([^\]]+)\]/config(?:/(index|next-hop|preference))?$`)
 
 type niStaticRouteReqInfo struct {
 	niName         string
@@ -293,12 +298,13 @@ func matchNiStaticRouteRequestUri(uri string) (*niStaticRouteReqInfo, error) {
 // static-routes container, that a container-level request can carry. List keys
 // are included because a payload repeats them alongside the data they identify.
 var niStaticRouteMappedPayloadLeaves = map[string]bool{
-	"static/prefix":                             true,
-	"static/config/prefix":                      true,
-	"static/config/set-tag":                     true,
-	"static/next-hops/next-hop/index":           true,
-	"static/next-hops/next-hop/config/index":    true,
-	"static/next-hops/next-hop/config/next-hop": true,
+	"static/prefix":                               true,
+	"static/config/prefix":                        true,
+	"static/config/set-tag":                       true,
+	"static/next-hops/next-hop/index":             true,
+	"static/next-hops/next-hop/config/index":      true,
+	"static/next-hops/next-hop/config/next-hop":   true,
+	"static/next-hops/next-hop/config/preference": true,
 }
 
 // STATIC_ROUTE stores one comma separated list per next-hop attribute, and the
@@ -374,6 +380,53 @@ func niStaticRouteDecodeNextHops(entry db.Value) []map[string]string {
 		entries[i] = e
 	}
 	return entries
+}
+
+// niStaticRoutePreferenceToDb renders a preference onto the distance the row
+// holds for one next-hop. FRR takes a distance of 1 to 255 on a route line and
+// spells "no distance" by leaving it off, which the row holds as 0. So 0 is not
+// a preference to be set but the absence of one, and a DELETE of the leaf is
+// what asks for it.
+func niStaticRoutePreferenceToDb(preference uint32) (string, error) {
+	if preference == 0 || preference > niStaticRoutePreferenceMax {
+		return "", tlerr.InvalidArgsError{Format: fmt.Sprintf(
+			"static route next-hop preference %d is out of range; FRR takes an administrative distance of 1 to %d, and a DELETE of the leaf restores the default",
+			preference, niStaticRoutePreferenceMax)}
+	}
+	return strconv.FormatUint(uint64(preference), 10), nil
+}
+
+// niStaticRoutePreferenceOf reports the preference of one stored next-hop. A 0
+// is reported as absent rather than as 0: it is how the row spells no
+// preference, and FRR then leaves the distance off the route line and applies
+// its own default, so 0 is never the distance the next-hop really has.
+func niStaticRoutePreferenceOf(e map[string]string) (uint32, bool) {
+	v := strings.TrimSpace(e[niStaticRouteDistanceFld])
+	if v == "" {
+		return 0, false
+	}
+	n, err := strconv.ParseUint(v, 10, 32)
+	if err != nil || n == 0 || n > niStaticRoutePreferenceMax {
+		return 0, false
+	}
+	return uint32(n), true
+}
+
+// niStaticRoutePreferenceFromPayload reads the preference a next-hop request
+// carries, spelled as the distance field holds it.
+func niStaticRoutePreferenceFromPayload(s *ygot.GoStruct, reqInfo *niStaticRouteReqInfo) (string, bool, error) {
+	nhObj := getNiStaticRouteNextHopObj(s, reqInfo.niName, reqInfo.protoName, reqInfo.prefix, reqInfo.index, false)
+	if nhObj == nil || nhObj.Config == nil || nhObj.Config.Preference == nil {
+		if reqInfo.targetLeaf == niStaticRoutePreferenceLeaf {
+			return "", false, tlerr.InvalidArgsError{Format: "static route next-hop preference is missing in request payload"}
+		}
+		return "", false, nil
+	}
+	distance, err := niStaticRoutePreferenceToDb(*nhObj.Config.Preference)
+	if err != nil {
+		return "", false, err
+	}
+	return distance, true, nil
 }
 
 // niStaticRouteSetTagFields renders a set-tag request into the row fields that
@@ -1249,6 +1302,13 @@ func buildNiStaticRouteHierResMap(cfgDb *db.DB, s *ygot.GoStruct, niName, protoN
 				if err != nil {
 					return res, err
 				}
+				if nhObj.Config != nil && nhObj.Config.Preference != nil {
+					distance, prefErr := niStaticRoutePreferenceToDb(*nhObj.Config.Preference)
+					if prefErr != nil {
+						return res, prefErr
+					}
+					nh[niStaticRouteDistanceFld] = distance
+				}
 				entries = niStaticRouteUpsertNextHop(entries, index, nh)
 				changed = true
 			}
@@ -1383,6 +1443,15 @@ func populateNiStaticRouteNextHopsToYang(ygRoot *ygot.GoStruct, niName, protoNam
 		if err := niStaticRouteNextHopUnionValue(nhObj.Config, niStaticRouteNextHopValue(e)); err != nil {
 			return err
 		}
+		if preference, ok := niStaticRoutePreferenceOf(e); ok {
+			nhObj.Config.Preference = &preference
+		} else {
+			// The leaf a GET targets is allocated before this runs, so an
+			// absent preference is cleared rather than left at the zero value
+			// it was handed: 0 is the absence of a preference, never one the
+			// next-hop has.
+			nhObj.Config.Preference = nil
+		}
 	}
 	return nil
 }
@@ -1422,6 +1491,12 @@ var YangToDb_ni_static_route_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPa
 				Path:   inParams.requestUri,
 			}
 		case niStaticRouteTargetNextHopInst, niStaticRouteTargetNextHopCfg:
+			if reqInfo.targetLeaf == niStaticRoutePreferenceLeaf {
+				// Only the preference, which is one element of the distance
+				// list the route's next-hops share, rather than the next-hop
+				// that carries it.
+				return res, niStaticRouteClearNextHopPreference(inParams, reqInfo)
+			}
 			return res, niStaticRouteDeleteNextHop(inParams, reqInfo)
 		}
 		return res, tlerr.NotSupportedError{Format: "unsupported DELETE path under static route mapping", Path: inParams.requestUri}
@@ -1527,6 +1602,13 @@ func niStaticRouteSetNextHop(inParams XfmrParams, reqInfo *niStaticRouteReqInfo)
 	if err != nil {
 		return res, err
 	}
+	distance, hasPreference, prefErr := niStaticRoutePreferenceFromPayload(wrappedRoot, reqInfo)
+	if prefErr != nil {
+		return res, prefErr
+	}
+	if hasPreference {
+		nh[niStaticRouteDistanceFld] = distance
+	}
 	existing := niStaticRouteEntryOrEmpty(inParams.dbs[db.ConfigDB], reqInfo.niName, reqInfo.prefix)
 	entries := niStaticRouteUpsertNextHop(niStaticRouteDecodeNextHops(existing), reqInfo.index, nh)
 	return makeNiStaticRouteResMap(reqInfo.niName, reqInfo.prefix, niStaticRouteEncodeNextHops(entries, existing, reqInfo.prefix)), nil
@@ -1564,6 +1646,34 @@ func niStaticRouteDeleteNextHop(inParams XfmrParams, reqInfo *niStaticRouteReqIn
 	}
 	updMap := make(RedisDbMap)
 	updMap[db.ConfigDB] = makeNiStaticRouteResMap(reqInfo.niName, reqInfo.prefix, fields)
+	inParams.subOpDataMap[UPDATE] = &updMap
+	return nil
+}
+
+// niStaticRouteClearNextHopPreference puts the preference of one next-hop back
+// at the default. The next-hops of a route share one row, so the distance list
+// is rewritten through an update sub-operation rather than the field deleted:
+// deleting the field would drop the preference of every other next-hop too.
+func niStaticRouteClearNextHopPreference(inParams XfmrParams, reqInfo *niStaticRouteReqInfo) error {
+	existing := niStaticRouteEntryOrEmpty(inParams.dbs[db.ConfigDB], reqInfo.niName, reqInfo.prefix)
+	entries := niStaticRouteDecodeNextHops(existing)
+	found := false
+	for _, e := range entries {
+		if niStaticRouteNhIndex(e) != reqInfo.index {
+			continue
+		}
+		found = true
+		delete(e, niStaticRouteDistanceFld)
+	}
+	if !found {
+		return tlerr.NotFoundError{Format: fmt.Sprintf("static route %s has no next-hop %s", reqInfo.prefix, reqInfo.index)}
+	}
+	if inParams.subOpDataMap == nil {
+		return tlerr.InvalidArgsError{Format: "unable to rewrite static route next-hop preference for DELETE"}
+	}
+	updMap := make(RedisDbMap)
+	updMap[db.ConfigDB] = makeNiStaticRouteResMap(reqInfo.niName, reqInfo.prefix,
+		niStaticRouteEncodeNextHops(entries, existing, reqInfo.prefix))
 	inParams.subOpDataMap[UPDATE] = &updMap
 	return nil
 }
@@ -1639,8 +1749,13 @@ var DbToYang_ni_static_route_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrPa
 			switch reqInfo.targetLeaf {
 			case niStaticRouteIndexLeaf:
 				nhObj.Config.NextHop = nil
+				nhObj.Config.Preference = nil
 			case niStaticRouteNextHopLeaf:
 				nhObj.Config.Index = nil
+				nhObj.Config.Preference = nil
+			case niStaticRoutePreferenceLeaf:
+				nhObj.Config.Index = nil
+				nhObj.Config.NextHop = nil
 			}
 		}
 		return nil
