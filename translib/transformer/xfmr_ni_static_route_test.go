@@ -912,6 +912,179 @@ func Test_openconfig_network_instance_static_route_set_tag_without_next_hop(t *t
 	time.Sleep(1 * time.Second)
 }
 
+func Test_openconfig_network_instance_static_route_next_hop_preference(t *testing.T) {
+	// Two next-hops, because a preference belongs to one next-hop rather than
+	// to the route: FRR writes each next-hop as its own route line with its
+	// own distance, and prefers the lowest.
+	preReqMap := map[string]interface{}{
+		"STATIC_ROUTE": map[string]interface{}{
+			"default|172.16.11.0/24": map[string]interface{}{
+				"nexthop": "40.0.0.1,40.0.0.2",
+				"ifname":  ",",
+			},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"STATIC_ROUTE": map[string]interface{}{
+			"default|172.16.11.0/24": "",
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	staticUrl := niStaticRouteProtoUrl + "/static-routes/static[prefix=172.16.11.0/24]"
+	firstUrl := staticUrl + "/next-hops/next-hop[index=40.0.0.1]/config/preference"
+	secondUrl := staticUrl + "/next-hops/next-hop[index=40.0.0.2]/config/preference"
+
+	t.Run("PATCH static route next-hop preference",
+		processSetRequest(firstUrl, `{"openconfig-network-instance:preference":10}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	// The next-hop that was not named keeps the default, which the row spells
+	// as 0. A distance list shorter than the next-hop list programs none of
+	// the route at all.
+	expectedMap := map[string]interface{}{
+		"STATIC_ROUTE": map[string]interface{}{
+			"default|172.16.11.0/24": map[string]interface{}{
+				"nexthop":  "40.0.0.1,40.0.0.2",
+				"ifname":   ",",
+				"distance": "10,0",
+			},
+		},
+	}
+	t.Run("Verify the preference landed on its own next-hop",
+		verifyDbResult(rclient, "STATIC_ROUTE|default|172.16.11.0/24", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET static route next-hop preference",
+		processGetRequest(firstUrl, nil, `{"openconfig-network-instance:preference":10}`, false))
+	time.Sleep(1 * time.Second)
+
+	// Two next-hops at different preferences is the point of the leaf: the
+	// second is a backup rather than a second path.
+	t.Run("PATCH a different preference on the other next-hop",
+		processSetRequest(secondUrl, `{"openconfig-network-instance:preference":200}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"STATIC_ROUTE": map[string]interface{}{
+			"default|172.16.11.0/24": map[string]interface{}{
+				"nexthop":  "40.0.0.1,40.0.0.2",
+				"ifname":   ",",
+				"distance": "10,200",
+			},
+		},
+	}
+	t.Run("Verify each next-hop carries its own preference",
+		verifyDbResult(rclient, "STATIC_ROUTE|default|172.16.11.0/24", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	expectedGetJSON := `{"openconfig-network-instance:config":{"index":"40.0.0.2","next-hop":"40.0.0.2","preference":200}}`
+	t.Run("GET the next-hop config container with its preference",
+		processGetRequest(staticUrl+"/next-hops/next-hop[index=40.0.0.2]/config", nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	// A delete takes the preference of the next-hop it names and leaves both
+	// the next-hop and the other next-hop's preference alone.
+	t.Run("DELETE static route next-hop preference", processDeleteRequest(firstUrl, false))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"STATIC_ROUTE": map[string]interface{}{
+			"default|172.16.11.0/24": map[string]interface{}{
+				"nexthop":  "40.0.0.1,40.0.0.2",
+				"ifname":   ",",
+				"distance": "0,200",
+			},
+		},
+	}
+	t.Run("Verify only the named next-hop lost its preference",
+		verifyDbResult(rclient, "STATIC_ROUTE|default|172.16.11.0/24", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	// The 0 left behind is the absence of a preference, so it is reported as
+	// absent rather than as 0: FRR leaves the distance off that route line and
+	// applies its own default, so 0 is never the distance the next-hop has.
+	expectedGetJSON = `{"openconfig-network-instance:config":{"index":"40.0.0.1","next-hop":"40.0.0.1"}}`
+	t.Run("GET the next-hop whose preference was deleted",
+		processGetRequest(staticUrl+"/next-hops/next-hop[index=40.0.0.1]/config", nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET the leaf itself once deleted", processGetRequest(firstUrl, nil, emptyJson, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_network_instance_static_route_next_hop_preference_container(t *testing.T) {
+	preReqMap := map[string]interface{}{}
+	cleanupTbl := map[string]interface{}{
+		"STATIC_ROUTE": map[string]interface{}{
+			"default|172.16.12.0/24": "",
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	// One container level request carrying both next-hops and the preference
+	// of each, so the whole route arrives at once.
+	urlInputBodyJSON := `{"next-hop":[{"index":"41.0.0.1","config":{"index":"41.0.0.1","next-hop":"41.0.0.1","preference":20}},` +
+		`{"index":"41.0.0.2","config":{"index":"41.0.0.2","next-hop":"41.0.0.2","preference":220}}]}`
+	t.Run("PATCH the next-hops container with a preference on each",
+		processSetRequest(niStaticRouteProtoUrl+"/static-routes/static[prefix=172.16.12.0/24]/next-hops",
+			urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"STATIC_ROUTE": map[string]interface{}{
+			"default|172.16.12.0/24": map[string]interface{}{
+				"nexthop":  "41.0.0.1,41.0.0.2",
+				"distance": "20,220",
+			},
+		},
+	}
+	t.Run("Verify both preferences landed in next-hop order",
+		verifyDbResult(rclient, "STATIC_ROUTE|default|172.16.12.0/24", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_network_instance_static_route_next_hop_preference_rejected(t *testing.T) {
+	preReqMap := map[string]interface{}{
+		"STATIC_ROUTE": map[string]interface{}{
+			"default|172.16.13.0/24": map[string]interface{}{
+				"nexthop": "42.0.0.1",
+			},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"STATIC_ROUTE": map[string]interface{}{
+			"default|172.16.13.0/24": "",
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	url := niStaticRouteProtoUrl + "/static-routes/static[prefix=172.16.13.0/24]/next-hops/next-hop[index=42.0.0.1]/config/preference"
+
+	// FRR takes 1 through 255, and a 0 is how the row spells no preference at
+	// all, so it is refused rather than written: a DELETE asks for that.
+	t.Run("PATCH preference zero is refused",
+		processSetRequest(url, `{"openconfig-network-instance:preference":0}`, "PATCH", true, tlerr.InvalidArgsError{
+			Format: "static route next-hop preference 0 is out of range; FRR takes an administrative distance of 1 to 255, and a DELETE of the leaf restores the default"}))
+	time.Sleep(1 * time.Second)
+
+	// The OpenConfig leaf is a uint32, so a value FRR cannot take is refused
+	// here rather than left to the pattern CVL enforces on the field.
+	t.Run("PATCH preference above the FRR range is refused",
+		processSetRequest(url, `{"openconfig-network-instance:preference":256}`, "PATCH", true, tlerr.InvalidArgsError{
+			Format: "static route next-hop preference 256 is out of range; FRR takes an administrative distance of 1 to 255, and a DELETE of the leaf restores the default"}))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
 func Test_openconfig_network_instance_static_route_set_tag_from_container(t *testing.T) {
 	preReqMap := map[string]interface{}{
 		"STATIC_ROUTE": map[string]interface{}{
