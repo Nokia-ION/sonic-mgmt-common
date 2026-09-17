@@ -4472,3 +4472,32 @@ func Test_openconfig_network_instance_bgp_container_peer_group_afi_safi_enabled(
 
 	unloadDB(db.ConfigDB, cleanupTbl)
 }
+
+func Test_openconfig_network_instance_unconfigured_instance_lists_are_empty(t *testing.T) {
+	// A string-keyed list under a network instance used to report one entry
+	// that was never configured, keyed on the instance name, because a list
+	// with no table of its own inherited the enclosing instance key and
+	// materialized an instance from it. Binding the network-instance levels to
+	// a mapping of their own stopped the lists below them from reaching that
+	// branch, which fixed it as a side effect. The branch is still unguarded,
+	// so this is asserted rather than trusted.
+	const noSuchNi = "NoSuchVrf"
+	niUrl := "/openconfig-network-instance:network-instances/network-instance[name=" + noSuchNi + "]"
+
+	for _, tc := range []struct {
+		what string
+		url  string
+	}{
+		{"BGP neighbors", niUrl + "/protocols/protocol[identifier=BGP][name=bgp]/bgp/neighbors"},
+		{"BGP peer-groups", niUrl + "/protocols/protocol[identifier=BGP][name=bgp]/bgp/peer-groups"},
+		{"static routes", niUrl + "/protocols/protocol[identifier=STATIC][name=static]/static-routes"},
+		{"IPv4 AFT entries", niUrl + "/afts/ipv4-unicast"},
+		{"IPv6 AFT entries", niUrl + "/afts/ipv6-unicast"},
+		// Keyed on an integer, so it never had the defect. Kept as the
+		// contrast that identified the cause.
+		{"next-hop-groups", niUrl + "/afts/next-hop-groups"},
+	} {
+		t.Run("GET "+tc.what+" on an unconfigured network instance", processGetRequest(tc.url, nil, emptyJson, false))
+		time.Sleep(1 * time.Second)
+	}
+}
