@@ -261,11 +261,13 @@ func Test_openconfig_network_instance_static_route_unmapped_payload_rejected(t *
 	loadDB(db.ConfigDB, preReqMap)
 	time.Sleep(1 * time.Second)
 
-	// set-tag has no CONFIG_DB mapping, so the whole request is rejected.
-	urlInputBodyJSON := `{"static":[{"prefix":"172.16.3.0/24","config":{"prefix":"172.16.3.0/24","set-tag":42}}]}`
+	// metric has no CONFIG_DB mapping, FRR having no metric for a static
+	// route at all, so the whole request is rejected.
+	urlInputBodyJSON := `{"static":[{"prefix":"172.16.3.0/24","next-hops":{"next-hop":[` +
+		`{"index":"60.0.0.1","config":{"index":"60.0.0.1","next-hop":"60.0.0.1","metric":5}}]}}]}`
 	expectedErr := tlerr.NotSupportedError{
 		Format: "static routes container payload carries leaves that have no CONFIG_DB mapping: " +
-			"static-routes/static[172.16.3.0/24]/config/set-tag",
+			"static-routes/static[172.16.3.0/24]/next-hops/next-hop[60.0.0.1]/config/metric",
 	}
 	t.Run("PATCH static-routes container rejects unmapped leaf",
 		processSetRequest(niStaticRouteProtoUrl+"/static-routes", urlInputBodyJSON, "PATCH", true, expectedErr))
@@ -275,13 +277,16 @@ func Test_openconfig_network_instance_static_route_unmapped_payload_rejected(t *
 		verifyDbResult(rclient, "STATIC_ROUTE|default|172.16.3.0/24", map[string]interface{}{}, false))
 	time.Sleep(1 * time.Second)
 
+	// The same payload at the route's own config container. set-tag is mapped
+	// now, so what stops this one is the route having no next-hop to carry the
+	// tag, which is the refusal that guards the fan-out.
 	cfgUrl := niStaticRouteProtoUrl + "/static-routes/static[prefix=172.16.3.0/24]/config"
 	cfgInputBodyJSON := `{"prefix":"172.16.3.0/24","set-tag":42}`
-	cfgExpectedErr := tlerr.NotSupportedError{
-		Format: "static route payload carries leaves that have no CONFIG_DB mapping: " +
-			"static-routes/static[172.16.3.0/24]/config/set-tag",
+	cfgExpectedErr := tlerr.InvalidArgsError{
+		Format: "static route 172.16.3.0/24 has no next-hop to carry a tag; " +
+			"FRR takes the tag on each route line, so a next-hop has to exist first",
 	}
-	t.Run("PATCH config container rejects unmapped leaf",
+	t.Run("PATCH config container tagging a route with no next-hop is refused",
 		processSetRequest(cfgUrl, cfgInputBodyJSON, "PATCH", true, cfgExpectedErr))
 	time.Sleep(1 * time.Second)
 
@@ -819,6 +824,7 @@ func Test_openconfig_network_instance_static_route_config_set_tag(t *testing.T) 
 		"STATIC_ROUTE": map[string]interface{}{
 			"default|172.16.9.0/24": map[string]interface{}{
 				"nexthop": "30.0.0.1,30.0.0.2",
+				"ifname":  ",",
 				"tag":     "100,100",
 			},
 		},
@@ -839,7 +845,9 @@ func Test_openconfig_network_instance_static_route_config_set_tag(t *testing.T) 
 	expectedMap = map[string]interface{}{
 		"STATIC_ROUTE": map[string]interface{}{
 			"default|172.16.9.0/24": map[string]interface{}{
-				"tag": "255,255",
+				"nexthop": "30.0.0.1,30.0.0.2",
+				"ifname":  ",",
+				"tag":     "255,255",
 			},
 		},
 	}
@@ -866,6 +874,7 @@ func Test_openconfig_network_instance_static_route_config_set_tag(t *testing.T) 
 		"STATIC_ROUTE": map[string]interface{}{
 			"default|172.16.9.0/24": map[string]interface{}{
 				"nexthop": "30.0.0.1,30.0.0.2,30.0.0.3",
+				"ifname":  ",,",
 				"tag":     "255,255,255",
 			},
 		},
@@ -881,6 +890,7 @@ func Test_openconfig_network_instance_static_route_config_set_tag(t *testing.T) 
 		"STATIC_ROUTE": map[string]interface{}{
 			"default|172.16.9.0/24": map[string]interface{}{
 				"nexthop": "30.0.0.1,30.0.0.2,30.0.0.3",
+				"ifname":  ",,",
 			},
 		},
 	}
@@ -900,4 +910,79 @@ func Test_openconfig_network_instance_static_route_set_tag_without_next_hop(t *t
 		processSetRequest(url, "{\"openconfig-network-instance:set-tag\":100}", "PATCH", true, tlerr.InvalidArgsError{
 			Format: "static route 172.16.7.0/24 has no next-hop to carry a tag; FRR takes the tag on each route line, so a next-hop has to exist first"}))
 	time.Sleep(1 * time.Second)
+}
+
+func Test_openconfig_network_instance_static_route_set_tag_from_container(t *testing.T) {
+	preReqMap := map[string]interface{}{
+		"STATIC_ROUTE": map[string]interface{}{
+			"default|172.16.15.0/24": map[string]interface{}{
+				"nexthop": "50.0.0.3",
+			},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"STATIC_ROUTE": map[string]interface{}{
+			"default|172.16.14.0/24": "",
+			"default|172.16.15.0/24": "",
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	// One request carrying the route, both its next-hops and its tag. The tag
+	// is applied once the next-hops have been merged in, since a route with
+	// none of them has nowhere to carry one.
+	urlInputBodyJSON := `{"static":[{"prefix":"172.16.14.0/24","config":{"prefix":"172.16.14.0/24","set-tag":600},` +
+		`"next-hops":{"next-hop":[{"index":"50.0.0.1","config":{"index":"50.0.0.1","next-hop":"50.0.0.1"}},` +
+		`{"index":"50.0.0.2","config":{"index":"50.0.0.2","next-hop":"50.0.0.2"}}]}}]}`
+	t.Run("PATCH the static-routes container with a tagged route",
+		processSetRequest(niStaticRouteProtoUrl+"/static-routes", urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"STATIC_ROUTE": map[string]interface{}{
+			"default|172.16.14.0/24": map[string]interface{}{
+				"nexthop": "50.0.0.1,50.0.0.2",
+				"tag":     "600,600",
+			},
+		},
+	}
+	t.Run("Verify the tag arrived with the route it came in with",
+		verifyDbResult(rclient, "STATIC_ROUTE|default|172.16.14.0/24", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	expectedGetJSON := `{"openconfig-network-instance:set-tag":600}`
+	t.Run("GET the tag that arrived through the container",
+		processGetRequest(niStaticRouteProtoUrl+"/static-routes/static[prefix=172.16.14.0/24]/config/set-tag",
+			nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	// The same, one level down, on a route that already has its next-hop.
+	urlInputBodyJSON = `{"prefix":"172.16.15.0/24","config":{"prefix":"172.16.15.0/24","set-tag":601}}`
+	t.Run("PATCH the route instance with a tag",
+		processSetRequest(niStaticRouteProtoUrl+"/static-routes/static[prefix=172.16.15.0/24]",
+			urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"STATIC_ROUTE": map[string]interface{}{
+			"default|172.16.15.0/24": map[string]interface{}{
+				"nexthop": "50.0.0.3",
+				"tag":     "601",
+			},
+		},
+	}
+	t.Run("Verify the route instance payload tagged the route",
+		verifyDbResult(rclient, "STATIC_ROUTE|default|172.16.15.0/24", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	// A route with no next-hop is refused here for the same reason as at the
+	// route's own config container, rather than accepted and dropped.
+	urlInputBodyJSON = `{"static":[{"prefix":"172.16.16.0/24","config":{"prefix":"172.16.16.0/24","set-tag":602}}]}`
+	t.Run("PATCH a container payload tagging a route with no next-hop is refused",
+		processSetRequest(niStaticRouteProtoUrl+"/static-routes", urlInputBodyJSON, "PATCH", true, tlerr.InvalidArgsError{
+			Format: "static route 172.16.16.0/24 has no next-hop to carry a tag; FRR takes the tag on each route line, so a next-hop has to exist first"}))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
 }
