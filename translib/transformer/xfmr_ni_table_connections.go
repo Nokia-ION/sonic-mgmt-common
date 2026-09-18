@@ -784,7 +784,7 @@ func firstPolicyValueFromDb(in string) string {
 var YangToDb_ni_table_conn_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (map[string]map[string]db.Value, error) {
 	res := make(map[string]map[string]db.Value)
 
-	reqInfo, err := parseNiTableConnRequestUri(inParams.requestUri)
+	reqInfo, err := parseNiTableConnRequestUri(niHandlerReqUri(inParams))
 	if err != nil {
 		return res, err
 	}

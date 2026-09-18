@@ -1781,6 +1781,13 @@ var YangToDb_ni_bgp_global_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPara
 	}()
 	res = make(map[string]map[string]db.Value)
 
+	if niIsUnmappedProtocolNodeUri(niHandlerReqUri(inParams)) {
+		// The protocol list node and the identity leaves a payload repeats
+		// under an instance map nothing; translib visits the instance itself
+		// separately, which is where the work is.
+		return res, nil
+	}
+
 	// The protocol list carries this transformer for every protocol instance,
 	// so requests for the STATIC instance are handed to the static route
 	// mapping instead of being failed as unsupported BGP paths.
@@ -1791,7 +1798,7 @@ var YangToDb_ni_bgp_global_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPara
 		return staticRes, staticErr
 	}
 
-	reqInfo, err := parseNiBgpRequestUri(inParams.requestUri)
+	reqInfo, err := parseNiBgpRequestUri(niHandlerReqUri(inParams))
 	if err != nil {
 		return res, err
 	}

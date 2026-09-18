@@ -1030,7 +1030,7 @@ func niBgpPgApplyPolicyFields(inParams XfmrParams, reqInfo *niBgpPgReqInfo) (map
 var YangToDb_ni_bgp_pg_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (map[string]map[string]db.Value, error) {
 	res := make(map[string]map[string]db.Value)
 
-	reqInfo, err := parseNiBgpPgRequestUri(inParams.requestUri)
+	reqInfo, err := parseNiBgpPgRequestUri(niHandlerReqUri(inParams))
 	if err != nil {
 		fallback, nameErr := niBgpContainerLevelFallback(inParams.requestUri)
 		if nameErr != nil {
