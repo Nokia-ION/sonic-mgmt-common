@@ -918,7 +918,10 @@ var DbToYang_grpc_server_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) er
 	if stateDb == nil {
 		return errors.New("DbToYang_grpc_server_xfmr stateDb is nil!")
 	}
-	if len(serverNames) == 0 || len(serverNames[0]) == 0 {
+	// An unset key and an explicit "*" both mean "every gRPC server"; without
+	// the wildcard case a Get on grpc-server[name=*] looks up a profile
+	// literally named "*" and comes back empty.
+	if len(serverNames) == 0 || len(serverNames[0]) == 0 || serverNames[0] == "*" {
 		var err error
 		if serverNames, err = getAllKeys(stateDb, CERT_TBL); err != nil {
 			return err
