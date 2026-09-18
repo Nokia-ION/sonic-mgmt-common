@@ -181,11 +181,13 @@ func deriveSetOpFromKey(key string, inner json.RawMessage) (derivedSetOp, error)
 }
 
 // rewriteOrBulkRootSet expands a SET path from the payload. Origin-only
-// payloads are split per top-level module. UPDATE/REPLACE then expand YANG
-// lists in the payload into keyed instance paths, but only when the SET URI
-// has no list keys yet. More than one derived op, or any list expansion, is
-// applied as a Bulk transaction (done is true) so a missing instance can
-// fall back to REPLACE per entry. Otherwise req is rewritten in place and
+// payloads are split per top-level module. UPDATE then expands YANG lists
+// in the payload into keyed instance paths, but only when the SET URI has
+// no list keys yet, so a missing instance can fall back to REPLACE per
+// entry. REPLACE is not split: a parent REPLACE is already the full set,
+// and per-instance REPLACE last-wins on table-owner lists (SYSLOG_SERVER).
+// More than one derived op, or any list expansion, is applied as a Bulk
+// transaction (done is true). Otherwise req is rewritten in place and
 // done is false.
 func rewriteOrBulkRootSet(req SetRequest, operation int) (reqOut SetRequest, done bool, resp SetResponse, err error) {
 	ops, needBulk, err := expandSetOps(req.Path, req.Payload, operation)
@@ -239,8 +241,9 @@ func applyRootSetAsBulk(req SetRequest, ops []derivedSetOp, operation int) (SetR
 }
 
 // expandBulkRootSet expands origin-only non-DELETE entries into one Bulk
-// entry per payload key (and, for UPDATE/REPLACE, per YANG list instance
-// when the URI has no list keys), preserving request order.
+// entry per payload key (and, for UPDATE, per YANG list instance when the
+// URI has no list keys), preserving request order. REPLACE list payloads
+// stay on the parent path.
 func expandBulkRootSet(req BulkRequest) ([]BulkRequestEntry, error) {
 	var out []BulkRequestEntry
 	for i := range req.Request {
@@ -263,17 +266,19 @@ func expandBulkRootSet(req BulkRequest) ([]BulkRequestEntry, error) {
 	return out, nil
 }
 
-// expandSetOps derives SET targets from an origin payload and, for
-// UPDATE/REPLACE, from YANG lists in that payload when the URI has no list
-// keys. needBulk is true when more than one op is produced or when a list
-// was expanded to keyed instances.
+// expandSetOps derives SET targets from an origin payload and, for UPDATE,
+// from YANG lists in that payload when the URI has no list keys. REPLACE
+// is not list-expanded: splitting a parent REPLACE into keyed instance
+// REPLACEs makes table-owner delete-for-replace keep only the last member.
+// needBulk is true when more than one op is produced or when a list was
+// expanded to keyed instances.
 func expandSetOps(path string, payload []byte, operation int) ([]derivedSetOp, bool, error) {
 	ops, err := expandRootSetRequest(path, payload)
 	if err != nil {
 		return nil, false, err
 	}
 	needBulk := len(ops) > 1
-	if operation != UPDATE && operation != REPLACE {
+	if operation != UPDATE {
 		return ops, needBulk, nil
 	}
 
