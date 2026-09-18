@@ -3107,121 +3107,6 @@ func Test_openconfig_network_instance_container_get(t *testing.T) {
 	unloadDB(db.ConfigDB, cleanupTbl)
 }
 
-func Test_openconfig_network_instance_container_set_not_supported(t *testing.T) {
-	preReqMap, cleanupTbl := niContainerTestRows()
-	loadDB(db.ConfigDB, preReqMap)
-	time.Sleep(1 * time.Second)
-
-	// A network-instance level spans four subtrees with four owners, and
-	// CONFIG_DB holds no row for the network instance itself, so a write there
-	// is refused by a message saying so rather than accepted and dropped.
-	expectedErr := tlerr.NotSupportedError{
-		Format: "SET is not supported at a network-instance container level; set a mapped child path instead",
-	}
-
-	urlInputBodyJSON := `{"protocol":[{"identifier":"openconfig-policy-types:BGP","name":"bgp",` +
-		`"bgp":{"global":{"config":{"as":65400}}}}]}`
-	t.Run("PATCH network-instance protocols container rejected",
-		processSetRequest(niContainerNiUrl+"/protocols", urlInputBodyJSON, "PATCH", true, expectedErr))
-	time.Sleep(1 * time.Second)
-
-	urlInputBodyJSON = `{"name":"default","protocols":{"protocol":[` +
-		`{"identifier":"openconfig-policy-types:BGP","name":"bgp","bgp":{"global":{"config":{"as":65400}}}}]}}`
-	t.Run("PATCH network-instance list instance rejected",
-		processSetRequest(niContainerNiUrl, urlInputBodyJSON, "PATCH", true, expectedErr))
-	time.Sleep(1 * time.Second)
-
-	urlInputBodyJSON = `{"network-instance":[{"name":"default","protocols":{"protocol":[` +
-		`{"identifier":"openconfig-policy-types:BGP","name":"bgp","bgp":{"global":{"config":{"as":65400}}}}]}}]}`
-	t.Run("PATCH network-instances container rejected",
-		processSetRequest(niContainerRootUrl, urlInputBodyJSON, "PATCH", true, expectedErr))
-	time.Sleep(1 * time.Second)
-
-	// A node of a network instance that this module maps nothing under. It used
-	// to be refused by the BGP global parser, describing global config for a
-	// path that is not about it.
-	urlInputBodyJSON = `{"name":"default","enabled":true}`
-	t.Run("PATCH unmapped network-instance node rejected",
-		processSetRequest(niContainerNiUrl+"/config", urlInputBodyJSON, "PATCH", true,
-			tlerr.NotSupportedError{Format: "unsupported network-instance path: " + niContainerNiUrl + "/config"}))
-	time.Sleep(1 * time.Second)
-
-	// The refusals must leave the rows they spanned alone.
-	expectedMap := map[string]interface{}{
-		"BGP_GLOBALS": map[string]interface{}{
-			"default": map[string]interface{}{
-				"local_asn": "65200",
-				"router_id": "2.2.2.2",
-			},
-		},
-	}
-	t.Run("Verify BGP_GLOBALS unchanged after the refused container writes",
-		verifyDbResult(rclient, "BGP_GLOBALS|default", expectedMap, false))
-	time.Sleep(1 * time.Second)
-
-	unloadDB(db.ConfigDB, cleanupTbl)
-}
-
-func Test_openconfig_network_instance_container_delete_not_supported(t *testing.T) {
-	preReqMap, cleanupTbl := niContainerTestRows()
-	loadDB(db.ConfigDB, preReqMap)
-	time.Sleep(1 * time.Second)
-
-	// This is the destructive one: honoured, a DELETE here would remove the
-	// whole network instance, and it used to be accepted and do nothing.
-	expectedErr := tlerr.NotSupportedError{
-		Format: "DELETE is not supported at a network-instance container level; delete a mapped child path or a list instance instead",
-	}
-	t.Run("DELETE network-instances container rejected",
-		processDeleteRequest(niContainerRootUrl, true, expectedErr))
-	time.Sleep(1 * time.Second)
-
-	t.Run("DELETE network-instance list instance rejected",
-		processDeleteRequest(niContainerNiUrl, true, expectedErr))
-	time.Sleep(1 * time.Second)
-
-	t.Run("DELETE network-instance protocols container rejected",
-		processDeleteRequest(niContainerNiUrl+"/protocols", true, expectedErr))
-	time.Sleep(1 * time.Second)
-
-	expectedMap := map[string]interface{}{
-		"BGP_GLOBALS": map[string]interface{}{
-			"default": map[string]interface{}{
-				"local_asn": "65200",
-				"router_id": "2.2.2.2",
-			},
-		},
-	}
-	t.Run("Verify BGP_GLOBALS retained after the refused container deletes",
-		verifyDbResult(rclient, "BGP_GLOBALS|default", expectedMap, false))
-	time.Sleep(1 * time.Second)
-
-	expectedMap = map[string]interface{}{
-		"BGP_NEIGHBOR": map[string]interface{}{
-			"default|20.0.0.1": map[string]interface{}{
-				"admin_status": "up",
-				"asn":          "65300",
-			},
-		},
-	}
-	t.Run("Verify BGP_NEIGHBOR retained after the refused container deletes",
-		verifyDbResult(rclient, "BGP_NEIGHBOR|default|20.0.0.1", expectedMap, false))
-	time.Sleep(1 * time.Second)
-
-	expectedMap = map[string]interface{}{
-		"ROUTE_REDISTRIBUTE": map[string]interface{}{
-			"default|static|bgp|ipv4": map[string]interface{}{
-				"route_map": "TRM-RED",
-			},
-		},
-	}
-	t.Run("Verify ROUTE_REDISTRIBUTE retained after the refused container deletes",
-		verifyDbResult(rclient, "ROUTE_REDISTRIBUTE|default|static|bgp|ipv4", expectedMap, false))
-	time.Sleep(1 * time.Second)
-
-	unloadDB(db.ConfigDB, cleanupTbl)
-}
-
 func Test_openconfig_network_instance_bgp_peer_group_config_container_set(t *testing.T) {
 	preReqMap := map[string]interface{}{
 		"BGP_GLOBALS": map[string]interface{}{
@@ -4500,4 +4385,263 @@ func Test_openconfig_network_instance_unconfigured_instance_lists_are_empty(t *t
 		t.Run("GET "+tc.what+" on an unconfigured network instance", processGetRequest(tc.url, nil, emptyJson, false))
 		time.Sleep(1 * time.Second)
 	}
+}
+
+func Test_openconfig_network_instance_level_set(t *testing.T) {
+	cleanupTbl := map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": "",
+		},
+		"STATIC_ROUTE": map[string]interface{}{
+			"default|173.16.1.0/24": "",
+		},
+	}
+	loadDB(db.ConfigDB, map[string]interface{}{})
+	time.Sleep(1 * time.Second)
+
+	// One payload at the network-instances container, carrying two subtrees
+	// with two different owners. Each is handed to the transformer that owns
+	// it, so the whole thing lands in one request.
+	url := "/openconfig-network-instance:network-instances"
+	urlInputBodyJSON := `{"network-instance":[{"name":"default","config":{"name":"default"},"protocols":{"protocol":[` +
+		`{"identifier":"openconfig-policy-types:BGP","name":"bgp","config":{"identifier":"openconfig-policy-types:BGP","name":"bgp"},` +
+		`"bgp":{"global":{"config":{"as":65299,"router-id":"11.0.0.99"}}}},` +
+		`{"identifier":"openconfig-policy-types:STATIC","name":"static","config":{"identifier":"openconfig-policy-types:STATIC","name":"static"},` +
+		`"static-routes":{"static":[{"prefix":"173.16.1.0/24","config":{"prefix":"173.16.1.0/24"},` +
+		`"next-hops":{"next-hop":[{"index":"70.0.0.1","config":{"index":"70.0.0.1","next-hop":"70.0.0.1"}}]}}]}}]}}]}`
+	t.Run("PATCH the network-instances container with two protocol subtrees",
+		processSetRequest(url, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(2 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": map[string]interface{}{
+				"local_asn": "65299",
+				"router_id": "11.0.0.99",
+			},
+		},
+	}
+	t.Run("Verify the BGP global row from the network-instance payload",
+		verifyDbResult(rclient, "BGP_GLOBALS|default", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"STATIC_ROUTE": map[string]interface{}{
+			"default|173.16.1.0/24": map[string]interface{}{
+				"nexthop": "70.0.0.1",
+			},
+		},
+	}
+	t.Run("Verify the static route row from the same payload",
+		verifyDbResult(rclient, "STATIC_ROUTE|default|173.16.1.0/24", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	// The instance itself has no CONFIG_DB row, so nothing under its config
+	// container is mapped beyond the name it repeats.
+	urlInputBodyJSON = `{"network-instance":[{"name":"default","config":{"name":"default","enabled":true}}]}`
+	t.Run("PATCH a payload naming an unmapped network-instance leaf is refused",
+		processSetRequest(url, urlInputBodyJSON, "PATCH", true, tlerr.NotSupportedError{
+			Format: "network-instance payload carries nodes that have no CONFIG_DB mapping: config/enabled"}))
+	time.Sleep(1 * time.Second)
+
+	// The AFTs report forwarding state, so a payload naming them is refused
+	// rather than quietly ignored.
+	urlInputBodyJSON = `{"network-instance":[{"name":"default","afts":{"ipv4-unicast":{"ipv4-entry":[{"prefix":"173.16.2.0/24","config":{"prefix":"173.16.2.0/24"}}]}}}]}`
+	t.Run("PATCH a payload naming the AFTs is refused",
+		processSetRequest(url, urlInputBodyJSON, "PATCH", true, tlerr.NotSupportedError{
+			Format: "the AFTs of a network instance report forwarding state and cannot be written"}))
+	time.Sleep(1 * time.Second)
+
+	// A keyed level names its instance, so a payload for another one is a
+	// request for a path that was not asked for.
+	t.Run("PATCH an instance level payload naming a different instance is refused",
+		processSetRequest("/openconfig-network-instance:network-instances/network-instance[name=default]",
+			`{"name":"Vrf1","config":{"name":"Vrf1"}}`, "PATCH", true, tlerr.InvalidArgsError{
+				Format: "network-instance name \"Vrf1\" in payload does not match list key \"default\""}))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_network_instance_instance_level_set(t *testing.T) {
+	cleanupTbl := map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": "",
+		},
+		"STATIC_ROUTE": map[string]interface{}{
+			"default|173.16.3.0/24": "",
+			"default|173.16.4.0/24": "",
+		},
+	}
+	loadDB(db.ConfigDB, map[string]interface{}{})
+	time.Sleep(1 * time.Second)
+
+	url := "/openconfig-network-instance:network-instances/network-instance[name=default]"
+	urlInputBodyJSON := `{"name":"default","protocols":{"protocol":[` +
+		`{"identifier":"openconfig-policy-types:BGP","name":"bgp","config":{"identifier":"openconfig-policy-types:BGP","name":"bgp"},` +
+		`"bgp":{"global":{"config":{"as":65298,"router-id":"11.0.0.98"}}}},` +
+		`{"identifier":"openconfig-policy-types:STATIC","name":"static","config":{"identifier":"openconfig-policy-types:STATIC","name":"static"},` +
+		`"static-routes":{"static":[{"prefix":"173.16.3.0/24","config":{"prefix":"173.16.3.0/24"},` +
+		`"next-hops":{"next-hop":[{"index":"70.0.0.3","config":{"index":"70.0.0.3","next-hop":"70.0.0.3"}}]}}]}}]}}`
+	t.Run("PATCH a network-instance instance with two protocol subtrees",
+		processSetRequest(url, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(2 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": map[string]interface{}{
+				"local_asn": "65298",
+				"router_id": "11.0.0.98",
+			},
+		},
+	}
+	t.Run("Verify the BGP global row from the instance payload",
+		verifyDbResult(rclient, "BGP_GLOBALS|default", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"STATIC_ROUTE": map[string]interface{}{
+			"default|173.16.3.0/24": map[string]interface{}{
+				"nexthop": "70.0.0.3",
+			},
+		},
+	}
+	t.Run("Verify the static route row from the instance payload",
+		verifyDbResult(rclient, "STATIC_ROUTE|default|173.16.3.0/24", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	// And the third level, so every level a request can name is covered here
+	// rather than two of them here and the last only on hardware.
+	urlInputBodyJSON = `{"protocol":[{"identifier":"openconfig-policy-types:STATIC","name":"static",` +
+		`"config":{"identifier":"openconfig-policy-types:STATIC","name":"static"},` +
+		`"static-routes":{"static":[{"prefix":"173.16.4.0/24","config":{"prefix":"173.16.4.0/24"},` +
+		`"next-hops":{"next-hop":[{"index":"70.0.0.4","config":{"index":"70.0.0.4","next-hop":"70.0.0.4"}}]}}]}}]}`
+	t.Run("PATCH the protocols container with a static route",
+		processSetRequest(url+"/protocols", urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(2 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"STATIC_ROUTE": map[string]interface{}{
+			"default|173.16.4.0/24": map[string]interface{}{
+				"nexthop": "70.0.0.4",
+			},
+		},
+	}
+	t.Run("Verify the protocols level payload landed",
+		verifyDbResult(rclient, "STATIC_ROUTE|default|173.16.4.0/24", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_network_instance_container_set_served(t *testing.T) {
+	preReqMap, cleanupTbl := niContainerTestRows()
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	// A network-instance level used to refuse a write, since it spans four
+	// subtrees with four owners. It is served now: each subtree in the payload
+	// is written by the handler that owns it. The payloads here carry a static
+	// route rather than the BGP global AS they once did, so that a level
+	// writing something it was not given is still visible as a failure.
+	for i, spec := range []struct {
+		what   string
+		url    string
+		prefix string
+		body   string
+	}{
+		{
+			"protocols container", niContainerNiUrl + "/protocols", "177.16.1.0/24",
+			`{"protocol":[{"identifier":"openconfig-policy-types:STATIC","name":"static",` +
+				`"config":{"identifier":"openconfig-policy-types:STATIC","name":"static"},` +
+				`"static-routes":{"static":[{"prefix":"177.16.1.0/24","config":{"prefix":"177.16.1.0/24"},` +
+				`"next-hops":{"next-hop":[{"index":"84.0.0.1","config":{"index":"84.0.0.1","next-hop":"84.0.0.1"}}]}}]}}]}`,
+		},
+	} {
+		_ = i
+		t.Run("PATCH the "+spec.what, processSetRequest(spec.url, spec.body, "PATCH", false, nil))
+		time.Sleep(2 * time.Second)
+		expectedMap := map[string]interface{}{
+			"STATIC_ROUTE": map[string]interface{}{
+				"default|" + spec.prefix: map[string]interface{}{
+					"nexthop": "84.0.0.1",
+				},
+			},
+		}
+		t.Run("Verify the "+spec.what+" payload landed",
+			verifyDbResult(rclient, "STATIC_ROUTE|default|"+spec.prefix, expectedMap, false))
+		time.Sleep(1 * time.Second)
+		t.Run("DELETE the route the "+spec.what+" created",
+			processDeleteRequest(niContainerNiUrl+"/protocols/protocol[identifier=STATIC][name=static]/static-routes/static[prefix="+spec.prefix+"]", false))
+		time.Sleep(1 * time.Second)
+	}
+
+	// What the level still refuses: a node of the network instance that
+	// nothing here maps.
+	t.Run("PATCH a payload naming an unmapped leaf is refused",
+		processSetRequest(niContainerNiUrl, `{"name":"default","config":{"name":"default","enabled":true}}`,
+			"PATCH", true, tlerr.NotSupportedError{
+				Format: "network-instance payload carries nodes that have no CONFIG_DB mapping: config/enabled"}))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+func Test_openconfig_network_instance_container_delete_not_supported(t *testing.T) {
+	preReqMap, cleanupTbl := niContainerTestRows()
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	// This is the destructive one: honoured, a DELETE here would remove the
+	// whole network instance, and it used to be accepted and do nothing.
+	expectedErr := tlerr.NotSupportedError{
+		Format: "DELETE is not supported at a network-instance container level; delete a mapped child path or a list instance instead",
+	}
+	t.Run("DELETE network-instances container rejected",
+		processDeleteRequest(niContainerRootUrl, true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	t.Run("DELETE network-instance list instance rejected",
+		processDeleteRequest(niContainerNiUrl, true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	t.Run("DELETE network-instance protocols container rejected",
+		processDeleteRequest(niContainerNiUrl+"/protocols", true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": map[string]interface{}{
+				"local_asn": "65200",
+				"router_id": "2.2.2.2",
+			},
+		},
+	}
+	t.Run("Verify BGP_GLOBALS retained after the refused container deletes",
+		verifyDbResult(rclient, "BGP_GLOBALS|default", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"BGP_NEIGHBOR": map[string]interface{}{
+			"default|20.0.0.1": map[string]interface{}{
+				"admin_status": "up",
+				"asn":          "65300",
+			},
+		},
+	}
+	t.Run("Verify BGP_NEIGHBOR retained after the refused container deletes",
+		verifyDbResult(rclient, "BGP_NEIGHBOR|default|20.0.0.1", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"ROUTE_REDISTRIBUTE": map[string]interface{}{
+			"default|static|bgp|ipv4": map[string]interface{}{
+				"route_map": "TRM-RED",
+			},
+		},
+	}
+	t.Run("Verify ROUTE_REDISTRIBUTE retained after the refused container deletes",
+		verifyDbResult(rclient, "ROUTE_REDISTRIBUTE|default|static|bgp|ipv4", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
 }

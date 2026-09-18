@@ -19,8 +19,11 @@
 package transformer
 
 import (
+	"fmt"
+	"reflect"
 	"regexp"
 	"sort"
+	"strings"
 
 	"github.com/Azure/sonic-mgmt-common/translib/db"
 	"github.com/Azure/sonic-mgmt-common/translib/ocbinds"
@@ -37,8 +40,9 @@ import (
 //
 // A GET here answers with everything this module maps under a network
 // instance: the BGP protocol instance, the static routes, the table
-// connections and the AFTs. A SET and a DELETE are refused, since neither has
-// one meaning at a level that spans four subtrees with different owners.
+// connections and the AFTs. A SET is served by the handler that owns each
+// subtree, which translib calls for its own node; this level refuses a payload
+// naming anything with no mapping. A DELETE is still refused.
 const (
 	niContainerTargetRoot      = "network-instances-root"
 	niContainerTargetInstance  = "network-instance-instance"
@@ -80,7 +84,7 @@ func parseNiContainerRequestUri(uri string) (string, string) {
 
 var YangToDb_ni_container_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (map[string]map[string]db.Value, error) {
 	res := make(map[string]map[string]db.Value)
-	kind, _ := parseNiContainerRequestUri(inParams.requestUri)
+	kind, niName := parseNiContainerRequestUri(inParams.requestUri)
 
 	if kind == niContainerTargetUnmapped {
 		return res, tlerr.NotSupportedError{
@@ -89,20 +93,146 @@ var YangToDb_ni_container_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (
 		}
 	}
 
-	// Refused rather than served. A network-instance level spans the BGP
-	// protocol instance, the static routes, the table connections and the
-	// AFTs, each owned by its own transformer, and CONFIG_DB has no row for
-	// the network instance itself to create or remove.
 	if inParams.oper == DELETE {
 		return res, tlerr.NotSupportedError{
 			Format: "DELETE is not supported at a network-instance container level; delete a mapped child path or a list instance instead",
 			Path:   inParams.requestUri,
 		}
 	}
-	return res, tlerr.NotSupportedError{
-		Format: "SET is not supported at a network-instance container level; set a mapped child path instead",
-		Path:   inParams.requestUri,
+
+	// The rows themselves are written by the handler that owns each subtree,
+	// which translib calls for its own node with this level as the request.
+	// What is left here is the part only this level can do: refusing a payload
+	// that names something with no mapping, since a caller told its request
+	// succeeded must not find half of it applied.
+	wrappedRoot, wrapErr := wrapNiContainerRootAsDevice(inParams.ygRoot, niName)
+	if wrapErr != nil {
+		return res, wrapErr
 	}
+	niMap := niContainerInstancesFromPayload(wrappedRoot)
+	if len(niMap) == 0 {
+		return res, tlerr.InvalidArgsError{Format: "network-instance payload does not name any network instance"}
+	}
+	for _, name := range niContainerSortedNames(niMap) {
+		if kind != niContainerTargetRoot && name != niName {
+			return res, tlerr.InvalidArgsError{
+				Format: fmt.Sprintf("network-instance payload names %q, which is not the network instance %q in the request path", name, niName),
+			}
+		}
+		if niMap[name] == nil {
+			continue
+		}
+		if err := niContainerCheckPayloadShape(niMap[name], name, kind); err != nil {
+			return res, err
+		}
+	}
+	return res, nil
+}
+
+// niContainerInstancesFromPayload reads the network instances a payload
+// carries, whatever level it arrived at.
+func niContainerInstancesFromPayload(s *ygot.GoStruct) map[string]*ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance {
+	devObj, ok := (*s).(*ocbinds.Device)
+	if !ok || devObj == nil || devObj.NetworkInstances == nil {
+		return nil
+	}
+	return devObj.NetworkInstances.NetworkInstance
+}
+
+func niContainerSortedNames(niMap map[string]*ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance) []string {
+	names := make([]string, 0, len(niMap))
+	for name := range niMap {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// niContainerCheckPayloadShape refuses what this module does not map. A
+// payload naming one of these used to be accepted and dropped.
+func niContainerCheckPayloadShape(niObj *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance, niName string, kind string) error {
+	if niObj.Name != nil && strings.TrimSpace(*niObj.Name) != "" && *niObj.Name != niName {
+		return tlerr.InvalidArgsError{
+			Format: fmt.Sprintf("network-instance name %q in payload does not match list key %q", *niObj.Name, niName),
+		}
+	}
+	if kind == niContainerTargetProtocols && (niObj.TableConnections != nil || niObj.Afts != nil) {
+		return tlerr.NotSupportedError{Format: "a payload at the protocols container carries nodes from outside it"}
+	}
+	if niObj.Afts != nil {
+		return tlerr.NotSupportedError{
+			Format: "the AFTs of a network instance report forwarding state and cannot be written",
+		}
+	}
+	var unmapped []string
+	for _, part := range []struct {
+		name  string
+		carry bool
+	}{
+		{"connection-points", niObj.ConnectionPoints != nil},
+		{"encapsulation", niObj.Encapsulation != nil},
+		{"fdb", niObj.Fdb != nil},
+		{"inter-instance-policies", niObj.InterInstancePolicies != nil},
+		{"interfaces", niObj.Interfaces != nil},
+		{"mpls", niObj.Mpls != nil},
+		{"policy-forwarding", niObj.PolicyForwarding != nil},
+		{"route-limits", niObj.RouteLimits != nil},
+		{"segment-routing", niObj.SegmentRouting != nil},
+		{"state", niObj.State != nil},
+		{"tables", niObj.Tables != nil},
+		{"vlans", niObj.Vlans != nil},
+	} {
+		if part.carry {
+			unmapped = append(unmapped, part.name)
+		}
+	}
+	if niObj.Config != nil {
+		// The instance has no CONFIG_DB row of its own, so nothing under its
+		// config container is mapped. The name is tolerated, a payload
+		// repeating the key it is addressed by.
+		if niObj.Config.Name != nil && *niObj.Config.Name != niName {
+			return tlerr.InvalidArgsError{
+				Format: fmt.Sprintf("network-instance config/name %q does not match list key %q", *niObj.Config.Name, niName),
+			}
+		}
+		unmapped = append(unmapped, niContainerConfigLeavesBesideName(niObj.Config)...)
+	}
+	if len(unmapped) > 0 {
+		sort.Strings(unmapped)
+		return tlerr.NotSupportedError{
+			Format: "network-instance payload carries nodes that have no CONFIG_DB mapping: " + formatOcLeafPathList(unmapped),
+		}
+	}
+	return nil
+}
+
+// niContainerConfigLeavesBesideName names anything set under the instance's own
+// config container other than the key it repeats.
+func niContainerConfigLeavesBesideName(cfg *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Config) []string {
+	var set []string
+	v := reflect.ValueOf(cfg).Elem()
+	t := v.Type()
+	for i := 0; i < t.NumField(); i++ {
+		name := t.Field(i).Tag.Get("path")
+		if name == "" || name == "name" {
+			continue
+		}
+		f := v.Field(i)
+		switch f.Kind() {
+		case reflect.Ptr, reflect.Interface, reflect.Map, reflect.Slice:
+			if f.IsNil() {
+				continue
+			}
+		case reflect.Int64:
+			if f.Int() == 0 {
+				continue
+			}
+		default:
+			continue
+		}
+		set = append(set, "config/"+name)
+	}
+	return set
 }
 
 var DbToYang_ni_container_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) error {
@@ -234,6 +364,46 @@ func niContainerReplay(inParams XfmrParams, ygRoot *ygot.GoStruct, uri string, h
 		xfmrLogInfo("network-instance container GET skipped node %v: %v", uri, err)
 	}
 	return nil
+}
+
+// niHandlerReqUri returns the URI a subtree handler under a network instance
+// should read as its request.
+//
+// translib calls each annotated subtree transformer for its own node, and
+// leaves requestUri at the level the caller asked for. Its
+// invokeCRUSubtreeOnce is recorded per transformer function, so it stops a
+// transformer being invoked again for its own children and says nothing about
+// children owned by someone else: a request made at a network-instance level
+// reaches every handler below it with a requestUri none of them recognise.
+// When that happens the node's own uri is what describes what the handler has
+// been handed.
+//
+// Only a request at one of the three network-instance levels is treated this
+// way. A request at or below a protocol instance keeps reading requestUri, so
+// the levels that already worked behave exactly as they did.
+func niHandlerReqUri(inParams XfmrParams) string {
+	if inParams.uri == "" || inParams.uri == inParams.requestUri {
+		return inParams.requestUri
+	}
+	if !strings.HasPrefix(inParams.uri, inParams.requestUri) {
+		return inParams.requestUri
+	}
+	if kind, _ := parseNiContainerRequestUri(inParams.requestUri); kind == niContainerTargetUnmapped {
+		return inParams.requestUri
+	}
+	return inParams.uri
+}
+
+// niIsUnmappedProtocolNodeUri reports a node on the way to a protocol instance
+// that this repo maps nothing at: the protocol list itself, and the identity
+// leaves a payload repeats under the instance. translib walks each of these as
+// well as the instance, so a handler reached at one of them maps nothing rather
+// than refusing a path it cannot read.
+var niUnmappedProtocolNodeRe = regexp.MustCompile(`^/openconfig-network-instance:network-instances/network-instance\[name=[^\]]+\]/protocols/protocol` +
+	`(?:/?$|\[[^\]]+\]\[[^\]]+\]/(?:config|state)(?:/(?:identifier|name))?/?$|\[[^\]]+\]\[[^\]]+\]/(?:identifier|name)/?$)`)
+
+func niIsUnmappedProtocolNodeUri(uri string) bool {
+	return niUnmappedProtocolNodeRe.MatchString(uri)
 }
 
 func niContainerNiUri(niName string) string {
