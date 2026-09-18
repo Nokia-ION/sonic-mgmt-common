@@ -348,6 +348,55 @@ func TestExpandSetOpsCreateSkipsListExpansion(t *testing.T) {
 	}
 }
 
+func TestExpandSetOpsReplaceSkipsListExpansion(t *testing.T) {
+	payload := []byte(`{
+  "interface": [
+    {"name": "Ethernet46", "config": {"name": "Ethernet46"}},
+    {"name": "PortChannel100", "config": {"name": "PortChannel100"}}
+  ]
+}`)
+	ops, needBulk, err := expandSetOps("/openconfig-interfaces:interfaces", payload, REPLACE)
+	if err != nil {
+		t.Fatalf("expandSetOps: %v", err)
+	}
+	if needBulk {
+		t.Fatal("REPLACE should not Bulk-expand list members")
+	}
+	if len(ops) != 1 || ops[0].Path != "/openconfig-interfaces:interfaces" {
+		t.Fatalf("REPLACE should stay at the container, got %+v", ops)
+	}
+	if !strings.Contains(string(ops[0].Payload), `"Ethernet46"`) ||
+		!strings.Contains(string(ops[0].Payload), `"PortChannel100"`) {
+		t.Errorf("REPLACE payload lost list members: %s", ops[0].Payload)
+	}
+
+	updateOps, updateBulk, err := expandSetOps("/openconfig-interfaces:interfaces", payload, UPDATE)
+	if err != nil {
+		t.Fatalf("UPDATE expandSetOps: %v", err)
+	}
+	if !updateBulk || len(updateOps) != 2 {
+		t.Fatalf("UPDATE should still expand to 2 keyed ops, got needBulk=%v ops=%+v", updateBulk, updateOps)
+	}
+}
+
+func TestExpandSetOpsReplaceLoggingSkipsRemoteServers(t *testing.T) {
+	payload := []byte(`{"remote-servers":{"remote-server":[
+		{"host":"203.0.113.1","config":{"host":"203.0.113.1","remote-port":6514}},
+		{"host":"203.0.113.2","config":{"host":"203.0.113.2","remote-port":6514}}
+	]}}`)
+	path := "/openconfig-system:system/logging"
+	ops, needBulk, err := expandSetOps(path, payload, REPLACE)
+	if err != nil {
+		t.Fatalf("expandSetOps: %v", err)
+	}
+	if needBulk {
+		t.Fatal("REPLACE /system/logging must not split remote-server list")
+	}
+	if len(ops) != 1 || ops[0].Path != path {
+		t.Fatalf("REPLACE should stay at %s, got %+v", path, ops)
+	}
+}
+
 func TestRootSetUnMarshallAfterDerive(t *testing.T) {
 	payload := []byte(`{"openconfig-lldp:lldp":{"config":{"enabled":true}}}`)
 	path, inner, err := resolveRootSetRequest("/", payload)
