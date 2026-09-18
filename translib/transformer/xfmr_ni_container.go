@@ -94,10 +94,7 @@ var YangToDb_ni_container_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (
 	}
 
 	if inParams.oper == DELETE {
-		return res, tlerr.NotSupportedError{
-			Format: "DELETE is not supported at a network-instance container level; delete a mapped child path or a list instance instead",
-			Path:   inParams.requestUri,
-		}
+		return niContainerDelete(inParams, kind, niName)
 	}
 
 	// The rows themselves are written by the handler that owns each subtree,
@@ -404,6 +401,140 @@ var niUnmappedProtocolNodeRe = regexp.MustCompile(`^/openconfig-network-instance
 
 func niIsUnmappedProtocolNodeUri(uri string) bool {
 	return niUnmappedProtocolNodeRe.MatchString(uri)
+}
+
+// niReqFromNiLevel reports a request made at one of the network-instance
+// levels. It is how a handler below tells a cascade from a request aimed at
+// itself, so that what a caller may do directly is unchanged.
+func niReqFromNiLevel(inParams XfmrParams) bool {
+	kind, _ := parseNiContainerRequestUri(inParams.requestUri)
+	return kind != niContainerTargetUnmapped
+}
+
+// niContainerDelete removes what this module maps under the instances in
+// scope. Nothing cascades on its own: translib walks the children of a SET but
+// not of a DELETE, so each subtree is removed here, through the delete its own
+// list instance already serves.
+func niContainerDelete(inParams XfmrParams, kind, niName string) (map[string]map[string]db.Value, error) {
+	res := make(map[string]map[string]db.Value)
+	cfgDb := inParams.dbs[db.ConfigDB]
+	if cfgDb == nil {
+		return res, tlerr.InvalidArgsError{Format: "ConfigDB nil for network-instance container mapping"}
+	}
+
+	names := []string{niName}
+	if kind == niContainerTargetRoot {
+		names = niContainerNamesFromDb(cfgDb)
+	}
+	for _, name := range names {
+		if err := niContainerDeleteInstance(inParams, cfgDb, name, kind, res); err != nil {
+			return make(map[string]map[string]db.Value), err
+		}
+	}
+	// An instance holding nothing this module maps is already in the state the
+	// caller asked for, so an empty answer is success rather than an error.
+	return res, nil
+}
+
+func niContainerDeleteInstance(inParams XfmrParams, cfgDb *db.DB, niName, kind string,
+	res map[string]map[string]db.Value) error {
+	bgpUri := niContainerProtoUri(niName, "BGP", niBgpProtoNameLower)
+
+	// The neighbours and peer groups first, each by the delete its own list
+	// instance serves, which is what clears their address-family rows too.
+	// The whole BGP subtree of the instance, every row named by the handler
+	// that owns those tables.
+	if err := niContainerReplayDelete(inParams, bgpUri, YangToDb_ni_bgp_global_cfg_xfmr, res); err != nil {
+		return err
+	}
+
+	staticUri := niContainerProtoUri(niName, "STATIC", niStaticRouteProtoNameLower)
+	for _, prefix := range niStaticRoutePrefixesFromDb(cfgDb, niName) {
+		uri := staticUri + "/static-routes/static[prefix=" + prefix + "]"
+		if err := niContainerReplayDelete(inParams, uri, YangToDb_ni_static_route_cfg_xfmr, res); err != nil {
+			return err
+		}
+	}
+
+	if kind == niContainerTargetProtocols {
+		// The protocols container holds the protocol instances and nothing
+		// else, so the table connections and the AFTs are not its to remove.
+		return nil
+	}
+
+	if rows, err := niTableConnDbRowsForNi(cfgDb, niName); err == nil {
+		for _, k := range rows {
+			if len(k.Comp) != 4 {
+				continue
+			}
+			src, srcErr := niTableConnProtocolDbToEnum(k.Comp[1])
+			dst, dstErr := niTableConnProtocolDbToEnum(k.Comp[2])
+			af, afErr := niTableConnAddressFamilyDbToEnum(k.Comp[3])
+			if srcErr != nil || dstErr != nil || afErr != nil {
+				// A row spelled in a way the model cannot name is left alone
+				// rather than guessed at.
+				xfmrLogInfo("network-instance delete skipped table-connection row %v", k.Comp)
+				continue
+			}
+			uri := niContainerNiUri(niName) + "/table-connections/table-connection[src-protocol=" +
+				niTableConnProtocolEnumToOcName(src) + "][dst-protocol=" + niTableConnProtocolEnumToOcName(dst) +
+				"][address-family=" + niTableConnAddressFamilyEnumToOcName(af) + "]"
+			if err := niContainerReplayDelete(inParams, uri, YangToDb_ni_table_conn_cfg_xfmr, res); err != nil {
+				return err
+			}
+		}
+	}
+
+	// The AFTs report the forwarding state fpmsyncd publishes, so there is
+	// nothing under them for a delete to remove.
+	return nil
+}
+
+func niContainerReplayDelete(inParams XfmrParams, uri string, handler SubTreeXfmrYangToDb,
+	res map[string]map[string]db.Value) error {
+	subParams := inParams
+	subParams.uri = uri
+	subParams.param = nil
+
+	childRes, err := handler(subParams)
+	if err != nil {
+		return err
+	}
+	return niContainerMergeResMap(res, childRes, uri)
+}
+
+// niContainerMergeResMap folds one transformer's rows into the answer. Two
+// owners naming one field of one row is not expected among the mapped
+// subtrees, so a disagreement is reported rather than resolved by whichever
+// ran last.
+func niContainerMergeResMap(dst, src map[string]map[string]db.Value, uri string) error {
+	for table, rows := range src {
+		if _, ok := dst[table]; !ok {
+			dst[table] = make(map[string]db.Value)
+		}
+		for key, val := range rows {
+			existing, seen := dst[table][key]
+			if !seen {
+				dst[table][key] = val
+				continue
+			}
+			if len(existing.Field) == 0 || len(val.Field) == 0 {
+				// One of them removes the whole row, which covers the other.
+				dst[table][key] = db.Value{Field: map[string]string{}}
+				continue
+			}
+			for fld, v := range val.Field {
+				if have, dup := existing.Field[fld]; dup && have != v {
+					return tlerr.InvalidArgsError{Format: fmt.Sprintf(
+						"network-instance delete maps %s field %s of row %s to both %q and %q, from %s",
+						table, fld, key, have, v, uri)}
+				}
+				existing.Field[fld] = v
+			}
+			dst[table][key] = existing
+		}
+	}
+	return nil
 }
 
 func niContainerNiUri(niName string) string {

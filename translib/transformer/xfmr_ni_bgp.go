@@ -1771,6 +1771,51 @@ func populateNiBgpHierToYangFromDb(cfgDb *db.DB, ygRoot *ygot.GoStruct, niName, 
 	return nil
 }
 
+// niBgpDeleteGlobalsForNi removes the BGP global rows of one network instance:
+// the row itself and one per address family. It is reached only as part of a
+// delete of the instance, since a delete aimed at the BGP container is refused
+// for want of one meaning.
+func niBgpDeleteGlobalsForNi(inParams XfmrParams, niName string) (map[string]map[string]db.Value, error) {
+	res := make(map[string]map[string]db.Value)
+	cfgDb := inParams.dbs[db.ConfigDB]
+	if cfgDb == nil {
+		return res, tlerr.InvalidArgsError{Format: "ConfigDB nil for network-instance BGP global mapping"}
+	}
+	// Every row of the instance's BGP configuration, named outright rather
+	// than left to the cascade. CVL reports a dependency per edge, and the
+	// edge from a peer group to a neighbour is the neighbour's
+	// peer_group_name field, not its row; the cascade turns a field edge into
+	// a field delete and writes it into the entry that already holds a row
+	// delete, whose Field map is empty by definition. The row then survives
+	// as a neighbour without a peer group, still references the globals row,
+	// and CVL refuses the transaction as an instance in use.
+	if _, err := cfgDb.GetEntry(&db.TableSpec{Name: niBgpGlobalsTbl}, db.Key{Comp: []string{niName}}); err == nil {
+		res[niBgpGlobalsTbl] = map[string]db.Value{niName: {Field: map[string]string{}}}
+	}
+	for _, tbl := range []string{
+		niBgpGlobalsAfTbl,
+		niBgpNbrTbl,
+		niBgpNbrAfTbl,
+		niBgpPeerGroupTbl,
+		niBgpPeerGroupAfTbl,
+	} {
+		keys, err := cfgDb.GetKeys(&db.TableSpec{Name: tbl})
+		if err != nil {
+			continue
+		}
+		for _, k := range keys {
+			if len(k.Comp) < 2 || k.Comp[0] != niName {
+				continue
+			}
+			if _, ok := res[tbl]; !ok {
+				res[tbl] = make(map[string]db.Value)
+			}
+			res[tbl][strings.Join(k.Comp, "|")] = db.Value{Field: map[string]string{}}
+		}
+	}
+	return res, nil
+}
+
 var YangToDb_ni_bgp_global_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (res map[string]map[string]db.Value, err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -1821,6 +1866,11 @@ var YangToDb_ni_bgp_global_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPara
 			return pgRes, pgErr
 		}
 		if reqInfo.targetPathKind == niBgpTargetProtocolRoot || reqInfo.targetPathKind == niBgpTargetBgpRoot {
+			if niReqFromNiLevel(inParams) {
+				// Part of a delete of the network instance, where the globals
+				// row is the one thing no list instance covers.
+				return niBgpDeleteGlobalsForNi(inParams, reqInfo.niName)
+			}
 			return res, tlerr.NotSupportedError{Format: "DELETE is not supported at BGP container level; delete mapped child paths or list instances instead", Path: inParams.requestUri}
 		}
 		switch reqInfo.targetLeaf {
