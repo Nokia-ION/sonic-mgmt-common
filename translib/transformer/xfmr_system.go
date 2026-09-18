@@ -773,30 +773,61 @@ var DbToYang_grpc_server_key_xfmr KeyXfmrDbToYang = func(inParams XfmrParams) (m
 }
 
 // GNMI_CFG_TBL is the CONFIG_DB table that holds the gNMI server runtime
-// settings. The "gnmi" key carries port/dscp/...; certificate material lives
-// under the separate "certs" key and is managed independently (not by this
-// transformer).
+// settings. The "gnmi" key carries port/dscp/certificate_id; certificate
+// material itself lives under the separate "certs" key and is managed
+// independently (not by this transformer).
 const (
 	GNMI_CFG_TBL = "GNMI"
 	GNMI_CFG_KEY = "gnmi"
+	GNMI_CERT_ID = "certificate_id"
 )
+
+// validateCertificateId rejects a binding to an SSL profile the device does not
+// have. gNSI Certz publishes a CREDENTIALS|CERT|<profile> entry for every
+// profile holding credentials, so that table is the list of bindable ids. The
+// default gnxi profile always exists, even before any rotation has happened.
+//
+// Without this check a typo would be accepted and silently ignored, leaving the
+// listener on its previous profile while the config claimed otherwise.
+//
+// The write path only hands transformers a CONFIG_DB handle, so StateDB is
+// opened here rather than taken from inParams.dbs.
+func validateCertificateId(certId string) error {
+	if certId == "" || certId == GNXI_ID {
+		return nil
+	}
+	stateDb, err := db.NewDB(getDBOptions(db.StateDB))
+	if err != nil {
+		return tlerr.New("cannot validate certificate-id %q: %v", certId, err)
+	}
+	defer stateDb.DeleteDB()
+
+	entry, err := stateDb.GetEntry(&db.TableSpec{Name: CERT_TBL}, db.Key{Comp: []string{certId}})
+	if err != nil || !entry.IsPopulated() {
+		return tlerr.InvalidArgs("certificate-id %q: no such SSL profile", certId)
+	}
+	return nil
+}
 
 // YangToDb_grpc_server_xfmr maps the writable leaves of the OpenConfig
 // grpc-server config container onto the SONiC "GNMI" CONFIG_DB table so that a
 // controller can program the gNMI server through a single, vendor-neutral
 // OpenConfig gNMI Set. Today it handles:
 //
-//	.../config/port -> GNMI|gnmi:port
-//	.../config/dscp -> GNMI|gnmi:dscp  (openconfig-system-grpc-ext augment)
+//	.../config/port           -> GNMI|gnmi:port
+//	.../config/dscp           -> GNMI|gnmi:dscp  (openconfig-system-grpc-ext augment)
+//	.../config/certificate-id -> GNMI|gnmi:certificate_id
 //
 // The DSCP leaf is the model-driven equivalent of the vendor "qos dscp" knob;
 // telemetry.sh reads GNMI|gnmi:dscp at start-up and the gNMI server marks its
 // served (observer) traffic with it. Changes take effect on the next gNMI
 // service restart, mirroring how "port" is applied.
 //
-// Certificates are intentionally out of scope here: the server cert/key/CA
-// material is managed separately (GNMI|certs, provisioned directly, and gNSI
-// Certz), so this transformer does not touch certificate configuration.
+// certificate-id names the gNSI Certz SSL profile the listener presents. It is
+// a binding, not certificate material: the cert/key/CA bytes are owned by Certz
+// (and by the separate GNMI|certs provisioning), and this transformer only
+// records which profile is selected. The gNMI server picks the new profile up
+// on subsequent TLS handshakes, so the change applies without a restart.
 var YangToDb_grpc_server_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (map[string]map[string]db.Value, error) {
 	res := make(map[string]map[string]db.Value)
 	pathInfo := NewPathInfo(inParams.uri)
@@ -825,9 +856,12 @@ var YangToDb_grpc_server_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (m
 			delFields["dscp"] = ""
 		case "port":
 			delFields["port"] = ""
+		case "certificate-id":
+			delFields[GNMI_CERT_ID] = ""
 		case "config", "grpc-server":
 			delFields["dscp"] = ""
 			delFields["port"] = ""
+			delFields[GNMI_CERT_ID] = ""
 		default:
 			return res, nil
 		}
@@ -851,6 +885,12 @@ var YangToDb_grpc_server_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (m
 		}
 		if cfg.Dscp != nil {
 			fields["dscp"] = strconv.FormatUint(uint64(*cfg.Dscp), 10)
+		}
+		if cfg.CertificateId != nil {
+			if err := validateCertificateId(*cfg.CertificateId); err != nil {
+				return nil, err
+			}
+			fields[GNMI_CERT_ID] = *cfg.CertificateId
 		}
 		log.V(3).Infof("YangToDb_grpc_server_xfmr: server %s -> %v", serverName, fields)
 	}
@@ -965,9 +1005,9 @@ var DbToYang_grpc_server_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) er
 		serverObj.State.GnmiPathzPolicyCreatedOn = &state.pathzCreated
 		serverObj.State.GnmiPathzPolicyVersion = &state.pathzVersion
 
-		// Populate the writable config leaves (port, dscp) from CONFIG_DB
-		// GNMI|gnmi so a GET of the grpc-server config subtree reflects what
-		// YangToDb_grpc_server_xfmr programmed.
+		// Populate the writable config leaves (port, dscp, certificate-id)
+		// from CONFIG_DB GNMI|gnmi so a GET of the grpc-server config subtree
+		// reflects what YangToDb_grpc_server_xfmr programmed.
 		if gnmiCfgOk {
 			if portStr := gnmiCfg.Get("port"); portStr != "" {
 				if p, perr := strconv.ParseUint(portStr, 10, 16); perr == nil {
@@ -984,6 +1024,24 @@ var DbToYang_grpc_server_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) er
 				}
 			}
 		}
+		// There is a single gRPC listener and a single binding for it in
+		// GNMI|gnmi, but this list is keyed from CREDENTIALS|CERT, so every
+		// Certz profile shows up as its own entry. Each entry is therefore a
+		// view of the same listener: report the binding on all of them, so
+		// that reading back any entry a controller just wrote to returns the
+		// value it set.
+		//
+		// An unset binding means the listener serves the default profile, so
+		// report that rather than leaving the leaf absent.
+		cfgCertId := GNXI_ID
+		if gnmiCfgOk {
+			if id := gnmiCfg.Get(GNMI_CERT_ID); id != "" {
+				cfgCertId = id
+			}
+		}
+		stCertId := cfgCertId
+		serverObj.Config.CertificateId = &cfgCertId
+		serverObj.State.CertificateId = &stCertId
 
 		// Authz counter
 		authzTables, err := stateDb.GetTable(&db.TableSpec{Name: AUTHZ_TBL})
