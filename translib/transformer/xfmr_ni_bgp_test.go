@@ -4534,6 +4534,142 @@ func Test_openconfig_network_instance_instance_level_set(t *testing.T) {
 	unloadDB(db.ConfigDB, cleanupTbl)
 }
 
+func Test_openconfig_network_instance_level_delete(t *testing.T) {
+	// One row in each subtree the network instance spans, so the cascade has
+	// something to remove in every one of them.
+	preReqMap := map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"VrfDel": map[string]interface{}{
+				"local_asn": "65288",
+				"router_id": "11.0.0.88",
+			},
+		},
+		"BGP_GLOBALS_AF": map[string]interface{}{
+			"VrfDel|ipv4_unicast": map[string]interface{}{
+				"max_ebgp_paths": "8",
+			},
+		},
+		"BGP_NEIGHBOR": map[string]interface{}{
+			"VrfDel|80.0.0.1": map[string]interface{}{
+				"asn": "65389",
+				// The neighbour references the peer group, which is the shape a
+				// real configuration has and the one CVL objects to.
+				"peer_group_name": "PGDEL",
+			},
+		},
+		"BGP_PEER_GROUP": map[string]interface{}{
+			"VrfDel|PGDEL": map[string]interface{}{
+				"asn": "65390",
+			},
+		},
+		"BGP_NEIGHBOR_AF": map[string]interface{}{
+			"VrfDel|80.0.0.1|ipv4_unicast": map[string]interface{}{
+				"admin_status": "up",
+			},
+		},
+		"BGP_PEER_GROUP_AF": map[string]interface{}{
+			"VrfDel|PGDEL|ipv4_unicast": map[string]interface{}{
+				"admin_status": "up",
+			},
+		},
+		"STATIC_ROUTE": map[string]interface{}{
+			"VrfDel|175.16.1.0/24": map[string]interface{}{
+				"nexthop": "80.0.0.1",
+			},
+		},
+		"ROUTE_REDISTRIBUTE": map[string]interface{}{
+			"VrfDel|static|bgp|ipv4": map[string]interface{}{
+				"route_map": "RMDEL",
+			},
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	t.Run("DELETE the network instance", processDeleteRequest(
+		"/openconfig-network-instance:network-instances/network-instance[name=VrfDel]", false))
+	time.Sleep(2 * time.Second)
+
+	empty := map[string]interface{}{"t": map[string]interface{}{"k": map[string]interface{}{}}}
+	for _, row := range []struct {
+		what string
+		key  string
+	}{
+		{"the BGP globals row", "BGP_GLOBALS|VrfDel"},
+		{"its address-family row", "BGP_GLOBALS_AF|VrfDel|ipv4_unicast"},
+		{"the neighbor", "BGP_NEIGHBOR|VrfDel|80.0.0.1"},
+		{"the peer group", "BGP_PEER_GROUP|VrfDel|PGDEL"},
+		{"the neighbor address-family row", "BGP_NEIGHBOR_AF|VrfDel|80.0.0.1|ipv4_unicast"},
+		{"the peer-group address-family row", "BGP_PEER_GROUP_AF|VrfDel|PGDEL|ipv4_unicast"},
+		{"the static route", "STATIC_ROUTE|VrfDel|175.16.1.0/24"},
+		{"the table connection", "ROUTE_REDISTRIBUTE|VrfDel|static|bgp|ipv4"},
+	} {
+		t.Run("Verify "+row.what+" is gone", verifyDbResult(rclient, row.key, empty, false))
+		time.Sleep(1 * time.Second)
+	}
+
+	unloadDB(db.ConfigDB, map[string]interface{}{
+		"BGP_GLOBALS":        map[string]interface{}{"VrfDel": ""},
+		"BGP_GLOBALS_AF":     map[string]interface{}{"VrfDel|ipv4_unicast": ""},
+		"BGP_NEIGHBOR":       map[string]interface{}{"VrfDel|80.0.0.1": ""},
+		"BGP_PEER_GROUP":     map[string]interface{}{"VrfDel|PGDEL": ""},
+		"BGP_NEIGHBOR_AF":    map[string]interface{}{"VrfDel|80.0.0.1|ipv4_unicast": ""},
+		"BGP_PEER_GROUP_AF":  map[string]interface{}{"VrfDel|PGDEL|ipv4_unicast": ""},
+		"STATIC_ROUTE":       map[string]interface{}{"VrfDel|175.16.1.0/24": ""},
+		"ROUTE_REDISTRIBUTE": map[string]interface{}{"VrfDel|static|bgp|ipv4": ""},
+	})
+}
+
+func Test_openconfig_network_instance_protocols_level_delete(t *testing.T) {
+	// The protocols container owns the protocol instances and nothing else, so
+	// the table connection has to survive a delete aimed at it.
+	preReqMap := map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"VrfDel": map[string]interface{}{
+				"local_asn": "65287",
+			},
+		},
+		"STATIC_ROUTE": map[string]interface{}{
+			"VrfDel|175.16.2.0/24": map[string]interface{}{
+				"nexthop": "80.0.0.2",
+			},
+		},
+		"ROUTE_REDISTRIBUTE": map[string]interface{}{
+			"VrfDel|static|bgp|ipv4": map[string]interface{}{
+				"route_map": "RMKEEP",
+			},
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	t.Run("DELETE the protocols container", processDeleteRequest(
+		"/openconfig-network-instance:network-instances/network-instance[name=VrfDel]/protocols", false))
+	time.Sleep(2 * time.Second)
+
+	empty := map[string]interface{}{"t": map[string]interface{}{"k": map[string]interface{}{}}}
+	t.Run("Verify the BGP globals row is gone", verifyDbResult(rclient, "BGP_GLOBALS|VrfDel", empty, false))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify the static route is gone", verifyDbResult(rclient, "STATIC_ROUTE|VrfDel|175.16.2.0/24", empty, false))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"ROUTE_REDISTRIBUTE": map[string]interface{}{
+			"VrfDel|static|bgp|ipv4": map[string]interface{}{
+				"route_map": "RMKEEP",
+			},
+		},
+	}
+	t.Run("Verify the table connection survived", verifyDbResult(rclient, "ROUTE_REDISTRIBUTE|VrfDel|static|bgp|ipv4", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, map[string]interface{}{
+		"BGP_GLOBALS":        map[string]interface{}{"VrfDel": ""},
+		"STATIC_ROUTE":       map[string]interface{}{"VrfDel|175.16.2.0/24": ""},
+		"ROUTE_REDISTRIBUTE": map[string]interface{}{"VrfDel|static|bgp|ipv4": ""},
+	})
+}
+
 func Test_openconfig_network_instance_container_set_served(t *testing.T) {
 	preReqMap, cleanupTbl := niContainerTestRows()
 	loadDB(db.ConfigDB, preReqMap)
@@ -4586,26 +4722,21 @@ func Test_openconfig_network_instance_container_set_served(t *testing.T) {
 
 	unloadDB(db.ConfigDB, cleanupTbl)
 }
-func Test_openconfig_network_instance_container_delete_not_supported(t *testing.T) {
+
+func Test_openconfig_network_instance_container_delete_served(t *testing.T) {
 	preReqMap, cleanupTbl := niContainerTestRows()
 	loadDB(db.ConfigDB, preReqMap)
 	time.Sleep(1 * time.Second)
 
-	// This is the destructive one: honoured, a DELETE here would remove the
-	// whole network instance, and it used to be accepted and do nothing.
-	expectedErr := tlerr.NotSupportedError{
-		Format: "DELETE is not supported at a network-instance container level; delete a mapped child path or a list instance instead",
-	}
-	t.Run("DELETE network-instances container rejected",
-		processDeleteRequest(niContainerRootUrl, true, expectedErr))
+	// A delete at these levels is served now. It is exercised here against an
+	// instance that holds nothing, because this suite shares one database and
+	// the rows loaded above are what several later tests rely on. The cascade
+	// over a populated instance is asserted by the tests that use an instance
+	// of their own.
+	noSuch := "/openconfig-network-instance:network-instances/network-instance[name=NoSuchVrf]"
+	t.Run("DELETE an unconfigured network instance", processDeleteRequest(noSuch, false))
 	time.Sleep(1 * time.Second)
-
-	t.Run("DELETE network-instance list instance rejected",
-		processDeleteRequest(niContainerNiUrl, true, expectedErr))
-	time.Sleep(1 * time.Second)
-
-	t.Run("DELETE network-instance protocols container rejected",
-		processDeleteRequest(niContainerNiUrl+"/protocols", true, expectedErr))
+	t.Run("DELETE the protocols of an unconfigured instance", processDeleteRequest(noSuch+"/protocols", false))
 	time.Sleep(1 * time.Second)
 
 	expectedMap := map[string]interface{}{
@@ -4616,31 +4747,8 @@ func Test_openconfig_network_instance_container_delete_not_supported(t *testing.
 			},
 		},
 	}
-	t.Run("Verify BGP_GLOBALS retained after the refused container deletes",
+	t.Run("Verify BGP_GLOBALS is untouched by a delete elsewhere",
 		verifyDbResult(rclient, "BGP_GLOBALS|default", expectedMap, false))
-	time.Sleep(1 * time.Second)
-
-	expectedMap = map[string]interface{}{
-		"BGP_NEIGHBOR": map[string]interface{}{
-			"default|20.0.0.1": map[string]interface{}{
-				"admin_status": "up",
-				"asn":          "65300",
-			},
-		},
-	}
-	t.Run("Verify BGP_NEIGHBOR retained after the refused container deletes",
-		verifyDbResult(rclient, "BGP_NEIGHBOR|default|20.0.0.1", expectedMap, false))
-	time.Sleep(1 * time.Second)
-
-	expectedMap = map[string]interface{}{
-		"ROUTE_REDISTRIBUTE": map[string]interface{}{
-			"default|static|bgp|ipv4": map[string]interface{}{
-				"route_map": "TRM-RED",
-			},
-		},
-	}
-	t.Run("Verify ROUTE_REDISTRIBUTE retained after the refused container deletes",
-		verifyDbResult(rclient, "ROUTE_REDISTRIBUTE|default|static|bgp|ipv4", expectedMap, false))
 	time.Sleep(1 * time.Second)
 
 	unloadDB(db.ConfigDB, cleanupTbl)
