@@ -1544,7 +1544,7 @@ func parseNiBgpNbrAllowOwnAs(inParams XfmrParams) (*uint8, error) {
 var YangToDb_ni_bgp_nbr_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (map[string]map[string]db.Value, error) {
 	res := make(map[string]map[string]db.Value)
 
-	reqInfo, err := parseNiBgpNbrRequestUri(inParams.requestUri)
+	reqInfo, err := parseNiBgpNbrRequestUri(niHandlerReqUri(inParams))
 	if err != nil {
 		fallback, nameErr := niBgpContainerLevelFallback(inParams.requestUri)
 		if nameErr != nil {

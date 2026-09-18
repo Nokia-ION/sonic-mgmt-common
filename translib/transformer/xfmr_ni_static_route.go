@@ -1466,7 +1466,7 @@ var YangToDb_ni_static_route_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPa
 	}()
 	res = make(map[string]map[string]db.Value)
 
-	reqInfo, err := parseNiStaticRouteRequestUri(inParams.requestUri)
+	reqInfo, err := parseNiStaticRouteRequestUri(niHandlerReqUri(inParams))
 	if err != nil {
 		return res, err
 	}
@@ -1766,7 +1766,7 @@ var DbToYang_ni_static_route_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrPa
 // niStaticRouteYangToDbDispatch handles a SET on the STATIC protocol instance
 // on behalf of the transformer bound to the protocol list.
 func niStaticRouteYangToDbDispatch(inParams XfmrParams) (bool, map[string]map[string]db.Value, error) {
-	if !isNiStaticRouteReqUri(inParams.requestUri) {
+	if !isNiStaticRouteReqUri(niHandlerReqUri(inParams)) {
 		return false, nil, nil
 	}
 	res, err := YangToDb_ni_static_route_cfg_xfmr(inParams)
