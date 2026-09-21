@@ -265,14 +265,14 @@ module openconfig-routing-policy-annot {
 
     deviation /oc-rpol:routing-policy/oc-rpol:policy-definitions/oc-rpol:policy-definition/oc-rpol:statements/oc-rpol:statement/oc-rpol:actions/oc-rpol:state {
       deviate add {
-          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:db-name "STATE_DB";
           sonic-ext:subtree-transformer "routing_policy_xfmr";
       }
     }
 
     deviation /oc-rpol:routing-policy/oc-rpol:policy-definitions/oc-rpol:policy-definition/oc-rpol:statements/oc-rpol:statement/oc-rpol:actions/oc-rpol:state/oc-rpol:policy-result {
       deviate add {
-          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:db-name "STATE_DB";
           sonic-ext:subtree-transformer "routing_policy_xfmr";
       }
     }

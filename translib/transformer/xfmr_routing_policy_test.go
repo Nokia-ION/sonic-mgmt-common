@@ -1120,8 +1120,7 @@ func Test_openconfig_routing_policy_container_get(t *testing.T) {
 	time.Sleep(1 * time.Second)
 
 	statementEntryJSON := `{"actions":{"openconfig-bgp-policy:bgp-actions":{"config":{"set-local-pref":200}},` +
-		`"config":{"policy-result":"ACCEPT_ROUTE"},"state":{"policy-result":"ACCEPT_ROUTE"}},` +
-		`"config":{"name":"10"},"name":"10"}`
+		`"config":{"policy-result":"ACCEPT_ROUTE"}},"config":{"name":"10"},"name":"10"}`
 	policyEntryJSON := `{"config":{"name":"POL1"},"name":"POL1","statements":{"statement":[` + statementEntryJSON + `]}}`
 	definedSetsJSON := `{"openconfig-bgp-policy:bgp-defined-sets":{"community-sets":{"community-set":[` +
 		`{"community-set-name":"COMM1","config":{"community-set-name":"COMM1"}}]}}}`
@@ -1205,14 +1204,11 @@ func Test_openconfig_routing_policy_container_get_list_instance(t *testing.T) {
 	time.Sleep(1 * time.Second)
 
 	stmt10JSON := `{"actions":{"openconfig-bgp-policy:bgp-actions":{"config":{"set-med":110}},` +
-		`"config":{"policy-result":"ACCEPT_ROUTE"},"state":{"policy-result":"ACCEPT_ROUTE"}},` +
-		`"config":{"name":"10"},"name":"10"}`
-	stmt20JSON := `{"actions":{"config":{"policy-result":"REJECT_ROUTE"},` +
-		`"state":{"policy-result":"REJECT_ROUTE"}},"config":{"name":"20"},"name":"20"}`
+		`"config":{"policy-result":"ACCEPT_ROUTE"}},"config":{"name":"10"},"name":"10"}`
+	stmt20JSON := `{"actions":{"config":{"policy-result":"REJECT_ROUTE"}},"config":{"name":"20"},"name":"20"}`
 	pol1JSON := `{"config":{"name":"POL1"},"name":"POL1","statements":{"statement":[` +
 		stmt10JSON + `,` + stmt20JSON + `]}}`
-	pol2Stmt := `{"actions":{"config":{"policy-result":"ACCEPT_ROUTE"},` +
-		`"state":{"policy-result":"ACCEPT_ROUTE"}},"config":{"name":"10"},"name":"10"}`
+	pol2Stmt := `{"actions":{"config":{"policy-result":"ACCEPT_ROUTE"}},"config":{"name":"10"},"name":"10"}`
 	pol2JSON := `{"config":{"name":"POL2"},"name":"POL2","statements":{"statement":[` + pol2Stmt + `]}}`
 
 	pol1Url := rpolContainerUrl + "/policy-definitions/policy-definition[name=POL1]"
@@ -2662,8 +2658,21 @@ func Test_openconfig_routing_policy_policy_definition_statement_actions_state(t 
 			"POLST|10": map[string]interface{}{"route_operation": "deny"},
 		},
 	}
+	// The applied row is what state reports, so the fixture writes what bgpmon
+	// would have scraped out of FRR. It is deliberately the same value as the
+	// configured one here; the divergence case is asserted further down.
+	appliedTbl := map[string]interface{}{
+		"ROUTE_MAP_APPLIED": map[string]interface{}{"POLST|10": ""},
+	}
+	appliedMap := map[string]interface{}{
+		"ROUTE_MAP_APPLIED": map[string]interface{}{
+			"POLST|10": map[string]interface{}{"route_operation": "deny"},
+		},
+	}
 	unloadDB(db.ConfigDB, cleanupTbl)
+	unloadDB(db.StateDB, appliedTbl)
 	loadDB(db.ConfigDB, preReqMap)
+	loadDB(db.StateDB, appliedMap)
 	time.Sleep(1 * time.Second)
 
 	stmtUrl := "/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition[name=POLST]" +
@@ -2724,16 +2733,45 @@ func Test_openconfig_routing_policy_policy_definition_statement_actions_state(t 
 		verifyDbResult(rclient, "ROUTE_MAP|POLST|10", verifyMap, false))
 	time.Sleep(1 * time.Second)
 
-	// Writing through config is what moves state, since they are one field.
+	// Config and state are now two sources, so a config write alone does not
+	// move state. That is the point of an applied view: it reports what FRR
+	// took, and until the scrape catches up the two legitimately disagree.
 	t.Run("PATCH the config leaf",
 		processSetRequest(stmtUrl+"/actions/config/policy-result",
 			`{"openconfig-routing-policy:policy-result":"ACCEPT_ROUTE"}`, "PATCH", false, nil))
 	time.Sleep(1 * time.Second)
 
 	expectedGetJSON = `{"openconfig-routing-policy:policy-result":"ACCEPT_ROUTE"}`
-	t.Run("GET the state leaf follows the config write",
+	t.Run("GET the config leaf shows the write",
+		processGetRequest(stmtUrl+"/actions/config/policy-result", nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	expectedGetJSON = `{"openconfig-routing-policy:policy-result":"REJECT_ROUTE"}`
+	t.Run("GET the state leaf still reports what FRR applied",
 		processGetRequest(stmtUrl+"/actions/state/policy-result", nil, expectedGetJSON, false))
 	time.Sleep(1 * time.Second)
 
+	// And when the scrape catches up, state follows it rather than config.
+	loadDB(db.StateDB, map[string]interface{}{
+		"ROUTE_MAP_APPLIED": map[string]interface{}{
+			"POLST|10": map[string]interface{}{"route_operation": "permit"},
+		},
+	})
+	time.Sleep(1 * time.Second)
+
+	expectedGetJSON = `{"openconfig-routing-policy:policy-result":"ACCEPT_ROUTE"}`
+	t.Run("GET the state leaf follows the applied row",
+		processGetRequest(stmtUrl+"/actions/state/policy-result", nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	// A statement FRR has not taken reports no state at all, rather than
+	// echoing the configuration back and calling it applied.
+	unloadDB(db.StateDB, appliedTbl)
+	time.Sleep(1 * time.Second)
+	t.Run("GET the state container reports nothing when FRR has not taken it",
+		processGetRequest(stmtUrl+"/actions/state", nil, "{}", false))
+	time.Sleep(1 * time.Second)
+
 	unloadDB(db.ConfigDB, cleanupTbl)
+	unloadDB(db.StateDB, appliedTbl)
 }

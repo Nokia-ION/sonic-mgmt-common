@@ -34,8 +34,13 @@ import (
 )
 
 const (
-	rpolRouteMapSetTbl                     = "ROUTE_MAP_SET"
-	rpolRouteMapTbl                        = "ROUTE_MAP"
+	rpolRouteMapSetTbl = "ROUTE_MAP_SET"
+	rpolRouteMapTbl    = "ROUTE_MAP"
+	// What FRR has actually applied, scraped into STATE_DB by bgpmon. The
+	// field names match the CONFIG_DB ones above on purpose, so state decodes
+	// the same way config does.
+	rpolRouteMapAppliedTbl                 = "ROUTE_MAP_APPLIED"
+	rpolRouteMapSetAppliedTbl              = "ROUTE_MAP_SET_APPLIED"
 	rpolMetricActionSet                    = "METRIC_SET_VALUE"
 	rpolMetricActionAdd                    = "METRIC_ADD_VALUE"
 	rpolMetricActionSubtract               = "METRIC_SUBTRACT_VALUE"
@@ -464,6 +469,22 @@ func getRpolPolicyStmtActionsCfgObj(s *ygot.GoStruct, policyName, stmtName strin
 // getRpolPolicyStmtActionsStateObj returns the state container of a statement's
 // actions. It has no datastore of its own: it reports the same ROUTE_MAP row
 // the config container writes.
+// rpolAppliedStmtEntry reads the applied row for one statement. A miss is not
+// an error: FRR may not have taken a statement the configuration holds, and
+// reporting nothing is the honest answer for a state path.
+func rpolAppliedStmtEntry(inParams XfmrParams, policyName, stmtName string) (db.Value, bool) {
+	stateDb := inParams.dbs[db.StateDB]
+	if stateDb == nil {
+		return db.Value{}, false
+	}
+	entry, err := stateDb.GetEntry(&db.TableSpec{Name: rpolRouteMapAppliedTbl},
+		db.Key{Comp: []string{policyName, stmtName}})
+	if err != nil || len(entry.Field) == 0 {
+		return db.Value{}, false
+	}
+	return entry, true
+}
+
 func getRpolPolicyStmtActionsStateObj(s *ygot.GoStruct, policyName, stmtName string, createIfMissing bool) *ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_State {
 	stmtObj := getRpolPolicyStmtObj(s, policyName, stmtName, createIfMissing)
 	if stmtObj == nil {
@@ -3115,6 +3136,85 @@ func rpolYangToDbXfmr(inParams XfmrParams) (res map[string]map[string]db.Value, 
 
 var DbToYang_routing_policy_xfmr SubTreeXfmrDbToYang = rpolDbToYangXfmr
 
+// rpolSubscPolicyDefsReqUriRe matches the policy definitions subtree, with the
+// list key present, wildcarded or absent. A subscribe path keeps its wildcard,
+// unlike a GET path, where translib removes it before dispatch.
+var rpolSubscPolicyDefsReqUriRe = regexp.MustCompile(
+	`^/openconfig-routing-policy:routing-policy/policy-definitions` +
+		`(?:/policy-definition(?:\[name=([^\]]+)\])?(?:/(.*))?)?$`)
+
+// Subscribe_routing_policy_xfmr reports the CONFIG_DB tables behind the policy
+// definitions, which is what makes the path DB backed.
+//
+// Both refusals a routing-policy subscription used to get came from that one
+// fact. collectNotificationPreferences clears IsOnChangeSupported and
+// IsWildcardSupported for any path whose notificationAppInfo isNonDB, and
+// validateNonDbPath refuses a wildcard key outright, so an on-change request was
+// turned away as unsupported and a sampled one with a wildcard as a wildcard
+// path. A path is non-DB precisely when no callback maps it to a table.
+var Subscribe_routing_policy_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSubscInParams) (XfmrSubscOutParams, error) {
+	var result XfmrSubscOutParams
+
+	if inParams.subscProc != TRANSLATE_SUBSCRIBE {
+		result.isVirtualTbl = true
+		return result, nil
+	}
+
+	// Which node was asked for, as opposed to which one the callback is anchored
+	// on, survives only in requestURI: the subscribe path trims a trailing leaf
+	// off uri. The CRUD parent-table check reaches here with requestURI unset.
+	reqUri := inParams.requestURI
+	if reqUri == "" {
+		reqUri = inParams.uri
+	}
+
+	m := rpolSubscPolicyDefsReqUriRe.FindStringSubmatch(reqUri)
+	if m == nil {
+		// The rest of the subtree this transformer serves keeps the behaviour it
+		// has today rather than gaining a mapping it has no tests for.
+		result.isVirtualTbl = true
+		return result, nil
+	}
+
+	// A definition is one ROUTE_MAP_SET row and the ROUTE_MAP rows of its
+	// statements, the latter keyed <name>|<sequence>.
+	name, below := m[1], m[2]
+	setPatt, stmtPatt := "*", "*"
+	if name != "" && name != "*" {
+		setPatt, stmtPatt = name, name+"|*"
+	}
+
+	// No field is named. The only leaf directly below a policy definition is
+	// name, which is the list key, and the addition or removal of the row
+	// carries that on its own. A key is not a field, so nothing has to be
+	// mapped for it to be reported.
+	// The applied tables in STATE_DB, not the configured ones. A subscription on
+	// a state path has to report what FRR took, and mapping these is also what
+	// makes the path DB backed, which is what lifts the on-change and wildcard
+	// refusals a non-DB path gets.
+	result.dbDataMap = RedisDbSubscribeMap{db.StateDB: {
+		rpolRouteMapSetAppliedTbl: {setPatt: {}},
+		rpolRouteMapAppliedTbl:    {stmtPatt: {}},
+	}}
+	result.isVirtualTbl = false
+
+	// On change is offered where the row going away or arriving is the whole
+	// story: the definitions container, the list, and a named definition. Deeper
+	// nodes describe fields of a ROUTE_MAP row, and the notification mapping
+	// reports a changed field only when it is mapped to a leaf directly below
+	// the anchored node, so those keep sampling rather than being accepted and
+	// then reporting nothing.
+	if below == "" {
+		result.onChange = OnchangeEnable
+		result.nOpts = &notificationOpts{pType: OnChange}
+		return result, nil
+	}
+
+	result.onChange = OnchangeDisable
+	result.nOpts = &notificationOpts{pType: Sample}
+	return result, nil
+}
+
 func rpolDbToYangXfmr(inParams XfmrParams) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -3259,10 +3359,16 @@ func rpolDbToYangXfmr(inParams XfmrParams) (err error) {
 			return tlerr.InvalidArgsError{Format: "Unable to locate routing-policy statement actions state object in YANG tree"}
 		}
 		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == rpolPolicyResultLeaf {
-			routeOp, ok := entry.Field[rpolRouteOperationFld]
-			if ok && strings.TrimSpace(routeOp) != "" {
-				if polRes, conv := rpolRouteOpToPolicyResult(routeOp); conv {
-					stateObj.PolicyResult = polRes
+			// The applied row, not the configured one: this is a state path, so
+			// it reports what FRR took rather than what was asked for. The two
+			// agree in the ordinary case and diverge exactly when it matters.
+			applied, ok := rpolAppliedStmtEntry(inParams, reqInfo.policyName, reqInfo.stmtName)
+			if ok {
+				routeOp := applied.Field[rpolRouteOperationFld]
+				if strings.TrimSpace(routeOp) != "" {
+					if polRes, conv := rpolRouteOpToPolicyResult(routeOp); conv {
+						stateObj.PolicyResult = polRes
+					}
 				}
 			}
 		}
