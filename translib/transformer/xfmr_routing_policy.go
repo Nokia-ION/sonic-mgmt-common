@@ -65,6 +65,7 @@ const (
 	rpolTargetPolicyDefCfg                 = "policy-definition-config"
 	rpolTargetStmtName                     = "statement-name"
 	rpolTargetStmtActionsCfg               = "statement-actions-config"
+	rpolTargetStmtActionsState             = "statement-actions-state"
 	rpolTargetStmtCondMatchPfxCfg          = "statement-conditions-match-prefix-set-config"
 	rpolTargetStmtBgpActionsCfg            = "statement-actions-bgp-actions-config"
 	rpolTargetStmtBgpSetCommunity          = "statement-actions-bgp-set-community"
@@ -120,6 +121,7 @@ const (
 var rpolPolicyDefCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/config(?:/(name))?$`)
 var rpolStmtNameReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/(?:(?:[A-Za-z0-9_.-]+:)?name|(?:[A-Za-z0-9_.-]+:)?config(?:/(?:[A-Za-z0-9_.-]+:)?name)?)$`)
 var rpolStmtActionsCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/actions/config(?:/(policy-result))?$`)
+var rpolStmtActionsStateReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/actions/state(?:/(policy-result))?$`)
 var rpolStmtCondMatchPfxCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/conditions/match-prefix-set/config(?:/(prefix-set|match-set-options))?$`)
 var rpolStmtBgpActionsCfgReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/actions/(?:[A-Za-z0-9_.-]+:)?bgp-actions/(?:[A-Za-z0-9_.-]+:)?config(?:/(?:[A-Za-z0-9_.-]+:)?(set-next-hop|set-route-origin|set-local-pref|set-med-action|set-med))?$`)
 var rpolStmtBgpSetCommunityReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/actions/(?:[A-Za-z0-9_.-]+:)?bgp-actions/(?:[A-Za-z0-9_.-]+:)?set-community(?:/(?:[A-Za-z0-9_.-]+:)?config(?:/(?:[A-Za-z0-9_.-]+:)?(method|options))?)?$`)
@@ -188,6 +190,19 @@ func parseRpolRequestUri(uri string) (*rpolReqInfo, error) {
 			stmtName:   m[2],
 			targetLeaf: leaf,
 			targetPath: rpolTargetStmtActionsCfg,
+		}, nil
+	}
+	m = rpolStmtActionsStateReqUriRe.FindStringSubmatch(uri)
+	if len(m) >= 3 {
+		leaf := ""
+		if len(m) >= 4 {
+			leaf = m[3]
+		}
+		return &rpolReqInfo{
+			policyName: m[1],
+			stmtName:   m[2],
+			targetLeaf: leaf,
+			targetPath: rpolTargetStmtActionsState,
 		}, nil
 	}
 	m = rpolStmtNameReqUriRe.FindStringSubmatch(uri)
@@ -444,6 +459,21 @@ func getRpolPolicyStmtActionsCfgObj(s *ygot.GoStruct, policyName, stmtName strin
 	}
 	ygot.BuildEmptyTree(stmtObj)
 	return stmtObj.Actions.Config
+}
+
+// getRpolPolicyStmtActionsStateObj returns the state container of a statement's
+// actions. It has no datastore of its own: it reports the same ROUTE_MAP row
+// the config container writes.
+func getRpolPolicyStmtActionsStateObj(s *ygot.GoStruct, policyName, stmtName string, createIfMissing bool) *ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_State {
+	stmtObj := getRpolPolicyStmtObj(s, policyName, stmtName, createIfMissing)
+	if stmtObj == nil {
+		return nil
+	}
+	ygot.BuildEmptyTree(stmtObj)
+	if stmtObj.Actions == nil {
+		return nil
+	}
+	return stmtObj.Actions.State
 }
 
 func getRpolPolicyStmtObj(s *ygot.GoStruct, policyName, stmtName string, createIfMissing bool) *ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement {
@@ -3223,6 +3253,21 @@ func rpolDbToYangXfmr(inParams XfmrParams) (err error) {
 		return err
 	}
 
+	if reqInfo.targetPath == rpolTargetStmtActionsState {
+		stateObj := getRpolPolicyStmtActionsStateObj(inParams.ygRoot, reqInfo.policyName, reqInfo.stmtName, true)
+		if stateObj == nil {
+			return tlerr.InvalidArgsError{Format: "Unable to locate routing-policy statement actions state object in YANG tree"}
+		}
+		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == rpolPolicyResultLeaf {
+			routeOp, ok := entry.Field[rpolRouteOperationFld]
+			if ok && strings.TrimSpace(routeOp) != "" {
+				if polRes, conv := rpolRouteOpToPolicyResult(routeOp); conv {
+					stateObj.PolicyResult = polRes
+				}
+			}
+		}
+		return nil
+	}
 	if reqInfo.targetPath == rpolTargetStmtActionsCfg {
 		cfgObj := getRpolPolicyStmtActionsCfgObj(inParams.ygRoot, reqInfo.policyName, reqInfo.stmtName, true)
 		if cfgObj == nil {
