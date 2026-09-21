@@ -56,6 +56,7 @@ const (
 	niStaticRouteTargetRoutesRoot   = "static-routes-root"
 	niStaticRouteTargetRouteInst    = "static-route-instance"
 	niStaticRouteTargetRouteCfg     = "static-route-config"
+	niStaticRouteTargetRouteState   = "static-route-state"
 	niStaticRouteTargetNextHopsRoot = "static-route-next-hops-root"
 	niStaticRouteTargetNextHopInst  = "static-route-next-hop-instance"
 	niStaticRouteTargetNextHopCfg   = "static-route-next-hop-config"
@@ -101,6 +102,7 @@ var niStaticRoutesRootReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/stat
 var niStaticRouteInstReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/static-routes/static\[prefix=([^\]]+)\]$`)
 var niStaticRouteKeyLeafReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/static-routes/static\[prefix=([^\]]+)\]/prefix$`)
 var niStaticRouteCfgReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/static-routes/static\[prefix=([^\]]+)\]/config(?:/(prefix|set-tag))?$`)
+var niStaticRouteStateReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/static-routes/static\[prefix=([^\]]+)\]/state(?:/(prefix|set-tag))?$`)
 var niStaticRouteListReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/static-routes/static$`)
 var niStaticRouteNhsRootReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/static-routes/static\[prefix=([^\]]+)\]/next-hops(?:/next-hop)?$`)
 var niStaticRouteNhInstReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/static-routes/static\[prefix=([^\]]+)\]/next-hops/next-hop\[index=([^\]]+)\]$`)
@@ -243,6 +245,19 @@ func matchNiStaticRouteRequestUri(uri string) (*niStaticRouteReqInfo, error) {
 			prefix:         niStaticRouteUnescapeKey(m[3]),
 			targetLeaf:     leaf,
 			targetPathKind: niStaticRouteTargetRouteCfg,
+		}, nil
+	}
+	if m := niStaticRouteStateReqUriRe.FindStringSubmatch(uri); len(m) >= 4 {
+		leaf := ""
+		if len(m) >= 5 {
+			leaf = m[4]
+		}
+		return &niStaticRouteReqInfo{
+			niName:         m[1],
+			protoName:      m[2],
+			prefix:         niStaticRouteUnescapeKey(m[3]),
+			targetLeaf:     leaf,
+			targetPathKind: niStaticRouteTargetRouteState,
 		}, nil
 	}
 	if m := niStaticRouteKeyLeafReqUriRe.FindStringSubmatch(uri); len(m) >= 4 {
@@ -1042,6 +1057,37 @@ func getNiStaticRouteCfgObj(s *ygot.GoStruct, niName, protoName, prefix string, 
 	return rtObj.Config
 }
 
+// getNiStaticRouteStateObj returns a static route's state container. It has no
+// datastore of its own: it reports the same STATIC_ROUTE row config writes.
+func getNiStaticRouteStateObj(s *ygot.GoStruct, niName, protoName, prefix string, createIfMissing bool) *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_StaticRoutes_Static_State {
+	rtObj := getNiStaticRouteObj(s, niName, protoName, prefix, createIfMissing)
+	if rtObj == nil {
+		return nil
+	}
+	if rtObj.State == nil {
+		if !createIfMissing {
+			return nil
+		}
+		rtObj.State = &ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_StaticRoutes_Static_State{}
+	}
+	return rtObj.State
+}
+
+// niStaticRouteSetTagToYangState fills the tag on the state container. Config
+// and State are distinct generated types carrying the same leaf, so the decode
+// is shared and only the assignment differs.
+func niStaticRouteSetTagToYangState(stateObj *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_StaticRoutes_Static_State, entry db.Value) {
+	tag, ok := niStaticRouteUniformTag(entry)
+	if !ok {
+		return
+	}
+	n, err := strconv.ParseUint(tag, 10, 32)
+	if err != nil {
+		return
+	}
+	stateObj.SetTag = &ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_StaticRoutes_Static_State_SetTag_Union_Uint32{Uint32: uint32(n)}
+}
+
 func getNiStaticRouteNextHopObj(s *ygot.GoStruct, niName, protoName, prefix, index string, createIfMissing bool) *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_StaticRoutes_Static_NextHops_NextHop {
 	rtObj := getNiStaticRouteObj(s, niName, protoName, prefix, createIfMissing)
 	if rtObj == nil {
@@ -1414,6 +1460,10 @@ func populateNiStaticRouteHierToYangFromDb(cfgDb *db.DB, ygRoot *ygot.GoStruct, 
 			rtObj.Config.Prefix = &routePrefix
 			niStaticRouteSetTagToYang(rtObj.Config, entry)
 		}
+		if rtObj.State != nil {
+			rtObj.State.Prefix = &routePrefix
+			niStaticRouteSetTagToYangState(rtObj.State, entry)
+		}
 		if err := populateNiStaticRouteNextHopsToYang(ygRoot, niName, protoName, p, entry, ""); err != nil {
 			return err
 		}
@@ -1708,6 +1758,23 @@ var DbToYang_ni_static_route_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrPa
 			}
 		}
 		return populateNiStaticRouteHierToYangFromDb(cfgDb, wrappedRoot, reqInfo.niName, reqInfo.protoName, reqInfo.prefix)
+	case niStaticRouteTargetRouteState:
+		entry, err := niStaticRouteEntryFromDb(cfgDb, reqInfo.niName, reqInfo.prefix)
+		if err != nil {
+			return err
+		}
+		stateObj := getNiStaticRouteStateObj(inParams.ygRoot, reqInfo.niName, reqInfo.protoName, reqInfo.prefix, true)
+		if stateObj == nil {
+			return tlerr.InvalidArgsError{Format: "Unable to locate static route state object in YANG tree"}
+		}
+		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == niStaticRoutePrefixLeaf {
+			routePrefix := reqInfo.prefix
+			stateObj.Prefix = &routePrefix
+		}
+		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == niStaticRouteSetTagLeaf {
+			niStaticRouteSetTagToYangState(stateObj, entry)
+		}
+		return nil
 	case niStaticRouteTargetRouteCfg:
 		entry, err := niStaticRouteEntryFromDb(cfgDb, reqInfo.niName, reqInfo.prefix)
 		if err != nil {

@@ -19,6 +19,7 @@
 package transformer_test
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -227,9 +228,11 @@ func Test_openconfig_network_instance_static_route_container_get(t *testing.T) {
 	time.Sleep(1 * time.Second)
 
 	v4EntryJSON := `{"config":{"prefix":"172.16.1.0/24"},"prefix":"172.16.1.0/24","next-hops":{"next-hop":[` +
-		`{"config":{"index":"10.1.1.1","next-hop":"10.1.1.1"},"index":"10.1.1.1"}]}}`
+		`{"config":{"index":"10.1.1.1","next-hop":"10.1.1.1"},"index":"10.1.1.1"}]},` +
+		`"state":{"prefix":"172.16.1.0/24"}}`
 	v6EntryJSON := `{"config":{"prefix":"2004::/64"},"prefix":"2004::/64","next-hops":{"next-hop":[` +
-		`{"config":{"index":"2001::1","next-hop":"2001::1"},"index":"2001::1"}]}}`
+		`{"config":{"index":"2001::1","next-hop":"2001::1"},"index":"2001::1"}]},` +
+		`"state":{"prefix":"2004::/64"}}`
 
 	expectedGetJSON := `{"openconfig-network-instance:static-routes":{"static":[` + v4EntryJSON + `,` + v6EntryJSON + `]}}`
 	t.Run("GET network-instance static-routes container",
@@ -342,7 +345,8 @@ func Test_openconfig_network_instance_static_route_protocol_instance_name(t *tes
 	unknownProtoUrl := niProtoUrlPfx + "foo]"
 
 	entryJSON := `{"config":{"prefix":"172.16.9.0/24"},"prefix":"172.16.9.0/24","next-hops":{"next-hop":[` +
-		`{"config":{"index":"10.1.1.9","next-hop":"10.1.1.9"},"index":"10.1.1.9"}]}}`
+		`{"config":{"index":"10.1.1.9","next-hop":"10.1.1.9"},"index":"10.1.1.9"}]},` +
+		`"state":{"prefix":"172.16.9.0/24"}}`
 	expectedGetJSON := `{"openconfig-network-instance:static":[` + entryJSON + `]}`
 	t.Run("GET static route list with upper case protocol instance name",
 		processGetRequest(upperProtoUrl+"/static-routes/static", nil, expectedGetJSON, false))
@@ -1155,6 +1159,75 @@ func Test_openconfig_network_instance_static_route_set_tag_from_container(t *tes
 	t.Run("PATCH a container payload tagging a route with no next-hop is refused",
 		processSetRequest(niStaticRouteProtoUrl+"/static-routes", urlInputBodyJSON, "PATCH", true, tlerr.InvalidArgsError{
 			Format: "static route 172.16.16.0/24 has no next-hop to carry a tag; FRR takes the tag on each route line, so a next-hop has to exist first"}))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+// A static route's state container has no datastore of its own: it reports the
+// same STATIC_ROUTE row the config container writes, prefix and the tag alike.
+// It is read-only, and the request binder refuses a write to it before any
+// transformer runs.
+func Test_openconfig_network_instance_static_route_state(t *testing.T) {
+	cleanupTbl := map[string]interface{}{
+		"STATIC_ROUTE": map[string]interface{}{"default|172.16.40.0/24": ""},
+	}
+	preReqMap := map[string]interface{}{
+		"STATIC_ROUTE": map[string]interface{}{
+			"default|172.16.40.0/24": map[string]interface{}{
+				"nexthop": "10.1.1.40",
+				"ifname":  "",
+				"tag":     "77",
+			},
+		},
+	}
+	unloadDB(db.ConfigDB, cleanupTbl)
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	rtUrl := "/openconfig-network-instance:network-instances/network-instance[name=default]" +
+		"/protocols/protocol[identifier=STATIC][name=static]/static-routes/static[prefix=172.16.40.0/24]"
+
+	expectedGetJSON := `{"openconfig-network-instance:prefix":"172.16.40.0/24"}`
+	t.Run("GET the state prefix leaf",
+		processGetRequest(rtUrl+"/state/prefix", nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	expectedGetJSON = `{"openconfig-network-instance:set-tag":77}`
+	t.Run("GET the state set-tag leaf",
+		processGetRequest(rtUrl+"/state/set-tag", nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	expectedGetJSON = `{"openconfig-network-instance:state":{"prefix":"172.16.40.0/24","set-tag":77}}`
+	t.Run("GET the state container",
+		processGetRequest(rtUrl+"/state", nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	// state is config false, so the binder turns a write away before any
+	// transformer is reached. That message is what a client sees.
+	expectedErr := tlerr.TranslibSyntaxValidationError{
+		ErrorStr: errors.New("SET operation not allowed on the read-only object"),
+	}
+	t.Run("PATCH the state prefix leaf is refused",
+		processSetRequest(rtUrl+"/state/prefix",
+			`{"openconfig-network-instance:prefix":"172.16.40.0/24"}`, "PATCH", true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	t.Run("DELETE the state container is refused",
+		processDeleteRequest(rtUrl+"/state", true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	verifyMap := map[string]interface{}{
+		"STATIC_ROUTE": map[string]interface{}{
+			"default|172.16.40.0/24": map[string]interface{}{
+				"nexthop": "10.1.1.40",
+				"ifname":  "",
+				"tag":     "77",
+			},
+		},
+	}
+	t.Run("Verify the refused writes left the row alone",
+		verifyDbResult(rclient, "STATIC_ROUTE|default|172.16.40.0/24", verifyMap, false))
 	time.Sleep(1 * time.Second)
 
 	unloadDB(db.ConfigDB, cleanupTbl)
