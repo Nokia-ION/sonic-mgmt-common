@@ -103,6 +103,11 @@ var niStaticRouteInstReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/stati
 var niStaticRouteKeyLeafReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/static-routes/static\[prefix=([^\]]+)\]/prefix$`)
 var niStaticRouteCfgReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/static-routes/static\[prefix=([^\]]+)\]/config(?:/(prefix|set-tag))?$`)
 var niStaticRouteStateReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/static-routes/static\[prefix=([^\]]+)\]/state(?:/(prefix|set-tag))?$`)
+
+// A wildcard key is removed by translib before the request reaches here, so
+// these match what a `[prefix=*]` request arrives as: the list with no key.
+var niStaticRouteWildcardCfgReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/static-routes/static/config(?:/(prefix|set-tag))?$`)
+var niStaticRouteWildcardStateReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/static-routes/static/state(?:/(prefix|set-tag))?$`)
 var niStaticRouteListReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/static-routes/static$`)
 var niStaticRouteNhsRootReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/static-routes/static\[prefix=([^\]]+)\]/next-hops(?:/next-hop)?$`)
 var niStaticRouteNhInstReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/static-routes/static\[prefix=([^\]]+)\]/next-hops/next-hop\[index=([^\]]+)\]$`)
@@ -258,6 +263,30 @@ func matchNiStaticRouteRequestUri(uri string) (*niStaticRouteReqInfo, error) {
 			prefix:         niStaticRouteUnescapeKey(m[3]),
 			targetLeaf:     leaf,
 			targetPathKind: niStaticRouteTargetRouteState,
+		}, nil
+	}
+	if m := niStaticRouteWildcardStateReqUriRe.FindStringSubmatch(uri); len(m) >= 3 {
+		leaf := ""
+		if len(m) >= 4 {
+			leaf = m[3]
+		}
+		return &niStaticRouteReqInfo{
+			niName:         m[1],
+			protoName:      m[2],
+			targetLeaf:     leaf,
+			targetPathKind: niStaticRouteTargetRouteState,
+		}, nil
+	}
+	if m := niStaticRouteWildcardCfgReqUriRe.FindStringSubmatch(uri); len(m) >= 3 {
+		leaf := ""
+		if len(m) >= 4 {
+			leaf = m[3]
+		}
+		return &niStaticRouteReqInfo{
+			niName:         m[1],
+			protoName:      m[2],
+			targetLeaf:     leaf,
+			targetPathKind: niStaticRouteTargetRouteCfg,
 		}, nil
 	}
 	if m := niStaticRouteKeyLeafReqUriRe.FindStringSubmatch(uri); len(m) >= 4 {
@@ -1759,6 +1788,13 @@ var DbToYang_ni_static_route_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrPa
 		}
 		return populateNiStaticRouteHierToYangFromDb(cfgDb, wrappedRoot, reqInfo.niName, reqInfo.protoName, reqInfo.prefix)
 	case niStaticRouteTargetRouteState:
+		// translib removes a wildcard list key before dispatch, so the request
+		// path no longer names a route. At the list node that is served, the node
+		// being the list itself, but here it identifies nothing and a filled tree
+		// would serialise to nothing, so say so rather than answer empty.
+		if reqInfo.prefix == "" {
+			return tlerr.NotSupportedError{Format: "a wildcard or absent static route prefix is served at the route list; address static-routes/static rather than a container below it"}
+		}
 		entry, err := niStaticRouteEntryFromDb(cfgDb, reqInfo.niName, reqInfo.prefix)
 		if err != nil {
 			return err
@@ -1776,6 +1812,9 @@ var DbToYang_ni_static_route_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrPa
 		}
 		return nil
 	case niStaticRouteTargetRouteCfg:
+		if reqInfo.prefix == "" {
+			return tlerr.NotSupportedError{Format: "a wildcard or absent static route prefix is served at the route list; address static-routes/static rather than a container below it"}
+		}
 		entry, err := niStaticRouteEntryFromDb(cfgDb, reqInfo.niName, reqInfo.prefix)
 		if err != nil {
 			return err

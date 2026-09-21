@@ -1232,3 +1232,69 @@ func Test_openconfig_network_instance_static_route_state(t *testing.T) {
 
 	unloadDB(db.ConfigDB, cleanupTbl)
 }
+
+// A wildcard on the static list's own key reads every route of the instance.
+// The enclosing keys stay concrete: omitting the network-instance or protocol
+// key is served nowhere in this repo, and a partial wildcard on the protocol
+// pair is refused by the request binder before any transformer runs.
+// A wildcard on the static list's own key is served at the list node: translib
+// removes the key before dispatch, the node is the list itself, and every route
+// of the instance is answered with its state alongside its config. A request
+// that wildcards the key and then descends into a container is refused, because
+// after the key is removed the path identifies no route and an answer would be
+// silently empty. The enclosing keys stay concrete throughout: omitting the
+// network-instance or protocol key is served nowhere in this repo.
+func Test_openconfig_network_instance_static_route_state_wildcard(t *testing.T) {
+	cleanupTbl := map[string]interface{}{
+		"STATIC_ROUTE": map[string]interface{}{
+			"default|172.16.41.0/24": "",
+			"default|172.16.42.0/24": "",
+		},
+	}
+	preReqMap := map[string]interface{}{
+		"STATIC_ROUTE": map[string]interface{}{
+			"default|172.16.41.0/24": map[string]interface{}{
+				"nexthop": "10.1.1.41", "ifname": "", "tag": "41",
+			},
+			"default|172.16.42.0/24": map[string]interface{}{
+				"nexthop": "10.1.1.42", "ifname": "", "tag": "42",
+			},
+		},
+	}
+	unloadDB(db.ConfigDB, cleanupTbl)
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	routesUrl := "/openconfig-network-instance:network-instances/network-instance[name=default]" +
+		"/protocols/protocol[identifier=STATIC][name=static]/static-routes"
+
+	wildcardListJSON := `{"openconfig-network-instance:static":[` +
+		`{"config":{"prefix":"172.16.41.0/24","set-tag":41},"next-hops":{"next-hop":[{"config":{"index":"10.1.1.41","next-hop":"10.1.1.41"},"index":"10.1.1.41"}]},"prefix":"172.16.41.0/24","state":{"prefix":"172.16.41.0/24","set-tag":41}}` + `,` +
+		`{"config":{"prefix":"172.16.42.0/24","set-tag":42},"next-hops":{"next-hop":[{"config":{"index":"10.1.1.42","next-hop":"10.1.1.42"},"index":"10.1.1.42"}]},"prefix":"172.16.42.0/24","state":{"prefix":"172.16.42.0/24","set-tag":42}}` + `]}`
+
+	t.Run("GET the route list with a wildcard prefix",
+		processGetRequest(routesUrl+"/static[prefix=*]", nil, wildcardListJSON, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET the route list with the key omitted",
+		processGetRequest(routesUrl+"/static", nil, wildcardListJSON, false))
+	time.Sleep(1 * time.Second)
+
+	// One level down the key is gone and the path names no route.
+	expectedErr := tlerr.NotSupportedError{
+		Format: "a wildcard or absent static route prefix is served at the route list; address static-routes/static rather than a container below it",
+	}
+	t.Run("GET the state container with a wildcard prefix is refused",
+		processGetRequest(routesUrl+"/static[prefix=*]/state", nil, "", true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET the state prefix leaf with a wildcard prefix is refused",
+		processGetRequest(routesUrl+"/static[prefix=*]/state/prefix", nil, "", true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET the config container with a wildcard prefix is refused",
+		processGetRequest(routesUrl+"/static[prefix=*]/config", nil, "", true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
