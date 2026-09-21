@@ -19,6 +19,7 @@
 package transformer_test
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -1119,7 +1120,8 @@ func Test_openconfig_routing_policy_container_get(t *testing.T) {
 	time.Sleep(1 * time.Second)
 
 	statementEntryJSON := `{"actions":{"openconfig-bgp-policy:bgp-actions":{"config":{"set-local-pref":200}},` +
-		`"config":{"policy-result":"ACCEPT_ROUTE"}},"config":{"name":"10"},"name":"10"}`
+		`"config":{"policy-result":"ACCEPT_ROUTE"},"state":{"policy-result":"ACCEPT_ROUTE"}},` +
+		`"config":{"name":"10"},"name":"10"}`
 	policyEntryJSON := `{"config":{"name":"POL1"},"name":"POL1","statements":{"statement":[` + statementEntryJSON + `]}}`
 	definedSetsJSON := `{"openconfig-bgp-policy:bgp-defined-sets":{"community-sets":{"community-set":[` +
 		`{"community-set-name":"COMM1","config":{"community-set-name":"COMM1"}}]}}}`
@@ -1203,11 +1205,14 @@ func Test_openconfig_routing_policy_container_get_list_instance(t *testing.T) {
 	time.Sleep(1 * time.Second)
 
 	stmt10JSON := `{"actions":{"openconfig-bgp-policy:bgp-actions":{"config":{"set-med":110}},` +
-		`"config":{"policy-result":"ACCEPT_ROUTE"}},"config":{"name":"10"},"name":"10"}`
-	stmt20JSON := `{"actions":{"config":{"policy-result":"REJECT_ROUTE"}},"config":{"name":"20"},"name":"20"}`
+		`"config":{"policy-result":"ACCEPT_ROUTE"},"state":{"policy-result":"ACCEPT_ROUTE"}},` +
+		`"config":{"name":"10"},"name":"10"}`
+	stmt20JSON := `{"actions":{"config":{"policy-result":"REJECT_ROUTE"},` +
+		`"state":{"policy-result":"REJECT_ROUTE"}},"config":{"name":"20"},"name":"20"}`
 	pol1JSON := `{"config":{"name":"POL1"},"name":"POL1","statements":{"statement":[` +
 		stmt10JSON + `,` + stmt20JSON + `]}}`
-	pol2Stmt := `{"actions":{"config":{"policy-result":"ACCEPT_ROUTE"}},"config":{"name":"10"},"name":"10"}`
+	pol2Stmt := `{"actions":{"config":{"policy-result":"ACCEPT_ROUTE"},` +
+		`"state":{"policy-result":"ACCEPT_ROUTE"}},"config":{"name":"10"},"name":"10"}`
 	pol2JSON := `{"config":{"name":"POL2"},"name":"POL2","statements":{"statement":[` + pol2Stmt + `]}}`
 
 	pol1Url := rpolContainerUrl + "/policy-definitions/policy-definition[name=POL1]"
@@ -2637,6 +2642,97 @@ func Test_openconfig_routing_policy_statement_actions_bgp_set_community_options(
 
 	t.Run("GET the config container reports no options under REFERENCE",
 		processGetRequest(cfgUrl, nil, `{"openconfig-bgp-policy:config":{"method":"REFERENCE"}}`, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+// The state container under a statement's actions has no datastore of its own:
+// it reports the same ROUTE_MAP route_operation the config container writes. It
+// is read-only, so a write naming it is refused, and it is reported at the
+// levels above it as well as at its own leaf.
+func Test_openconfig_routing_policy_policy_definition_statement_actions_state(t *testing.T) {
+	cleanupTbl := map[string]interface{}{
+		"ROUTE_MAP":     map[string]interface{}{"POLST|10": ""},
+		"ROUTE_MAP_SET": map[string]interface{}{"POLST": ""},
+	}
+	preReqMap := map[string]interface{}{
+		"ROUTE_MAP_SET": map[string]interface{}{"POLST": map[string]interface{}{"NULL": "NULL"}},
+		"ROUTE_MAP": map[string]interface{}{
+			"POLST|10": map[string]interface{}{"route_operation": "deny"},
+		},
+	}
+	unloadDB(db.ConfigDB, cleanupTbl)
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	stmtUrl := "/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition[name=POLST]" +
+		"/statements/statement[name=10]"
+
+	expectedGetJSON := `{"openconfig-routing-policy:policy-result":"REJECT_ROUTE"}`
+	t.Run("GET the state policy-result leaf",
+		processGetRequest(stmtUrl+"/actions/state/policy-result", nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	expectedGetJSON = `{"openconfig-routing-policy:state":{"policy-result":"REJECT_ROUTE"}}`
+	t.Run("GET the state container",
+		processGetRequest(stmtUrl+"/actions/state", nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	// A read of the enclosing statement reports both halves, which is the point
+	// of serving state at all: the level above is not left half empty. A uri
+	// terminating at `actions` is a separate, pre-existing gap: no parse pattern
+	// matches it, so it answers empty at HEAD too and is left for the
+	// container-level work.
+	expectedGetJSON = `{"openconfig-routing-policy:statement":[{"actions":{"config":{"policy-result":"REJECT_ROUTE"},` +
+		`"state":{"policy-result":"REJECT_ROUTE"}},"config":{"name":"10"},"name":"10"}]}`
+	t.Run("GET the statement reports config and state",
+		processGetRequest(stmtUrl, nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	// state is config false, so the request binder refuses a write to it before
+	// any transformer is reached. That message, not ours, is what a client sees,
+	// and it is the one worth pinning.
+	expectedErr := tlerr.TranslibSyntaxValidationError{
+		ErrorStr: errors.New("SET operation not allowed on the read-only object"),
+	}
+	t.Run("PATCH the state leaf is refused",
+		processSetRequest(stmtUrl+"/actions/state/policy-result",
+			`{"openconfig-routing-policy:policy-result":"ACCEPT_ROUTE"}`, "PATCH", true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	t.Run("DELETE the state container is refused",
+		processDeleteRequest(stmtUrl+"/actions/state", true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	// A container payload carrying state is refused by the same check, which is
+	// what makes the handler's own state guard unreachable rather than merely
+	// redundant.
+	t.Run("PATCH the actions container carrying state is refused",
+		processSetRequest(stmtUrl+"/actions",
+			`{"openconfig-routing-policy:state":{"policy-result":"ACCEPT_ROUTE"}}`,
+			"PATCH", true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	// The refused writes must leave the row exactly as it was.
+	verifyMap := map[string]interface{}{
+		"ROUTE_MAP": map[string]interface{}{
+			"POLST|10": map[string]interface{}{"route_operation": "deny"},
+		},
+	}
+	t.Run("Verify the refused writes left route_operation alone",
+		verifyDbResult(rclient, "ROUTE_MAP|POLST|10", verifyMap, false))
+	time.Sleep(1 * time.Second)
+
+	// Writing through config is what moves state, since they are one field.
+	t.Run("PATCH the config leaf",
+		processSetRequest(stmtUrl+"/actions/config/policy-result",
+			`{"openconfig-routing-policy:policy-result":"ACCEPT_ROUTE"}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedGetJSON = `{"openconfig-routing-policy:policy-result":"ACCEPT_ROUTE"}`
+	t.Run("GET the state leaf follows the config write",
+		processGetRequest(stmtUrl+"/actions/state/policy-result", nil, expectedGetJSON, false))
 	time.Sleep(1 * time.Second)
 
 	unloadDB(db.ConfigDB, cleanupTbl)

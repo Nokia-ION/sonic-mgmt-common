@@ -102,6 +102,10 @@ func rpolStmtActionsCfgUri(policyName, stmtName string) string {
 	return rpolStmtUriPrefix(policyName, stmtName) + "/actions/config"
 }
 
+func rpolStmtActionsStateUri(policyName, stmtName string) string {
+	return rpolStmtUriPrefix(policyName, stmtName) + "/actions/state"
+}
+
 func rpolStmtBgpActionsCfgUri(policyName, stmtName string) string {
 	return rpolStmtUriPrefix(policyName, stmtName) + "/actions/bgp-actions/config"
 }
@@ -547,6 +551,7 @@ func rpolStmtGetTargetUris(policyName, stmtName string, entry db.Value) []string
 	var uris []string
 	if hasField(rpolRouteOperationFld) {
 		uris = append(uris, rpolStmtActionsCfgUri(policyName, stmtName))
+		uris = append(uris, rpolStmtActionsStateUri(policyName, stmtName))
 	}
 	if hasField(rpolMatchPrefixSetFld, rpolMatchIpv6PrefixSetFld) {
 		uris = append(uris, rpolStmtCondMatchPfxCfgUri(policyName, stmtName))
