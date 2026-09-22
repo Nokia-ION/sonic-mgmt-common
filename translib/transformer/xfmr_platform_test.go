@@ -1314,6 +1314,47 @@ func TestFillXcvrFirmwareVersionAndDescription(t *testing.T) {
 	}
 }
 
+// A transceiver serves its module temperature on the state/temperature
+// container as well as on the instant leaf below it.
+func TestFillXcvrTemperature(t *testing.T) {
+	d, err := db.NewDB(getDBOptions(db.StateDB))
+	if err != nil {
+		t.Fatal("NewDB failed")
+	}
+	defer d.DeleteDB()
+	cfgdb, err := db.NewDB(getDBOptions(db.ConfigDB))
+	if err != nil {
+		t.Fatal("NewDB failed")
+	}
+	defer cfgdb.DeleteDB()
+	var dbs [db.MaxDB]*db.DB
+	dbs[db.StateDB] = d
+	dbs[db.ConfigDB] = cfgdb
+
+	const name = "Ethernet72"
+	seedXcvrInfoEntry(t, d, name, map[string]string{
+		"type": "QSFP-DD Double Density 8X Pluggable Transceiver",
+	})
+	seedXcvrDomEntry(t, d, name, map[string]string{"temperature": "24.004"})
+
+	for _, targetUriPath := range []string{COMP_STATE_TEMP_CTR, COMP_STATE_TEMP} {
+		t.Run(targetUriPath, func(t *testing.T) {
+			comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+			ygot.BuildEmptyTree(comp)
+			if err := fillXcvrInfo(comp, name, false, "", targetUriPath, dbs); err != nil {
+				t.Fatalf("fillXcvrInfo() unexpected error: %v", err)
+			}
+			got := comp.State.Temperature.Instant
+			if got == nil {
+				t.Fatalf("state/temperature/instant is nil, want 24.004")
+			}
+			if *got != 24.004 {
+				t.Errorf("state/temperature/instant = %v, want 24.004", *got)
+			}
+		})
+	}
+}
+
 // PSU_INFO.revision carries the PSU hardware revision on both the
 // whole-component and the targeted leaf path, and the not-available sentinel
 // leaves the leaf unset.
