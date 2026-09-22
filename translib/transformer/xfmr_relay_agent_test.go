@@ -20,11 +20,56 @@ package transformer
 
 import (
 	"testing"
+	"time"
 
 	"github.com/Azure/sonic-mgmt-common/translib/db"
 	"github.com/Azure/sonic-mgmt-common/translib/ocbinds"
 	"github.com/openconfig/ygot/ygot"
 )
+
+func init() {
+	// Unit tests must not talk to host D-Bus / systemd.
+	dhcpRelayRestartFn = func() {}
+}
+
+func withDhcpRelayRestartCapture(t *testing.T) <-chan struct{} {
+	t.Helper()
+	origFn := dhcpRelayRestartFn
+	origDelay := dhcpRelayRestartDelay
+	called := make(chan struct{}, 1)
+	dhcpRelayRestartDelay = 0
+	dhcpRelayRestartFn = func() {
+		select {
+		case called <- struct{}{}:
+		default:
+		}
+	}
+	t.Cleanup(func() {
+		dhcpRelayRestartMu.Lock()
+		if dhcpRelayRestartTimer != nil {
+			dhcpRelayRestartTimer.Stop()
+			dhcpRelayRestartTimer = nil
+		}
+		dhcpRelayRestartMu.Unlock()
+		dhcpRelayRestartFn = origFn
+		dhcpRelayRestartDelay = origDelay
+	})
+	return called
+}
+
+func waitDhcpRelayRestart(t *testing.T, called <-chan struct{}, want bool) {
+	t.Helper()
+	select {
+	case <-called:
+		if !want {
+			t.Fatal("did not expect dhcp_relay restart")
+		}
+	case <-time.After(300 * time.Millisecond):
+		if want {
+			t.Fatal("expected dhcp_relay restart")
+		}
+	}
+}
 
 func TestValidateDhcpv6RelayIfId(t *testing.T) {
 	if err := validateDhcpv6RelayIfId("Vlan100"); err != nil {
@@ -463,4 +508,131 @@ func TestDbToYangPath_dhcpRelayAgent(t *testing.T) {
 			t.Fatalf("got %q, want Vlan200", params.ygPathKeys[want])
 		}
 	})
+}
+
+func TestDhcpRelayRestartHelpers(t *testing.T) {
+	t.Run("changed result", func(t *testing.T) {
+		result := map[string]map[string]db.Value{
+			dhcpRelayTable: {"Vlan100": db.Value{Field: map[string]string{dhcpv6ServersField: "2001:db8::1"}}},
+		}
+		if !dhcpRelayConfigChanged(result, nil) {
+			t.Fatal("expected config change")
+		}
+	})
+	t.Run("empty result", func(t *testing.T) {
+		if dhcpRelayConfigChanged(map[string]map[string]db.Value{}, nil) {
+			t.Fatal("empty result is not a change")
+		}
+	})
+	t.Run("id path skipped", func(t *testing.T) {
+		if dhcpRelayRestartForPath(ocRelayDhcpConfigPath + "/id") {
+			t.Fatal("id leaf should not restart")
+		}
+		if dhcpRelayRestartForPath(ocRelayDhcpv6ConfigPath + "/id") {
+			t.Fatal("id leaf should not restart")
+		}
+		if !dhcpRelayRestartForPath(ocRelayDhcpConfigPath + "/helper-address") {
+			t.Fatal("helper-address should restart")
+		}
+	})
+	t.Run("skip native v4", func(t *testing.T) {
+		called := withDhcpRelayRestartCapture(t)
+		result := map[string]map[string]db.Value{
+			VLAN_TN: {"Vlan100": db.Value{Field: map[string]string{vlanDhcpServersField: "10.0.0.1"}}},
+		}
+		maybeRestartDhcpRelay(XfmrParams{}, result, false)
+		waitDhcpRelayRestart(t, called, false)
+	})
+	t.Run("restart when required", func(t *testing.T) {
+		called := withDhcpRelayRestartCapture(t)
+		result := map[string]map[string]db.Value{
+			dhcpRelayTable: {"Vlan100": db.Value{Field: map[string]string{dhcpv6ServersField: "2001:db8::1"}}},
+		}
+		maybeRestartDhcpRelay(XfmrParams{}, result, true)
+		waitDhcpRelayRestart(t, called, true)
+	})
+}
+
+func TestYangToDb_Dhcpv6RelayHelperAddressRestarts(t *testing.T) {
+	called := withDhcpRelayRestartCapture(t)
+	device := &ocbinds.Device{}
+	var yg ygot.GoStruct = device
+	root := getDhcpv6RelayRoot(&yg)
+	intf, err := root.Dhcpv6.Interfaces.NewInterface("Vlan100")
+	if err != nil {
+		t.Fatalf("NewInterface: %v", err)
+	}
+	id := "Vlan100"
+	intf.Config = &ocbinds.OpenconfigRelayAgent_RelayAgent_Dhcpv6_Interfaces_Interface_Config{
+		Id:            &id,
+		HelperAddress: []string{"2001:db8::53"},
+	}
+	got, err := YangToDb_dhcpv6_relay_agent_xfmr(XfmrParams{
+		ygRoot:     &yg,
+		uri:        "/openconfig-relay-agent:relay-agent/dhcpv6/interfaces/interface[id=Vlan100]/config",
+		requestUri: "/openconfig-relay-agent:relay-agent/dhcpv6/interfaces/interface[id=Vlan100]/config",
+		oper:       UPDATE,
+	})
+	if err != nil {
+		t.Fatalf("YangToDb: %v", err)
+	}
+	if _, ok := got["DHCP_SERVER"]; ok {
+		t.Fatalf("DHCP_SERVER must not be written: %v", got)
+	}
+	waitDhcpRelayRestart(t, called, true)
+}
+
+func TestYangToDb_Dhcpv4RelayHelperAddressRestartsLegacy(t *testing.T) {
+	called := withDhcpRelayRestartCapture(t)
+	device := &ocbinds.Device{}
+	var yg ygot.GoStruct = device
+	root := getDhcpv4RelayRoot(&yg)
+	intf, err := root.Dhcp.Interfaces.NewInterface("Vlan100")
+	if err != nil {
+		t.Fatalf("NewInterface: %v", err)
+	}
+	id := "Vlan100"
+	intf.Config = &ocbinds.OpenconfigRelayAgent_RelayAgent_Dhcp_Interfaces_Interface_Config{
+		Id:            &id,
+		HelperAddress: []string{"10.0.0.53"},
+	}
+	got, err := YangToDb_dhcpv4_relay_agent_xfmr(XfmrParams{
+		ygRoot:     &yg,
+		uri:        "/openconfig-relay-agent:relay-agent/dhcp/interfaces/interface[id=Vlan100]/config",
+		requestUri: "/openconfig-relay-agent:relay-agent/dhcp/interfaces/interface[id=Vlan100]/config",
+		oper:       UPDATE,
+	})
+	if err != nil {
+		t.Fatalf("YangToDb: %v", err)
+	}
+	if _, ok := got["DHCP_SERVER"]; ok {
+		t.Fatalf("DHCP_SERVER must not be written: %v", got)
+	}
+	waitDhcpRelayRestart(t, called, true)
+}
+
+func TestYangToDb_Dhcpv6RelayRejectDoesNotRestart(t *testing.T) {
+	called := withDhcpRelayRestartCapture(t)
+	device := &ocbinds.Device{}
+	var yg ygot.GoStruct = device
+	root := getDhcpv6RelayRoot(&yg)
+	intf, err := root.Dhcpv6.Interfaces.NewInterface("Vlan100")
+	if err != nil {
+		t.Fatalf("NewInterface: %v", err)
+	}
+	id := "Vlan100"
+	intf.Config = &ocbinds.OpenconfigRelayAgent_RelayAgent_Dhcpv6_Interfaces_Interface_Config{
+		Id:            &id,
+		HelperAddress: []string{"10.0.0.1"},
+	}
+	_, err = YangToDb_dhcpv6_relay_agent_xfmr(XfmrParams{
+		ygRoot:     &yg,
+		uri:        "/openconfig-relay-agent:relay-agent/dhcpv6/interfaces/interface[id=Vlan100]/config/helper-address",
+		requestUri: "/openconfig-relay-agent:relay-agent/dhcpv6/interfaces/interface[id=Vlan100]/config/helper-address",
+		oper:       UPDATE,
+	})
+	if err == nil {
+		t.Fatal("expected IPv4 helper-address to fail")
+	}
+	waitDhcpRelayRestart(t, called, false)
 }
