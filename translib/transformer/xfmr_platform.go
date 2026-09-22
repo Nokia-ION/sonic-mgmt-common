@@ -3403,7 +3403,7 @@ func fillXcvrInfo(xcvrCom *ocbinds.OpenconfigPlatform_Components_Component,
 		}
 	case COMP_STATE_OPER_STATUS:
 		xcvrEEPROMState.OperStatus = ocbinds.OpenconfigPlatformTypes_COMPONENT_OPER_STATUS_ACTIVE
-	case COMP_STATE_TEMP:
+	case COMP_STATE_TEMP_CTR, COMP_STATE_TEMP:
 		if xcvrInfo.Temperature != "" {
 			float64val, err := strconv.ParseFloat(xcvrInfo.Temperature, 64)
 			if err != nil {
