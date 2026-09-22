@@ -22,11 +22,28 @@ import (
 	"net"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/Azure/sonic-mgmt-common/translib/db"
 	"github.com/Azure/sonic-mgmt-common/translib/ocbinds"
 	"github.com/Azure/sonic-mgmt-common/translib/tlerr"
+	log "github.com/golang/glog"
 	"github.com/openconfig/ygot/ygot"
+)
+
+const (
+	dhcpRelayServiceName = "dhcp_relay"
+)
+
+var (
+	dhcpRelayRestartMu    sync.Mutex
+	dhcpRelayRestartTimer *time.Timer
+	// YangToDb runs before CONFIG_DB CommitTx. Delay the host restart so
+	// ISC dhcrelay / dhcp6relay re-read the committed helper list.
+	dhcpRelayRestartDelay = time.Second
+	// dhcpRelayRestartFn is the host action after debounce. Tests replace it.
+	dhcpRelayRestartFn = hostRestartDhcpRelayService
 )
 
 const (
@@ -47,6 +64,84 @@ func init() {
 	XlateFuncBind("DbToYang_dhcpv6_relay_agent_xfmr", DbToYang_dhcpv6_relay_agent_xfmr)
 	XlateFuncBind("Subscribe_dhcpv6_relay_agent_xfmr", Subscribe_dhcpv6_relay_agent_xfmr)
 	XlateFuncBind("DbToYangPath_dhcpv6_relay_agent_intf_path_xfmr", DbToYangPath_dhcpv6_relay_agent_intf_path_xfmr)
+}
+
+func hostRestartDhcpRelayService() {
+	log.Info("Restarting dhcp_relay after OpenConfig relay-agent helper change")
+	result := HostQuery("systemd.restart_service", dhcpRelayServiceName)
+	if result.Err != nil {
+		log.Warningf("dhcp_relay restart failed: %v", result.Err)
+		return
+	}
+	if len(result.Body) == 0 {
+		return
+	}
+	rc, _ := result.Body[0].(int32)
+	if rc == 0 {
+		return
+	}
+	msg := ""
+	if len(result.Body) > 1 {
+		msg, _ = result.Body[1].(string)
+	}
+	log.Warningf("dhcp_relay restart returned %d: %s", rc, msg)
+}
+
+func scheduleDhcpRelayRestart() {
+	dhcpRelayRestartMu.Lock()
+	defer dhcpRelayRestartMu.Unlock()
+	if dhcpRelayRestartTimer != nil {
+		dhcpRelayRestartTimer.Stop()
+	}
+	dhcpRelayRestartTimer = time.AfterFunc(dhcpRelayRestartDelay, func() {
+		dhcpRelayRestartFn()
+	})
+}
+
+func tableMapHasEntries(m map[string]map[string]db.Value) bool {
+	for _, keys := range m {
+		if len(keys) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func dhcpRelayConfigChanged(result map[string]map[string]db.Value, subOp map[Operation]*RedisDbMap) bool {
+	if tableMapHasEntries(result) {
+		return true
+	}
+	for _, redisMap := range subOp {
+		if redisMap == nil {
+			continue
+		}
+		if tableMapHasEntries((*redisMap)[db.ConfigDB]) {
+			return true
+		}
+	}
+	return false
+}
+
+func dhcpRelayRestartForPath(targetUriPath string) bool {
+	switch targetUriPath {
+	case ocRelayDhcpConfigPath + "/id", ocRelayDhcpv6ConfigPath + "/id":
+		return false
+	default:
+		return true
+	}
+}
+
+// maybeRestartDhcpRelay restarts dhcp_relay after helper-address changes that
+// ISC dhcrelay / dhcp6relay only pick up at process start. DHCP_SERVER is not
+// written: it is minigraph/GCU bookkeeping and is not consumed by the daemons.
+func maybeRestartDhcpRelay(inParams XfmrParams, result map[string]map[string]db.Value, required bool) {
+	if !required {
+		return
+	}
+	if !dhcpRelayConfigChanged(result, inParams.subOpDataMap) {
+		return
+	}
+	scheduleDhcpRelayRestart()
 }
 
 func dhcpv6RelayCfgDb(inParams XfmrParams) *db.DB {
@@ -604,14 +699,23 @@ var YangToDb_dhcpv6_relay_agent_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPar
 	}
 
 	cfgDb := dhcpv6RelayCfgDb(inParams)
+	var result map[string]map[string]db.Value
+	var err error
 	switch inParams.oper {
 	case DELETE:
-		return dhcpv6RelayYangToDbDelete(inParams, cfgDb, targetUriPath)
+		result, err = dhcpv6RelayYangToDbDelete(inParams, cfgDb, targetUriPath)
 	case CREATE, UPDATE, REPLACE:
-		return dhcpv6RelayYangToDbWrite(inParams, cfgDb, targetUriPath)
+		result, err = dhcpv6RelayYangToDbWrite(inParams, cfgDb, targetUriPath)
 	default:
 		return nil, tlerr.NotSupported("Unsupported operation on " + ocRelayDhcpv6Path)
 	}
+	if err != nil {
+		return result, err
+	}
+	if dhcpRelayRestartForPath(targetUriPath) {
+		maybeRestartDhcpRelay(inParams, result, true)
+	}
+	return result, nil
 }
 
 var DbToYang_dhcpv6_relay_agent_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) error {
@@ -1272,14 +1376,24 @@ var YangToDb_dhcpv4_relay_agent_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPar
 
 	cfgDb := dhcpv4RelayCfgDb(inParams)
 	store := dhcpv4RelayStoreFromCfg(cfgDb)
+	var result map[string]map[string]db.Value
+	var err error
 	switch inParams.oper {
 	case DELETE:
-		return dhcpv4RelayYangToDbDelete(inParams, cfgDb, store, targetUriPath)
+		result, err = dhcpv4RelayYangToDbDelete(inParams, cfgDb, store, targetUriPath)
 	case CREATE, UPDATE, REPLACE:
-		return dhcpv4RelayYangToDbWrite(inParams, cfgDb, store, targetUriPath)
+		result, err = dhcpv4RelayYangToDbWrite(inParams, cfgDb, store, targetUriPath)
 	default:
 		return nil, tlerr.NotSupported("Unsupported operation on " + ocRelayDhcpPath)
 	}
+	if err != nil {
+		return result, err
+	}
+	// Native dhcp4relay watches DHCPV4_RELAY live. Legacy ISC dhcrelay does not.
+	if dhcpRelayRestartForPath(targetUriPath) {
+		maybeRestartDhcpRelay(inParams, result, !useSonicDhcpv4Relay(cfgDb))
+	}
+	return result, nil
 }
 
 var DbToYang_dhcpv4_relay_agent_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) error {
