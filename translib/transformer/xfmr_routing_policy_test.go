@@ -2775,3 +2775,171 @@ func Test_openconfig_routing_policy_policy_definition_statement_actions_state(t 
 	unloadDB(db.ConfigDB, cleanupTbl)
 	unloadDB(db.StateDB, appliedTbl)
 }
+
+// bgp-actions/state reports what FRR applied, decoded from the same field
+// names CONFIG_DB uses, which is what lets the applied row be read by the same
+// logic as the configured one. A statement FRR has not taken reports nothing.
+func Test_openconfig_routing_policy_statement_bgp_actions_state(t *testing.T) {
+	cleanupTbl := map[string]interface{}{
+		"ROUTE_MAP":     map[string]interface{}{"POLBA|10": ""},
+		"ROUTE_MAP_SET": map[string]interface{}{"POLBA": ""},
+	}
+	appliedTbl := map[string]interface{}{
+		"ROUTE_MAP_APPLIED": map[string]interface{}{"POLBA|10": ""},
+	}
+	preReqMap := map[string]interface{}{
+		"ROUTE_MAP_SET": map[string]interface{}{"POLBA": map[string]interface{}{"NULL": "NULL"}},
+		"ROUTE_MAP": map[string]interface{}{
+			"POLBA|10": map[string]interface{}{"route_operation": "permit"},
+		},
+	}
+	// What bgpmon would have scraped: FRR took a local-pref, an origin, a
+	// next-hop and a MED for this statement.
+	appliedMap := map[string]interface{}{
+		"ROUTE_MAP_APPLIED": map[string]interface{}{
+			"POLBA|10": map[string]interface{}{
+				"route_operation": "permit",
+				"set_local_pref":  "250",
+				"set_origin":      "egp",
+				"set_next_hop":    "10.9.9.9",
+				"set_med":         "400",
+			},
+		},
+	}
+	unloadDB(db.ConfigDB, cleanupTbl)
+	unloadDB(db.StateDB, appliedTbl)
+	loadDB(db.ConfigDB, preReqMap)
+	loadDB(db.StateDB, appliedMap)
+	time.Sleep(1 * time.Second)
+
+	baUrl := "/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition[name=POLBA]" +
+		"/statements/statement[name=10]/actions/openconfig-bgp-policy:bgp-actions"
+
+	t.Run("GET state/set-local-pref",
+		processGetRequest(baUrl+"/state/set-local-pref", nil,
+			`{"openconfig-bgp-policy:set-local-pref":250}`, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET state/set-route-origin",
+		processGetRequest(baUrl+"/state/set-route-origin", nil,
+			`{"openconfig-bgp-policy:set-route-origin":"EGP"}`, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET state/set-next-hop",
+		processGetRequest(baUrl+"/state/set-next-hop", nil,
+			`{"openconfig-bgp-policy:set-next-hop":"10.9.9.9"}`, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET state/set-med",
+		processGetRequest(baUrl+"/state/set-med", nil,
+			`{"openconfig-bgp-policy:set-med":400}`, false))
+	time.Sleep(1 * time.Second)
+
+	expectedGetJSON := `{"openconfig-bgp-policy:state":{"set-local-pref":250,"set-med":400,` +
+		`"set-next-hop":"10.9.9.9","set-route-origin":"EGP"}}`
+	t.Run("GET the whole state container",
+		processGetRequest(baUrl+"/state", nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	// The configured row says nothing but permit, so config and state differ
+	// here exactly as an applied view should allow.
+	t.Run("GET the config container carries none of it",
+		processGetRequest(baUrl+"/config", nil, "{}", false))
+	time.Sleep(1 * time.Second)
+
+	expectedErr := tlerr.TranslibSyntaxValidationError{
+		ErrorStr: errors.New("SET operation not allowed on the read-only object"),
+	}
+	t.Run("PATCH state/set-local-pref is refused",
+		processSetRequest(baUrl+"/state/set-local-pref",
+			`{"openconfig-bgp-policy:set-local-pref":300}`, "PATCH", true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	// Nothing applied means nothing reported, rather than the configuration
+	// echoed back under a state path.
+	unloadDB(db.StateDB, appliedTbl)
+	time.Sleep(1 * time.Second)
+	t.Run("GET the state container reports nothing when FRR has not taken it",
+		processGetRequest(baUrl+"/state", nil, "{}", false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+	unloadDB(db.StateDB, appliedTbl)
+}
+
+// The rest of the statement's state surface, all read from the applied row:
+// the as-path prepend, the community settings and the match conditions. The
+// configured row is deliberately left bare, so anything reported here came
+// from what FRR applied rather than from CONFIG_DB.
+func Test_openconfig_routing_policy_statement_state_from_applied(t *testing.T) {
+	cleanupTbl := map[string]interface{}{
+		"ROUTE_MAP":     map[string]interface{}{"POLAP|10": ""},
+		"ROUTE_MAP_SET": map[string]interface{}{"POLAP": ""},
+	}
+	appliedTbl := map[string]interface{}{
+		"ROUTE_MAP_APPLIED": map[string]interface{}{"POLAP|10": ""},
+	}
+	preReqMap := map[string]interface{}{
+		"ROUTE_MAP_SET": map[string]interface{}{"POLAP": map[string]interface{}{"NULL": "NULL"}},
+		"ROUTE_MAP": map[string]interface{}{
+			"POLAP|10": map[string]interface{}{"route_operation": "permit"},
+		},
+	}
+	appliedMap := map[string]interface{}{
+		"ROUTE_MAP_APPLIED": map[string]interface{}{
+			"POLAP|10": map[string]interface{}{
+				"route_operation":      "permit",
+				"set_asn":              "65010",
+				"set_repeat_asn":       "3",
+				"set_community_inline": "65001:100",
+				"match_prefix_set":     "PSETV4",
+				"match_med":            "100",
+				"match_local_pref":     "120",
+			},
+		},
+	}
+	unloadDB(db.ConfigDB, cleanupTbl)
+	unloadDB(db.StateDB, appliedTbl)
+	loadDB(db.ConfigDB, preReqMap)
+	loadDB(db.StateDB, appliedMap)
+	time.Sleep(1 * time.Second)
+
+	stmt := "/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition[name=POLAP]" +
+		"/statements/statement[name=10]"
+	bgpAct := stmt + "/actions/openconfig-bgp-policy:bgp-actions"
+
+	t.Run("GET set-as-path-prepend state/asn",
+		processGetRequest(bgpAct+"/set-as-path-prepend/state/asn", nil,
+			`{"openconfig-bgp-policy:asn":65010}`, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET set-as-path-prepend state/repeat-n",
+		processGetRequest(bgpAct+"/set-as-path-prepend/state/repeat-n", nil,
+			`{"openconfig-bgp-policy:repeat-n":3}`, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET match-prefix-set state/prefix-set",
+		processGetRequest(stmt+"/conditions/match-prefix-set/state/prefix-set", nil,
+			`{"openconfig-routing-policy:prefix-set":"PSETV4"}`, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET bgp-conditions state/med-eq",
+		processGetRequest(stmt+"/conditions/openconfig-bgp-policy:bgp-conditions/state/med-eq", nil,
+			`{"openconfig-bgp-policy:med-eq":100}`, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET bgp-conditions state/local-pref-eq",
+		processGetRequest(stmt+"/conditions/openconfig-bgp-policy:bgp-conditions/state/local-pref-eq", nil,
+			`{"openconfig-bgp-policy:local-pref-eq":120}`, false))
+	time.Sleep(1 * time.Second)
+
+	// Nothing applied, nothing reported.
+	unloadDB(db.StateDB, appliedTbl)
+	time.Sleep(1 * time.Second)
+	t.Run("GET set-as-path-prepend state reports nothing once the row is gone",
+		processGetRequest(bgpAct+"/set-as-path-prepend/state", nil, "{}", false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+	unloadDB(db.StateDB, appliedTbl)
+}
