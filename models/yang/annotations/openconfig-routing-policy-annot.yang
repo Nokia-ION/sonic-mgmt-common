@@ -33,6 +33,7 @@ module openconfig-routing-policy-annot {
           sonic-ext:virtual-table "true";
           sonic-ext:db-name "CONFIG_DB";
           sonic-ext:subtree-transformer "routing_policy_xfmr";
+          sonic-ext:path-transformer "routing_policy_path_xfmr";
       }
     }
 
@@ -41,6 +42,7 @@ module openconfig-routing-policy-annot {
           sonic-ext:virtual-table "true";
           sonic-ext:db-name "CONFIG_DB";
           sonic-ext:subtree-transformer "routing_policy_xfmr";
+          sonic-ext:path-transformer "routing_policy_path_xfmr";
       }
     }
 
