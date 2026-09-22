@@ -17,9 +17,11 @@
 package transformer
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/Azure/sonic-mgmt-common/translib/db"
+	"github.com/Azure/sonic-mgmt-common/translib/internal/apis"
 )
 
 const rpolSubscUrl = "/openconfig-routing-policy:routing-policy"
@@ -156,5 +158,170 @@ func TestSubscribe_routing_policy_exists_check_reports_no_mapping(t *testing.T) 
 	}
 	if !out.isVirtualTbl {
 		t.Fatalf("expected no mapping for an existence check, got %v", out.dbDataMap)
+	}
+}
+
+// Declaring the callback is not enough on its own: translib reaches every
+// transformer callback through the XlateFuncs registry, keyed by the name the
+// annotation gives the subtree. Without the bind the callback is dead code, the
+// path stays non-DB, and both refusals above come back even though the tests
+// that call the callback directly still pass. So assert the registration
+// alongside the behaviour.
+func TestSubscribe_routing_policy_callback_is_registered(t *testing.T) {
+	for _, name := range []string{
+		"YangToDb_routing_policy_xfmr",
+		"DbToYang_routing_policy_xfmr",
+		"Subscribe_routing_policy_xfmr",
+	} {
+		if !IsXlateFuncBinded(name) {
+			t.Errorf("%s is not bound in XlateFuncs, so translib will never call it", name)
+		}
+	}
+}
+
+// The path transformer is what lets a subscription report a row whose key
+// translib has to supply rather than read from the request. A wildcard or
+// omitted key is exactly that case, which is why it was accepted and then
+// reported nothing until this existed.
+func TestDbToYangPath_routing_policy(t *testing.T) {
+	const polList = rpolSubscUrl + "/policy-definitions/policy-definition"
+	stmtList := polList + "/statements/statement"
+
+	tests := []struct {
+		name       string
+		schemaPath string
+		tblName    string
+		keyComp    []string
+		wantPolicy string // empty means no policy key is expected
+		wantStmt   string // empty means no statement key is expected
+		wantErr    bool
+		// A row of a table these lists do not serve has to be declined with
+		// apis.ErrUnrelatedEntry, so the infrastructure drops the notification
+		// without logging a warning for it.
+		wantUnrelated bool
+	}{
+		{
+			name:       "policy row names the policy",
+			schemaPath: polList,
+			tblName:    rpolRouteMapSetAppliedTbl,
+			keyComp:    []string{"POL1"},
+			wantPolicy: "POL1",
+		},
+		{
+			// The statement rows feed a subscription anchored on the policy
+			// too, and there the statement is not on the path to be named.
+			name:       "statement row on the policy path names only the policy",
+			schemaPath: polList,
+			tblName:    rpolRouteMapAppliedTbl,
+			keyComp:    []string{"POL1", "10"},
+			wantPolicy: "POL1",
+		},
+		{
+			name:       "statement row on the statement path names both",
+			schemaPath: stmtList,
+			tblName:    rpolRouteMapAppliedTbl,
+			keyComp:    []string{"POL1", "10"},
+			wantPolicy: "POL1",
+			wantStmt:   "10",
+		},
+		{
+			// A node below the list inherits the path transformer, so it is
+			// called with the leaf on the schema path and still has to answer
+			// with the key paths of the lists that hold the keys.
+			name:       "leaf below the statement inherits it",
+			schemaPath: stmtList + "/actions/state/policy-result",
+			tblName:    rpolRouteMapAppliedTbl,
+			keyComp:    []string{"POL1", "10"},
+			wantPolicy: "POL1",
+			wantStmt:   "10",
+		},
+		{
+			// The key is a policy name, and a name may hold characters that
+			// mean something to a path, so it is passed through as it stands.
+			name:       "policy name is not interpreted",
+			schemaPath: polList,
+			tblName:    rpolRouteMapSetAppliedTbl,
+			keyComp:    []string{"POL-1.2_X"},
+			wantPolicy: "POL-1.2_X",
+		},
+		{
+			name:       "a path above the list has no key to answer with",
+			schemaPath: rpolSubscUrl + "/policy-definitions",
+			tblName:    rpolRouteMapSetAppliedTbl,
+			keyComp:    []string{"POL1"},
+		},
+		{
+			name:          "another table is declined as unrelated",
+			schemaPath:    polList,
+			tblName:       "ROUTE_MAP",
+			keyComp:       []string{"POL1"},
+			wantErr:       true,
+			wantUnrelated: true,
+		},
+		{
+			// No key at all is not a row of the table, so it stays a fault and
+			// keeps its warning rather than being dropped quietly.
+			name:       "empty policy key is a fault",
+			schemaPath: polList,
+			tblName:    rpolRouteMapSetAppliedTbl,
+			keyComp:    []string{},
+			wantErr:    true,
+		},
+		{
+			name:       "statement row missing its sequence is a fault",
+			schemaPath: stmtList,
+			tblName:    rpolRouteMapAppliedTbl,
+			keyComp:    []string{"POL1"},
+			wantErr:    true,
+		},
+		{
+			name:       "statement row with an empty sequence is a fault",
+			schemaPath: stmtList,
+			tblName:    rpolRouteMapAppliedTbl,
+			keyComp:    []string{"POL1", ""},
+			wantErr:    true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			keys := make(map[string]string)
+			err := DbToYangPath_routing_policy_path_xfmr(XfmrDbToYgPathParams{
+				ygSchemaPath: tc.schemaPath,
+				tblName:      tc.tblName,
+				tblKeyComp:   tc.keyComp,
+				ygPathKeys:   keys,
+			})
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected an error, got keys %v", keys)
+				}
+				if got := errors.Is(err, apis.ErrUnrelatedEntry); got != tc.wantUnrelated {
+					t.Errorf("errors.Is(err, apis.ErrUnrelatedEntry) = %v, want %v; err: %v",
+						got, tc.wantUnrelated, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("DbToYangPath_routing_policy_path_xfmr failed: %v", err)
+			}
+
+			polKey := keys[polList+"/name"]
+			if polKey != tc.wantPolicy {
+				t.Errorf("policy key = %q, want %q; all keys %v", polKey, tc.wantPolicy, keys)
+			}
+			stmtKey := keys[stmtList+"/name"]
+			if stmtKey != tc.wantStmt {
+				t.Errorf("statement key = %q, want %q; all keys %v", stmtKey, tc.wantStmt, keys)
+			}
+		})
+	}
+}
+
+// The path transformer reaches translib the same way the subscribe callback
+// does, by name through the registry, so it needs its own bind.
+func TestDbToYangPath_routing_policy_is_registered(t *testing.T) {
+	if !IsXlateFuncBinded("DbToYangPath_routing_policy_path_xfmr") {
+		t.Error("DbToYangPath_routing_policy_path_xfmr is not bound in XlateFuncs, so translib will never call it")
 	}
 }

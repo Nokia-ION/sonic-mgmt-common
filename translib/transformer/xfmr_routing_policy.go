@@ -27,6 +27,7 @@ import (
 	"strings"
 
 	"github.com/Azure/sonic-mgmt-common/translib/db"
+	"github.com/Azure/sonic-mgmt-common/translib/internal/apis"
 	"github.com/Azure/sonic-mgmt-common/translib/ocbinds"
 	"github.com/Azure/sonic-mgmt-common/translib/tlerr"
 	log "github.com/golang/glog"
@@ -88,6 +89,8 @@ const (
 	rpolTargetRoot                           = "routing-policy-root"
 	rpolPolicyDefNameLeaf                    = "name"
 	rpolStmtNameLeaf                         = "name"
+	rpolPolicyDefNode                        = "policy-definition"
+	rpolStatementNode                        = "statement"
 	rpolCommunitySetNameLeaf                 = "community-set-name"
 	rpolCommunitySetRefLeaf                  = "community-set-ref"
 	rpolCommunitySetRefsLeaf                 = "community-set-refs"
@@ -181,6 +184,8 @@ type rpolReqInfo struct {
 func init() {
 	XlateFuncBind("YangToDb_routing_policy_xfmr", YangToDb_routing_policy_xfmr)
 	XlateFuncBind("DbToYang_routing_policy_xfmr", DbToYang_routing_policy_xfmr)
+	XlateFuncBind("Subscribe_routing_policy_xfmr", Subscribe_routing_policy_xfmr)
+	XlateFuncBind("DbToYangPath_routing_policy_path_xfmr", DbToYangPath_routing_policy_path_xfmr)
 }
 
 func parseRpolRequestUri(uri string) (*rpolReqInfo, error) {
@@ -3620,6 +3625,81 @@ var Subscribe_routing_policy_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSubsc
 	result.onChange = OnchangeDisable
 	result.nOpts = &notificationOpts{pType: Sample}
 	return result, nil
+}
+
+// rpolSchemaPathUpto truncates a schema path just after the named node, and
+// reports whether the path names it at all. A yang key is looked up under the
+// path of the list that holds it, so a path transformer has to answer with a
+// prefix of the path it was given. Comparing on the node name alone lets a
+// module qualified element match the node it names.
+func rpolSchemaPathUpto(schemaPath string, node string) (string, bool) {
+	var b strings.Builder
+	for _, elem := range strings.Split(strings.TrimPrefix(schemaPath, "/"), "/") {
+		b.WriteString("/")
+		b.WriteString(elem)
+		name := elem
+		if i := strings.Index(name, ":"); i >= 0 {
+			name = name[i+1:]
+		}
+		if name == node {
+			return b.String(), true
+		}
+	}
+	return "", false
+}
+
+// DbToYangPath_routing_policy_path_xfmr names the policy, and where the path
+// reaches it the statement, that an applied row belongs to.
+//
+// A subscription needs this whenever translib has to supply a key rather than
+// read one from the request: with a wildcard or an omitted key it holds a
+// changed ROUTE_MAP_APPLIED row and no way to say which policy-definition
+// instance the notification is for. Without this callback such a subscription
+// is accepted and then reports nothing, which is how the AFT lists behaved
+// before they were given one. A fully keyed subscription never needed it,
+// since the path already carries the key.
+var DbToYangPath_routing_policy_path_xfmr PathXfmrDbToYangFunc = func(params XfmrDbToYgPathParams) error {
+	var policy, statement string
+
+	switch params.tblName {
+	case rpolRouteMapSetAppliedTbl:
+		if len(params.tblKeyComp) != 1 || params.tblKeyComp[0] == "" {
+			return fmt.Errorf("routing_policy_path_xfmr: %s key %v does not name a policy",
+				params.tblName, params.tblKeyComp)
+		}
+		policy = params.tblKeyComp[0]
+	case rpolRouteMapAppliedTbl:
+		// <policy>|<sequence>, and the sequence is the statement name.
+		if len(params.tblKeyComp) != 2 || params.tblKeyComp[0] == "" || params.tblKeyComp[1] == "" {
+			return fmt.Errorf("routing_policy_path_xfmr: %s key %v does not name a policy and a statement",
+				params.tblName, params.tblKeyComp)
+		}
+		policy, statement = params.tblKeyComp[0], params.tblKeyComp[1]
+	default:
+		// A row of a table these lists do not serve is not a fault, so it is
+		// declined as unrelated rather than reported as an error.
+		return fmt.Errorf("routing_policy_path_xfmr: notification from table %q: %w",
+			params.tblName, apis.ErrUnrelatedEntry)
+	}
+
+	// A path above the policy definitions holds no key of this row to fill in,
+	// so there is nothing to answer with. That is not a fault: the same thing
+	// happens on the AFT side for a path anchored above its entry list.
+	defPath, ok := rpolSchemaPathUpto(params.ygSchemaPath, rpolPolicyDefNode)
+	if !ok {
+		return nil
+	}
+	params.ygPathKeys[defPath+"/"+rpolPolicyDefNameLeaf] = policy
+
+	// A path anchored at or above the policy names no statement, so there is no
+	// statement key to answer with even when the row carries one.
+	if statement != "" {
+		if stmtPath, ok := rpolSchemaPathUpto(params.ygSchemaPath, rpolStatementNode); ok {
+			params.ygPathKeys[stmtPath+"/"+rpolStmtNameLeaf] = statement
+		}
+	}
+
+	return nil
 }
 
 func rpolDbToYangXfmr(inParams XfmrParams) (err error) {
