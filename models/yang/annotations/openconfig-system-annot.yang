@@ -41,6 +41,14 @@ module openconfig-system-annot {
         }
     }
 
+    /* Sits on the list rather than the container above it, so that a
+       subscription wildcarding the server name has its key resolved. */
+    deviation /oc-sys:system/oc-sys-grpc:grpc-servers/oc-sys-grpc:grpc-server {
+        deviate add {
+            sonic-ext:path-transformer "grpc_server_path_xfmr";
+        }
+    }
+
     deviation /oc-sys:system/oc-sys:config {
         deviate add {
             sonic-ext:key-transformer "sys_config_key_xfmr";

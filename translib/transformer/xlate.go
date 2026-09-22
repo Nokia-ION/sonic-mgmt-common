@@ -845,6 +845,21 @@ func IsListNode(uri string) bool {
 	return result
 }
 
+// ListKeyNames returns the key leaf names of the YANG list at uri, in the
+// order the schema declares them. Returns nil when uri is not a list, or is a
+// list with no keys.
+func ListKeyNames(uri string) []string {
+	specInfo, err := getXfmrSpecInfoFromUri(uri)
+	if err != nil {
+		return nil
+	}
+	xInfo, ok := specInfo.(*yangXpathInfo)
+	if !ok || xInfo.yangType != YANG_LIST || xInfo.yangEntry == nil {
+		return nil
+	}
+	return strings.Fields(xInfo.yangEntry.Key)
+}
+
 func tableKeysToBeSorted(tblNm string) bool {
 	/* function to decide whether to sort table keys.
 	Required when a sonic table has more than 1 lists
