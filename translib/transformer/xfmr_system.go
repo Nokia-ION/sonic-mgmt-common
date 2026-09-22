@@ -32,14 +32,22 @@ const (
 
 	/** Credential Tables **/
 	CREDENTIALS_TBL = "CREDENTIALS"
-	CRED_PATHZ_TBL  = "CREDENTIALS|PATHZ_POLICY"
+	CRED_PATHZ_TBL  = CREDENTIALS_TBL + "|" + CRED_PATHZ_PREFIX
 	CRED_AUTHZ_TBL  = "CREDENTIALS|AUTHZ_POLICY"
-	CERT_TBL        = "CREDENTIALS|CERT"
+	CERT_TBL        = CREDENTIALS_TBL + "|" + CRED_CERT_PREFIX
 	AUTHZ_TBL       = "AUTHZ_TABLE"
 	ACCEPTS         = "permitted"
 	REJECTS         = "denied"
 	cntResult       = "cntResult"
 	tsResult        = "tsResult"
+
+	/** First component of a CREDENTIALS key, naming the kind of credential
+	  that the rest of the key identifies. **/
+	CRED_CERT_PREFIX  = "CERT"
+	CRED_PATHZ_PREFIX = "PATHZ_POLICY"
+
+	/** Second component of the pathz CREDENTIALS key, which is a singleton. **/
+	CRED_PATHZ_ACTIVE_KEY = "ACTIVE"
 
 	/** System Root paths **/
 	SYSTEM_ROOT = "/openconfig-system:system"
@@ -171,6 +179,7 @@ func init() {
 	XlateFuncBind("YangToDb_grpc_server_xfmr", YangToDb_grpc_server_xfmr)
 	XlateFuncBind("Subscribe_grpc_server_xfmr", Subscribe_grpc_server_xfmr)
 	XlateFuncBind("DbToYang_grpc_server_key_xfmr", DbToYang_grpc_server_key_xfmr)
+	XlateFuncBind("DbToYangPath_grpc_server_path_xfmr", DbToYangPath_grpc_server_path_xfmr)
 	XlateFuncBind("DbToYang_ssh_server_state_xfmr", DbToYang_ssh_server_state_xfmr)
 	XlateFuncBind("Subscribe_ssh_server_state_xfmr", Subscribe_ssh_server_state_xfmr)
 	XlateFuncBind("DbToYang_authz_policy_xfmr", DbToYang_authz_policy_xfmr)
@@ -681,26 +690,26 @@ var Subscribe_grpc_server_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSubscInP
 	log.V(3).Infof("Subscribe_grpc_server_xfmr: targetUriPath: %s name: %s", targetUriPath, serverName)
 
 	var result XfmrSubscOutParams
-	if serverName == "" {
-		result.dbDataMap = RedisDbSubscribeMap{
-			db.StateDB: map[string]map[string]map[string]string{
-				CREDENTIALS_TBL: {
-					"CERT|gnxi":           {},
-					"PATHZ_POLICY|ACTIVE": {}},
-			},
-		}
-	} else {
-		result = XfmrSubscOutParams{
-			dbDataMap: RedisDbSubscribeMap{
-				db.StateDB: map[string]map[string]map[string]string{
-					CREDENTIALS_TBL: {
-						"CERT|gnxi":           {},
-						"PATHZ_POLICY|ACTIVE": {}},
-				}},
-		}
+	// Both CREDENTIALS rows name the same grpc-server instance, so the framework
+	// emits one notification per row it is given. Registering a row the request
+	// is not asking about therefore repeats the same leaf, and a client that
+	// rejects a repeated leaf, such as ygnmi, discards the whole response.
+	// Register the one row the request reads: the counters come from the pathz
+	// row, everything else from the certificate row. A request spanning both is
+	// driven by the certificate row, since the counters are sampled rather than
+	// reported on change.
+	isCounters := strings.HasPrefix(targetUriPath, PATHZ_POLICY_COUNTERS)
+	credRow := CRED_CERT_PREFIX + "|" + GNXI_ID
+	if isCounters {
+		credRow = CRED_PATHZ_PREFIX + "|" + CRED_PATHZ_ACTIVE_KEY
+	}
+	result.dbDataMap = RedisDbSubscribeMap{
+		db.StateDB: map[string]map[string]map[string]string{
+			CREDENTIALS_TBL: {credRow: {}},
+		},
 	}
 
-	if !strings.HasPrefix(targetUriPath, "/openconfig-system:system/grpc-servers/grpc-server/gnsi-pathz:gnmi-pathz-policy-counters") {
+	if !isCounters {
 		result.onChange = OnchangeEnable
 		result.nOpts = &notificationOpts{mInterval: 0, pType: OnChange}
 	} else {
@@ -770,6 +779,44 @@ var DbToYang_grpc_server_key_xfmr KeyXfmrDbToYang = func(inParams XfmrParams) (m
 	log.V(3).Info("DbToYang_grpc_server_key_xfmr root, uri: ", inParams.ygRoot, inParams.uri)
 
 	return map[string]interface{}{"name": NewPathInfo(inParams.uri).Var("name")}, nil
+}
+
+// DbToYangPath_grpc_server_path_xfmr names the grpc-server instance a state
+// database notification belongs to.
+//
+// A subscription may wildcard the server name, and the notification then has
+// to say which server it describes. The key transformer cannot answer that: it
+// only reflects the name the request already carried, which a wildcard does
+// not have. Without this the subscribe path falls back to converting the db
+// key directly, which CREDENTIALS has no sonic model for, and every
+// notification is dropped. That is what a client discovering servers with a
+// wildcard sees as an empty result.
+//
+// The server name is the third component of a CREDENTIALS|CERT|<name> key, the
+// same source a Get of the list enumerates. The pathz policy is stored once
+// under a key that names no server, and is reported against the default
+// server, matching how the read path reports it.
+var DbToYangPath_grpc_server_path_xfmr PathXfmrDbToYangFunc = func(params XfmrDbToYgPathParams) error {
+	if params.tblName != CREDENTIALS_TBL {
+		log.V(3).Infof("DbToYangPath_grpc_server_path_xfmr: unexpected table %v", params.tblName)
+		return nil
+	}
+
+	var serverName string
+	switch {
+	case len(params.tblKeyComp) > 1 && params.tblKeyComp[0] == CRED_CERT_PREFIX:
+		serverName = params.tblKeyComp[1]
+	case len(params.tblKeyComp) > 0 && params.tblKeyComp[0] == CRED_PATHZ_PREFIX:
+		serverName = GNXI_ID
+	default:
+		log.V(3).Infof("DbToYangPath_grpc_server_path_xfmr: no server name in key %v", params.tblKeyComp)
+		return nil
+	}
+
+	params.ygPathKeys[GRPC_SERVER+"/name"] = serverName
+	log.V(3).Infof("DbToYangPath_grpc_server_path_xfmr: ygPathKeys: %v", params.ygPathKeys)
+
+	return nil
 }
 
 // GNMI_CFG_TBL is the CONFIG_DB table that holds the gNMI server runtime

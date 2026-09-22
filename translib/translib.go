@@ -102,12 +102,26 @@ type GetRequest struct {
 	ClientVersion Version
 	QueryParams   QueryParameters
 	Ctxt          context.Context
+	// ListFallback lets Get answer with the enclosing list when the requested
+	// node sits below a list carrying no keys, which cannot be served on its
+	// own. The path that was served comes back in GetResponse.ServedPath.
+	// Callers that can only describe a response with the path they asked for,
+	// such as RESTCONF, should leave this unset and keep the empty result.
+	ListFallback bool
 }
 
 type GetResponse struct {
 	Payload   []byte
 	ValueTree ygot.ValidatedGoStruct
 	ErrSrc    ErrSource
+	// ServedPath names the path the payload actually describes, and is set
+	// only when the request could not be served as asked and a broader path
+	// was used instead. Callers that label a response with the request path
+	// must use this instead, or they will describe the payload wrongly.
+	ServedPath string
+	// ServedListKeys holds the key leaf names of the list at ServedPath, so a
+	// caller can address a single instance of the payload it came back with.
+	ServedListKeys []string
 }
 
 type ActionRequest struct {
@@ -488,6 +502,19 @@ func Get(req GetRequest) (GetResponse, error) {
 		path = p
 	}
 
+	// A node below a keyless list cannot be bound to a single instance, so
+	// serve the list and report which path the payload describes.
+	var servedPath string
+	var servedListKeys []string
+	if req.ListFallback {
+		if p, keys, ok := truncateToKeylessList(path); ok {
+			log.Info("Get: target below a keyless list, serving path = ", p)
+			path = p
+			servedPath = p
+			servedListKeys = keys
+		}
+	}
+
 	app, appInfo, err := getAppModule(path, req.ClientVersion)
 
 	if err != nil {
@@ -520,6 +547,8 @@ func Get(req GetRequest) (GetResponse, error) {
 	}
 
 	resp, err = (*app).processGet(dbs, req.FmtType)
+	resp.ServedPath = servedPath
+	resp.ServedListKeys = servedListKeys
 
 	return resp, err
 }

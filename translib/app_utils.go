@@ -27,6 +27,7 @@ import (
 	"github.com/Azure/sonic-mgmt-common/translib/db"
 	"github.com/Azure/sonic-mgmt-common/translib/ocbinds"
 	"github.com/Azure/sonic-mgmt-common/translib/tlerr"
+	"github.com/Azure/sonic-mgmt-common/translib/transformer"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -87,6 +88,51 @@ func stripWildcardListKeys(uri string) (string, bool) {
 	}
 
 	return newUri, true
+}
+
+// truncateToKeylessList shortens a request URI to the list itself when the
+// target sits somewhere below a list that carries no keys. Such a target
+// cannot be served as asked: with no key there is no single instance to bind
+// the node to, so the request comes back empty today. The list subtree does
+// hold the requested node for every instance, so serving that is the closest
+// answer to the question and leaves the caller to pick the instances it
+// wanted.
+//
+// The deepest keyless list wins, which keeps the answer no broader than the
+// schema forces it to be. A list that is itself the target is left alone,
+// since that already returns every instance.
+//
+// Only OpenConfig paths are rewritten. The sonic-yang paths reach the DB
+// through a separate field-level extraction that handles a keyless list on
+// its own.
+//
+// Returns the shortened URI, the key leaf names of that list, and whether
+// anything changed. The key names let a caller that wants per instance answers
+// split the list payload back up by instance.
+func truncateToKeylessList(uri string) (string, []string, bool) {
+	if strings.HasPrefix(uri, "/sonic") {
+		return uri, nil, false
+	}
+
+	gPath, err := ygot.StringToPath(uri, ygot.StructuredPath)
+	if err != nil {
+		return uri, nil, false
+	}
+
+	for i := len(gPath.Elem) - 2; i >= 0; i-- {
+		if len(gPath.Elem[i].Key) != 0 {
+			continue
+		}
+		listUri, perr := ygot.PathToString(&gnmi.Path{Elem: gPath.Elem[:i+1]})
+		if perr != nil {
+			return uri, nil, false
+		}
+		if transformer.IsListNode(listUri) {
+			return listUri, transformer.ListKeyNames(listUri), true
+		}
+	}
+
+	return uri, nil, false
 }
 
 func getYangPathFromUri(uri string) (string, error) {
