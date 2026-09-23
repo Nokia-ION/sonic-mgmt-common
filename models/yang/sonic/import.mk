@@ -26,6 +26,11 @@ SONICYANG_IMPORTS += sonic-gnmi.yang
 # without it CVL rejects the write ("Invalid table or key for
 # PORT_STORM_CONTROL|<ifname>|<storm_type>"). Imports sonic-port, already listed.
 SONICYANG_IMPORTS += sonic-storm-control.yang
+# sonic-auto_techsupport provides the AUTO_TECHSUPPORT table. Required so CVL can
+# validate translib writes to AUTO_TECHSUPPORT|GLOBAL:max_core_limit driven by
+# the openconfig-system-ext core-file-cleanup augment. Imports sonic-types,
+# already listed.
+SONICYANG_IMPORTS += sonic-auto_techsupport.yang
 
 # BGP global OC mapping uses CONFIG_DB:BGP_GLOBALS|<vrf>.
 # Import BGP and routing-policy SONiC YANGs so CVL schema contains

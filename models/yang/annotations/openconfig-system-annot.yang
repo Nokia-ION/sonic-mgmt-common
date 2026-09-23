@@ -303,6 +303,15 @@ module openconfig-system-annot {
       }
     }
 
+    /* Core file cleanup (openconfig-system-ext) maps to AUTO_TECHSUPPORT|GLOBAL.
+       Config and state are handled together because state/enabled is derived
+       from the 'state' field rather than mirroring a config leaf. */
+    deviation /oc-sys:system/oc-sys-ext:core-file-cleanup {
+      deviate add {
+        sonic-ext:subtree-transformer "core_file_cleanup_xfmr";
+      }
+    }
+
     /*
      * Control-plane traffic filtering in hardware.
      *

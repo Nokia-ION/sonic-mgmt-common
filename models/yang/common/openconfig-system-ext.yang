@@ -28,11 +28,19 @@ module openconfig-system-ext {
 
       * a DSCP marking value for the SSH management server,
       * a DSCP marking value for TACACS+ client traffic,
-      * an idle (inactivity) timeout for the serial console, and
+      * an idle (inactivity) timeout for the serial console,
       * a source interface for NTP, TACACS+, and remote syslog
-        management traffic.";
+        management traffic, and
+      * a disk-usage limit for automatic core file cleanup.";
 
-  oc-ext:openconfig-version "0.3.0";
+  oc-ext:openconfig-version "0.4.0";
+
+  revision "2026-09-23" {
+    description
+      "Add a core-file-cleanup container with a max-core-limit leaf
+      (maps to AUTO_TECHSUPPORT|GLOBAL:max_core_limit).";
+    reference "0.4.0";
+  }
 
   revision "2026-09-01" {
     description
@@ -117,6 +125,66 @@ module openconfig-system-ext {
         service. Equivalent to the EOS 'ntp local-interface <intf>' and
         'ip tacacs source-interface <intf>' settings; maps to the SONiC
         src_intf field of the corresponding global table.";
+    }
+  }
+
+  grouping system-core-file-cleanup-config {
+    description
+      "Configuration for automatic cleanup of core files.";
+
+    leaf max-core-limit {
+      type decimal64 {
+        fraction-digits 2;
+        range "0..99.99";
+      }
+      units "percent";
+      description
+        "Maximum share of the filesystem hosting /var/core, in percent,
+        that core files may occupy. When a new core file is written and
+        the total size of the core files exceeds this limit, the oldest
+        core files are deleted until the total is below it; the newest
+        core file is always kept. A value of 0 disables this cleanup.
+        Maps to the SONiC AUTO_TECHSUPPORT|GLOBAL:max_core_limit field.";
+    }
+  }
+
+  grouping system-core-file-cleanup-state {
+    description
+      "Operational state for automatic cleanup of core files.";
+
+    leaf enabled {
+      type boolean;
+      description
+        "True when size-based core file cleanup runs, that is when the
+        SONiC AUTO_TECHSUPPORT|GLOBAL:state field is 'enabled'. That field
+        also gates event-driven tech-support collection, so it is not
+        configurable through this container.";
+    }
+  }
+
+  grouping system-core-file-cleanup-top {
+    description
+      "Top-level grouping for automatic core file cleanup.";
+
+    container core-file-cleanup {
+      description
+        "Automatic cleanup of core files under /var/core.";
+
+      container config {
+        description
+          "Configuration data for core file cleanup.";
+
+        uses system-core-file-cleanup-config;
+      }
+
+      container state {
+        config false;
+        description
+          "Operational state data for core file cleanup.";
+
+        uses system-core-file-cleanup-config;
+        uses system-core-file-cleanup-state;
+      }
     }
   }
 
@@ -207,5 +275,12 @@ module openconfig-system-ext {
 
       uses system-source-interface-config;
     }
+  }
+
+  augment "/oc-sys:system" {
+    description
+      "Add automatic core file cleanup configuration and state.";
+
+    uses system-core-file-cleanup-top;
   }
 }
