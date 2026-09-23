@@ -398,45 +398,98 @@ func Test_openconfig_network_instance_static_route_protocol_instance_name(t *tes
 	unloadDB(db.ConfigDB, cleanupTbl)
 }
 
-func Test_openconfig_network_instance_static_route_container_delete_not_supported(t *testing.T) {
+// The static protocol instance holds nothing but its routes, so a delete
+// addressed at the instance and one addressed at the static-routes container
+// it holds are the same request, and both remove every route of the instance.
+func Test_openconfig_network_instance_static_route_protocol_instance_delete(t *testing.T) {
+	const vrf = "VrfStaticDel"
+	const protoUrl = "/openconfig-network-instance:network-instances/network-instance[name=" + vrf +
+		"]/protocols/protocol[identifier=STATIC][name=static]"
+
 	preReqMap := map[string]interface{}{
 		"STATIC_ROUTE": map[string]interface{}{
-			"default|172.16.1.0/24": map[string]interface{}{
-				"nexthop": "10.1.1.1",
-			},
+			vrf + "|172.16.1.0/24": map[string]interface{}{"nexthop": "10.1.1.1"},
+			vrf + "|fc00:16::/64":  map[string]interface{}{"nexthop": "fc00:11::1"},
 		},
 	}
 	cleanupTbl := map[string]interface{}{
 		"STATIC_ROUTE": map[string]interface{}{
-			"default|172.16.1.0/24": "",
+			vrf + "|172.16.1.0/24": "",
+			vrf + "|fc00:16::/64":  "",
 		},
 	}
+
+	empty := map[string]interface{}{"t": map[string]interface{}{"k": map[string]interface{}{}}}
+
+	for _, spec := range []struct {
+		what string
+		url  string
+	}{
+		{"protocol instance", protoUrl},
+		{"static-routes container", protoUrl + "/static-routes"},
+	} {
+		loadDB(db.ConfigDB, preReqMap)
+		time.Sleep(1 * time.Second)
+
+		t.Run("DELETE the "+spec.what, processDeleteRequest(spec.url, false))
+		time.Sleep(2 * time.Second)
+
+		t.Run("Verify the ipv4 route is gone after deleting the "+spec.what,
+			verifyDbResult(rclient, "STATIC_ROUTE|"+vrf+"|172.16.1.0/24", empty, false))
+		time.Sleep(1 * time.Second)
+		t.Run("Verify the ipv6 route is gone after deleting the "+spec.what,
+			verifyDbResult(rclient, "STATIC_ROUTE|"+vrf+"|fc00:16::/64", empty, false))
+		time.Sleep(1 * time.Second)
+
+		unloadDB(db.ConfigDB, cleanupTbl)
+	}
+
+	// An instance holding no routes is already in the state the caller asked
+	// for, so the delete succeeds rather than reporting nothing to remove.
+	t.Run("DELETE an instance holding no routes", processDeleteRequest(protoUrl, false))
+	time.Sleep(1 * time.Second)
+
+	// Routes of another instance are not this instance's to remove.
+	otherReq := map[string]interface{}{
+		"STATIC_ROUTE": map[string]interface{}{
+			"VrfStaticKeep|173.16.1.0/24": map[string]interface{}{"nexthop": "10.1.1.2"},
+		},
+	}
+	loadDB(db.ConfigDB, otherReq)
+	time.Sleep(1 * time.Second)
+
+	t.Run("DELETE the instance again, with another instance holding a route",
+		processDeleteRequest(protoUrl, false))
+	time.Sleep(2 * time.Second)
+
+	t.Run("Verify the other instance kept its route",
+		verifyDbResult(rclient, "STATIC_ROUTE|VrfStaticKeep|173.16.1.0/24", otherReq, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, map[string]interface{}{
+		"STATIC_ROUTE": map[string]interface{}{"VrfStaticKeep|173.16.1.0/24": ""},
+	})
+
+	// The list instance delete this container delete was once the only
+	// alternative to still works.
 	loadDB(db.ConfigDB, preReqMap)
 	time.Sleep(1 * time.Second)
 
-	expectedErr := tlerr.NotSupportedError{
-		Format: "DELETE is not supported at static routes container level; delete a static route instance instead",
-	}
-	t.Run("DELETE static-routes container rejected",
-		processDeleteRequest(niStaticRouteProtoUrl+"/static-routes", true, expectedErr))
+	t.Run("DELETE a static route list instance",
+		processDeleteRequest(protoUrl+"/static-routes/static[prefix=172.16.1.0/24]", false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify only the named route went",
+		verifyDbResult(rclient, "STATIC_ROUTE|"+vrf+"|172.16.1.0/24", empty, false))
 	time.Sleep(1 * time.Second)
 
 	expectedMap := map[string]interface{}{
 		"STATIC_ROUTE": map[string]interface{}{
-			"default|172.16.1.0/24": map[string]interface{}{
-				"nexthop": "10.1.1.1",
-			},
+			vrf + "|fc00:16::/64": map[string]interface{}{"nexthop": "fc00:11::1"},
 		},
 	}
-	t.Run("Verify STATIC_ROUTE row kept after rejected container DELETE",
-		verifyDbResult(rclient, "STATIC_ROUTE|default|172.16.1.0/24", expectedMap, false))
-	time.Sleep(1 * time.Second)
-
-	t.Run("DELETE static route list instance", processDeleteRequest(niStaticRouteProtoUrl+"/static-routes/static[prefix=172.16.1.0/24]", false))
-	time.Sleep(1 * time.Second)
-
-	t.Run("Verify STATIC_ROUTE row deleted with list instance",
-		verifyDbResult(rclient, "STATIC_ROUTE|default|172.16.1.0/24", map[string]interface{}{}, false))
+	t.Run("Verify the other route of the instance stayed",
+		verifyDbResult(rclient, "STATIC_ROUTE|"+vrf+"|fc00:16::/64", expectedMap, false))
 	time.Sleep(1 * time.Second)
 
 	unloadDB(db.ConfigDB, cleanupTbl)

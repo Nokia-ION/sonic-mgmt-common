@@ -2957,54 +2957,111 @@ func Test_openconfig_network_instance_bgp_container_unmapped_payload_rejected(t 
 	unloadDB(db.ConfigDB, cleanupTbl)
 }
 
-func Test_openconfig_network_instance_bgp_container_delete_not_supported(t *testing.T) {
+// A delete addressed at the BGP protocol instance, and one addressed at the
+// bgp container it holds, are the same request: the list entry has no row of
+// its own, the instance existing only because the globals row does. Both
+// remove every BGP row of the instance. A container below the bgp container is
+// a different matter and stays refused.
+func Test_openconfig_network_instance_bgp_protocol_instance_delete(t *testing.T) {
+	const vrf = "VrfBgpDel"
+	const protoUrl = "/openconfig-network-instance:network-instances/network-instance[name=" + vrf +
+		"]/protocols/protocol[identifier=BGP][name=bgp]"
+
 	preReqMap := map[string]interface{}{
 		"BGP_GLOBALS": map[string]interface{}{
-			"default": map[string]interface{}{
-				"local_asn": "65200",
-			},
+			vrf: map[string]interface{}{"local_asn": "65200"},
+		},
+		"BGP_GLOBALS_AF": map[string]interface{}{
+			vrf + "|ipv4_unicast": map[string]interface{}{"max_ebgp_paths": "8"},
 		},
 		"BGP_NEIGHBOR": map[string]interface{}{
-			"default|20.0.0.1": map[string]interface{}{
-				"admin_status": "up",
-			},
+			vrf + "|20.0.0.1": map[string]interface{}{"admin_status": "up", "peer_group_name": "PGDEL"},
+		},
+		"BGP_NEIGHBOR_AF": map[string]interface{}{
+			vrf + "|20.0.0.1|ipv4_unicast": map[string]interface{}{"admin_status": "up"},
+		},
+		"BGP_PEER_GROUP": map[string]interface{}{
+			vrf + "|PGDEL": map[string]interface{}{"peer_group_name": "PGDEL"},
 		},
 	}
 	cleanupTbl := map[string]interface{}{
-		"BGP_NEIGHBOR": map[string]interface{}{"default|20.0.0.1": ""},
-		"BGP_GLOBALS":  map[string]interface{}{"default": ""},
+		"BGP_NEIGHBOR_AF": map[string]interface{}{vrf + "|20.0.0.1|ipv4_unicast": ""},
+		"BGP_NEIGHBOR":    map[string]interface{}{vrf + "|20.0.0.1": ""},
+		"BGP_PEER_GROUP":  map[string]interface{}{vrf + "|PGDEL": ""},
+		"BGP_GLOBALS_AF":  map[string]interface{}{vrf + "|ipv4_unicast": ""},
+		"BGP_GLOBALS":     map[string]interface{}{vrf: ""},
 	}
+
+	empty := map[string]interface{}{"t": map[string]interface{}{"k": map[string]interface{}{}}}
+	gone := []struct {
+		what string
+		key  string
+	}{
+		{"the globals row", "BGP_GLOBALS|" + vrf},
+		{"the globals address family row", "BGP_GLOBALS_AF|" + vrf + "|ipv4_unicast"},
+		{"the neighbor row", "BGP_NEIGHBOR|" + vrf + "|20.0.0.1"},
+		{"the neighbor address family row", "BGP_NEIGHBOR_AF|" + vrf + "|20.0.0.1|ipv4_unicast"},
+		{"the peer group row", "BGP_PEER_GROUP|" + vrf + "|PGDEL"},
+	}
+
+	// The peer group is deleted alongside the neighbour that names it, which
+	// is the case CVL refuses when a cascade turns that edge into a field
+	// delete written into a row that is itself being deleted.
+	for _, spec := range []struct {
+		what string
+		url  string
+	}{
+		{"protocol instance", protoUrl},
+		{"bgp container", protoUrl + "/bgp"},
+	} {
+		loadDB(db.ConfigDB, preReqMap)
+		time.Sleep(1 * time.Second)
+
+		t.Run("DELETE the "+spec.what, processDeleteRequest(spec.url, false))
+		time.Sleep(2 * time.Second)
+
+		for _, g := range gone {
+			t.Run("Verify "+g.what+" is gone after deleting the "+spec.what,
+				verifyDbResult(rclient, g.key, empty, false))
+			time.Sleep(1 * time.Second)
+		}
+		unloadDB(db.ConfigDB, cleanupTbl)
+	}
+
+	// Everything below the bgp container keeps its refusal, and this is the
+	// part that matters most. The parse reports every node of the instance
+	// that has no pattern of its own as the bgp root, because that is what the
+	// container dispatch needs in order to read it. If the delete treated that
+	// as the instance, a delete aimed at any one of these would take every BGP
+	// row with it, which is what an unguarded version of this change did.
 	loadDB(db.ConfigDB, preReqMap)
 	time.Sleep(1 * time.Second)
 
-	expectedErr := tlerr.NotSupportedError{
-		Format: "DELETE is not supported at BGP container level; delete mapped child paths or list instances instead",
-	}
-	t.Run("DELETE network-instance BGP container rejected", processDeleteRequest(niBgpProtoUrl+"/bgp", true, expectedErr))
-	time.Sleep(1 * time.Second)
+	for _, path := range []string{
+		"/bgp/neighbors",
+		"/bgp/peer-groups",
+		"/bgp/global/afi-safis",
+		"/bgp/global/afi-safis/afi-safi[afi-safi-name=IPV6_UNICAST]/ipv6-unicast/config",
+	} {
+		t.Run("DELETE at "+path+" is refused", processDeleteRequest(protoUrl+path, true))
+		time.Sleep(1 * time.Second)
 
-	t.Run("DELETE network-instance BGP neighbors container rejected", processDeleteRequest(niBgpProtoUrl+"/bgp/neighbors", true))
-	time.Sleep(1 * time.Second)
+		t.Run("Verify the globals row survived the refused delete at "+path,
+			verifyDbResult(rclient, "BGP_GLOBALS|"+vrf, map[string]interface{}{
+				"BGP_GLOBALS": map[string]interface{}{
+					vrf: map[string]interface{}{"local_asn": "65200"},
+				},
+			}, false))
+		time.Sleep(1 * time.Second)
 
-	expectedMap := map[string]interface{}{
-		"BGP_GLOBALS": map[string]interface{}{
-			"default": map[string]interface{}{
-				"local_asn": "65200",
-			},
-		},
+		t.Run("Verify the neighbor row survived the refused delete at "+path,
+			verifyDbResult(rclient, "BGP_NEIGHBOR|"+vrf+"|20.0.0.1", map[string]interface{}{
+				"BGP_NEIGHBOR": map[string]interface{}{
+					vrf + "|20.0.0.1": map[string]interface{}{"admin_status": "up", "peer_group_name": "PGDEL"},
+				},
+			}, false))
+		time.Sleep(1 * time.Second)
 	}
-	t.Run("Verify BGP_GLOBALS retained after rejected container delete", verifyDbResult(rclient, "BGP_GLOBALS|default", expectedMap, false))
-	time.Sleep(1 * time.Second)
-
-	expectedMap = map[string]interface{}{
-		"BGP_NEIGHBOR": map[string]interface{}{
-			"default|20.0.0.1": map[string]interface{}{
-				"admin_status": "up",
-			},
-		},
-	}
-	t.Run("Verify BGP_NEIGHBOR retained after rejected container delete", verifyDbResult(rclient, "BGP_NEIGHBOR|default|20.0.0.1", expectedMap, false))
-	time.Sleep(1 * time.Second)
 
 	unloadDB(db.ConfigDB, cleanupTbl)
 }
