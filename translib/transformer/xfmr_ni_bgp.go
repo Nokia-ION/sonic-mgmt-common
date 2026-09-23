@@ -118,6 +118,11 @@ type niBgpReqInfo struct {
 	protoName      string
 	targetLeaf     string // "", "as", "router-id", "always-compare-med", "maximum-paths"
 	targetPathKind string
+	// wholeInstance marks the two uris that name the instance itself: the
+	// protocol list entry and the bgp container it holds. The catch-all below
+	// also reports niBgpTargetBgpRoot, for any node of the instance that has no
+	// pattern of its own, and those are emphatically not the whole instance.
+	wholeInstance bool
 }
 
 func init() {
@@ -144,6 +149,7 @@ func matchNiBgpRequestUri(uri string) (*niBgpReqInfo, error) {
 			protoName:      m[2],
 			targetLeaf:     "",
 			targetPathKind: niBgpTargetProtocolRoot,
+			wholeInstance:  true,
 		}, nil
 	}
 	m = niBgpRootReqUriRe.FindStringSubmatch(uri)
@@ -153,6 +159,7 @@ func matchNiBgpRequestUri(uri string) (*niBgpReqInfo, error) {
 			protoName:      m[2],
 			targetLeaf:     "",
 			targetPathKind: niBgpTargetBgpRoot,
+			wholeInstance:  true,
 		}, nil
 	}
 
@@ -1866,12 +1873,21 @@ var YangToDb_ni_bgp_global_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPara
 			return pgRes, pgErr
 		}
 		if reqInfo.targetPathKind == niBgpTargetProtocolRoot || reqInfo.targetPathKind == niBgpTargetBgpRoot {
-			if niReqFromNiLevel(inParams) {
-				// Part of a delete of the network instance, where the globals
-				// row is the one thing no list instance covers.
+			if reqInfo.wholeInstance {
+				// The two spellings name one request. The protocol list entry
+				// has no row of its own, the instance existing only because
+				// the globals row does, so deleting the instance and deleting
+				// the bgp container it holds remove the same rows. A delete
+				// replayed from a network-instance level arrives here too,
+				// where the globals row is the one thing no list instance
+				// covers.
 				return niBgpDeleteGlobalsForNi(inParams, reqInfo.niName)
 			}
-			return res, tlerr.NotSupportedError{Format: "DELETE is not supported at BGP container level; delete mapped child paths or list instances instead", Path: inParams.requestUri}
+			// A node of the instance with no pattern of its own reaches here
+			// reported as the bgp root, because that is what the container
+			// dispatch needs for a read. Deleting it as though the caller had
+			// named the instance would remove every BGP row from under them.
+			return res, tlerr.NotSupportedError{Format: "DELETE is not supported at this path under the BGP protocol instance; delete mapped child paths or list instances instead", Path: inParams.requestUri}
 		}
 		switch reqInfo.targetLeaf {
 		case "as":

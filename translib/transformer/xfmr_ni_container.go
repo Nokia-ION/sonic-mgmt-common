@@ -403,14 +403,6 @@ func niIsUnmappedProtocolNodeUri(uri string) bool {
 	return niUnmappedProtocolNodeRe.MatchString(uri)
 }
 
-// niReqFromNiLevel reports a request made at one of the network-instance
-// levels. It is how a handler below tells a cascade from a request aimed at
-// itself, so that what a caller may do directly is unchanged.
-func niReqFromNiLevel(inParams XfmrParams) bool {
-	kind, _ := parseNiContainerRequestUri(inParams.requestUri)
-	return kind != niContainerTargetUnmapped
-}
-
 // niContainerDelete removes what this module maps under the instances in
 // scope. Nothing cascades on its own: translib walks the children of a SET but
 // not of a DELETE, so each subtree is removed here, through the delete its own

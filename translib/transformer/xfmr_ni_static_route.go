@@ -1433,6 +1433,45 @@ func niStaticRouteEntryOrEmpty(cfgDb *db.DB, niName, prefix string) db.Value {
 
 // niStaticRoutePrefixesFromDb lists the prefixes configured for one VRF. A key
 // without a VRF component belongs to the default VRF.
+// niStaticRouteDeleteAllForNi names every static route row of the instance.
+//
+// The rows are named from the keys the database holds rather than rebuilt from
+// the prefixes, because a route of the default instance may be keyed on the
+// prefix alone, and a key rebuilt as <ni>|<prefix> would then name no row.
+func niStaticRouteDeleteAllForNi(inParams XfmrParams, niName string) (map[string]map[string]db.Value, error) {
+	res := make(map[string]map[string]db.Value)
+	cfgDb := inParams.dbs[db.ConfigDB]
+	if cfgDb == nil {
+		return res, tlerr.InvalidArgsError{Format: "ConfigDB nil for network-instance static route mapping"}
+	}
+
+	keys, err := cfgDb.GetKeys(&db.TableSpec{Name: niStaticRouteTbl})
+	if err != nil {
+		// An instance holding no routes is already in the state the caller
+		// asked for, so having nothing to delete is success.
+		return res, nil
+	}
+	for _, k := range keys {
+		switch len(k.Comp) {
+		case 1:
+			if niName != "default" {
+				continue
+			}
+		case 2:
+			if k.Comp[0] != niName {
+				continue
+			}
+		default:
+			continue
+		}
+		if _, ok := res[niStaticRouteTbl]; !ok {
+			res[niStaticRouteTbl] = make(map[string]db.Value)
+		}
+		res[niStaticRouteTbl][strings.Join(k.Comp, "|")] = db.Value{Field: map[string]string{}}
+	}
+	return res, nil
+}
+
 func niStaticRoutePrefixesFromDb(cfgDb *db.DB, niName string) []string {
 	var prefixes []string
 	keys, err := cfgDb.GetKeys(&db.TableSpec{Name: niStaticRouteTbl})
@@ -1553,7 +1592,11 @@ var YangToDb_ni_static_route_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPa
 	if inParams.oper == DELETE {
 		switch reqInfo.targetPathKind {
 		case niStaticRouteTargetProtocolRoot, niStaticRouteTargetRoutesRoot:
-			return res, tlerr.NotSupportedError{Format: "DELETE is not supported at static routes container level; delete a static route instance instead", Path: inParams.requestUri}
+			// The same two spellings of one request as on the BGP side: the
+			// protocol instance holds nothing but its routes, so removing the
+			// instance and removing the static-routes container it holds are
+			// the same thing.
+			return niStaticRouteDeleteAllForNi(inParams, reqInfo.niName)
 		case niStaticRouteTargetRouteCfg:
 			if reqInfo.targetLeaf == niStaticRouteSetTagLeaf {
 				// Only the tag, which lives in the row the route shares with its
