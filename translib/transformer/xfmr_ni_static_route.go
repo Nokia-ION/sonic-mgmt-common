@@ -31,6 +31,7 @@ import (
 	log "github.com/golang/glog"
 
 	"github.com/Azure/sonic-mgmt-common/translib/db"
+	"github.com/Azure/sonic-mgmt-common/translib/internal/apis"
 	"github.com/Azure/sonic-mgmt-common/translib/ocbinds"
 	"github.com/Azure/sonic-mgmt-common/translib/tlerr"
 	"github.com/openconfig/ygot/ygot"
@@ -51,6 +52,11 @@ const (
 	niStaticRouteDistanceFld   = "distance"
 	niStaticRouteAdvertiseFld  = "advertise"
 	niStaticRouteTagFld        = "tag"
+	// What FRR holds, published by bgpmon, keyed <vrf>|<prefix> exactly as the
+	// configured table is keyed, so state decodes the way config does.
+	niStaticRouteAppliedTbl = "STATIC_ROUTE_APPLIED"
+	niStaticRouteNiListNode = "network-instance"
+	niStaticRouteListNode   = "static"
 
 	niStaticRouteTargetProtocolRoot = "static-protocol-root"
 	niStaticRouteTargetRoutesRoot   = "static-routes-root"
@@ -126,6 +132,8 @@ type niStaticRouteReqInfo struct {
 func init() {
 	XlateFuncBind("YangToDb_ni_static_route_cfg_xfmr", YangToDb_ni_static_route_cfg_xfmr)
 	XlateFuncBind("DbToYang_ni_static_route_cfg_xfmr", DbToYang_ni_static_route_cfg_xfmr)
+	XlateFuncBind("Subscribe_ni_static_route_cfg_xfmr", Subscribe_ni_static_route_cfg_xfmr)
+	XlateFuncBind("DbToYangPath_ni_static_route_path_xfmr", DbToYangPath_ni_static_route_path_xfmr)
 }
 
 // isNiStaticRouteReqUri reports whether uri targets the STATIC protocol
@@ -1494,6 +1502,145 @@ func niStaticRoutePrefixesFromDb(cfgDb *db.DB, niName string) []string {
 	return prefixes
 }
 
+// niStaticRouteAppliedEntry reads what FRR holds for one route. There is no
+// key without the VRF here, unlike the configured table: the producer reads
+// FRR's own vrf-keyed dump, so every row names its instance.
+func niStaticRouteAppliedEntry(inParams XfmrParams, niName, prefix string) (db.Value, bool) {
+	stDb := inParams.dbs[db.StateDB]
+	if stDb == nil {
+		return db.Value{}, false
+	}
+	entry, err := stDb.GetEntry(&db.TableSpec{Name: niStaticRouteAppliedTbl},
+		db.Key{Comp: []string{niName, prefix}})
+	// A missing row is not always reported as an error: the answer can be a
+	// value holding no fields. Reading that as a route FRR holds would make
+	// state report a route FRR never accepted.
+	if err != nil || len(entry.Field) == 0 {
+		return db.Value{}, false
+	}
+	return entry, true
+}
+
+// niStaticRouteSchemaPathUpto truncates a schema path just after the named
+// node, and reports whether the path names it at all. A yang key is looked up
+// under the path of the list that holds it, so a path transformer has to
+// answer with a prefix of the path it was given.
+func niStaticRouteSchemaPathUpto(schemaPath string, node string) (string, bool) {
+	var b strings.Builder
+	for _, elem := range strings.Split(strings.TrimPrefix(schemaPath, "/"), "/") {
+		b.WriteString("/")
+		b.WriteString(elem)
+		name := elem
+		if i := strings.Index(name, ":"); i >= 0 {
+			name = name[i+1:]
+		}
+		if name == node {
+			return b.String(), true
+		}
+	}
+	return "", false
+}
+
+var niStaticRouteSubscReqUriRe = regexp.MustCompile(niStaticRouteUriPfx +
+	`/static-routes(?:/static(?:\[prefix=([^\]]+)\])?(?:/(.*))?)?$`)
+
+// Subscribe_ni_static_route_cfg_xfmr maps the applied table behind the static
+// routes, which is what makes the path DB backed. A path that is not gets
+// refused twice over: on-change and wildcard support are both cleared for it,
+// and a wildcard key is rejected outright.
+var Subscribe_ni_static_route_cfg_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSubscInParams) (XfmrSubscOutParams, error) {
+	var result XfmrSubscOutParams
+
+	if inParams.subscProc != TRANSLATE_SUBSCRIBE {
+		result.isVirtualTbl = true
+		return result, nil
+	}
+
+	// The anchor is uri: the subscribe path trims a trailing leaf off it, so a
+	// request on state/prefix arrives anchored on state, which is the node the
+	// notification is formed against. requestURI names the leaf the caller
+	// asked for and would answer a different question. The CRUD parent-table
+	// check arrives with uri unset.
+	anchor := inParams.uri
+	if anchor == "" {
+		anchor = inParams.requestURI
+	}
+
+	m := niStaticRouteSubscReqUriRe.FindStringSubmatch(anchor)
+	if m == nil {
+		result.isVirtualTbl = true
+		return result, nil
+	}
+
+	niName, prefix, below := m[1], m[3], m[4]
+	// A caller that hands over the whole path rather than the trimmed one is
+	// asking about the same node, so it is answered the same way.
+	if below == "state/"+niStaticRoutePrefixLeaf || below == "state/"+niStaticRouteSetTagLeaf {
+		below = "state"
+	}
+	keyPatt := niName + "|*"
+	if prefix != "" && prefix != "*" {
+		keyPatt = niName + "|" + prefix
+	}
+
+	// Only a leaf directly below the anchored node can be named, because the
+	// framework forms the path by appending the name to the anchor. prefix
+	// needs no mapping: it is the list key, which a row arriving or going away
+	// carries on its own.
+	fields := map[string]string{}
+	if below == "state" {
+		fields[niStaticRouteTagFld] = niStaticRouteSetTagLeaf
+	}
+
+	result.dbDataMap = RedisDbSubscribeMap{db.StateDB: {
+		niStaticRouteAppliedTbl: {keyPatt: fields},
+	}}
+	result.isVirtualTbl = false
+
+	// On change where a row arriving or going away is the whole story: the
+	// route list, a keyed route, and its state container. Deeper nodes describe
+	// next-hops, which this table does not decompose, so they keep sampling
+	// rather than being accepted and then reporting nothing.
+	if below == "" || below == "state" {
+		result.onChange = OnchangeEnable
+		result.nOpts = &notificationOpts{pType: OnChange}
+		return result, nil
+	}
+
+	result.onChange = OnchangeDisable
+	result.nOpts = &notificationOpts{pType: Sample}
+	return result, nil
+}
+
+// DbToYangPath_ni_static_route_path_xfmr names the instance and the route an
+// applied row belongs to. A subscription needs this whenever translib has to
+// supply a key rather than read one from the request: with a wildcard or an
+// omitted key it holds a changed row and no way to say which route it is for.
+var DbToYangPath_ni_static_route_path_xfmr PathXfmrDbToYangFunc = func(params XfmrDbToYgPathParams) error {
+	if params.tblName != niStaticRouteAppliedTbl {
+		return fmt.Errorf("ni_static_route_path_xfmr: notification from table %q, expected %q: %w",
+			params.tblName, niStaticRouteAppliedTbl, apis.ErrUnrelatedEntry)
+	}
+	if len(params.tblKeyComp) != 2 || params.tblKeyComp[0] == "" || params.tblKeyComp[1] == "" {
+		return fmt.Errorf("ni_static_route_path_xfmr: %s key %v does not name an instance and a prefix",
+			niStaticRouteAppliedTbl, params.tblKeyComp)
+	}
+	niName, prefix := params.tblKeyComp[0], params.tblKeyComp[1]
+
+	niPath, ok := niStaticRouteSchemaPathUpto(params.ygSchemaPath, niStaticRouteNiListNode)
+	if !ok {
+		// Nothing of this row is on the path, so there is no key to answer
+		// with. That is not a fault, the same way it is not on the AFT side.
+		return nil
+	}
+	params.ygPathKeys[niPath+"/name"] = niName
+
+	if routePath, ok := niStaticRouteSchemaPathUpto(params.ygSchemaPath, niStaticRouteListNode); ok {
+		params.ygPathKeys[routePath+"/"+niStaticRoutePrefixLeaf] = prefix
+	}
+	return nil
+}
+
 func niStaticRouteEntryFromDb(cfgDb *db.DB, niName, prefix string) (db.Value, error) {
 	entry, err := cfgDb.GetEntry(&db.TableSpec{Name: niStaticRouteTbl}, db.Key{Comp: []string{niName, prefix}})
 	if err == nil {
@@ -1838,20 +1985,24 @@ var DbToYang_ni_static_route_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrPa
 		if reqInfo.prefix == "" {
 			return tlerr.NotSupportedError{Format: "a wildcard or absent static route prefix is served at the route list; address static-routes/static rather than a container below it"}
 		}
-		entry, err := niStaticRouteEntryFromDb(cfgDb, reqInfo.niName, reqInfo.prefix)
-		if err != nil {
-			return err
-		}
 		stateObj := getNiStaticRouteStateObj(inParams.ygRoot, reqInfo.niName, reqInfo.protoName, reqInfo.prefix, true)
 		if stateObj == nil {
 			return tlerr.InvalidArgsError{Format: "Unable to locate static route state object in YANG tree"}
+		}
+		// State is what FRR holds rather than what was written. A route FRR has
+		// not taken reports nothing, rather than echoing the configuration back
+		// and calling it applied, so an absent applied row leaves the container
+		// empty instead of failing.
+		applied, held := niStaticRouteAppliedEntry(inParams, reqInfo.niName, reqInfo.prefix)
+		if !held {
+			return nil
 		}
 		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == niStaticRoutePrefixLeaf {
 			routePrefix := reqInfo.prefix
 			stateObj.Prefix = &routePrefix
 		}
 		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == niStaticRouteSetTagLeaf {
-			niStaticRouteSetTagToYangState(stateObj, entry)
+			niStaticRouteSetTagToYangState(stateObj, applied)
 		}
 		return nil
 	case niStaticRouteTargetRouteCfg:
