@@ -1221,9 +1221,17 @@ func Test_openconfig_network_instance_static_route_set_tag_from_container(t *tes
 // same STATIC_ROUTE row the config container writes, prefix and the tag alike.
 // It is read-only, and the request binder refuses a write to it before any
 // transformer runs.
+// State is what FRR holds, published by bgpmon into the applied table, not a
+// copy of what was configured. The fixtures deliberately disagree - the
+// configured tag is 77 and the applied one 88 - so a state read that fell back
+// to CONFIG_DB would be visible as a wrong value rather than passing by
+// accident.
 func Test_openconfig_network_instance_static_route_state(t *testing.T) {
 	cleanupTbl := map[string]interface{}{
 		"STATIC_ROUTE": map[string]interface{}{"default|172.16.40.0/24": ""},
+	}
+	appliedTbl := map[string]interface{}{
+		"STATIC_ROUTE_APPLIED": map[string]interface{}{"default|172.16.40.0/24": ""},
 	}
 	preReqMap := map[string]interface{}{
 		"STATIC_ROUTE": map[string]interface{}{
@@ -1234,8 +1242,24 @@ func Test_openconfig_network_instance_static_route_state(t *testing.T) {
 			},
 		},
 	}
+	appliedMap := map[string]interface{}{
+		"STATIC_ROUTE_APPLIED": map[string]interface{}{
+			"default|172.16.40.0/24": map[string]interface{}{
+				"nexthop":   "10.1.1.40",
+				"ifname":    "Ethernet0",
+				"tag":       "88",
+				"distance":  "1",
+				"metric":    "0",
+				"installed": "true",
+				"selected":  "true",
+				"blackhole": "false",
+			},
+		},
+	}
 	unloadDB(db.ConfigDB, cleanupTbl)
+	unloadDB(db.StateDB, appliedTbl)
 	loadDB(db.ConfigDB, preReqMap)
+	loadDB(db.StateDB, appliedMap)
 	time.Sleep(1 * time.Second)
 
 	rtUrl := "/openconfig-network-instance:network-instances/network-instance[name=default]" +
@@ -1246,14 +1270,20 @@ func Test_openconfig_network_instance_static_route_state(t *testing.T) {
 		processGetRequest(rtUrl+"/state/prefix", nil, expectedGetJSON, false))
 	time.Sleep(1 * time.Second)
 
-	expectedGetJSON = `{"openconfig-network-instance:set-tag":77}`
-	t.Run("GET the state set-tag leaf",
+	expectedGetJSON = `{"openconfig-network-instance:set-tag":88}`
+	t.Run("GET the state set-tag leaf reports what FRR holds",
 		processGetRequest(rtUrl+"/state/set-tag", nil, expectedGetJSON, false))
 	time.Sleep(1 * time.Second)
 
-	expectedGetJSON = `{"openconfig-network-instance:state":{"prefix":"172.16.40.0/24","set-tag":77}}`
+	expectedGetJSON = `{"openconfig-network-instance:state":{"prefix":"172.16.40.0/24","set-tag":88}}`
 	t.Run("GET the state container",
 		processGetRequest(rtUrl+"/state", nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	// The configured value is still its own, read from its own table.
+	expectedGetJSON = `{"openconfig-network-instance:set-tag":77}`
+	t.Run("GET the config set-tag leaf still reports what was written",
+		processGetRequest(rtUrl+"/config/set-tag", nil, expectedGetJSON, false))
 	time.Sleep(1 * time.Second)
 
 	// state is config false, so the binder turns a write away before any
@@ -1283,6 +1313,36 @@ func Test_openconfig_network_instance_static_route_state(t *testing.T) {
 		verifyDbResult(rclient, "STATIC_ROUTE|default|172.16.40.0/24", verifyMap, false))
 	time.Sleep(1 * time.Second)
 
+	// A route FRR is not holding reports nothing rather than echoing the
+	// configuration back and calling it applied. This is the divergence that
+	// makes the applied view worth having, so it is asserted rather than
+	// assumed.
+	unloadDB(db.StateDB, appliedTbl)
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET the state container with no applied row reports nothing",
+		processGetRequest(rtUrl+"/state", nil, "{}", false))
+	time.Sleep(1 * time.Second)
+
+	expectedGetJSON = `{"openconfig-network-instance:set-tag":77}`
+	t.Run("GET the config set-tag leaf is unaffected by the applied row going",
+		processGetRequest(rtUrl+"/config/set-tag", nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	// And when the scrape catches up, state follows it.
+	loadDB(db.StateDB, map[string]interface{}{
+		"STATIC_ROUTE_APPLIED": map[string]interface{}{
+			"default|172.16.40.0/24": map[string]interface{}{"tag": "99"},
+		},
+	})
+	time.Sleep(1 * time.Second)
+
+	expectedGetJSON = `{"openconfig-network-instance:set-tag":99}`
+	t.Run("GET the state set-tag leaf follows the scrape",
+		processGetRequest(rtUrl+"/state/set-tag", nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.StateDB, appliedTbl)
 	unloadDB(db.ConfigDB, cleanupTbl)
 }
 
