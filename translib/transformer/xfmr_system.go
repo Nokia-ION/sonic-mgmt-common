@@ -332,6 +332,9 @@ var DbToYang_sys_config_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) err
 	if err != nil {
 		return err
 	}
+	if isUnsetSysNameLeafRequest(inParams.requestUri, hostname, domainName) {
+		return nil
+	}
 
 	ygot.BuildEmptyTree(sysObj)
 	sysObj.Config.Hostname = optionalString(hostname)
@@ -348,6 +351,29 @@ func optionalString(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+// isUnsetSysNameLeafRequest reports whether the request targets the hostname
+// or domain-name leaf and that leaf has no value. The transformer must then
+// leave the ygot tree untouched: translib only answers NotFound for a leaf
+// when the tree is unchanged, and otherwise replies with "{}" as the leaf
+// value, which clients cannot unmarshal into a string.
+func isUnsetSysNameLeafRequest(requestUri, hostname, domainName string) bool {
+	yangPath, err := getYangPathFromUri(requestUri)
+	if err != nil {
+		return false
+	}
+	leaf := yangPath[strings.LastIndex(yangPath, "/")+1:]
+	if i := strings.LastIndex(leaf, ":"); i >= 0 {
+		leaf = leaf[i+1:]
+	}
+	switch leaf {
+	case "hostname":
+		return hostname == ""
+	case "domain-name":
+		return domainName == ""
+	}
+	return false
 }
 
 var YangToDb_sys_config_key_xfmr KeyXfmrYangToDb = func(inParams XfmrParams) (string, error) {
@@ -408,6 +434,9 @@ var DbToYang_sys_state_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) erro
 	hostname, domainName, err := getSystemHostAndDomainName(inParams)
 	if err != nil {
 		return err
+	}
+	if isUnsetSysNameLeafRequest(inParams.requestUri, hostname, domainName) {
+		return nil
 	}
 
 	ygot.BuildEmptyTree(sysObj)
