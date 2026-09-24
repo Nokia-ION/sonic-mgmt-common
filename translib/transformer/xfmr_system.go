@@ -334,10 +334,20 @@ var DbToYang_sys_config_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) err
 	}
 
 	ygot.BuildEmptyTree(sysObj)
-	sysObj.Config.Hostname = &hostname
-	sysObj.Config.DomainName = &domainName
+	sysObj.Config.Hostname = optionalString(hostname)
+	sysObj.Config.DomainName = optionalString(domainName)
 
 	return nil
+}
+
+// optionalString returns nil for an empty DB field, so an unset or deleted
+// leaf is omitted rather than reported as "", which also violates the
+// oc-inet:domain-name length 1..253 restriction.
+func optionalString(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
 
 var YangToDb_sys_config_key_xfmr KeyXfmrYangToDb = func(inParams XfmrParams) (string, error) {
@@ -403,8 +413,8 @@ var DbToYang_sys_state_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) erro
 	ygot.BuildEmptyTree(sysObj)
 	sysObj.State.BootTime = &bootTime
 	sysObj.State.UpTime = &upTime
-	sysObj.State.Hostname = &hostname
-	sysObj.State.DomainName = &domainName
+	sysObj.State.Hostname = optionalString(hostname)
+	sysObj.State.DomainName = optionalString(domainName)
 	return nil
 }
 
