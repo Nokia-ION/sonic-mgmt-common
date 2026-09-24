@@ -2996,16 +2996,6 @@ func getXcvrInfoFromDb(name string, d *db.DB) (XcvrInfo, error) {
 	return xcvrInfo, err
 }
 
-// sfp_type_to_max_lanes_map mapping pulled from third_party/sonic-platform-daemons/sonic-xcvrd/xcvrd/xcvrd.py
-var sfpTypeToMaxLanesMap = map[string]int{
-	"SFP/SFP+/SFP28":                1,
-	"QSFP":                          4,
-	"QSFP+ or later":                4,
-	"QSFP28 or later":               4,
-	"OSFP 8X Pluggable Transceiver": 8,
-	"QSFP-DD Double Density 8X Pluggable Transceiver": 8,
-}
-
 func convAndFillDBValues(rxpField, txpField, txbField, txdisableField string, channel *ocbinds.OpenconfigPlatform_Components_Component_Transceiver_PhysicalChannels_Channel) {
 	if rxPower, ok := parseXcvrDomValue(rxpField); ok {
 		channel.State.InputPower.Instant = &rxPower

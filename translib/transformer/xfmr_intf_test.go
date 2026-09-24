@@ -948,7 +948,7 @@ func TestGetSpecificCounterAttr_InFcsErrors(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			counterContainer := tt.getCounter()
 
-			handled, err := getSpecificCounterAttr(tt.targetUriPath, tt.entry, counterContainer)
+			handled, err := getSpecificCounterAttr(XfmrParams{}, tt.targetUriPath, tt.entry, counterContainer)
 
 			if tt.expectError && err == nil {
 				t.Fatalf("Expected execution error but function returned success status")
