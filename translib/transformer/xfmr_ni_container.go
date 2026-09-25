@@ -44,10 +44,19 @@ import (
 // subtree, which translib calls for its own node; this level refuses a payload
 // naming anything with no mapping. A DELETE is still refused.
 const (
-	niContainerTargetRoot      = "network-instances-root"
-	niContainerTargetInstance  = "network-instance-instance"
-	niContainerTargetProtocols = "network-instance-protocols"
-	niContainerTargetUnmapped  = "network-instance-unmapped"
+	niContainerTargetRoot               = "network-instances-root"
+	niContainerTargetInstance           = "network-instance-instance"
+	niContainerTargetProtocols          = "network-instance-protocols"
+	niContainerTargetInstanceConfig     = "network-instance-config"
+	niContainerTargetInstanceConfigName = "network-instance-config-name"
+	niContainerTargetInstanceConfigType = "network-instance-config-type"
+	niContainerTargetInstanceState      = "network-instance-state"
+	niContainerTargetInstanceStateName  = "network-instance-state-name"
+	niContainerTargetInstanceStateType  = "network-instance-state-type"
+	niContainerTargetUnmapped           = "network-instance-unmapped"
+
+	niContainerDefaultNameLower = "default"
+	niContainerDefaultNameUpper = "DEFAULT"
 )
 
 const niContainerUriPfx = `^/openconfig-network-instance:network-instances`
@@ -55,6 +64,12 @@ const niContainerUriPfx = `^/openconfig-network-instance:network-instances`
 var niContainerRootReqUriRe = regexp.MustCompile(niContainerUriPfx + `(?:/network-instance)?$`)
 var niContainerInstanceReqUriRe = regexp.MustCompile(niContainerUriPfx + `/network-instance\[name=([^\]]+)\]$`)
 var niContainerProtocolsReqUriRe = regexp.MustCompile(niContainerUriPfx + `/network-instance\[name=([^\]]+)\]/protocols(?:/protocol)?$`)
+var niContainerInstanceConfigTypeReqUriRe = regexp.MustCompile(niContainerUriPfx + `/network-instance\[name=([^\]]+)\]/config/type$`)
+var niContainerInstanceConfigNameReqUriRe = regexp.MustCompile(niContainerUriPfx + `/network-instance\[name=([^\]]+)\]/config/name$`)
+var niContainerInstanceConfigReqUriRe = regexp.MustCompile(niContainerUriPfx + `/network-instance\[name=([^\]]+)\]/config$`)
+var niContainerInstanceStateTypeReqUriRe = regexp.MustCompile(niContainerUriPfx + `/network-instance\[name=([^\]]+)\]/state/type$`)
+var niContainerInstanceStateNameReqUriRe = regexp.MustCompile(niContainerUriPfx + `/network-instance\[name=([^\]]+)\]/state/name$`)
+var niContainerInstanceStateReqUriRe = regexp.MustCompile(niContainerUriPfx + `/network-instance\[name=([^\]]+)\]/state$`)
 var niContainerAnyNiReqUriRe = regexp.MustCompile(niContainerUriPfx + `/network-instance\[name=([^\]]+)\]`)
 
 func init() {
@@ -70,6 +85,24 @@ func parseNiContainerRequestUri(uri string) (string, string) {
 	if niContainerRootReqUriRe.MatchString(uri) {
 		return niContainerTargetRoot, ""
 	}
+	if m := niContainerInstanceConfigTypeReqUriRe.FindStringSubmatch(uri); len(m) == 2 {
+		return niContainerTargetInstanceConfigType, m[1]
+	}
+	if m := niContainerInstanceConfigNameReqUriRe.FindStringSubmatch(uri); len(m) == 2 {
+		return niContainerTargetInstanceConfigName, m[1]
+	}
+	if m := niContainerInstanceConfigReqUriRe.FindStringSubmatch(uri); len(m) == 2 {
+		return niContainerTargetInstanceConfig, m[1]
+	}
+	if m := niContainerInstanceStateTypeReqUriRe.FindStringSubmatch(uri); len(m) == 2 {
+		return niContainerTargetInstanceStateType, m[1]
+	}
+	if m := niContainerInstanceStateNameReqUriRe.FindStringSubmatch(uri); len(m) == 2 {
+		return niContainerTargetInstanceStateName, m[1]
+	}
+	if m := niContainerInstanceStateReqUriRe.FindStringSubmatch(uri); len(m) == 2 {
+		return niContainerTargetInstanceState, m[1]
+	}
 	if m := niContainerInstanceReqUriRe.FindStringSubmatch(uri); len(m) == 2 {
 		return niContainerTargetInstance, m[1]
 	}
@@ -82,15 +115,91 @@ func parseNiContainerRequestUri(uri string) (string, string) {
 	return niContainerTargetUnmapped, ""
 }
 
+// niContainerIsDefaultInstanceName reports whether niName is one of the two
+// spellings this implementation uses for the default forwarding instance.
+func niContainerIsDefaultInstanceName(niName string) bool {
+	return niName == niContainerDefaultNameLower || niName == niContainerDefaultNameUpper
+}
+
+// niContainerDerivedType returns the OpenConfig network-instance type derived
+// from the list key. There is no CONFIG_DB row for the instance itself; the
+// type is reported and may be written only when it matches this derivation.
+func niContainerDerivedType(niName string) ocbinds.E_OpenconfigNetworkInstanceTypes_NETWORK_INSTANCE_TYPE {
+	if niContainerIsDefaultInstanceName(niName) {
+		return ocbinds.OpenconfigNetworkInstanceTypes_NETWORK_INSTANCE_TYPE_DEFAULT_INSTANCE
+	}
+	return ocbinds.OpenconfigNetworkInstanceTypes_NETWORK_INSTANCE_TYPE_L3VRF
+}
+
+func niContainerNetworkInstanceTypeName(t ocbinds.E_OpenconfigNetworkInstanceTypes_NETWORK_INSTANCE_TYPE) string {
+	switch t {
+	case ocbinds.OpenconfigNetworkInstanceTypes_NETWORK_INSTANCE_TYPE_DEFAULT_INSTANCE:
+		return "DEFAULT_INSTANCE"
+	case ocbinds.OpenconfigNetworkInstanceTypes_NETWORK_INSTANCE_TYPE_L3VRF:
+		return "L3VRF"
+	case ocbinds.OpenconfigNetworkInstanceTypes_NETWORK_INSTANCE_TYPE_L2L3:
+		return "L2L3"
+	case ocbinds.OpenconfigNetworkInstanceTypes_NETWORK_INSTANCE_TYPE_L2P2P:
+		return "L2P2P"
+	case ocbinds.OpenconfigNetworkInstanceTypes_NETWORK_INSTANCE_TYPE_L2VSI:
+		return "L2VSI"
+	default:
+		return fmt.Sprintf("%d", int64(t))
+	}
+}
+
+func niContainerValidateConfigType(niName string, want ocbinds.E_OpenconfigNetworkInstanceTypes_NETWORK_INSTANCE_TYPE) error {
+	if want == ocbinds.OpenconfigNetworkInstanceTypes_NETWORK_INSTANCE_TYPE_UNSET {
+		return nil
+	}
+	derived := niContainerDerivedType(niName)
+	if want == derived {
+		return nil
+	}
+	if !niContainerIsDefaultInstanceName(niName) {
+		switch want {
+		case ocbinds.OpenconfigNetworkInstanceTypes_NETWORK_INSTANCE_TYPE_L2L3,
+			ocbinds.OpenconfigNetworkInstanceTypes_NETWORK_INSTANCE_TYPE_L2P2P,
+			ocbinds.OpenconfigNetworkInstanceTypes_NETWORK_INSTANCE_TYPE_L2VSI:
+			return tlerr.NotSupportedError{
+				Format: fmt.Sprintf("network-instance %q supports only L3VRF as a non-default type", niName),
+			}
+		}
+	}
+	return tlerr.InvalidArgsError{
+		Format: fmt.Sprintf("network-instance type %q does not match the derived type %q for instance %q",
+			niContainerNetworkInstanceTypeName(want),
+			niContainerNetworkInstanceTypeName(derived),
+			niName),
+	}
+}
+
 var YangToDb_ni_container_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (map[string]map[string]db.Value, error) {
 	res := make(map[string]map[string]db.Value)
-	kind, niName := parseNiContainerRequestUri(inParams.requestUri)
+	kind, niName := parseNiContainerRequestUri(niHandlerReqUri(inParams))
 
 	if kind == niContainerTargetUnmapped {
 		return res, tlerr.NotSupportedError{
 			Format: "unsupported network-instance path: " + inParams.requestUri,
 			Path:   inParams.requestUri,
 		}
+	}
+
+	if kind == niContainerTargetInstanceConfigType || kind == niContainerTargetInstanceStateType {
+		if inParams.oper == DELETE {
+			return res, tlerr.NotSupportedError{
+				Format: "network-instance type is derived and cannot be deleted",
+				Path:   inParams.requestUri,
+			}
+		}
+		want, typeErr := niContainerTypeFromSet(inParams, niName)
+		if typeErr != nil {
+			return res, typeErr
+		}
+		if err := niContainerValidateConfigType(niName, want); err != nil {
+			return res, err
+		}
+		return res, nil
 	}
 
 	if inParams.oper == DELETE {
@@ -161,6 +270,16 @@ func niContainerCheckPayloadShape(niObj *ocbinds.OpenconfigNetworkInstance_Netwo
 			Format: "the AFTs of a network instance report forwarding state and cannot be written",
 		}
 	}
+	if niObj.State != nil {
+		if niObj.State.Name != nil && *niObj.State.Name != niName {
+			return tlerr.InvalidArgsError{
+				Format: fmt.Sprintf("network-instance state/name %q does not match list key %q", *niObj.State.Name, niName),
+			}
+		}
+		if err := niContainerValidateConfigType(niName, niObj.State.Type); err != nil {
+			return err
+		}
+	}
 	var unmapped []string
 	for _, part := range []struct {
 		name  string
@@ -184,13 +303,16 @@ func niContainerCheckPayloadShape(niObj *ocbinds.OpenconfigNetworkInstance_Netwo
 		}
 	}
 	if niObj.Config != nil {
-		// The instance has no CONFIG_DB row of its own, so nothing under its
-		// config container is mapped. The name is tolerated, a payload
-		// repeating the key it is addressed by.
+		// The instance has no CONFIG_DB row of its own. The name is tolerated,
+		// a payload repeating the key it is addressed by. The type is derived
+		// from the key and is tolerated only when it matches that derivation.
 		if niObj.Config.Name != nil && *niObj.Config.Name != niName {
 			return tlerr.InvalidArgsError{
 				Format: fmt.Sprintf("network-instance config/name %q does not match list key %q", *niObj.Config.Name, niName),
 			}
+		}
+		if err := niContainerValidateConfigType(niName, niObj.Config.Type); err != nil {
+			return err
 		}
 		unmapped = append(unmapped, niContainerConfigLeavesBesideName(niObj.Config)...)
 	}
@@ -211,7 +333,7 @@ func niContainerConfigLeavesBesideName(cfg *ocbinds.OpenconfigNetworkInstance_Ne
 	t := v.Type()
 	for i := 0; i < t.NumField(); i++ {
 		name := t.Field(i).Tag.Get("path")
-		if name == "" || name == "name" {
+		if name == "" || name == "name" || name == "type" {
 			continue
 		}
 		f := v.Field(i)
@@ -255,17 +377,130 @@ var DbToYang_ni_container_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) e
 		return populateNiContainerProtocolsFromDb(inParams, wrappedRoot, cfgDb, niName)
 	}
 
+	switch kind {
+	case niContainerTargetInstanceConfig, niContainerTargetInstanceConfigName, niContainerTargetInstanceConfigType,
+		niContainerTargetInstanceState, niContainerTargetInstanceStateName, niContainerTargetInstanceStateType:
+		return niContainerPopulateDerivedToYang(wrappedRoot, niName, kind)
+	}
+
 	niNames := []string{niName}
 	if kind == niContainerTargetRoot {
 		niNames = niContainerNamesFromDb(cfgDb)
 	}
 	for _, name := range niNames {
+		if err := niContainerPopulateDerivedToYang(wrappedRoot, name, kind); err != nil {
+			return err
+		}
 		if err := populateNiContainerProtocolsFromDb(inParams, wrappedRoot, cfgDb, name); err != nil {
 			return err
 		}
 		if err := populateNiContainerNonProtocolFromDb(inParams, wrappedRoot, cfgDb, name); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// niContainerTypeFromSet reads a type leaf a SET names at config/type or
+// state/type, or inside a container payload.
+func niContainerTypeFromSet(inParams XfmrParams, niName string) (ocbinds.E_OpenconfigNetworkInstanceTypes_NETWORK_INSTANCE_TYPE, error) {
+	unset := ocbinds.OpenconfigNetworkInstanceTypes_NETWORK_INSTANCE_TYPE_UNSET
+	wrappedRoot, wrapErr := wrapNiContainerRootAsDevice(inParams.ygRoot, niName)
+	if wrapErr != nil {
+		return unset, wrapErr
+	}
+	niMap := niContainerInstancesFromPayload(wrappedRoot)
+	if niObj := niMap[niName]; niObj != nil {
+		if niObj.Config != nil && niObj.Config.Type != unset {
+			return niObj.Config.Type, nil
+		}
+		if niObj.State != nil && niObj.State.Type != unset {
+			return niObj.State.Type, nil
+		}
+	}
+	return unset, nil
+}
+
+// niContainerPopulateDerivedToYang fills config/name, config/type and the
+// matching state leaves from the list key. There is no CONFIG_DB row for them.
+func niContainerPopulateDerivedToYang(ygRoot *ygot.GoStruct, niName, kind string) error {
+	switch kind {
+	case niContainerTargetInstanceConfig, niContainerTargetInstanceConfigName, niContainerTargetInstanceConfigType:
+		return niContainerFillDerivedConfig(ygRoot, niName, kind)
+	case niContainerTargetInstanceState, niContainerTargetInstanceStateName, niContainerTargetInstanceStateType:
+		return niContainerFillDerivedState(ygRoot, niName, kind)
+	case niContainerTargetInstance, niContainerTargetRoot:
+		if err := niContainerFillDerivedConfig(ygRoot, niName, niContainerTargetInstanceConfig); err != nil {
+			return err
+		}
+		return niContainerFillDerivedState(ygRoot, niName, niContainerTargetInstanceState)
+	}
+	return nil
+}
+
+func niContainerGetOrCreateNi(ygRoot *ygot.GoStruct, niName string) (*ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance, error) {
+	wrappedRoot, err := wrapNiContainerRootAsDevice(ygRoot, niName)
+	if err != nil {
+		return nil, err
+	}
+	devObj, ok := (*wrappedRoot).(*ocbinds.Device)
+	if !ok || devObj.NetworkInstances == nil {
+		return nil, tlerr.InvalidArgsError{Format: "unable to locate network-instances container for derived config"}
+	}
+	if devObj.NetworkInstances.NetworkInstance == nil {
+		devObj.NetworkInstances.NetworkInstance = make(map[string]*ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance)
+	}
+	niObj := devObj.NetworkInstances.NetworkInstance[niName]
+	if niObj == nil {
+		niObj, err = devObj.NetworkInstances.NewNetworkInstance(niName)
+		if err != nil || niObj == nil {
+			return nil, tlerr.InvalidArgsError{Format: "unable to create network-instance object for derived config"}
+		}
+		ygot.BuildEmptyTree(niObj)
+	}
+	return niObj, nil
+}
+
+func niContainerFillDerivedConfig(ygRoot *ygot.GoStruct, niName, kind string) error {
+	niObj, err := niContainerGetOrCreateNi(ygRoot, niName)
+	if err != nil {
+		return err
+	}
+	if niObj.Config == nil {
+		niObj.Config = &ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Config{}
+	}
+	name := niName
+	derived := niContainerDerivedType(niName)
+	switch kind {
+	case niContainerTargetInstanceConfigName:
+		niObj.Config.Name = &name
+	case niContainerTargetInstanceConfigType:
+		niObj.Config.Type = derived
+	default:
+		niObj.Config.Name = &name
+		niObj.Config.Type = derived
+	}
+	return nil
+}
+
+func niContainerFillDerivedState(ygRoot *ygot.GoStruct, niName, kind string) error {
+	niObj, err := niContainerGetOrCreateNi(ygRoot, niName)
+	if err != nil {
+		return err
+	}
+	if niObj.State == nil {
+		niObj.State = &ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_State{}
+	}
+	name := niName
+	derived := niContainerDerivedType(niName)
+	switch kind {
+	case niContainerTargetInstanceStateName:
+		niObj.State.Name = &name
+	case niContainerTargetInstanceStateType:
+		niObj.State.Type = derived
+	default:
+		niObj.State.Name = &name
+		niObj.State.Type = derived
 	}
 	return nil
 }
