@@ -93,3 +93,79 @@ func Test_openconfig_network_instance_derived_config_type(t *testing.T) {
 		},
 	})
 }
+
+func Test_openconfig_network_instance_protocols_aggregate_state(t *testing.T) {
+	preReqMap := map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": map[string]interface{}{
+				"local_asn": "65200",
+				"router_id": "2.2.2.2",
+			},
+		},
+		"BGP_NEIGHBOR": map[string]interface{}{
+			"default|20.0.0.1": map[string]interface{}{
+				"admin_status": "up",
+			},
+		},
+		"STATIC_ROUTE": map[string]interface{}{
+			"default|10.1.0.0/24": map[string]interface{}{
+				"nexthop": "10.1.1.1",
+				"ifname":  "",
+			},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"BGP_GLOBALS":    map[string]interface{}{"default": ""},
+		"BGP_NEIGHBOR":   map[string]interface{}{"default|20.0.0.1": ""},
+		"STATIC_ROUTE":   map[string]interface{}{"default|10.1.0.0/24": ""},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	loadNiBgpGlobalsApplied("default", map[string]interface{}{
+		"local_asn":      "65100",
+		"router_id":      "1.1.1.1",
+		"total_paths":    "1",
+		"total_prefixes": "1",
+	})
+	loadNiBgpNbrState("20.0.0.1", "Established")
+	loadDB(db.StateDB, map[string]interface{}{
+		"BGP_NEIGH_APPLIED_META": map[string]interface{}{
+			"global": map[string]interface{}{"last_sync": time.Now().Unix()},
+		},
+		"BGP_NEIGH_APPLIED": map[string]interface{}{
+			"default|20.0.0.1": map[string]interface{}{
+				"enabled":          "true",
+				"neighbor_address": "20.0.0.1",
+			},
+		},
+		"STATIC_ROUTE_APPLIED": map[string]interface{}{
+			"default|10.1.0.0/24": map[string]interface{}{
+				"nexthop": "10.1.1.1",
+				"ifname":  "",
+			},
+		},
+	})
+	time.Sleep(1 * time.Second)
+
+	protocolsJSON := `{"openconfig-network-instance:protocol":[` +
+		`{"bgp":{"global":{"config":{"as":65200,"router-id":"2.2.2.2"},` +
+		`"state":{"as":65100,"router-id":"1.1.1.1","total-paths":1,"total-prefixes":1}},` +
+		`"neighbors":{"neighbor":[{"config":{"enabled":true},"neighbor-address":"20.0.0.1",` +
+		`"state":{"enabled":true,"neighbor-address":"20.0.0.1","session-state":"ESTABLISHED"}}]}}},` +
+		`{"identifier":"openconfig-policy-types:STATIC","name":"static","static-routes":{"static":[` +
+		`{"config":{"prefix":"10.1.0.0/24"},"next-hops":{"next-hop":[{"config":{"index":"10.1.1.1","next-hop":"10.1.1.1"},` +
+		`"index":"10.1.1.1","state":{"index":"10.1.1.1","next-hop":"10.1.1.1"}}]},` +
+		`"prefix":"10.1.0.0/24","state":{"prefix":"10.1.0.0/24"}}]}}}]}`
+
+	t.Run("GET protocols merges BGP and STATIC operational subtrees",
+		processGetRequest(niContainerDefaultURL+"/protocols", nil, protocolsJSON, false))
+	time.Sleep(1 * time.Second)
+
+	unloadNiBgpNbrState("20.0.0.1")
+	unloadNiBgpGlobalsApplied("default")
+	unloadDB(db.StateDB, map[string]interface{}{
+		"BGP_NEIGH_APPLIED":      map[string]interface{}{"default|20.0.0.1": ""},
+		"BGP_NEIGH_APPLIED_META": map[string]interface{}{"global": ""},
+		"STATIC_ROUTE_APPLIED":   map[string]interface{}{"default|10.1.0.0/24": ""},
+	})
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
