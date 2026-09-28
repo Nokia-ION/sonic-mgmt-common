@@ -468,12 +468,75 @@ func Test_qos_rewrite_interface_binding(t *testing.T) {
 	t.Run("Get binding", processGetRequest(qosRwIntfClassifiersUrl(qosRwIntf),
 		nil, expected_get_json, false))
 
+	t.Log("\n\n+++++++++++++ Read one list instance back ++++++++++++")
+	intfClsV4Url := qosRwIntfClassifiersUrl(qosRwIntf) + "/classifier[type=IPV4]"
+	expected_get_json = `{"openconfig-qos:classifier":[{
+		"type":"IPV4",
+		"config":{"type":"IPV4","name":"` + qosRwCls + `"},
+		"state":{"type":"IPV4","name":"` + qosRwCls + `"}}]}`
+	t.Run("Get IPV4 instance", processGetRequest(intfClsV4Url, nil, expected_get_json, false))
+	t.Run("Get config name", processGetRequest(intfClsV4Url+"/config/name", nil,
+		`{"openconfig-qos:name":"`+qosRwCls+`"}`, false))
+	t.Run("Get state name", processGetRequest(intfClsV4Url+"/state/name", nil,
+		`{"openconfig-qos:name":"`+qosRwCls+`"}`, false))
+	t.Run("Get unbound IPV6 instance", processGetRequest(
+		qosRwIntfClassifiersUrl(qosRwIntf)+"/classifier[type=IPV6]", nil, "", true))
+
 	t.Log("\n\n+++++++++++++ Unbinding drops the interface again ++++++++++++")
 	t.Run("Unbind classifier", processDeleteRequest(qosRwIntfClassifiersUrl(qosRwIntf), false))
 	time.Sleep(1 * time.Second)
 
 	t.Run("Verify binding gone", processGetRequest(qosRwIntfClassifiersUrl(qosRwIntf),
 		nil, emptyJson, false))
+
+	unloadDB(db.ConfigDB, cleanuptbl)
+	t.Log("\n\n+++++++++++++ Done ++++++++++++")
+}
+
+// Test_qos_rewrite_interface_dscp_binding_get covers reading back a DSCP map
+// bound to an interface, both as the list and as one list instance. SONiC
+// applies the map to both families, so it is reported under both keys.
+func Test_qos_rewrite_interface_dscp_binding_get(t *testing.T) {
+	cleanuptbl := map[string]interface{}{
+		"PORT_QOS_MAP":       map[string]interface{}{qosRwIntf: ""},
+		"DSCP_TO_TC_MAP":     map[string]interface{}{qosRwDscpCls: ""},
+		"QOS_UMF_CLASSIFIER": map[string]interface{}{qosRwDscpCls: ""},
+	}
+	unloadDB(db.ConfigDB, cleanuptbl)
+
+	loadDB(db.ConfigDB, map[string]interface{}{
+		"DSCP_TO_TC_MAP":     map[string]interface{}{qosRwDscpCls: map[string]interface{}{"34": "4"}},
+		"QOS_UMF_CLASSIFIER": map[string]interface{}{qosRwDscpCls: map[string]interface{}{"type": "ipv4"}},
+		"PORT_QOS_MAP": map[string]interface{}{
+			qosRwIntf: map[string]interface{}{"dscp_to_tc_map": qosRwDscpCls},
+		},
+	})
+	time.Sleep(1 * time.Second)
+
+	t.Log("\n\n+++++++++++++ Read the binding back ++++++++++++")
+	expected_get_json := `{"openconfig-qos:classifiers":{"classifier":[{
+		"type":"IPV4",
+		"config":{"type":"IPV4","name":"` + qosRwDscpCls + `"},
+		"state":{"type":"IPV4","name":"` + qosRwDscpCls + `"}},{
+		"type":"IPV6",
+		"config":{"type":"IPV6","name":"` + qosRwDscpCls + `_ipv6"},
+		"state":{"type":"IPV6","name":"` + qosRwDscpCls + `_ipv6"}}]}}`
+	t.Run("Get binding", processGetRequest(qosRwIntfClassifiersUrl(qosRwIntf),
+		nil, expected_get_json, false))
+
+	t.Log("\n\n+++++++++++++ Read one list instance back ++++++++++++")
+	intfClsV4Url := qosRwIntfClassifiersUrl(qosRwIntf) + "/classifier[type=IPV4]"
+	expected_get_json = `{"openconfig-qos:classifier":[{
+		"type":"IPV4",
+		"config":{"type":"IPV4","name":"` + qosRwDscpCls + `"},
+		"state":{"type":"IPV4","name":"` + qosRwDscpCls + `"}}]}`
+	t.Run("Get IPV4 instance", processGetRequest(intfClsV4Url, nil, expected_get_json, false))
+	t.Run("Get config name", processGetRequest(intfClsV4Url+"/config/name", nil,
+		`{"openconfig-qos:name":"`+qosRwDscpCls+`"}`, false))
+	t.Run("Get state name", processGetRequest(intfClsV4Url+"/state/name", nil,
+		`{"openconfig-qos:name":"`+qosRwDscpCls+`"}`, false))
+	t.Run("Get unbound MPLS instance", processGetRequest(
+		qosRwIntfClassifiersUrl(qosRwIntf)+"/classifier[type=MPLS]", nil, "", true))
 
 	unloadDB(db.ConfigDB, cleanuptbl)
 	t.Log("\n\n+++++++++++++ Done ++++++++++++")
