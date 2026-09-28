@@ -1275,6 +1275,22 @@ func Test_openconfig_network_instance_static_route_state(t *testing.T) {
 		processGetRequest(rtUrl+"/state/set-tag", nil, expectedGetJSON, false))
 	time.Sleep(1 * time.Second)
 
+	nhUrl := rtUrl + "/next-hops/next-hop[index=10.1.1.40+Ethernet0]"
+	expectedGetJSON = `{"openconfig-network-instance:next-hop":"10.1.1.40"}`
+	t.Run("GET the next-hop state next-hop leaf reports what FRR holds",
+		processGetRequest(nhUrl+"/state/next-hop", nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	expectedGetJSON = `{"openconfig-network-instance:preference":1}`
+	t.Run("GET the next-hop state preference leaf reports the applied distance",
+		processGetRequest(nhUrl+"/state/preference", nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	expectedGetJSON = `{"openconfig-network-instance:next-hop":"10.1.1.40"}`
+	t.Run("GET the next-hop config next-hop leaf still reports what was written",
+		processGetRequest(rtUrl+"/next-hops/next-hop[index=10.1.1.40]/config/next-hop", nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
 	expectedGetJSON = `{"openconfig-network-instance:state":{"prefix":"172.16.40.0/24","set-tag":88}}`
 	t.Run("GET the state container",
 		processGetRequest(rtUrl+"/state", nil, expectedGetJSON, false))

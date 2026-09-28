@@ -103,6 +103,21 @@ func TestSubscribe_ni_static_route(t *testing.T) {
 			onChange: false,
 			keyPatt:  "default|10.1.0.0/16",
 		},
+		{
+			// Next-hop state is still one applied row per route, so a change to
+			// any next-hop field is reported at route granularity.
+			name:     "next-hop state container",
+			uri:      niSrSubscUrl + "/static-routes/static[prefix=10.1.0.0/16]/next-hops/next-hop[index=10.1.1.1]/state",
+			onChange: true,
+			keyPatt:  "default|10.1.0.0/16",
+		},
+		{
+			name:     "next-hop state/next-hop, anchored on state",
+			uri:      niSrSubscUrl + "/static-routes/static[prefix=10.1.0.0/16]/next-hops/next-hop[index=10.1.1.1]/state",
+			reqUri:   niSrSubscUrl + "/static-routes/static[prefix=10.1.0.0/16]/next-hops/next-hop[index=10.1.1.1]/state/next-hop",
+			onChange: true,
+			keyPatt:  "default|10.1.0.0/16",
+		},
 	}
 
 	for _, tc := range tests {
@@ -147,6 +162,23 @@ func TestSubscribe_ni_static_route(t *testing.T) {
 
 // Everything outside the static routes keeps the behaviour it has today, so
 // widening it later is a deliberate act rather than a side effect.
+func TestSubscribe_ni_static_route_rejects_unsupported_protocol_name(t *testing.T) {
+	const badUrl = "/openconfig-network-instance:network-instances/network-instance[name=default]" +
+		"/protocols/protocol[identifier=STATIC][name=DEFAULT]/static-routes/static"
+	out, err := Subscribe_ni_static_route_cfg_xfmr(XfmrSubscInParams{
+		uri:        badUrl,
+		requestURI: badUrl,
+		subscProc:  TRANSLATE_SUBSCRIBE,
+		dbDataMap:  make(RedisDbMap),
+	})
+	if err != nil {
+		t.Fatalf("Subscribe_ni_static_route_cfg_xfmr failed: %v", err)
+	}
+	if !out.isVirtualTbl {
+		t.Errorf("expected no mapping for unsupported protocol instance name, got %v", out.dbDataMap)
+	}
+}
+
 func TestSubscribe_ni_static_route_other_paths_report_no_mapping(t *testing.T) {
 	for _, uri := range []string{
 		"/openconfig-network-instance:network-instances/network-instance[name=default]/protocols/protocol[identifier=BGP][name=bgp]",
