@@ -63,9 +63,10 @@ func qosFgCleanupTbl() map[string]interface{} {
 			qosFgName:  "",
 			qosFgName2: "",
 		},
-		"TC_TO_QUEUE_MAP":    map[string]interface{}{"global_tc_to_queue_map": ""},
-		"DSCP_TO_TC_MAP":     map[string]interface{}{qosFgCls: ""},
-		"QOS_UMF_CLASSIFIER": map[string]interface{}{qosFgCls: ""},
+		"TC_TO_QUEUE_MAP":         map[string]interface{}{"global_tc_to_queue_map": ""},
+		"DSCP_TO_TC_MAP":          map[string]interface{}{qosFgCls: ""},
+		"QOS_UMF_CLASSIFIER":      map[string]interface{}{qosFgCls: ""},
+		"QOS_UMF_CLASSIFIER_TERM": map[string]interface{}{qosFgCls + "|1": ""},
 		"SCHEDULER": map[string]interface{}{
 			qosSchedSp + "@0": "",
 			qosSchedSp + "@1": "",
@@ -223,12 +224,10 @@ func Test_qos_fwdgrp_traffic_class_action(t *testing.T) {
 		verifyDbResult(rclient, "DSCP_TO_TC_MAP|"+qosFgCls, expected_map, false))
 
 	t.Log("\n\n+++++++++++++ Read the action back ++++++++++++")
-	// A DSCP classifier keys its term by the DSCP value rather than by the term
-	// id of the request, the map it becomes being keyed that way.
 	expected_get_json := `{"openconfig-qos:config":{"target-group":"` + qosFgName + `"}}`
 	t.Run("Get classifier action",
 		processGetRequest("/openconfig-qos:qos/classifiers/classifier["+"name="+qosFgCls+
-			"]/terms/term[id=32]/actions/config", nil, expected_get_json, false))
+			"]/terms/term[id=1]/actions/config", nil, expected_get_json, false))
 
 	t.Log("\n\n+++++++++++++ Done ++++++++++++")
 }

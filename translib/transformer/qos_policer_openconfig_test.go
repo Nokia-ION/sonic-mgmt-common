@@ -265,10 +265,11 @@ func Test_qos_policer_dscp_classifier_untouched(t *testing.T) {
 		"QOS_FWD_GROUP": map[string]interface{}{"AF1": map[string]interface{}{"priority": "1"}},
 	}
 	cleanuptbl := map[string]interface{}{
-		"QOS_FWD_GROUP":      map[string]interface{}{"AF1": ""},
-		"DSCP_TO_TC_MAP":     map[string]interface{}{qosPolClsMap: ""},
-		"QOS_UMF_CLASSIFIER": map[string]interface{}{qosPolClsMap: ""},
-		"ACL_TABLE":          map[string]interface{}{qosPolClsMap: ""},
+		"QOS_FWD_GROUP":           map[string]interface{}{"AF1": ""},
+		"DSCP_TO_TC_MAP":          map[string]interface{}{qosPolClsMap: ""},
+		"QOS_UMF_CLASSIFIER":      map[string]interface{}{qosPolClsMap: ""},
+		"ACL_TABLE":               map[string]interface{}{qosPolClsMap: ""},
+		"QOS_UMF_CLASSIFIER_TERM": map[string]interface{}{qosPolClsMap + "|1": ""},
 	}
 	unloadDB(db.ConfigDB, cleanuptbl)
 	loadDB(db.ConfigDB, pre_req_map)
