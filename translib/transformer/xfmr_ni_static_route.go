@@ -66,6 +66,7 @@ const (
 	niStaticRouteTargetNextHopsRoot = "static-route-next-hops-root"
 	niStaticRouteTargetNextHopInst  = "static-route-next-hop-instance"
 	niStaticRouteTargetNextHopCfg   = "static-route-next-hop-config"
+	niStaticRouteTargetNextHopState = "static-route-next-hop-state"
 
 	niStaticRoutePrefixLeaf  = "prefix"
 	niStaticRouteSetTagLeaf  = "set-tag"
@@ -118,6 +119,7 @@ var niStaticRouteListReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/stati
 var niStaticRouteNhsRootReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/static-routes/static\[prefix=([^\]]+)\]/next-hops(?:/next-hop)?$`)
 var niStaticRouteNhInstReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/static-routes/static\[prefix=([^\]]+)\]/next-hops/next-hop\[index=([^\]]+)\]$`)
 var niStaticRouteNhKeyLeafReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/static-routes/static\[prefix=([^\]]+)\]/next-hops/next-hop\[index=([^\]]+)\]/index$`)
+var niStaticRouteNhStateReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/static-routes/static\[prefix=([^\]]+)\]/next-hops/next-hop\[index=([^\]]+)\]/state(?:/(index|next-hop|preference))?$`)
 var niStaticRouteNhCfgReqUriRe = regexp.MustCompile(niStaticRouteUriPfx + `/static-routes/static\[prefix=([^\]]+)\]/next-hops/next-hop\[index=([^\]]+)\]/config(?:/(index|next-hop|preference))?$`)
 
 type niStaticRouteReqInfo struct {
@@ -206,6 +208,20 @@ func parseNiStaticRouteRequestUri(uri string) (*niStaticRouteReqInfo, error) {
 }
 
 func matchNiStaticRouteRequestUri(uri string) (*niStaticRouteReqInfo, error) {
+	if m := niStaticRouteNhStateReqUriRe.FindStringSubmatch(uri); len(m) >= 5 {
+		leaf := ""
+		if len(m) >= 6 {
+			leaf = m[5]
+		}
+		return &niStaticRouteReqInfo{
+			niName:         m[1],
+			protoName:      m[2],
+			prefix:         niStaticRouteUnescapeKey(m[3]),
+			index:          niStaticRouteUnescapeKey(m[4]),
+			targetLeaf:     leaf,
+			targetPathKind: niStaticRouteTargetNextHopState,
+		}, nil
+	}
 	if m := niStaticRouteNhCfgReqUriRe.FindStringSubmatch(uri); len(m) >= 5 {
 		leaf := ""
 		if len(m) >= 6 {
@@ -1215,6 +1231,24 @@ func niStaticRouteNextHopUnionValue(cfgObj *ocbinds.OpenconfigNetworkInstance_Ne
 	return err
 }
 
+func niStaticRouteNextHopStateUnionValue(stateObj *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_StaticRoutes_Static_NextHops_NextHop_State, value string) error {
+	if stateObj == nil || value == "" {
+		return nil
+	}
+	var err error
+	switch value {
+	case niStaticRouteDropToken:
+		stateObj.NextHop, err = stateObj.To_OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_StaticRoutes_Static_NextHops_NextHop_State_NextHop_Union(
+			ocbinds.OpenconfigLocalRouting_LOCAL_DEFINED_NEXT_HOP_DROP)
+	case niStaticRouteLocalLinkToken:
+		stateObj.NextHop, err = stateObj.To_OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_StaticRoutes_Static_NextHops_NextHop_State_NextHop_Union(
+			ocbinds.OpenconfigLocalRouting_LOCAL_DEFINED_NEXT_HOP_LOCAL_LINK)
+	default:
+		stateObj.NextHop, err = stateObj.To_OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_StaticRoutes_Static_NextHops_NextHop_State_NextHop_Union(value)
+	}
+	return err
+}
+
 // niStaticRouteNextHopFromPayload reads the next-hop leaf of a request that
 // targets the next-hop config container or that leaf.
 func niStaticRouteNextHopFromPayload(inParams XfmrParams, ygRoot *ygot.GoStruct, reqInfo *niStaticRouteReqInfo) string {
@@ -1572,11 +1606,25 @@ var Subscribe_ni_static_route_cfg_xfmr SubTreeXfmrSubscribe = func(inParams Xfmr
 		return result, nil
 	}
 
+	if err := validateNiStaticRouteProtoName(m[2]); err != nil {
+		result.isVirtualTbl = true
+		return result, nil
+	}
+
 	niName, prefix, below := m[1], m[3], m[4]
 	// A caller that hands over the whole path rather than the trimmed one is
 	// asking about the same node, so it is answered the same way.
 	if below == "state/"+niStaticRoutePrefixLeaf || below == "state/"+niStaticRouteSetTagLeaf {
 		below = "state"
+	}
+	if strings.HasPrefix(below, "next-hops/") && strings.Contains(below, "/state") {
+		if strings.HasSuffix(below, "/state/"+niStaticRouteNextHopLeaf) ||
+			strings.HasSuffix(below, "/state/"+niStaticRouteIndexLeaf) ||
+			strings.HasSuffix(below, "/state/"+niStaticRoutePreferenceLeaf) {
+			below = "next-hops/state"
+		} else if strings.HasSuffix(below, "/state") {
+			below = "next-hops/state"
+		}
 	}
 	keyPatt := niName + "|*"
 	if prefix != "" && prefix != "*" {
@@ -1598,10 +1646,11 @@ var Subscribe_ni_static_route_cfg_xfmr SubTreeXfmrSubscribe = func(inParams Xfmr
 	result.isVirtualTbl = false
 
 	// On change where a row arriving or going away is the whole story: the
-	// route list, a keyed route, and its state container. Deeper nodes describe
-	// next-hops, which this table does not decompose, so they keep sampling
-	// rather than being accepted and then reporting nothing.
-	if below == "" || below == "state" {
+	// route list, a keyed route, its state container, and next-hop state below
+	// it. Other next-hop nodes describe per-index data this table does not
+	// decompose, so they keep sampling rather than being accepted and then
+	// reporting nothing.
+	if below == "" || below == "state" || below == "next-hops/state" {
 		result.onChange = OnchangeEnable
 		result.nOpts = &notificationOpts{pType: OnChange}
 		return result, nil
@@ -1716,6 +1765,40 @@ func populateNiStaticRouteNextHopsToYang(ygRoot *ygot.GoStruct, niName, protoNam
 			// it was handed: 0 is the absence of a preference, never one the
 			// next-hop has.
 			nhObj.Config.Preference = nil
+		}
+	}
+	return nil
+}
+
+// populateNiStaticRouteNextHopsStateToYang fills next-hop state from what FRR
+// holds in STATIC_ROUTE_APPLIED. An empty index populates every next-hop that
+// appears in the applied row.
+func populateNiStaticRouteNextHopsStateToYang(ygRoot *ygot.GoStruct, niName, protoName, prefix string, entry db.Value, index string) error {
+	for _, e := range niStaticRouteDecodeNextHops(entry) {
+		nhIndex := niStaticRouteNhIndex(e)
+		if nhIndex == "" || (index != "" && nhIndex != index) {
+			continue
+		}
+		nhObj := getNiStaticRouteNextHopObj(ygRoot, niName, protoName, prefix, nhIndex, true)
+		if nhObj == nil {
+			continue
+		}
+		nhKey := nhIndex
+		nhObj.Index = &nhKey
+		if nhObj.State == nil {
+			nhObj.State = &ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_StaticRoutes_Static_NextHops_NextHop_State{}
+		}
+		nhObj.State.Index = &nhKey
+		if err := niStaticRouteNextHopStateUnionValue(nhObj.State, niStaticRouteNextHopValue(e)); err != nil {
+			return err
+		}
+		if preference, ok := niStaticRoutePreferenceOf(e); ok {
+			nhObj.State.Preference = &preference
+		} else {
+			nhObj.State.Preference = nil
+		}
+		if nhObj.Config != nil && nhObj.Config.Index == nil && nhObj.Config.NextHop == nil && nhObj.Config.Preference == nil {
+			nhObj.Config = nil
 		}
 	}
 	return nil
@@ -2023,6 +2106,42 @@ var DbToYang_ni_static_route_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrPa
 		}
 		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == niStaticRouteSetTagLeaf {
 			niStaticRouteSetTagToYang(cfgObj, entry)
+		}
+		return nil
+	case niStaticRouteTargetNextHopState:
+		if reqInfo.prefix == "" {
+			return tlerr.NotSupportedError{Format: "a wildcard or absent static route prefix is served at the route list; address static-routes/static rather than a container below it"}
+		}
+		applied, held := niStaticRouteAppliedEntry(inParams, reqInfo.niName, reqInfo.prefix)
+		if !held {
+			return nil
+		}
+		wrappedRoot, wrapErr := wrapNiStaticRouteRootAsDevice(inParams.ygRoot, reqInfo)
+		if wrapErr != nil {
+			return wrapErr
+		}
+		if err := populateNiStaticRouteNextHopsStateToYang(wrappedRoot, reqInfo.niName, reqInfo.protoName, reqInfo.prefix, applied, reqInfo.index); err != nil {
+			return err
+		}
+		if reqInfo.index == "" {
+			return nil
+		}
+		nhObj := getNiStaticRouteNextHopObj(wrappedRoot, reqInfo.niName, reqInfo.protoName, reqInfo.prefix, reqInfo.index, false)
+		if nhObj == nil || nhObj.State == nil || (nhObj.State.NextHop == nil && nhObj.State.Index == nil && nhObj.State.Preference == nil) {
+			return nil
+		}
+		if nhObj.State != nil {
+			switch reqInfo.targetLeaf {
+			case niStaticRouteIndexLeaf:
+				nhObj.State.NextHop = nil
+				nhObj.State.Preference = nil
+			case niStaticRouteNextHopLeaf:
+				nhObj.State.Index = nil
+				nhObj.State.Preference = nil
+			case niStaticRoutePreferenceLeaf:
+				nhObj.State.Index = nil
+				nhObj.State.NextHop = nil
+			}
 		}
 		return nil
 	case niStaticRouteTargetNextHopsRoot, niStaticRouteTargetNextHopInst, niStaticRouteTargetNextHopCfg:
