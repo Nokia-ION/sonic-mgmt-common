@@ -666,6 +666,14 @@ func get_classifier_names(d *db.DB, classifier_name string) (string, string) {
 	return classifier_name, classifier_name + "_ipv6"
 }
 
+type qosIntfClsType = ocbinds.E_OpenconfigQos_Qos_Interfaces_Interface_Input_Classifiers_Classifier_Config_Type
+
+const (
+	qosIntfClsAny  = ocbinds.OpenconfigQos_Qos_Interfaces_Interface_Input_Classifiers_Classifier_Config_Type_UNSET
+	qosIntfClsIPv4 = ocbinds.OpenconfigQos_Qos_Interfaces_Interface_Input_Classifiers_Classifier_Config_Type_IPV4
+	qosIntfClsIPv6 = ocbinds.OpenconfigQos_Qos_Interfaces_Interface_Input_Classifiers_Classifier_Config_Type_IPV6
+)
+
 var DbToYang_classifier_intf_qos_map_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) error {
 	pathInfo := NewPathInfo(inParams.uri)
 	if_name := pathInfo.Var("interface-id")
@@ -679,95 +687,108 @@ var DbToYang_classifier_intf_qos_map_xfmr SubTreeXfmrDbToYang = func(inParams Xf
 		return nil
 	}
 
-	dbSpec := &db.TableSpec{Name: "PORT_QOS_MAP"}
-
-	key := db.Key{Comp: []string{if_name}}
-	mapCfg, err := inParams.d.GetEntry(dbSpec, key)
-	if err != nil {
-		log.V(lvl.DEBUG).Info("QoS Map not found for interface ", if_name)
-		// An ACL backed classifier is bound without a PORT_QOS_MAP entry, so a
-		// missing entry is not the end of the interface's classifiers.
-		return fill_intf_acl_classifiers(inParams, intfObj, if_name)
+	/*
+	 * A request addressing one list instance asks for that type alone, and
+	 * the tree already holds an entry for it built from the URI key.
+	 */
+	keyType := pathInfo.Var("type")
+	wantType := qosIntfClsAny
+	switch keyType {
+	case "":
+	case "IPV4":
+		wantType = qosIntfClsIPv4
+	case "IPV6":
+		wantType = qosIntfClsIPv6
+	default:
+		return tlerr.NotFoundError{Format: "No " + keyType + " classifier on " + if_name}
 	}
 
-	mapState, err := inParams.dbs[db.ApplDB].GetEntry(dbSpec, key)
-	if err != nil {
-		log.V(lvl.DEBUG).Info("QoS Map not found for interface ", if_name)
+	filled := map[qosIntfClsType]bool{}
+
+	if err := fill_intf_dscp_classifiers(inParams, intfObj, if_name, wantType, filled); err != nil {
+		return err
+	}
+	if err := fill_intf_acl_classifiers(inParams, intfObj, if_name, wantType, filled); err != nil {
+		return err
 	}
 
-	map_type := "DSCP_TO_TC_MAP"
+	if wantType != qosIntfClsAny && !filled[wantType] {
+		return tlerr.NotFoundError{Format: "No " + keyType + " classifier on " + if_name}
+	}
+	return nil
+}
 
-	db_attr_name, ok := map_type_name_in_db[map_type]
+// fill_intf_classifier sets one entry of an interface's classifier list,
+// reusing the entry a request addressing that instance has already created.
+func fill_intf_classifier(intfObj *ocbinds.OpenconfigQos_Qos_Interfaces_Interface,
+	clsType qosIntfClsType, name string) error {
+
+	if intfObj.Input == nil {
+		intfObj.Input = &ocbinds.OpenconfigQos_Qos_Interfaces_Interface_Input{}
+	}
+	if intfObj.Input.Classifiers == nil {
+		intfObj.Input.Classifiers = &ocbinds.OpenconfigQos_Qos_Interfaces_Interface_Input_Classifiers{}
+	}
+
+	classifier, ok := intfObj.Input.Classifiers.Classifier[clsType]
 	if !ok {
-		log.V(lvl.DEBUG).Info("map_type not implemented", map_type)
+		var err error
+		if classifier, err = intfObj.Input.Classifiers.NewClassifier(clsType); err != nil {
+			return tlerr.InternalError{Format: "Failed to initialize classifier " + name}
+		}
+	}
+
+	cfgName, stateName := name, name
+	classifier.Config = &ocbinds.OpenconfigQos_Qos_Interfaces_Interface_Input_Classifiers_Classifier_Config{
+		Name: &cfgName, Type: clsType,
+	}
+	classifier.State = &ocbinds.OpenconfigQos_Qos_Interfaces_Interface_Input_Classifiers_Classifier_State{
+		Name: &stateName, Type: clsType,
+	}
+	return nil
+}
+
+/*
+ * fill_intf_dscp_classifiers reports the DSCP map bound to an interface. SONiC
+ * applies the map to both families, so it is reported under both list keys.
+ * qosorch takes PORT_QOS_MAP from CONFIG_DB and no applied copy is kept in
+ * APPL_DB, so the state is what CONFIG_DB holds.
+ */
+func fill_intf_dscp_classifiers(inParams XfmrParams,
+	intfObj *ocbinds.OpenconfigQos_Qos_Interfaces_Interface, if_name string,
+	wantType qosIntfClsType, filled map[qosIntfClsType]bool) error {
+
+	db_attr_name, ok := map_type_name_in_db["DSCP_TO_TC_MAP"]
+	if !ok {
+		log.V(lvl.DEBUG).Info("map_type not implemented DSCP_TO_TC_MAP")
 		return nil
 	}
 
-	if value, ok := mapCfg.Field[db_attr_name]; ok {
-		if intfObj.Input == nil {
-			intfObj.Input = &ocbinds.OpenconfigQos_Qos_Interfaces_Interface_Input{}
-		}
-
-		if intfObj.Input.Classifiers == nil {
-			intfObj.Input.Classifiers = &ocbinds.OpenconfigQos_Qos_Interfaces_Interface_Input_Classifiers{}
-		}
-
-		state_value, ok := mapState.Field[db_attr_name]
-		if !ok {
-			log.V(lvl.DEBUG).Info("QoS Map state not available for intf ", if_name)
-		}
-
-		classifier_name := value
-		state_classifier_name := state_value
-		classifierv4, classifierv6 := get_classifier_names(inParams.d, classifier_name)
-		state_classifierv4, state_classifierv6 := get_classifier_names(inParams.d, state_classifier_name)
-
-		/* Since a classifier in SONiC applies to both v4 and v6 traffic we will fill both v4 and v6 paths */
-		/* V4 Classifier */
-		classifier, err := intfObj.Input.Classifiers.NewClassifier(ocbinds.OpenconfigQos_Qos_Interfaces_Interface_Input_Classifiers_Classifier_Config_Type_IPV4)
-		if err != nil {
-			log.V(lvl.ERROR).Info("Failed to initialize classifier ", classifier_name)
-			return tlerr.NotFoundError{Format: "Failed to initialize classifier"}
-		}
-
-		if classifier.Config == nil {
-			classifier.Config = &ocbinds.OpenconfigQos_Qos_Interfaces_Interface_Input_Classifiers_Classifier_Config{}
-		}
-
-		if classifier.State == nil {
-			classifier.State = &ocbinds.OpenconfigQos_Qos_Interfaces_Interface_Input_Classifiers_Classifier_State{}
-		}
-
-		/* Update Config */
-		classifier.Config.Name = &classifierv4
-		classifier.Config.Type = ocbinds.OpenconfigQos_Qos_Interfaces_Interface_Input_Classifiers_Classifier_Config_Type_IPV4
-		/* Update State */
-		classifier.State.Name = &state_classifierv4
-		classifier.State.Type = ocbinds.OpenconfigQos_Qos_Interfaces_Interface_Input_Classifiers_Classifier_Config_Type_IPV4
-
-		/* V6 Classifier */
-		classifier6, err := intfObj.Input.Classifiers.NewClassifier(ocbinds.OpenconfigQos_Qos_Interfaces_Interface_Input_Classifiers_Classifier_Config_Type_IPV6)
-		if err != nil {
-			log.V(lvl.ERROR).Info("Failed to initialize classifier ", classifier_name)
-			return tlerr.NotFoundError{Format: "Failed to initialize classifier"}
-		}
-
-		if classifier6.Config == nil {
-			classifier6.Config = &ocbinds.OpenconfigQos_Qos_Interfaces_Interface_Input_Classifiers_Classifier_Config{}
-		}
-
-		if classifier6.State == nil {
-			classifier6.State = &ocbinds.OpenconfigQos_Qos_Interfaces_Interface_Input_Classifiers_Classifier_State{}
-		}
-
-		/* Update Config */
-		classifier6.Config.Name = &classifierv6
-		classifier6.Config.Type = ocbinds.OpenconfigQos_Qos_Interfaces_Interface_Input_Classifiers_Classifier_Config_Type_IPV6
-		/* Update State */
-		classifier6.State.Name = &state_classifierv6
-		classifier6.State.Type = ocbinds.OpenconfigQos_Qos_Interfaces_Interface_Input_Classifiers_Classifier_Config_Type_IPV6
+	mapCfg, err := inParams.d.GetEntry(&db.TableSpec{Name: "PORT_QOS_MAP"}, db.Key{Comp: []string{if_name}})
+	if err != nil {
+		log.V(lvl.DEBUG).Info("QoS Map not found for interface ", if_name)
+		return nil
 	}
-	return fill_intf_acl_classifiers(inParams, intfObj, if_name)
+
+	classifier_name := mapCfg.Field[db_attr_name]
+	if classifier_name == "" {
+		return nil
+	}
+
+	classifierv4, classifierv6 := get_classifier_names(inParams.d, classifier_name)
+	for clsType, name := range map[qosIntfClsType]string{
+		qosIntfClsIPv4: classifierv4,
+		qosIntfClsIPv6: classifierv6,
+	} {
+		if wantType != qosIntfClsAny && clsType != wantType {
+			continue
+		}
+		if err := fill_intf_classifier(intfObj, clsType, name); err != nil {
+			return err
+		}
+		filled[clsType] = true
+	}
+	return nil
 }
 
 /*
@@ -777,44 +798,29 @@ var DbToYang_classifier_intf_qos_map_xfmr SubTreeXfmrDbToYang = func(inParams Xf
  * for one family and is reported under that key alone.
  */
 func fill_intf_acl_classifiers(inParams XfmrParams,
-	intfObj *ocbinds.OpenconfigQos_Qos_Interfaces_Interface, if_name string) error {
+	intfObj *ocbinds.OpenconfigQos_Qos_Interfaces_Interface, if_name string,
+	wantType qosIntfClsType, filled map[qosIntfClsType]bool) error {
 
-	names := qosAclClassifiersOnIntf(inParams, if_name)
-	if len(names) == 0 {
-		return nil
-	}
-
-	if intfObj.Input == nil {
-		intfObj.Input = &ocbinds.OpenconfigQos_Qos_Interfaces_Interface_Input{}
-	}
-	if intfObj.Input.Classifiers == nil {
-		intfObj.Input.Classifiers = &ocbinds.OpenconfigQos_Qos_Interfaces_Interface_Input_Classifiers{}
-	}
-
-	for _, name := range names {
-		clsType := ocbinds.OpenconfigQos_Qos_Interfaces_Interface_Input_Classifiers_Classifier_Config_Type_IPV4
+	for _, name := range qosAclClassifiersOnIntf(inParams, if_name) {
+		clsType := qosIntfClsIPv4
 		if qosAclClassifierFamily(inParams, name) == "ipv6" {
-			clsType = ocbinds.OpenconfigQos_Qos_Interfaces_Interface_Input_Classifiers_Classifier_Config_Type_IPV6
+			clsType = qosIntfClsIPv6
+		}
+		if wantType != qosIntfClsAny && clsType != wantType {
+			continue
 		}
 
 		// A DSCP map on the same interface already claimed both list keys. It
 		// is what PORT_QOS_MAP says is applied, so let it stand.
-		if _, ok := intfObj.Input.Classifiers.Classifier[clsType]; ok {
+		if filled[clsType] {
 			log.V(lvl.DEBUG).Info("Classifier list already holds type for intf ", if_name, " ", name)
 			continue
 		}
 
-		classifier, err := intfObj.Input.Classifiers.NewClassifier(clsType)
-		if err != nil {
-			return tlerr.InternalError{Format: "Failed to initialize classifier " + name}
+		if err := fill_intf_classifier(intfObj, clsType, name); err != nil {
+			return err
 		}
-		clsName := name
-		classifier.Config = &ocbinds.OpenconfigQos_Qos_Interfaces_Interface_Input_Classifiers_Classifier_Config{
-			Name: &clsName, Type: clsType,
-		}
-		classifier.State = &ocbinds.OpenconfigQos_Qos_Interfaces_Interface_Input_Classifiers_Classifier_State{
-			Name: &clsName, Type: clsType,
-		}
+		filled[clsType] = true
 	}
 	return nil
 }
