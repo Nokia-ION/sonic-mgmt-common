@@ -45,9 +45,8 @@ func populateNiStaticRouteAggregateStateReplay(inParams XfmrParams, ygRoot *ygot
 			!rpolNodeServesRequest(inParams.requestUri, routeInstUri+"/next-hops") {
 			continue
 		}
-		routeStateUri := routeInstUri + "/state"
-		if rpolNodeServesRequest(inParams.requestUri, routeStateUri) {
-			if err := niContainerReplay(inParams, ygRoot, routeStateUri, DbToYang_ni_static_route_cfg_xfmr); err != nil {
+		if rpolNodeServesRequest(inParams.requestUri, routeInstUri+"/state") {
+			if err := populateNiStaticRouteRouteStateFromApplied(inParams, ygRoot, niName, protoName, p, ""); err != nil {
 				return err
 			}
 		}

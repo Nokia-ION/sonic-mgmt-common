@@ -115,9 +115,9 @@ func Test_openconfig_network_instance_protocols_aggregate_state(t *testing.T) {
 		},
 	}
 	cleanupTbl := map[string]interface{}{
-		"BGP_GLOBALS":    map[string]interface{}{"default": ""},
-		"BGP_NEIGHBOR":   map[string]interface{}{"default|20.0.0.1": ""},
-		"STATIC_ROUTE":   map[string]interface{}{"default|10.1.0.0/24": ""},
+		"BGP_GLOBALS":  map[string]interface{}{"default": ""},
+		"BGP_NEIGHBOR": map[string]interface{}{"default|20.0.0.1": ""},
+		"STATIC_ROUTE": map[string]interface{}{"default|10.1.0.0/24": ""},
 	}
 	loadDB(db.ConfigDB, preReqMap)
 	loadNiBgpGlobalsApplied("default", map[string]interface{}{
