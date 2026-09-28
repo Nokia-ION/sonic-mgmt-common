@@ -28,6 +28,9 @@ import (
 // populateNiBgpAggregateStateReplay merges operational BGP subtrees into a
 // hierarchy GET after the CONFIG_DB mapping has run.
 func populateNiBgpAggregateStateReplay(inParams XfmrParams, ygRoot *ygot.GoStruct, niName, protoName string) error {
+	if err := populateNiBgpAggregateGlobalStateReplay(inParams, ygRoot, niName, protoName); err != nil {
+		return err
+	}
 	return populateNiBgpAggregateNeighborStateReplay(inParams, ygRoot, niName, protoName)
 }
 
@@ -50,6 +53,19 @@ func populateNiBgpAggregateNeighborStateReplay(inParams XfmrParams, ygRoot *ygot
 		}
 	}
 	return nil
+}
+
+// populateNiBgpAggregateGlobalStateReplay merges BGP global operational state.
+func populateNiBgpAggregateGlobalStateReplay(inParams XfmrParams, ygRoot *ygot.GoStruct, niName, protoName string) error {
+	if inParams.dbs[db.StateDB] == nil {
+		return nil
+	}
+	protoUri := niContainerProtoUri(niName, "BGP", protoName)
+	globalStateUri := protoUri + "/bgp/global/state"
+	if !rpolNodeServesRequest(inParams.requestUri, globalStateUri) {
+		return nil
+	}
+	return niContainerReplay(inParams, ygRoot, globalStateUri, DbToYang_ni_bgp_global_state_xfmr)
 }
 
 // niBgpNeighborAddrsForAggregate lists the neighbor addresses whose state

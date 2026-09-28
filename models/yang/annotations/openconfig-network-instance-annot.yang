@@ -195,6 +195,45 @@ module openconfig-network-instance-annot {
       }
     }
 
+    // BGP global operational state is published to STATE_DB by bgpmon as
+    // BGP_GLOBALS_APPLIED|<network-instance>, sourced from the FRR summary
+    // rather than CONFIG_DB, so aggregate GETs can merge as and router-id as
+    // FRR holds them alongside total-paths and total-prefixes.
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:bgp/oc-netinst:global/oc-netinst:state {
+      deviate add {
+          sonic-ext:db-name "STATE_DB";
+          sonic-ext:subtree-transformer "ni_bgp_global_state_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:bgp/oc-netinst:global/oc-netinst:state/oc-netinst:as {
+      deviate add {
+          sonic-ext:db-name "STATE_DB";
+          sonic-ext:subtree-transformer "ni_bgp_global_state_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:bgp/oc-netinst:global/oc-netinst:state/oc-netinst:router-id {
+      deviate add {
+          sonic-ext:db-name "STATE_DB";
+          sonic-ext:subtree-transformer "ni_bgp_global_state_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:bgp/oc-netinst:global/oc-netinst:state/oc-netinst:total-paths {
+      deviate add {
+          sonic-ext:db-name "STATE_DB";
+          sonic-ext:subtree-transformer "ni_bgp_global_state_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:bgp/oc-netinst:global/oc-netinst:state/oc-netinst:total-prefixes {
+      deviate add {
+          sonic-ext:db-name "STATE_DB";
+          sonic-ext:subtree-transformer "ni_bgp_global_state_xfmr";
+      }
+    }
+
     deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:bgp/oc-netinst:global/oc-netinst:route-selection-options/oc-netinst:config {
       deviate add {
           sonic-ext:db-name "CONFIG_DB";
