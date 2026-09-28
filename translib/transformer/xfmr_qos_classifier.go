@@ -2,6 +2,7 @@ package transformer
 
 import (
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 
@@ -53,13 +54,14 @@ var YangToDb_qos_dscp_classifier_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPa
 		 * the map delete below would leave its ACL objects behind.
 		 */
 		delPathInfo := NewPathInfo(inParams.uri)
-		if name := delPathInfo.Var("name"); name != "" && qosClassifierIsPolicing(inParams, name) {
+		name := delPathInfo.Var("name")
+		if name != "" && qosClassifierIsPolicing(inParams, name) {
 			return qosClassifierAclDelete(inParams, name, delPathInfo.Var("id"))
 		}
-		if res_map, err := qos_map_delete_xfmr(inParams, "QOS_UMF_CLASSIFIER"); err != nil {
-			return res_map, err
+		if termId := delPathInfo.Var("id"); name != "" && termId != "" {
+			return qosDscpClassifierTermDelete(inParams, name, termId)
 		}
-		return qos_map_delete_xfmr(inParams, map_type)
+		return qosDscpClassifierDelete(inParams, name)
 	}
 
 	res_map := make(map[string]map[string]db.Value)
@@ -81,7 +83,7 @@ var YangToDb_qos_dscp_classifier_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPa
 		return res_map, tlerr.InvalidArgsError{Format: "nil qos obj"}
 	}
 
-	if _, ok := qosObj.Classifiers.Classifier[name]; !ok {
+	if qosObj.Classifiers == nil || qosObj.Classifiers.Classifier[name] == nil {
 		/* URI path does not have a classifier instance, hence nothing more to process */
 		return res_map, nil
 	}
@@ -108,9 +110,19 @@ var YangToDb_qos_dscp_classifier_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPa
 	umf_map_key := name
 	umf_map_entry[umf_map_key] = db.Value{Field: make(map[string]string)}
 
-	switch qosObj.Classifiers.Classifier[name].Config.Type {
+	clsType := ocbinds.OpenconfigQos_Qos_Classifiers_Classifier_Config_Type_UNSET
+	if cfg := qosObj.Classifiers.Classifier[name].Config; cfg != nil {
+		clsType = cfg.Type
+	}
+	switch clsType {
 	case ocbinds.OpenconfigQos_Qos_Classifiers_Classifier_Config_Type_IPV6:
 		umf_map_entry[umf_map_key].Field["type"] = "ipv6"
+	case ocbinds.OpenconfigQos_Qos_Classifiers_Classifier_Config_Type_UNSET:
+		umf_map_entry[umf_map_key].Field["type"] = "ipv4"
+		if row, err := inParams.d.GetEntry(&db.TableSpec{Name: "QOS_UMF_CLASSIFIER"},
+			db.Key{Comp: []string{name}}); err == nil && row.Field["type"] != "" {
+			umf_map_entry[umf_map_key].Field["type"] = row.Field["type"]
+		}
 	default:
 		umf_map_entry[umf_map_key].Field["type"] = "ipv4"
 	}
@@ -127,49 +139,346 @@ var YangToDb_qos_dscp_classifier_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPa
 		return res_map, tlerr.NotSupportedError{Format: "Unsupported path"}
 	}
 
-	term, ok := qosObj.Classifiers.Classifier[name].Terms.Term[keyid]
-	if !ok {
+	clsObj := qosObj.Classifiers.Classifier[name]
+	var term *ocbinds.OpenconfigQos_Qos_Classifiers_Classifier_Terms_Term
+	if clsObj.Terms != nil {
+		term = clsObj.Terms.Term[keyid]
+	}
+	if term == nil {
 		/* URI path does not have a Term, hence nothing further to process */
+		/* A replace aimed at one term is also handed the classifier; the other terms stay. */
+		if keyid == "" && inParams.oper == REPLACE && NewPathInfo(inParams.requestUri).Var("id") == "" {
+			qosDscpClassifierPruneStale(inParams, name, clsObj)
+		}
 		res_map[map_type] = map_entry
 		return res_map, nil
 	}
 
-	var entry_key string
-	if term.Conditions.Ipv4 != nil && term.Conditions.Ipv4.Config != nil {
-		entry_key = strconv.Itoa(int(*term.Conditions.Ipv4.Config.Dscp))
+	dscps, isSet, err := qosTermDscps(keyid, term)
+	if err != nil {
+		return res_map, err
 	}
 
-	/* If v4 DSCP is not specified lets check the v6 DSCP */
-	if entry_key == "" {
-		if term.Conditions.Ipv6 != nil && term.Conditions.Ipv6.Config != nil {
-			entry_key = strconv.Itoa(int(*term.Conditions.Ipv6.Config.Dscp))
-		}
-		if entry_key == "" {
-			return res_map, tlerr.InvalidArgsError{Format: "Invalid DSCP"}
-		}
+	if !qosTermHasTargetGroup(term) {
+		return res_map, tlerr.InvalidArgsError{Format: "Classifier term " + keyid + " has no target-group"}
+	}
+	tc, err := qosTargetGroupToTc(inParams, *term.Actions.Config.TargetGroup)
+	if err != nil {
+		return res_map, err
 	}
 
-	log.V(lvl.DEBUG).Info("entry_key : ", entry_key, " operation: ", inParams.oper, " CREATE: ", CREATE,
-		" REPLACE: ", REPLACE, " UPDATE: ", UPDATE)
-
-	val := *(term.Actions.Config.TargetGroup)
-
-	if qosObj.ForwardingGroups == nil {
-		map_entry[map_key].Field[entry_key] = get_fwd_group_priority(inParams, val)
-	} else {
-		fwdGrp, ok := qosObj.ForwardingGroups.ForwardingGroup[val]
-		if ok {
-			map_entry[map_key].Field[entry_key] = strconv.Itoa(int(*fwdGrp.Config.FabricPriority))
-		} else {
-			map_entry[map_key].Field[entry_key] = get_fwd_group_priority(inParams, val)
-		}
+	for _, dscp := range dscps {
+		map_entry[map_key].Field[strconv.Itoa(int(dscp))] = tc
 	}
-
-	log.V(lvl.DEBUG).Info("map key : ", map_key, " entry_key: ", entry_key)
 	res_map[map_type] = map_entry
 
+	res_map[qosUmfClassifierTerm] = map[string]db.Value{
+		name + "|" + keyid: qosDscpTermRow(dscps, isSet),
+	}
+
+	/*
+	 * An update merges into the map, so the values this term named before and
+	 * no longer does would stay mapped. A replace rewrites the map row whole,
+	 * even when it is aimed at a single term.
+	 */
+	if inParams.oper != REPLACE {
+		qosDscpTermPruneStale(inParams, name, keyid, clsObj, res_map[qosUmfClassifierTerm][name+"|"+keyid])
+	} else if NewPathInfo(inParams.requestUri).Var("id") != "" {
+		qosDscpKeepOtherTerms(inParams, name, keyid, map_entry[map_key])
+	}
+
+	log.V(lvl.DEBUG).Info("classifier ", name, " term ", keyid, " dscps ", dscps, " tc ", tc)
 	return res_map, nil
 
+}
+
+const qosUmfClassifierTerm = "QOS_UMF_CLASSIFIER_TERM"
+
+// qosTermDscps returns the DSCP values a term of a DSCP classifier matches and
+// whether they were given as dscp-set rather than dscp.
+func qosTermDscps(termId string, term *ocbinds.OpenconfigQos_Qos_Classifiers_Classifier_Terms_Term) ([]uint8, bool, error) {
+	var dscp *uint8
+	var dscpSet []uint8
+	if c := term.Conditions; c != nil {
+		if c.Ipv4 != nil && c.Ipv4.Config != nil {
+			dscp, dscpSet = c.Ipv4.Config.Dscp, c.Ipv4.Config.DscpSet
+		}
+		if dscp == nil && len(dscpSet) == 0 && c.Ipv6 != nil && c.Ipv6.Config != nil {
+			dscp, dscpSet = c.Ipv6.Config.Dscp, c.Ipv6.Config.DscpSet
+		}
+	}
+
+	switch {
+	case dscp != nil && len(dscpSet) > 0:
+		return nil, false, tlerr.InvalidArgsError{
+			Format: "Classifier term " + termId + " sets both dscp and dscp-set"}
+	case dscp != nil:
+		return []uint8{*dscp}, false, nil
+	case len(dscpSet) > 0:
+		return dscpSet, true, nil
+	}
+	return nil, false, tlerr.InvalidArgsError{Format: "Classifier term " + termId + " has no dscp or dscp-set"}
+}
+
+func qosDscpTermRow(dscps []uint8, isSet bool) db.Value {
+	row := db.Value{Field: make(map[string]string)}
+	if !isSet {
+		row.Field["dscp"] = strconv.Itoa(int(dscps[0]))
+		return row
+	}
+	vals := make([]string, len(dscps))
+	for i, d := range dscps {
+		vals[i] = strconv.Itoa(int(d))
+	}
+	row.Field["dscp_set@"] = strings.Join(vals, ",")
+	return row
+}
+
+// qosDscpTerm is one term of a DSCP classifier. recorded is false for a value
+// written before terms were kept in QOS_UMF_CLASSIFIER_TERM, which stands as a
+// term of its own whose id is the value.
+type qosDscpTerm struct {
+	dscps    []string
+	isSet    bool
+	recorded bool
+}
+
+// qosDscpClassifierTerms reads the recorded terms of a DSCP classifier, keyed
+// by term id.
+func qosDscpClassifierTerms(d *db.DB, name string) map[string]qosDscpTerm {
+	terms := map[string]qosDscpTerm{}
+	if d == nil {
+		return terms
+	}
+	ts := &db.TableSpec{Name: qosUmfClassifierTerm}
+	keys, err := d.GetKeysByPattern(ts, name+"|*")
+	if err != nil {
+		return terms
+	}
+	for _, key := range keys {
+		if len(key.Comp) != 2 || key.Comp[0] != name {
+			continue
+		}
+		row, err := d.GetEntry(ts, key)
+		if err != nil {
+			continue
+		}
+		if set := row.Field["dscp_set@"]; set != "" {
+			terms[key.Comp[1]] = qosDscpTerm{dscps: strings.Split(set, ","), isSet: true, recorded: true}
+		} else if dscp := row.Field["dscp"]; dscp != "" {
+			terms[key.Comp[1]] = qosDscpTerm{dscps: []string{dscp}, recorded: true}
+		}
+	}
+	return terms
+}
+
+// qosDscpClassifierAllTerms returns the recorded terms of a DSCP classifier
+// plus a term for each mapped value no recorded term covers.
+func qosDscpClassifierAllTerms(d *db.DB, name string) map[string]qosDscpTerm {
+	terms := qosDscpClassifierTerms(d, name)
+	if d == nil {
+		return terms
+	}
+	mapCfg, err := d.GetEntry(&db.TableSpec{Name: "DSCP_TO_TC_MAP"}, db.Key{Comp: []string{name}})
+	if err != nil {
+		return terms
+	}
+	covered := map[string]bool{}
+	for _, term := range terms {
+		for _, dscp := range term.dscps {
+			covered[dscp] = true
+		}
+	}
+	for dscp := range mapCfg.Field {
+		if _, err := strconv.ParseUint(dscp, 10, 8); err != nil || covered[dscp] {
+			continue
+		}
+		if _, clash := terms[dscp]; !clash {
+			terms[dscp] = qosDscpTerm{dscps: []string{dscp}}
+		}
+	}
+	return terms
+}
+
+// qosDscpClassifierRequestDscps collects the DSCP values every term of the
+// classifier in the request names.
+func qosDscpClassifierRequestDscps(clsObj *ocbinds.OpenconfigQos_Qos_Classifiers_Classifier) map[string]bool {
+	named := map[string]bool{}
+	if clsObj == nil || clsObj.Terms == nil {
+		return named
+	}
+	for termId, term := range clsObj.Terms.Term {
+		dscps, _, err := qosTermDscps(termId, term)
+		if err != nil {
+			continue
+		}
+		for _, d := range dscps {
+			named[strconv.Itoa(int(d))] = true
+		}
+	}
+	return named
+}
+
+// qosDscpTermPruneStale drops the values a term mapped before and the request
+// no longer names under any of the classifier's terms. A changed record is
+// dropped too: an update would merge a dscp-set into the old one and keep a
+// dscp next to a new dscp-set. The delete runs before the update rewrites it.
+func qosDscpTermPruneStale(inParams XfmrParams, name, termId string,
+	clsObj *ocbinds.OpenconfigQos_Qos_Classifiers_Classifier, newRow db.Value) {
+
+	old, ok := qosDscpClassifierAllTerms(inParams.d, name)[termId]
+	if !ok {
+		return
+	}
+	if old.recorded {
+		oldRow := db.Value{Field: map[string]string{"dscp": old.dscps[0]}}
+		if old.isSet {
+			oldRow = db.Value{Field: map[string]string{"dscp_set@": strings.Join(old.dscps, ",")}}
+		}
+		if !reflect.DeepEqual(oldRow.Field, newRow.Field) {
+			qosStageDelete(inParams, qosUmfClassifierTerm, name+"|"+termId, db.Value{Field: make(map[string]string)})
+		}
+	}
+	named := qosDscpClassifierRequestDscps(clsObj)
+	stale := db.Value{Field: make(map[string]string)}
+	for _, d := range old.dscps {
+		if !named[d] {
+			stale.Field[d] = ""
+		}
+	}
+	if len(stale.Field) > 0 {
+		qosStageDelete(inParams, "DSCP_TO_TC_MAP", name, stale)
+	}
+}
+
+// qosDscpKeepOtherTerms copies into row the values the classifier's other terms
+// map, leaving any the request sets itself.
+func qosDscpKeepOtherTerms(inParams XfmrParams, name, termId string, row db.Value) {
+	mapCfg, err := inParams.d.GetEntry(&db.TableSpec{Name: "DSCP_TO_TC_MAP"}, db.Key{Comp: []string{name}})
+	if err != nil {
+		return
+	}
+	for otherId, other := range qosDscpClassifierAllTerms(inParams.d, name) {
+		if otherId == termId {
+			continue
+		}
+		for _, d := range other.dscps {
+			tc, mapped := mapCfg.Field[d]
+			if _, set := row.Field[d]; mapped && !set {
+				row.Field[d] = tc
+			}
+		}
+	}
+}
+
+// qosDscpClassifierPruneStale drops the recorded terms, and the values they
+// mapped, of a classifier that a replace no longer carries.
+func qosDscpClassifierPruneStale(inParams XfmrParams, name string,
+	clsObj *ocbinds.OpenconfigQos_Qos_Classifiers_Classifier) {
+
+	named := qosDscpClassifierRequestDscps(clsObj)
+	stale := db.Value{Field: make(map[string]string)}
+	for termId, old := range qosDscpClassifierAllTerms(inParams.d, name) {
+		if clsObj.Terms != nil {
+			if _, ok := clsObj.Terms.Term[termId]; ok {
+				continue
+			}
+		}
+		if old.recorded {
+			qosStageDelete(inParams, qosUmfClassifierTerm, name+"|"+termId, db.Value{Field: make(map[string]string)})
+		}
+		for _, d := range old.dscps {
+			if !named[d] {
+				stale.Field[d] = ""
+			}
+		}
+	}
+	if len(stale.Field) > 0 {
+		qosStageDelete(inParams, "DSCP_TO_TC_MAP", name, stale)
+	}
+}
+
+// qosDscpClassifierDelete removes a DSCP classifier, or every one when name is
+// empty, together with its bookkeeping.
+func qosDscpClassifierDelete(inParams XfmrParams, name string) (map[string]map[string]db.Value, error) {
+	names := []string{name}
+	if name == "" {
+		names = nil
+		if keys, err := inParams.d.GetKeys(&db.TableSpec{Name: "DSCP_TO_TC_MAP"}); err == nil {
+			for _, key := range keys {
+				names = append(names, key.Get(0))
+			}
+		}
+	}
+
+	res_map, err := qos_map_delete_xfmr(inParams, "DSCP_TO_TC_MAP")
+	if err != nil {
+		return res_map, err
+	}
+
+	umfTbl := &db.TableSpec{Name: "QOS_UMF_CLASSIFIER"}
+	termTbl := &db.TableSpec{Name: qosUmfClassifierTerm}
+	for _, cls := range names {
+		if _, err := inParams.d.GetEntry(umfTbl, db.Key{Comp: []string{cls}}); err == nil {
+			qosMergeTable(res_map, "QOS_UMF_CLASSIFIER",
+				map[string]db.Value{cls: {Field: make(map[string]string)}})
+		}
+		keys, err := inParams.d.GetKeysByPattern(termTbl, cls+"|*")
+		if err != nil {
+			continue
+		}
+		rows := map[string]db.Value{}
+		for _, key := range keys {
+			if len(key.Comp) == 2 && key.Comp[0] == cls {
+				rows[cls+"|"+key.Comp[1]] = db.Value{Field: make(map[string]string)}
+			}
+		}
+		if len(rows) > 0 {
+			qosMergeTable(res_map, qosUmfClassifierTerm, rows)
+		}
+	}
+	return res_map, nil
+}
+
+// qosDscpClassifierTermDelete removes one term of a DSCP classifier: the
+// values it mapped, unless another term names them too, and its record.
+func qosDscpClassifierTermDelete(inParams XfmrParams, name, termId string) (map[string]map[string]db.Value, error) {
+	res_map := make(map[string]map[string]db.Value)
+
+	terms := qosDscpClassifierAllTerms(inParams.d, name)
+	term, ok := terms[termId]
+	if !ok {
+		return res_map, nil
+	}
+	if term.recorded {
+		res_map[qosUmfClassifierTerm] = map[string]db.Value{
+			name + "|" + termId: {Field: make(map[string]string)},
+		}
+	}
+
+	mapCfg, err := inParams.d.GetEntry(&db.TableSpec{Name: "DSCP_TO_TC_MAP"}, db.Key{Comp: []string{name}})
+	if err != nil {
+		return res_map, nil
+	}
+	shared := map[string]bool{}
+	for otherId, other := range terms {
+		if otherId == termId {
+			continue
+		}
+		for _, d := range other.dscps {
+			shared[d] = true
+		}
+	}
+	fields := db.Value{Field: make(map[string]string)}
+	for _, d := range term.dscps {
+		if _, mapped := mapCfg.Field[d]; mapped && !shared[d] {
+			fields.Field[d] = ""
+		}
+	}
+	if len(fields.Field) > 0 {
+		res_map["DSCP_TO_TC_MAP"] = map[string]db.Value{name: fields}
+	}
+	return res_map, nil
 }
 
 func fill_classifier_info_by_name(inParams XfmrParams, classifiers *ocbinds.OpenconfigQos_Qos_Classifiers, name string, fillActionState bool) error {
@@ -227,19 +536,27 @@ func fill_classifier_info_by_name(inParams XfmrParams, classifiers *ocbinds.Open
 		mapObj.State.Type = ocbinds.OpenconfigQos_Qos_Classifiers_Classifier_Config_Type_IPV4
 	}
 
-	for k, v := range mapCfg.Field {
-		log.V(lvl.DEBUG).Info("Table key-value ", k, " ", v)
-
-		tmp, err := strconv.ParseUint(k, 10, 8)
-		if err != nil {
-			log.V(lvl.ERROR).Info("Could not parse DSCP key")
-			return err
+	for termId, term := range qosDscpClassifierAllTerms(inParams.d, name) {
+		var dscps []uint8
+		v := ""
+		for _, d := range term.dscps {
+			tmp, err := strconv.ParseUint(d, 10, 8)
+			if err != nil {
+				log.V(lvl.ERROR).Info("Could not parse DSCP key ", d)
+				continue
+			}
+			dscps = append(dscps, uint8(tmp))
+			if tc, ok := mapCfg.Field[d]; ok && v == "" {
+				v = tc
+			}
+		}
+		if len(dscps) == 0 || v == "" {
+			continue
 		}
 
-		key := uint8(tmp)
-		entryObj, ok := mapObj.Terms.Term[strconv.Itoa(int(key))]
+		entryObj, ok := mapObj.Terms.Term[termId]
 		if !ok {
-			entryObj, err = mapObj.Terms.NewTerm(strconv.Itoa(int(key)))
+			entryObj, err = mapObj.Terms.NewTerm(termId)
 			if err != nil {
 				log.V(lvl.ERROR).Info("Could not create new term")
 				return err
@@ -253,7 +570,7 @@ func fill_classifier_info_by_name(inParams XfmrParams, classifiers *ocbinds.Open
 			entryObj.Config = &ocbinds.OpenconfigQos_Qos_Classifiers_Classifier_Terms_Term_Config{}
 		}
 
-		key_str := strconv.Itoa(int(key))
+		key_str := termId
 		entryObj.Config.Id = &key_str
 
 		if entryObj.State == nil {
@@ -304,8 +621,16 @@ func fill_classifier_info_by_name(inParams XfmrParams, classifiers *ocbinds.Open
 		// Get the forwarding group name from value
 		fwd_group := get_fwd_group_from_priority(inParams, v)
 		if !fillActionState {
-			switch classifierCfg.Field["type"] {
-			case "ipv6":
+			key := dscps[0]
+			ipv6 := classifierCfg.Field["type"] == "ipv6"
+			switch {
+			case term.isSet && ipv6:
+				entryObj.Conditions.Ipv6.Config.DscpSet = dscps
+				entryObj.Conditions.Ipv6.State.DscpSet = dscps
+			case term.isSet:
+				entryObj.Conditions.Ipv4.Config.DscpSet = dscps
+				entryObj.Conditions.Ipv4.State.DscpSet = dscps
+			case ipv6:
 				entryObj.Conditions.Ipv6.Config.Dscp = &key
 				entryObj.Conditions.Ipv6.State.Dscp = &key
 			default:
@@ -406,12 +731,14 @@ func is_classifier_dscp(inParams XfmrParams, key string) bool {
 				}
 				if term.Conditions.Ipv4 != nil &&
 					term.Conditions.Ipv4.Config != nil &&
-					term.Conditions.Ipv4.Config.Dscp != nil {
+					(term.Conditions.Ipv4.Config.Dscp != nil ||
+						len(term.Conditions.Ipv4.Config.DscpSet) > 0) {
 					return true
 				}
 				if term.Conditions.Ipv6 != nil &&
 					term.Conditions.Ipv6.Config != nil &&
-					term.Conditions.Ipv6.Config.Dscp != nil {
+					(term.Conditions.Ipv6.Config.Dscp != nil ||
+						len(term.Conditions.Ipv6.Config.DscpSet) > 0) {
 					return true
 				}
 			}
