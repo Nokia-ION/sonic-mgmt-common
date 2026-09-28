@@ -2059,7 +2059,10 @@ var DbToYang_ni_static_route_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrPa
 				return err
 			}
 		}
-		return populateNiStaticRouteHierToYangFromDb(cfgDb, wrappedRoot, reqInfo.niName, reqInfo.protoName, reqInfo.prefix)
+		if err := populateNiStaticRouteHierToYangFromDb(cfgDb, wrappedRoot, reqInfo.niName, reqInfo.protoName, reqInfo.prefix); err != nil {
+			return err
+		}
+		return populateNiStaticRouteAggregateStateReplay(inParams, wrappedRoot, reqInfo.niName, reqInfo.protoName, reqInfo.prefix)
 	case niStaticRouteTargetRouteState:
 		// translib removes a wildcard list key before dispatch, so the request
 		// path no longer names a route. At the list node that is served, the node

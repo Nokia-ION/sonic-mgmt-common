@@ -1362,6 +1362,50 @@ func Test_openconfig_network_instance_static_route_state(t *testing.T) {
 	unloadDB(db.ConfigDB, cleanupTbl)
 }
 
+func Test_openconfig_network_instance_static_route_keyed_aggregate_state(t *testing.T) {
+	cleanupTbl := map[string]interface{}{
+		"STATIC_ROUTE": map[string]interface{}{"default|10.2.0.0/24": ""},
+	}
+	preReqMap := map[string]interface{}{
+		"STATIC_ROUTE": map[string]interface{}{
+			"default|10.2.0.0/24": map[string]interface{}{
+				"nexthop": "10.2.2.2",
+				"ifname":  "",
+				"tag":     "22",
+			},
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	loadDB(db.StateDB, map[string]interface{}{
+		"STATIC_ROUTE_APPLIED": map[string]interface{}{
+			"default|10.2.0.0/24": map[string]interface{}{
+				"nexthop":  "10.2.2.2",
+				"ifname":   "Ethernet0",
+				"distance": "200",
+			},
+		},
+	})
+	time.Sleep(1 * time.Second)
+
+	rtUrl := "/openconfig-network-instance:network-instances/network-instance[name=default]" +
+		"/protocols/protocol[identifier=STATIC][name=static]/static-routes/static[prefix=10.2.0.0/24]"
+
+	expectedGetJSON := `{"openconfig-network-instance:static":[` +
+		`{"config":{"prefix":"10.2.0.0/24","set-tag":22},"next-hops":{"next-hop":[` +
+		`{"config":{"index":"10.2.2.2","next-hop":"10.2.2.2"},"index":"10.2.2.2"},` +
+		`{"index":"10.2.2.2+Ethernet0","state":{"index":"10.2.2.2+Ethernet0","next-hop":"10.2.2.2","preference":200}}]},` +
+		`"prefix":"10.2.0.0/24","state":{"prefix":"10.2.0.0/24","set-tag":22}}]}`
+
+	t.Run("GET keyed static route merges route and next-hop state",
+		processGetRequest(rtUrl, nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.StateDB, map[string]interface{}{
+		"STATIC_ROUTE_APPLIED": map[string]interface{}{"default|10.2.0.0/24": ""},
+	})
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
 // A wildcard on the static list's own key reads every route of the instance.
 // The enclosing keys stay concrete: omitting the network-instance or protocol
 // key is served nowhere in this repo, and a partial wildcard on the protocol
