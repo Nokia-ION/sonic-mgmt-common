@@ -2073,7 +2073,10 @@ var DbToYang_ni_bgp_global_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrPara
 		if wrapErr != nil {
 			return wrapErr
 		}
-		return populateNiBgpHierToYangFromDb(cfgDb, wrappedRoot, reqInfo.niName, reqInfo.protoName)
+		if err := populateNiBgpHierToYangFromDb(cfgDb, wrappedRoot, reqInfo.niName, reqInfo.protoName); err != nil {
+			return err
+		}
+		return populateNiBgpAggregateStateReplay(inParams, wrappedRoot, reqInfo.niName, reqInfo.protoName)
 	}
 
 	if reqInfo.targetPathKind == niBgpTargetGlobalCfg {
