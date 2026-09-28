@@ -340,6 +340,12 @@ func qosAclRuleFields(termId string, term *ocbinds.OpenconfigQos_Qos_Classifiers
 			Format: "Classifier term " + termId + " hop-limit condition is not supported",
 		}
 	}
+	if (c.Ipv4 != nil && c.Ipv4.Config != nil && len(c.Ipv4.Config.DscpSet) > 0) ||
+		(c.Ipv6 != nil && c.Ipv6.Config != nil && len(c.Ipv6.Config.DscpSet) > 0) {
+		return val, nil, tlerr.NotSupportedError{
+			Format: "Classifier term " + termId + " dscp-set is only supported in a classifier that matches on DSCP alone",
+		}
+	}
 
 	if c.Ipv4 != nil && c.Ipv4.Config != nil {
 		cfg := c.Ipv4.Config

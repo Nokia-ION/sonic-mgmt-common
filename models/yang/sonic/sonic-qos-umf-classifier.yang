@@ -11,6 +11,11 @@ module sonic-qos-umf-classifier {
     description
         "SONIC QOS_UMF_CLASSIFIER";
 
+    revision 2026-09-28 {
+        description
+        "Add QOS_UMF_CLASSIFIER_TERM, the terms of a DSCP classifier.";
+    }
+
     revision 2021-04-21 {
         description
         "Initial revision.";
@@ -31,6 +36,36 @@ module sonic-qos-umf-classifier {
                     type enumeration {
                         enum ipv4;
                         enum ipv6;
+                    }
+                }
+            }
+        }
+
+        container QOS_UMF_CLASSIFIER_TERM {
+            list QOS_UMF_CLASSIFIER_TERM_LIST {
+                key "name id";
+                description
+                  "Terms of a classifier held in DSCP_TO_TC_MAP. The map keeps
+                  only DSCP to traffic class pairs; this records which term
+                  named which DSCP values, and through which leaf.";
+
+                leaf name {
+                    type string;
+                }
+
+                leaf id {
+                    type string;
+                }
+
+                leaf dscp {
+                    type uint8 {
+                        range "0..63";
+                    }
+                }
+
+                leaf-list dscp_set {
+                    type uint8 {
+                        range "0..63";
                     }
                 }
             }
