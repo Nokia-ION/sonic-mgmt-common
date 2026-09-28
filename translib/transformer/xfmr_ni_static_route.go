@@ -1702,6 +1702,27 @@ func niStaticRouteEntryFromDb(cfgDb *db.DB, niName, prefix string) (db.Value, er
 	return cfgDb.GetEntry(&db.TableSpec{Name: niStaticRouteTbl}, db.Key{Comp: []string{prefix}})
 }
 
+// populateNiStaticRouteRouteStateFromApplied fills route state from
+// STATIC_ROUTE_APPLIED. targetLeaf is "" to populate the whole state container.
+func populateNiStaticRouteRouteStateFromApplied(inParams XfmrParams, ygRoot *ygot.GoStruct, niName, protoName, prefix, targetLeaf string) error {
+	applied, held := niStaticRouteAppliedEntry(inParams, niName, prefix)
+	if !held {
+		return nil
+	}
+	stateObj := getNiStaticRouteStateObj(ygRoot, niName, protoName, prefix, true)
+	if stateObj == nil {
+		return tlerr.InvalidArgsError{Format: "Unable to locate static route state object in YANG tree"}
+	}
+	if targetLeaf == "" || targetLeaf == niStaticRoutePrefixLeaf {
+		routePrefix := prefix
+		stateObj.Prefix = &routePrefix
+	}
+	if targetLeaf == "" || targetLeaf == niStaticRouteSetTagLeaf {
+		niStaticRouteSetTagToYangState(stateObj, applied)
+	}
+	return nil
+}
+
 // populateNiStaticRouteHierToYangFromDb fills the static-routes subtree from
 // CONFIG_DB. An empty prefix populates every route of the network-instance.
 func populateNiStaticRouteHierToYangFromDb(cfgDb *db.DB, ygRoot *ygot.GoStruct, niName, protoName, prefix string) error {
@@ -2071,26 +2092,7 @@ var DbToYang_ni_static_route_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrPa
 		if reqInfo.prefix == "" {
 			return tlerr.NotSupportedError{Format: "a wildcard or absent static route prefix is served at the route list; address static-routes/static rather than a container below it"}
 		}
-		stateObj := getNiStaticRouteStateObj(inParams.ygRoot, reqInfo.niName, reqInfo.protoName, reqInfo.prefix, true)
-		if stateObj == nil {
-			return tlerr.InvalidArgsError{Format: "Unable to locate static route state object in YANG tree"}
-		}
-		// State is what FRR holds rather than what was written. A route FRR has
-		// not taken reports nothing, rather than echoing the configuration back
-		// and calling it applied, so an absent applied row leaves the container
-		// empty instead of failing.
-		applied, held := niStaticRouteAppliedEntry(inParams, reqInfo.niName, reqInfo.prefix)
-		if !held {
-			return nil
-		}
-		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == niStaticRoutePrefixLeaf {
-			routePrefix := reqInfo.prefix
-			stateObj.Prefix = &routePrefix
-		}
-		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == niStaticRouteSetTagLeaf {
-			niStaticRouteSetTagToYangState(stateObj, applied)
-		}
-		return nil
+		return populateNiStaticRouteRouteStateFromApplied(inParams, inParams.ygRoot, reqInfo.niName, reqInfo.protoName, reqInfo.prefix, reqInfo.targetLeaf)
 	case niStaticRouteTargetRouteCfg:
 		if reqInfo.prefix == "" {
 			return tlerr.NotSupportedError{Format: "a wildcard or absent static route prefix is served at the route list; address static-routes/static rather than a container below it"}
