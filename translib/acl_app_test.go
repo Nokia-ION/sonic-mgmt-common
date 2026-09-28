@@ -475,13 +475,22 @@ func Test_AclApp_IcmpMatch(t *testing.T) {
 	// code 0 of type 3, and 0 is also a valid code of type 1, so this is
 	// rejected on the identity rather than on the number.
 	t.Run("Reject_Icmpv6_Code_Of_Other_Type", processSetRequestErr(icmpv6ConfigUrl, icmpv6MismatchedCodeJson, "PATCH"))
-	// The per-type grouping identities name a group of codes, not a code.
-	t.Run("Reject_Icmpv6_Code_Group_Identity", processSetRequestErr(icmpv6ConfigUrl, icmpv6GroupCodeJson, "PATCH"))
+	// A per-type group identity is held to its type like a code is.
+	t.Run("Reject_Icmpv6_Code_Group_Of_Other_Type", processSetRequestErr(icmpv6ConfigUrl, icmpv6OtherGroupCodeJson, "PATCH"))
 	// Moving the type out from under a stored code would leave the two
 	// mismatched: ECHO_REPLY has only code 0, and the rule carries code 1.
 	t.Run("Reject_Icmpv6_Type_Leaving_Stale_Code", processSetRequestErr(icmpv6ConfigUrl, icmpv6TypeOnlyJson, "PATCH"))
 	// A rejected request must not have disturbed the rule.
 	t.Run("Verify_Icmpv6_Match_Unchanged", verifyRuleFields("MyACL9_ACL_IPV6", "RULE_6", map[string]string{
+		"ICMPV6_TYPE": "1", "ICMPV6_CODE": "1"}))
+
+	// The group identity of the configured type stands for every code of it,
+	// so the rule matches on the type alone and the stored code 1 goes.
+	t.Run("Set_Icmpv6_Code_Group_Identity", processSetRequest(icmpv6ConfigUrl, icmpv6GroupCodeJson, "PATCH", false))
+	t.Run("Verify_Icmpv6_Code_Group_Matches_Type_Only", verifyRuleFields("MyACL9_ACL_IPV6", "RULE_6", map[string]string{
+		"ICMPV6_TYPE": "1", "ICMPV6_CODE": ""}))
+	t.Run("Restore_Icmpv6_Code", processSetRequest(icmpv6ConfigUrl, icmpv6CodeOnlyJson, "PATCH", false))
+	t.Run("Verify_Icmpv6_Code_Restored", verifyRuleFields("MyACL9_ACL_IPV6", "RULE_6", map[string]string{
 		"ICMPV6_TYPE": "1", "ICMPV6_CODE": "1"}))
 
 	// A code on a rule with no type at all has nothing to be interpreted
@@ -490,6 +499,7 @@ func Test_AclApp_IcmpMatch(t *testing.T) {
 	rulev6NoTypeUrl := aclv6Url + "/acl-entries/acl-entry[sequence-id=7]"
 	t.Run("Create_Rule_Without_Icmpv6_Type", processSetRequest(rulev6NoTypeUrl, icmpv6RuleNoTypeJson, "POST", false))
 	t.Run("Reject_Icmpv6_Code_Without_Type", processSetRequestErr(rulev6NoTypeUrl+"/ipv6/icmpv6/config", icmpv6CodeOnlyJson, "PATCH"))
+	t.Run("Reject_Icmpv6_Code_Group_Without_Type", processSetRequestErr(rulev6NoTypeUrl+"/ipv6/icmpv6/config", icmpv6OtherGroupCodeJson, "PATCH"))
 	t.Run("Verify_No_Icmpv6_Code_Written", verifyRuleFields("MyACL9_ACL_IPV6", "RULE_7", map[string]string{
 		"ICMPV6_TYPE": "", "ICMPV6_CODE": ""}))
 
@@ -927,9 +937,10 @@ var icmpv6CodeOnlyJson string = "{\"code\":\"openconfig-icmpv6-types:DST_UNREACH
 var icmpv6TypeOnlyJson string = "{\"type\":\"openconfig-icmpv6-types:ECHO_REPLY\"}"
 var icmpv6RuleNoTypeJson string = "{\"sequence-id\":7,\"config\":{\"sequence-id\":7},\"ipv6\":{\"config\":{\"protocol\":58}},\"actions\":{\"config\":{\"forwarding-action\":\"DROP\"}}}"
 
-// DST_UNREACHABLE_CODE is the identity the type's codes are grouped under, so
-// it names a group rather than a single code.
+// DST_UNREACHABLE_CODE is the identity the codes of DESTINATION_UNREACHABLE
+// are grouped under; ECHO_REQUEST_CODE is the one of ECHO_REQUEST.
 var icmpv6GroupCodeJson string = "{\"type\":\"openconfig-icmpv6-types:DESTINATION_UNREACHABLE\",\"code\":\"openconfig-icmpv6-types:DST_UNREACHABLE_CODE\"}"
+var icmpv6OtherGroupCodeJson string = "{\"code\":\"openconfig-icmpv6-types:ECHO_REQUEST_CODE\"}"
 
 var emptyAclDescriptionJson string = "{\"openconfig-acl:description\":\"\"}"
 var emptyRuleDscpJson string = "{\"openconfig-acl:dscp\":0}"
