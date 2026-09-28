@@ -447,7 +447,7 @@ func TestValidateSyslogTlsProfile(t *testing.T) {
 			transportSecurity: false,
 			profileID:         &profileID,
 			wantErr:           true,
-			errContains:       "transport-security is required",
+			errContains:       "transport-security true is required",
 		},
 	}
 
@@ -560,7 +560,7 @@ func TestApplySyslogTlsSemantics(t *testing.T) {
 				SYSLOG_FIELD_TLS_PROFILE_ID: syslogTestProfile,
 			},
 			wantErr:     true,
-			errContains: "transport-security is required",
+			errContains: "transport-security true is required",
 		},
 		{
 			name: "Transport-security true without profile is rejected",
@@ -594,6 +594,20 @@ func TestApplySyslogTlsSemantics(t *testing.T) {
 			wantDel: map[string]string{
 				SYSLOG_FIELD_TLS_PROFILE_ID: syslogTestProfile,
 			},
+		},
+		{
+			name: "Transport-security false with profile in payload is rejected",
+			cfg: &ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer_Config{
+				TransportSecurity: &tsFalse,
+				TlsProfileId:      ygot.String(syslogTestProfile),
+			},
+			fields: map[string]string{
+				nullKey:                     nullKey,
+				SYSLOG_FIELD_TRANSPORT_SEC:  "false",
+				SYSLOG_FIELD_TLS_PROFILE_ID: syslogTestProfile,
+			},
+			wantErr:     true,
+			errContains: "transport-security true is required",
 		},
 		{
 			name: "Disable TLS keeps previously configured port",
@@ -1099,6 +1113,211 @@ func TestYangToDb_Syslog_Servers(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "DELETE transport-security sets protocol udp and keeps profile",
+			op:   DELETE,
+			uri:  SYSLOG_SERVER_PATH + "/config/transport-security",
+			key:  syslogTestHost3,
+			ygRoot: func() *ocbinds.Device {
+				return newSyslogDevice(nil)
+			},
+			serverState: map[string]db.Value{
+				syslogTestHost3: {Field: syslogTlsServerFields("6514", "tls", "true", syslogTestProfile)},
+			},
+			wantMap: map[string]map[string]db.Value{
+				SYSLOG_SERVER_TABLE_NAME: {
+					syslogTestHost3: {Field: map[string]string{
+						SYSLOG_FIELD_TRANSPORT_SEC: "true",
+					}},
+				},
+			},
+			wantSubReplace: map[string]map[string]db.Value{
+				SYSLOG_SERVER_TABLE_NAME: {
+					syslogTestHost3: {Field: map[string]string{
+						nullKey:                     nullKey,
+						SYSLOG_FIELD_PORT:           "6514",
+						SYSLOG_FIELD_PROTOCOL:       "udp",
+						SYSLOG_FIELD_TLS_PROFILE_ID: syslogTestProfile,
+					}},
+				},
+			},
+		},
+		{
+			name: "DELETE transport-security on one TLS server leaves siblings untouched",
+			op:   DELETE,
+			uri:  SYSLOG_SERVER_PATH + "/config/transport-security",
+			key:  syslogTestHost3,
+			ygRoot: func() *ocbinds.Device {
+				return newSyslogDevice(nil)
+			},
+			serverState: map[string]db.Value{
+				syslogTestHost1: {Field: map[string]string{
+					nullKey:               nullKey,
+					SYSLOG_FIELD_PORT:     "514",
+					SYSLOG_FIELD_PROTOCOL: "udp",
+				}},
+				syslogTestHost3: {Field: syslogTlsServerFields("6514", "tls", "true", syslogTestProfile)},
+			},
+			wantMap: map[string]map[string]db.Value{
+				SYSLOG_SERVER_TABLE_NAME: {
+					syslogTestHost3: {Field: map[string]string{
+						SYSLOG_FIELD_TRANSPORT_SEC: "true",
+					}},
+				},
+			},
+			wantSubReplace: map[string]map[string]db.Value{
+				SYSLOG_SERVER_TABLE_NAME: {
+					syslogTestHost3: {Field: map[string]string{
+						nullKey:                     nullKey,
+						SYSLOG_FIELD_PORT:           "6514",
+						SYSLOG_FIELD_PROTOCOL:       "udp",
+						SYSLOG_FIELD_TLS_PROFILE_ID: syslogTestProfile,
+					}},
+				},
+			},
+		},
+		{
+			name: "DELETE transport-security on UDP server clears leaf only",
+			op:   DELETE,
+			uri:  SYSLOG_SERVER_PATH + "/config/transport-security",
+			key:  syslogTestHost3,
+			ygRoot: func() *ocbinds.Device {
+				return newSyslogDevice(nil)
+			},
+			serverState: map[string]db.Value{
+				syslogTestHost3: {Field: map[string]string{
+					nullKey:                     nullKey,
+					SYSLOG_FIELD_PORT:           "514",
+					SYSLOG_FIELD_PROTOCOL:       "udp",
+					SYSLOG_FIELD_TRANSPORT_SEC:  "false",
+					SYSLOG_FIELD_TLS_PROFILE_ID: syslogTestProfile,
+				}},
+			},
+			wantMap: map[string]map[string]db.Value{
+				SYSLOG_SERVER_TABLE_NAME: {
+					syslogTestHost3: {Field: map[string]string{
+						SYSLOG_FIELD_TRANSPORT_SEC: "false",
+					}},
+				},
+			},
+		},
+		{
+			name: "DELETE transport-security not found when unset",
+			op:   DELETE,
+			uri:  SYSLOG_SERVER_PATH + "/config/transport-security",
+			key:  syslogTestHost1,
+			ygRoot: func() *ocbinds.Device {
+				return newSyslogDevice(nil)
+			},
+			serverState: map[string]db.Value{
+				syslogTestHost1: {Field: map[string]string{
+					nullKey:               nullKey,
+					SYSLOG_FIELD_PORT:     "514",
+					SYSLOG_FIELD_PROTOCOL: "udp",
+				}},
+			},
+			wantErr: true,
+		},
+		{
+			name: "DELETE tls-profile-id allowed when transport-security is false",
+			op:   DELETE,
+			uri:  SYSLOG_SERVER_PATH + "/config/tls-profile-id",
+			key:  syslogTestHost1,
+			ygRoot: func() *ocbinds.Device {
+				return newSyslogDevice(nil)
+			},
+			serverState: map[string]db.Value{
+				syslogTestHost1: {Field: map[string]string{
+					nullKey:                     nullKey,
+					SYSLOG_FIELD_PORT:           "514",
+					SYSLOG_FIELD_PROTOCOL:       "udp",
+					SYSLOG_FIELD_TRANSPORT_SEC:  "false",
+					SYSLOG_FIELD_TLS_PROFILE_ID: syslogTestProfile,
+				}},
+			},
+			wantMap: map[string]map[string]db.Value{
+				SYSLOG_SERVER_TABLE_NAME: {
+					syslogTestHost1: {Field: map[string]string{
+						SYSLOG_FIELD_TLS_PROFILE_ID: syslogTestProfile,
+					}},
+				},
+			},
+		},
+		{
+			name: "DELETE tls-profile-id rejected when transport-security is true",
+			op:   DELETE,
+			uri:  SYSLOG_SERVER_PATH + "/config/tls-profile-id",
+			key:  syslogTestHost3,
+			ygRoot: func() *ocbinds.Device {
+				return newSyslogDevice(nil)
+			},
+			serverState: map[string]db.Value{
+				syslogTestHost3: {Field: syslogTlsServerFields("6514", "tls", "true", syslogTestProfile)},
+			},
+			wantErr: true,
+		},
+		{
+			name: "UPDATE list profile-only on existing TLS server",
+			op:   UPDATE,
+			uri:  SYSLOG_SERVERS_PATH,
+			ygRoot: func() *ocbinds.Device {
+				return newSyslogDevice(map[string]*ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer{
+					syslogTestHost3: newSyslogRemoteServer(syslogTestHost3, nil, ygot.String("asdfghklm"), nil, nil, nil),
+				})
+			},
+			serverState: map[string]db.Value{
+				syslogTestHost3: {Field: syslogTlsServerFields("6514", "tls", "true", syslogTestProfile)},
+			},
+			wantMap: map[string]map[string]db.Value{
+				SYSLOG_SERVER_TABLE_NAME: {
+					syslogTestHost3: {Field: syslogTlsServerFields("6514", "tls", "true", "asdfghklm")},
+				},
+			},
+		},
+		{
+			name: "UPDATE tls-profile-id leaf on existing TLS server",
+			op:   UPDATE,
+			uri:  SYSLOG_SERVER_PATH + "/config/tls-profile-id",
+			key:  syslogTestHost3,
+			ygRoot: func() *ocbinds.Device {
+				return newSyslogDevice(nil)
+			},
+			serverState: map[string]db.Value{
+				syslogTestHost3: {Field: syslogTlsServerFields("6514", "tls", "true", syslogTestProfile)},
+			},
+			wantMap: map[string]map[string]db.Value{
+				SYSLOG_SERVER_TABLE_NAME: {
+					syslogTestHost3: {Field: syslogTlsServerFields("6514", "tls", "true", "siem-west")},
+				},
+			},
+		},
+		{
+			name: "CREATE rejects tls-profile-id without transport-security",
+			op:   UPDATE,
+			uri:  SYSLOG_SERVER_PATH + "/config",
+			key:  syslogTestHost1,
+			ygRoot: func() *ocbinds.Device {
+				return newSyslogDevice(map[string]*ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer{
+					syslogTestHost1: newSyslogRemoteServer(syslogTestHost1, nil, ygot.String(syslogTestProfile), nil, nil, nil),
+				})
+			},
+			serverState: map[string]db.Value{},
+			wantErr:     true,
+		},
+		{
+			name: "UPDATE rejects transport-security false with tls-profile-id",
+			op:   UPDATE,
+			uri:  SYSLOG_SERVER_PATH + "/config",
+			key:  syslogTestHost3,
+			ygRoot: func() *ocbinds.Device {
+				tsFalse := false
+				return newSyslogDevice(map[string]*ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer{
+					syslogTestHost3: newSyslogRemoteServer(syslogTestHost3, &tsFalse, ygot.String(syslogTestProfile), nil, nil, nil),
+				})
+			},
+			serverState: map[string]db.Value{},
+			wantErr:     true,
+		},
 	}
 
 	restoreIPView := setSyslogLinuxIPViewForTest(&syslogLinuxIPView{
@@ -1127,6 +1346,9 @@ func TestYangToDb_Syslog_Servers(t *testing.T) {
 				key:           tt.key,
 				subOpDataMap:  make(map[Operation]*map[db.DBNum]map[string]map[string]db.Value),
 				yangAuxValMap: make(map[string]map[string]db.Value),
+			}
+			if tt.name == "UPDATE tls-profile-id leaf on existing TLS server" {
+				inParams.param = "siem-west"
 			}
 
 			gotMap, err := YangToDb_remote_servers_list_xfmr(inParams)
