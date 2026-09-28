@@ -43,6 +43,10 @@ type AlreadyExistsError errordata
 // NotSupportedError indicates unspported operation error.
 type NotSupportedError errordata
 
+// FailedPreconditionError indicates the request is valid but the system is not
+// in a state that allows it, e.g. deleting an object that is still in use.
+type FailedPreconditionError errordata
+
 // InternalError indicates a generic error during app execution.
 type InternalError errordata
 
@@ -110,6 +114,15 @@ func NotSupported(msg string, args ...interface{}) NotSupportedError {
 // NotSupportedErr creates a NotSupportedError instance with given message, app error tag and path.
 func NotSupportedErr(appTag, path, msg string, args ...interface{}) NotSupportedError {
 	return NotSupportedError{Format: msg, Args: args, AppTag: appTag, Path: path}
+}
+
+func (e FailedPreconditionError) Error() string {
+	return p.Sprintf(e.Format, e.Args...)
+}
+
+// FailedPrecondition creates a FailedPreconditionError
+func FailedPrecondition(msg string, args ...interface{}) FailedPreconditionError {
+	return FailedPreconditionError{Format: msg, Args: args}
 }
 
 func (e InternalError) Error() string {
