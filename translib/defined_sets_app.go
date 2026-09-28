@@ -316,6 +316,15 @@ func (app *DefinedSetsApp) processDeletePortSets(d *db.DB) error {
 		return nil
 	}
 
+	// gNMI treats a delete of something that is not there as a success.
+	entry, err := d.GetEntry(app.portSetTs, asKey(name))
+	if tlerr.IsTranslibRedisClientEntryNotExist(err) || (err == nil && !entry.IsPopulated()) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
 	switch {
 	case strings.HasSuffix(app.pathInfo.Template, "/description"):
 		return app.deletePortSetFields(d, name, PORT_SET_DESCRIPTION)
@@ -362,7 +371,7 @@ func (app *DefinedSetsApp) checkPortSetUnused(d *db.DB, name, action string) err
 		rules = append(rules, strings.Join(key.Comp, "|"))
 	}
 
-	return tlerr.InvalidArgs("Port set %s is in use by %s; stop matching on it before you %s",
+	return tlerr.FailedPrecondition("Port set %s is in use by %s; stop matching on it before you %s",
 		name, strings.Join(rules, ", "), action)
 }
 
