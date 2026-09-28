@@ -20,9 +20,11 @@ package translib
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 
 	db "github.com/Azure/sonic-mgmt-common/translib/db"
+	"github.com/Azure/sonic-mgmt-common/translib/tlerr"
 )
 
 func init() {
@@ -151,6 +153,13 @@ func Test_SetRulePortMatch(t *testing.T) {
 // processSetRequestErr is processSetRequest for the cases that have to be
 // rejected; processSetRequest only tolerates an error, it does not require one.
 func processSetRequestErr(url string, jsonPayload string, oper string) func(*testing.T) {
+	return processSetRequestErrOfType(url, jsonPayload, oper, nil)
+}
+
+// processSetRequestErrOfType is processSetRequestErr that also requires the
+// error to be of the same type as want, which decides the gRPC code the client
+// sees. A nil want accepts any error.
+func processSetRequestErrOfType(url string, jsonPayload string, oper string, want error) func(*testing.T) {
 	return func(t *testing.T) {
 		var err error
 		switch oper {
@@ -167,8 +176,11 @@ func processSetRequestErr(url string, jsonPayload string, oper string) func(*tes
 		}
 		if err == nil {
 			t.Errorf("%s %s did not return an error", oper, url)
-		} else {
-			t.Logf("%s %s rejected with: %v", oper, url, err)
+			return
+		}
+		t.Logf("%s %s rejected with: %v", oper, url, err)
+		if want != nil && reflect.TypeOf(err) != reflect.TypeOf(want) {
+			t.Errorf("%s %s returned %T, want %T", oper, url, err, want)
 		}
 	}
 }
@@ -225,9 +237,17 @@ func Test_DefinedSetsApp_PortSetOperations(t *testing.T) {
 func Test_DefinedSetsApp_NegativeTests(t *testing.T) {
 	t.Run("Get_Unknown_Port_Set", processGetRequest(portSetsUrl+"[name=NO-SUCH-SET]", "", true))
 
+	// A delete of something that is not there succeeds and does nothing.
+	t.Run("Delete_Unknown_Port_Set", processDeleteRequest(portSetsUrl+"[name=NO-SUCH-SET]"))
+	t.Run("Delete_Description_Of_Unknown_Port_Set",
+		processDeleteRequest(portSetsUrl+"[name=NO-SUCH-SET]/config/description"))
+	t.Run("Delete_Ports_Of_Unknown_Port_Set",
+		processDeleteRequest(portSetsUrl+"[name=NO-SUCH-SET]/config/port"))
+
 	// Everything a single ACL_RULE port match cannot express.
 	t.Run("Create_Port_Set_With_Two_Ports",
-		processSetRequestErr(portSetsUrl+"[name=TWO-PORTS]", portSetTwoPortsCreateJson, "POST"))
+		processSetRequestErrOfType(portSetsUrl+"[name=TWO-PORTS]", portSetTwoPortsCreateJson, "POST",
+			tlerr.InvalidArgsError{}))
 	t.Run("Create_Port_Set_With_Exclude_Port",
 		processSetRequestErr(portSetsUrl+"[name=EXCLUDE-PORT]", portSetExcludePortCreateJson, "POST"))
 	t.Run("Create_Port_Set_Matching_Any_Port",
@@ -260,7 +280,7 @@ func Test_DefinedSetsApp_PortSetRules(t *testing.T) {
 	t.Run("Create_Acl", processSetRequest(aclUrl, aclForPortSetCreateJson, "POST", false))
 
 	t.Run("Create_Rule_Matching_Unknown_Port_Set",
-		processSetRequestErr(ruleUrl, ruleUnknownPortSetPostJson, "POST"))
+		processSetRequestErrOfType(ruleUrl, ruleUnknownPortSetPostJson, "POST", tlerr.NotFoundError{}))
 	t.Run("Create_Rule_With_Port_And_Port_Set",
 		processSetRequestErr(ruleUrl, rulePortAndPortSetPostJson, "POST"))
 
@@ -271,9 +291,12 @@ func Test_DefinedSetsApp_PortSetRules(t *testing.T) {
 		map[string]string{L4_DST_PORT_RANGE: "734-1733", L4_DST_PORT: "", RULE_DST_PORT_SET: ""}))
 	t.Run("Verify_Rule_Read_Back", processGetRequest(ruleUrl, rulePortSetGetJson, false))
 
-	t.Run("Delete_Port_Set_In_Use", processSetRequestErr(setUrl, "", "DELETE"))
-	t.Run("Delete_Ports_Of_Port_Set_In_Use", processSetRequestErr(setUrl+"/config/port", "", "DELETE"))
-	t.Run("Empty_Port_Set_In_Use", processSetRequestErr(setUrl, portSetNoPortsReplaceJson, "PUT"))
+	t.Run("Delete_Port_Set_In_Use",
+		processSetRequestErrOfType(setUrl, "", "DELETE", tlerr.FailedPreconditionError{}))
+	t.Run("Delete_Ports_Of_Port_Set_In_Use",
+		processSetRequestErrOfType(setUrl+"/config/port", "", "DELETE", tlerr.FailedPreconditionError{}))
+	t.Run("Empty_Port_Set_In_Use",
+		processSetRequestErrOfType(setUrl, portSetNoPortsReplaceJson, "PUT", tlerr.FailedPreconditionError{}))
 
 	// The rules matching on a set hold the resolved port, so they have to
 	// follow a change of its contents.
@@ -362,7 +385,7 @@ var definedSetsGetJson string = "{\"openconfig-defined-sets:defined-sets\":{\"po
 var portSetSinglePortGetJson string = "{\"openconfig-defined-sets:port-set\":[{\"config\":{\"name\":\"DST-PORTS-TEST\",\"port\":[1234]},\"name\":\"DST-PORTS-TEST\",\"state\":{\"name\":\"DST-PORTS-TEST\",\"port\":[1234]}}]}"
 
 // The rule reports both the port its set resolved to and the set it came from.
-var rulePortSetGetJson string = "{\"openconfig-acl:acl-entry\":[{\"actions\":{\"config\":{\"forwarding-action\":\"openconfig-acl:ACCEPT\"},\"state\":{\"forwarding-action\":\"openconfig-acl:ACCEPT\"}},\"config\":{\"sequence-id\":9},\"ipv4\":{\"config\":{\"protocol\":\"openconfig-packet-match-types:IP_TCP\"},\"state\":{\"protocol\":\"openconfig-packet-match-types:IP_TCP\"}},\"sequence-id\":9,\"state\":{\"matched-octets\":\"0\",\"matched-packets\":\"0\",\"sequence-id\":9},\"transport\":{\"config\":{\"destination-port\":\"734..1733\",\"destination-port-set\":\"DST-PORTS-TEST\"},\"state\":{\"destination-port\":\"734..1733\",\"destination-port-set\":\"DST-PORTS-TEST\"}}}]}"
+var rulePortSetGetJson string = "{\"openconfig-acl:acl-entry\":[{\"actions\":{\"config\":{\"forwarding-action\":\"openconfig-acl:ACCEPT\"},\"state\":{\"forwarding-action\":\"openconfig-acl:ACCEPT\"}},\"config\":{\"sequence-id\":9},\"ipv4\":{\"config\":{\"protocol\":\"openconfig-packet-match-types:IP_TCP\"},\"state\":{\"protocol\":\"openconfig-packet-match-types:IP_TCP\"}},\"sequence-id\":9,\"state\":{\"matched-octets\":\"0\",\"matched-packets\":\"0\",\"sequence-id\":9},\"transport\":{\"config\":{\"destination-port-set\":\"DST-PORTS-TEST\"},\"state\":{\"destination-port-set\":\"DST-PORTS-TEST\"}}}]}"
 
 var ruleWithoutPortSetGetJson string = "{\"openconfig-acl:acl-entry\":[{\"actions\":{\"config\":{\"forwarding-action\":\"openconfig-acl:ACCEPT\"},\"state\":{\"forwarding-action\":\"openconfig-acl:ACCEPT\"}},\"config\":{\"sequence-id\":9},\"ipv4\":{\"config\":{\"protocol\":\"openconfig-packet-match-types:IP_TCP\"},\"state\":{\"protocol\":\"openconfig-packet-match-types:IP_TCP\"}},\"sequence-id\":9,\"state\":{\"matched-octets\":\"0\",\"matched-packets\":\"0\",\"sequence-id\":9}}]}"
 

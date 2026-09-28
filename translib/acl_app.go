@@ -965,16 +965,21 @@ func (app *AclApp) convertInternalToOCAclRuleProperties(aclName string, ruleName
 		}
 	}
 
-	// The L4 port match above is the port a set resolved to. Report the set it
-	// came from, which is held in ACL_RULE_PORT_SET.
+	// The L4 port match above is the port a set resolved to, not something the
+	// client configured. Report the set it came from, which is held in
+	// ACL_RULE_PORT_SET, in place of the port.
 	if refs, ok := app.rulePortSetRef[aclName][ruleName]; ok {
 		if srcSet := (&refs).Get(RULE_SRC_PORT_SET); len(srcSet) > 0 {
 			entrySet.Transport.Config.SourcePortSet = &srcSet
 			entrySet.Transport.State.SourcePortSet = &srcSet
+			entrySet.Transport.Config.SourcePort = nil
+			entrySet.Transport.State.SourcePort = nil
 		}
 		if dstSet := (&refs).Get(RULE_DST_PORT_SET); len(dstSet) > 0 {
 			entrySet.Transport.Config.DestinationPortSet = &dstSet
 			entrySet.Transport.State.DestinationPortSet = &dstSet
+			entrySet.Transport.Config.DestinationPort = nil
+			entrySet.Transport.State.DestinationPort = nil
 		}
 	}
 
