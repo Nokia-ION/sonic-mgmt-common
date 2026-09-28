@@ -136,11 +136,9 @@ type icmpv6Code struct {
 // ICMPV6_CODE_MAP maps the standard openconfig-icmpv6-types CODE identities to
 // their numeric ICMPv6 code (SONiC ACL_RULE ICMPV6_CODE) and owning type.
 //
-// Only the leaves of the identity tree are here. The model groups the codes of
-// a type under a per-type identity (DST_UNREACHABLE_CODE and friends), and
-// those are derived from CODE as well, so a client can name one even though it
-// stands for a whole group rather than a code. Leaving them out of the map is
-// what lets the write path turn them away.
+// Only the leaves of the identity tree are here. The per-type identities the
+// codes are grouped under have no number of their own; they are in
+// ICMPV6_CODE_GROUP_MAP.
 var ICMPV6_CODE_MAP = map[ocbinds.E_OpenconfigIcmpv6Types_CODE]icmpv6Code{
 	// Type 1, destination unreachable.
 	ocbinds.OpenconfigIcmpv6Types_CODE_DST_UNREACHABLE_NO_ROUTE_TO_DST:        {0, ocbinds.OpenconfigIcmpv6Types_TYPE_DESTINATION_UNREACHABLE},
@@ -226,6 +224,41 @@ var ICMPV6_CODE_MAP = map[ocbinds.E_OpenconfigIcmpv6Types_CODE]icmpv6Code{
 	ocbinds.OpenconfigIcmpv6Types_CODE_EXT_ECHO_REPLY_MULTIPLE_INTF_SATISFY_QUERY: {4, ocbinds.OpenconfigIcmpv6Types_TYPE_EXT_ECHO_REPLY},
 }
 
+// ICMPV6_CODE_GROUP_MAP maps the per-type identities the model groups the codes
+// of a type under (DST_UNREACHABLE_CODE and friends) to their type. They are
+// derived from CODE too, so a client can name one as a code, and one stands for
+// every code of its type. SONiC has no number for that: it is a rule matching
+// on the type alone, with no ICMPV6_CODE.
+var ICMPV6_CODE_GROUP_MAP = map[ocbinds.E_OpenconfigIcmpv6Types_CODE]ocbinds.E_OpenconfigIcmpv6Types_TYPE{
+	ocbinds.OpenconfigIcmpv6Types_CODE_DST_UNREACHABLE_CODE:                      ocbinds.OpenconfigIcmpv6Types_TYPE_DESTINATION_UNREACHABLE,
+	ocbinds.OpenconfigIcmpv6Types_CODE_PACKET_TOO_BIG_CODE:                       ocbinds.OpenconfigIcmpv6Types_TYPE_PACKET_TOO_BIG,
+	ocbinds.OpenconfigIcmpv6Types_CODE_TIME_EXCEEDED_CODE:                        ocbinds.OpenconfigIcmpv6Types_TYPE_TIME_EXCEEDED,
+	ocbinds.OpenconfigIcmpv6Types_CODE_PARAM_PROBLEM_CODE:                        ocbinds.OpenconfigIcmpv6Types_TYPE_PARAMETER_PROBLEM,
+	ocbinds.OpenconfigIcmpv6Types_CODE_ECHO_REQUEST_CODE:                         ocbinds.OpenconfigIcmpv6Types_TYPE_ECHO_REQUEST,
+	ocbinds.OpenconfigIcmpv6Types_CODE_ECHO_REPLY_CODE:                           ocbinds.OpenconfigIcmpv6Types_TYPE_ECHO_REPLY,
+	ocbinds.OpenconfigIcmpv6Types_CODE_MULTICAST_LISTENER_QUERY_CODE:             ocbinds.OpenconfigIcmpv6Types_TYPE_MULTICAST_LISTENER_QUERY,
+	ocbinds.OpenconfigIcmpv6Types_CODE_MULTICAST_LISTENER_REPORT_CODE:            ocbinds.OpenconfigIcmpv6Types_TYPE_MULTICAST_LISTENER_REPORT,
+	ocbinds.OpenconfigIcmpv6Types_CODE_MULTICAST_LISTENER_DONE_CODE:              ocbinds.OpenconfigIcmpv6Types_TYPE_MULTICAST_LISTENER_DONE,
+	ocbinds.OpenconfigIcmpv6Types_CODE_ROUTER_SOLICITATION_CODE:                  ocbinds.OpenconfigIcmpv6Types_TYPE_ROUTER_SOLICITATION,
+	ocbinds.OpenconfigIcmpv6Types_CODE_ROUTER_ADVERTISEMENT_CODE:                 ocbinds.OpenconfigIcmpv6Types_TYPE_ROUTER_ADVERTISEMENT,
+	ocbinds.OpenconfigIcmpv6Types_CODE_NEIGHBOR_SOLICITATION_CODE:                ocbinds.OpenconfigIcmpv6Types_TYPE_NEIGHBOR_SOLICITATION,
+	ocbinds.OpenconfigIcmpv6Types_CODE_NEIGHBOR_ADVERTISEMENT_CODE:               ocbinds.OpenconfigIcmpv6Types_TYPE_NEIGHBOR_ADVERTISEMENT,
+	ocbinds.OpenconfigIcmpv6Types_CODE_REDIRECT_CODE:                             ocbinds.OpenconfigIcmpv6Types_TYPE_REDIRECT,
+	ocbinds.OpenconfigIcmpv6Types_CODE_RENUMBERING_CODE:                          ocbinds.OpenconfigIcmpv6Types_TYPE_RENUNBERING,
+	ocbinds.OpenconfigIcmpv6Types_CODE_NODE_INFORMATION_QUERY_CODE:               ocbinds.OpenconfigIcmpv6Types_TYPE_NODE_INFORMATION_QUERY,
+	ocbinds.OpenconfigIcmpv6Types_CODE_NDDE_INFORMATION_RESPONSE_CODE:            ocbinds.OpenconfigIcmpv6Types_TYPE_NODE_INFORMATION_RESPONSE,
+	ocbinds.OpenconfigIcmpv6Types_CODE_INVERSE_NEIGHBOR_SOLICITATION_CODE:        ocbinds.OpenconfigIcmpv6Types_TYPE_INVERSE_NEIGHBOR_SOLICITATION,
+	ocbinds.OpenconfigIcmpv6Types_CODE_INVERSE_NEIGHBOR_ADVERTISEMENT_CODE:       ocbinds.OpenconfigIcmpv6Types_TYPE_INVERSE_NEIGHBOR_ADVERTISEMENT,
+	ocbinds.OpenconfigIcmpv6Types_CODE_HOME_AGENT_ADDRESS_DISCOVERY_REQUEST_CODE: ocbinds.OpenconfigIcmpv6Types_TYPE_HOME_AGENT_ADDRESS_DISCOVERY_REQUEST,
+	ocbinds.OpenconfigIcmpv6Types_CODE_HOME_AGENT_ADDRESS_DISCOVERY_REPLY_CODE:   ocbinds.OpenconfigIcmpv6Types_TYPE_HOME_AGENT_ADDRESS_DISCOVERY_REPLY,
+	ocbinds.OpenconfigIcmpv6Types_CODE_MOBILE_PREFIX_SOLICITATION_CODE:           ocbinds.OpenconfigIcmpv6Types_TYPE_MOBILE_PREFIX_SOLICITATION,
+	ocbinds.OpenconfigIcmpv6Types_CODE_MOBILE_PREFIX_ADVERTISEMENT_CODE:          ocbinds.OpenconfigIcmpv6Types_TYPE_MOBILE_PREFIX_ADVERTISEMENT,
+	ocbinds.OpenconfigIcmpv6Types_CODE_DUPLICATE_ADDRESS_REQUEST_CODE:            ocbinds.OpenconfigIcmpv6Types_TYPE_DUPLICATE_ADDRESS_REQUEST,
+	ocbinds.OpenconfigIcmpv6Types_CODE_DUPLICATE_ADDRESS_REPLY_CODE:              ocbinds.OpenconfigIcmpv6Types_TYPE_DUPLICATE_ADDRESS_CONFIRMATION,
+	ocbinds.OpenconfigIcmpv6Types_CODE_EXT_ECHO_REQUEST_CODE:                     ocbinds.OpenconfigIcmpv6Types_TYPE_EXT_ECHO_REQUEST,
+	ocbinds.OpenconfigIcmpv6Types_CODE_EXT_ECHO_REPLY_CODE:                       ocbinds.OpenconfigIcmpv6Types_TYPE_EXT_ECHO_REPLY,
+}
+
 var ETHERTYPE_MAP = map[ocbinds.E_OpenconfigPacketMatchTypes_ETHERTYPE]uint32{
 	ocbinds.OpenconfigPacketMatchTypes_ETHERTYPE_ETHERTYPE_LLDP: 0x88CC,
 	ocbinds.OpenconfigPacketMatchTypes_ETHERTYPE_ETHERTYPE_VLAN: 0x8100,
@@ -254,6 +287,11 @@ type AclApp struct {
 	// read they hold the ACL_RULE_PORT_SET rows.
 	rulePortSetMap map[string]map[string]*rulePortSetInfo
 	rulePortSetRef map[string]map[string]db.Value
+
+	// Rules in the request whose icmpv6 code is a per-type group, keyed by acl
+	// name and rule name. They match every code of the type, so a code already
+	// stored on them has to go.
+	ruleIcmpv6CodeGroup map[string]map[string]bool
 
 	// Counters are read outside the ConfigDB handle passed to processCommon.
 	countersDb  *db.DB
@@ -294,6 +332,7 @@ func (app *AclApp) initialize(data appData) {
 	app.ruleTableMap = make(map[string]map[string]db.Value)
 	app.rulePortSetMap = make(map[string]map[string]*rulePortSetInfo)
 	app.rulePortSetRef = make(map[string]map[string]db.Value)
+	app.ruleIcmpv6CodeGroup = make(map[string]map[string]bool)
 }
 
 func (app *AclApp) getAppRootObject() *ocbinds.OpenconfigAcl_Acl {
@@ -450,6 +489,9 @@ func (app *AclApp) processCommon(d *db.DB, opcode int) error {
 							err = d.SetEntry(app.ruleTs, db.Key{Comp: []string{aclKey, ruleKey}}, app.ruleTableMap[aclKey][ruleKey])
 						case UPDATE:
 							if err = app.clearStaleRulePortMatch(d, aclKey, ruleKey, app.ruleTableMap[aclKey][ruleKey]); err != nil {
+								return err
+							}
+							if err = app.clearStaleRuleIcmpv6Code(d, aclKey, ruleKey); err != nil {
 								return err
 							}
 							err = d.ModEntry(app.ruleTs, db.Key{Comp: []string{aclKey, ruleKey}}, app.ruleTableMap[aclKey][ruleKey])
@@ -1487,6 +1529,12 @@ func (app *AclApp) convertOCAclRulesToInternal(d *db.DB, opcode int) error {
 							}
 							app.rulePortSetMap[aclKey][ruleName] = portSets
 						}
+						if aclSet.Type == ocbinds.OpenconfigAcl_ACL_TYPE_ACL_IPV6 && ruleHasIcmpv6CodeGroup(entrySet) {
+							if app.ruleIcmpv6CodeGroup[aclKey] == nil {
+								app.ruleIcmpv6CodeGroup[aclKey] = make(map[string]bool)
+							}
+							app.ruleIcmpv6CodeGroup[aclKey][ruleName] = true
+						}
 						// caclmgrd uses PACKET_ACTION directly as the iptables
 						// jump target (-j ACCEPT/DROP), so a control-plane "accept"
 						// must be ACCEPT rather than the data-plane SAI "FORWARD".
@@ -1765,13 +1813,20 @@ func setRuleIcmpv6TypeCode(d *db.DB, ruleData db.Value, aclName string, ruleInde
 		return nil
 	}
 
-	// The per-type grouping identities (DST_UNREACHABLE_CODE and friends) are
-	// derived from CODE as well, so a client can name one, but they stand for a
-	// group of codes rather than a code and have no number to install.
+	// A per-type group identity (DST_UNREACHABLE_CODE and friends) is checked
+	// against the type like a code is, but installs no ICMPV6_CODE: it stands
+	// for every code of the type.
 	reqCodeInfo, reqCodeOk := ICMPV6_CODE_MAP[reqCode]
-	if reqCode != ocbinds.OpenconfigIcmpv6Types_CODE_UNSET && !reqCodeOk {
+	reqGroupType, reqGroupOk := ICMPV6_CODE_GROUP_MAP[reqCode]
+	codeType := ocbinds.OpenconfigIcmpv6Types_TYPE_UNSET
+	switch {
+	case reqCodeOk:
+		codeType = reqCodeInfo.typ
+	case reqGroupOk:
+		codeType = reqGroupType
+	case reqCode != ocbinds.OpenconfigIcmpv6Types_CODE_UNSET:
 		return tlerr.InvalidArgs(
-			"icmpv6 code %s does not name a single ICMPv6 code on rule %d of %s",
+			"icmpv6 code %s is not a known ICMPv6 code on rule %d of %s",
 			icmpv6CodeName(reqCode), ruleIndex, aclName)
 	}
 
@@ -1794,7 +1849,7 @@ func setRuleIcmpv6TypeCode(d *db.DB, ruleData db.Value, aclName string, ruleInde
 		}
 	}
 
-	if reqCodeOk {
+	if codeType != ocbinds.OpenconfigIcmpv6Types_TYPE_UNSET {
 		// Compare the identity the client named, not its number: the same
 		// number is a different code under each type, so a code of the wrong
 		// type whose number happens to be valid under the configured one would
@@ -1802,12 +1857,12 @@ func setRuleIcmpv6TypeCode(d *db.DB, ruleData db.Value, aclName string, ruleInde
 		if effType == ocbinds.OpenconfigIcmpv6Types_TYPE_UNSET {
 			return tlerr.InvalidArgs(
 				"icmpv6 code %s needs the icmpv6 type %s to be set on rule %d of %s",
-				icmpv6CodeName(reqCode), icmpv6TypeName(reqCodeInfo.typ), ruleIndex, aclName)
+				icmpv6CodeName(reqCode), icmpv6TypeName(codeType), ruleIndex, aclName)
 		}
-		if reqCodeInfo.typ != effType {
+		if codeType != effType {
 			return tlerr.InvalidArgs(
 				"icmpv6 code %s is a code of type %s, not of the configured type %s, on rule %d of %s",
-				icmpv6CodeName(reqCode), icmpv6TypeName(reqCodeInfo.typ), icmpv6TypeName(effType),
+				icmpv6CodeName(reqCode), icmpv6TypeName(codeType), icmpv6TypeName(effType),
 				ruleIndex, aclName)
 		}
 	} else if haveStoredCode && reqType != ocbinds.OpenconfigIcmpv6Types_TYPE_UNSET {
@@ -1845,6 +1900,28 @@ func icmpv6CodeName(c ocbinds.E_OpenconfigIcmpv6Types_CODE) string {
 		return def.Name
 	}
 	return strconv.FormatInt(int64(c), 10)
+}
+
+func ruleHasIcmpv6CodeGroup(rule *ocbinds.OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry) bool {
+	if rule.Ipv6 == nil || rule.Ipv6.Icmpv6 == nil || rule.Ipv6.Icmpv6.Config == nil {
+		return false
+	}
+	_, ok := ICMPV6_CODE_GROUP_MAP[rule.Ipv6.Icmpv6.Config.Code]
+	return ok
+}
+
+// clearStaleRuleIcmpv6Code removes the ICMPv6 code stored on a rule whose
+// payload named a per-type code group. The group installs no ICMPV6_CODE, so a
+// merge would otherwise leave the stored code filtering.
+func (app *AclApp) clearStaleRuleIcmpv6Code(d *db.DB, aclKey, ruleKey string) error {
+	if !app.ruleIcmpv6CodeGroup[aclKey][ruleKey] {
+		return nil
+	}
+	existing, err := d.GetEntry(app.ruleTs, asKey(aclKey, ruleKey))
+	if err != nil || !(&existing).Has("ICMPV6_CODE") {
+		return nil
+	}
+	return d.DeleteEntryFields(app.ruleTs, asKey(aclKey, ruleKey), createEmptyDbValue("ICMPV6_CODE"))
 }
 
 func convertOCToInternalTransport(d *db.DB, ruleData db.Value, aclName string, ruleIndex uint32, rule *ocbinds.OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry) (*rulePortSetInfo, error) {
@@ -2283,6 +2360,9 @@ func (app *AclApp) setAclRuleDataInConfigDb(d *db.DB, ruleData map[string]map[st
 			} else {
 				if existingRuleEntry.IsPopulated() && ruleName != "DEFAULT_RULE" {
 					if err := app.clearStaleRulePortMatch(d, aclName, ruleName, ruleData[aclName][ruleName]); err != nil {
+						return err
+					}
+					if err := app.clearStaleRuleIcmpv6Code(d, aclName, ruleName); err != nil {
 						return err
 					}
 					err := d.ModEntry(app.ruleTs, db.Key{Comp: []string{aclName, ruleName}}, ruleData[aclName][ruleName])
