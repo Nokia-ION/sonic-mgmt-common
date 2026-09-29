@@ -72,10 +72,13 @@ const (
 	// from rewriting the applied row.
 	niBgpNbrStatsTbl = "BGP_NEIGH_STATS"
 
-	niBgpNbrStatsEstTransFld = "established_transitions"
-	niBgpNbrStatsLastEstFld  = "last_established"
-	niBgpNbrStatsUpdRcvdFld  = "updates_received"
-	niBgpNbrStatsUpdSentFld  = "updates_sent"
+	niBgpNbrStatsEstTransFld         = "established_transitions"
+	niBgpNbrStatsLastEstFld          = "last_established"
+	niBgpNbrStatsUpdRcvdFld          = "updates_received"
+	niBgpNbrStatsUpdSentFld          = "updates_sent"
+	niBgpNbrStatsLastNotifErrCodeFld = "last_notification_error_code"
+
+	niBgpNbrLastNotifErrCodeLeaf = "last-notification-error-code"
 
 	niBgpNbrAppliedMetaTbl     = "BGP_NEIGH_APPLIED_META"
 	niBgpNbrAppliedMetaKey     = "global"
@@ -120,7 +123,7 @@ var niBgpNbrStateReqUriRe = regexp.MustCompile(niBgpNbrStateUriPfx +
 // direction container are matched so that a request anchored at any of them is
 // served the counters below it.
 var niBgpNbrMessagesReqUriRe = regexp.MustCompile(niBgpNbrStateUriPfx +
-	`/state/messages(?:/(sent|received)(?:/(UPDATE))?)?$`)
+	`/state/messages(?:/(sent|received)(?:/(UPDATE|last-notification-error-code))?)?$`)
 
 // The transport state leaves sit in a sibling container of state, so they need
 // their own pattern. Both the transport container and its state container are
@@ -211,6 +214,25 @@ func parseNiBgpNbrStateRequestUri(uri string) (*niBgpNbrStateReqInfo, error) {
 // niBgpNbrSessionStateFromFrr maps the FSM state string that FRR reports in
 // "show bgp summary json", and that bgpmon copies verbatim into STATE_DB, onto
 // the OpenConfig session-state enumeration.
+func niBgpNbrLastNotifErrCodeFromFrr(code uint8) (ocbinds.E_OpenconfigBgpTypes_BGP_ERROR_CODE, bool) {
+	switch code {
+	case 1:
+		return ocbinds.OpenconfigBgpTypes_BGP_ERROR_CODE_MESSAGE_HEADER_ERROR, true
+	case 2:
+		return ocbinds.OpenconfigBgpTypes_BGP_ERROR_CODE_OPEN_MESSAGE_ERROR, true
+	case 3:
+		return ocbinds.OpenconfigBgpTypes_BGP_ERROR_CODE_UPDATE_MESSAGE_ERROR, true
+	case 4:
+		return ocbinds.OpenconfigBgpTypes_BGP_ERROR_CODE_HOLD_TIMER_EXPIRED, true
+	case 5:
+		return ocbinds.OpenconfigBgpTypes_BGP_ERROR_CODE_FINITE_STATE_MACHINE_ERROR, true
+	case 6:
+		return ocbinds.OpenconfigBgpTypes_BGP_ERROR_CODE_CEASE, true
+	default:
+		return ocbinds.OpenconfigBgpTypes_BGP_ERROR_CODE_UNSET, false
+	}
+}
+
 func niBgpNbrSessionStateFromFrr(state string) (ocbinds.E_OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Neighbors_Neighbor_State_SessionState, bool) {
 	s := strings.ToLower(strings.TrimSpace(state))
 	switch {
@@ -609,6 +631,39 @@ func populateNiBgpNbrStatsStateLeaves(stateObj *ocbinds.OpenconfigNetworkInstanc
 // The state object is looked up only once a counter is known to be present, so
 // that a neighbor whose row carries no message counters is not reported as an
 // empty state container.
+func populateNiBgpNbrLastNotificationErrorCode(inParams XfmrParams, entry db.Value, reqInfo *niBgpNbrStateReqInfo) error {
+	if reqInfo.targetLeaf != "" && reqInfo.targetLeaf != niBgpNbrLastNotifErrCodeLeaf {
+		return nil
+	}
+	if reqInfo.direction != "" && reqInfo.direction != niBgpNbrRcvdDir {
+		return nil
+	}
+	codeStr, ok := entry.Field[niBgpNbrStatsLastNotifErrCodeFld]
+	if !ok || strings.TrimSpace(codeStr) == "" {
+		return nil
+	}
+	codeVal, err := strconv.ParseUint(strings.TrimSpace(codeStr), 10, 8)
+	if err != nil {
+		return tlerr.InvalidArgsError{Format: fmt.Sprintf("unrecognized BGP_NEIGH_STATS.%s value %q for neighbor %s", niBgpNbrStatsLastNotifErrCodeFld, codeStr, reqInfo.neighborAddr)}
+	}
+	ocCode, ok := niBgpNbrLastNotifErrCodeFromFrr(uint8(codeVal))
+	if !ok {
+		return nil
+	}
+	stateObj := getNiBgpNbrStateObj(inParams.ygRoot, reqInfo.niName, reqInfo.protoName, reqInfo.neighborAddr, true)
+	if stateObj == nil {
+		return tlerr.InvalidArgsError{Format: "Unable to locate BGP neighbor state object in YANG tree"}
+	}
+	if stateObj.Messages == nil {
+		stateObj.Messages = &ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Neighbors_Neighbor_State_Messages{}
+	}
+	if stateObj.Messages.Received == nil {
+		stateObj.Messages.Received = &ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Neighbors_Neighbor_State_Messages_Received{}
+	}
+	stateObj.Messages.Received.LastNotificationErrorCode = ocCode
+	return nil
+}
+
 func populateNiBgpNbrMessageCounters(inParams XfmrParams, entry db.Value, reqInfo *niBgpNbrStateReqInfo) error {
 	if reqInfo.targetLeaf != "" && reqInfo.targetLeaf != niBgpNbrUpdateLeaf {
 		return nil
@@ -691,7 +746,10 @@ func populateNiBgpNbrMessagesFromDb(inParams XfmrParams, stateDb *db.DB, reqInfo
 	if !found {
 		return nil
 	}
-	return populateNiBgpNbrMessageCounters(inParams, entry, reqInfo)
+	if err := populateNiBgpNbrMessageCounters(inParams, entry, reqInfo); err != nil {
+		return err
+	}
+	return populateNiBgpNbrLastNotificationErrorCode(inParams, entry, reqInfo)
 }
 
 // populateNiBgpNbrStateFromDb fills the state container. Its leaves come from
@@ -791,7 +849,10 @@ func populateNiBgpNbrStateFromDb(inParams XfmrParams, stateDb *db.DB, reqInfo *n
 		// A request for the whole state container has to reach the counters
 		// below messages as well, since no separate callback runs for them.
 		if reqInfo.targetLeaf == "" {
-			return populateNiBgpNbrMessageCounters(inParams, statsEntry, reqInfo)
+			if err := populateNiBgpNbrMessageCounters(inParams, statsEntry, reqInfo); err != nil {
+				return err
+			}
+			return populateNiBgpNbrLastNotificationErrorCode(inParams, statsEntry, reqInfo)
 		}
 	}
 	return nil
