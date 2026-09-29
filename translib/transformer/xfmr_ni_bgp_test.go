@@ -800,23 +800,12 @@ func Test_openconfig_network_instance_bgp_global_use_multiple_paths_ebgp_maximum
 	preReqMap := map[string]interface{}{
 		"BGP_GLOBALS": map[string]interface{}{
 			"default": map[string]interface{}{
-				"local_asn": "65100",
-			},
-		},
-		"BGP_GLOBALS_AF": map[string]interface{}{
-			"default|ipv4_unicast": map[string]interface{}{
-				"max_ebgp_paths": "2",
-			},
-			"default|ipv6_unicast": map[string]interface{}{
+				"local_asn":      "65100",
 				"max_ebgp_paths": "2",
 			},
 		},
 	}
 	cleanupTbl := map[string]interface{}{
-		"BGP_GLOBALS_AF": map[string]interface{}{
-			"default|ipv4_unicast": "",
-			"default|ipv6_unicast": "",
-		},
 		"BGP_GLOBALS": map[string]interface{}{"default": ""},
 	}
 	loadDB(db.ConfigDB, preReqMap)
@@ -828,23 +817,14 @@ func Test_openconfig_network_instance_bgp_global_use_multiple_paths_ebgp_maximum
 	time.Sleep(1 * time.Second)
 
 	expectedMap := map[string]interface{}{
-		"BGP_GLOBALS_AF": map[string]interface{}{
-			"default|ipv4_unicast": map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": map[string]interface{}{
+				"local_asn":      "65100",
 				"max_ebgp_paths": "16",
 			},
 		},
 	}
-	t.Run("Verify BGP_GLOBALS_AF ipv4 max_ebgp_paths mapping", verifyDbResult(rclient, "BGP_GLOBALS_AF|default|ipv4_unicast", expectedMap, false))
-	time.Sleep(1 * time.Second)
-
-	expectedMap = map[string]interface{}{
-		"BGP_GLOBALS_AF": map[string]interface{}{
-			"default|ipv6_unicast": map[string]interface{}{
-				"max_ebgp_paths": "16",
-			},
-		},
-	}
-	t.Run("Verify BGP_GLOBALS_AF ipv6 max_ebgp_paths mapping", verifyDbResult(rclient, "BGP_GLOBALS_AF|default|ipv6_unicast", expectedMap, false))
+	t.Run("Verify BGP_GLOBALS max_ebgp_paths mapping", verifyDbResult(rclient, "BGP_GLOBALS|default", expectedMap, false))
 	time.Sleep(1 * time.Second)
 
 	expectedGetJSON := "{\"openconfig-network-instance:maximum-paths\":16}"
@@ -855,19 +835,13 @@ func Test_openconfig_network_instance_bgp_global_use_multiple_paths_ebgp_maximum
 	time.Sleep(1 * time.Second)
 
 	expectedMap = map[string]interface{}{
-		"BGP_GLOBALS_AF": map[string]interface{}{
-			"default|ipv4_unicast": map[string]interface{}{},
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": map[string]interface{}{
+				"local_asn": "65100",
+			},
 		},
 	}
-	t.Run("Verify BGP_GLOBALS_AF ipv4 max_ebgp_paths cleared", verifyDbResult(rclient, "BGP_GLOBALS_AF|default|ipv4_unicast", expectedMap, false))
-	time.Sleep(1 * time.Second)
-
-	expectedMap = map[string]interface{}{
-		"BGP_GLOBALS_AF": map[string]interface{}{
-			"default|ipv6_unicast": map[string]interface{}{},
-		},
-	}
-	t.Run("Verify BGP_GLOBALS_AF ipv6 max_ebgp_paths cleared", verifyDbResult(rclient, "BGP_GLOBALS_AF|default|ipv6_unicast", expectedMap, false))
+	t.Run("Verify BGP_GLOBALS max_ebgp_paths cleared", verifyDbResult(rclient, "BGP_GLOBALS|default", expectedMap, false))
 	time.Sleep(1 * time.Second)
 
 	unloadDB(db.ConfigDB, cleanupTbl)
@@ -879,23 +853,12 @@ func Test_openconfig_network_instance_bgp_global_use_multiple_paths_ibgp_maximum
 	preReqMap := map[string]interface{}{
 		"BGP_GLOBALS": map[string]interface{}{
 			"default": map[string]interface{}{
-				"local_asn": "65100",
-			},
-		},
-		"BGP_GLOBALS_AF": map[string]interface{}{
-			"default|ipv4_unicast": map[string]interface{}{
-				"max_ibgp_paths": "2",
-			},
-			"default|ipv6_unicast": map[string]interface{}{
+				"local_asn":      "65100",
 				"max_ibgp_paths": "2",
 			},
 		},
 	}
 	cleanupTbl := map[string]interface{}{
-		"BGP_GLOBALS_AF": map[string]interface{}{
-			"default|ipv4_unicast": "",
-			"default|ipv6_unicast": "",
-		},
 		"BGP_GLOBALS": map[string]interface{}{"default": ""},
 	}
 	loadDB(db.ConfigDB, preReqMap)
@@ -907,23 +870,14 @@ func Test_openconfig_network_instance_bgp_global_use_multiple_paths_ibgp_maximum
 	time.Sleep(1 * time.Second)
 
 	expectedMap := map[string]interface{}{
-		"BGP_GLOBALS_AF": map[string]interface{}{
-			"default|ipv4_unicast": map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": map[string]interface{}{
+				"local_asn":      "65100",
 				"max_ibgp_paths": "24",
 			},
 		},
 	}
-	t.Run("Verify BGP_GLOBALS_AF ipv4 max_ibgp_paths mapping", verifyDbResult(rclient, "BGP_GLOBALS_AF|default|ipv4_unicast", expectedMap, false))
-	time.Sleep(1 * time.Second)
-
-	expectedMap = map[string]interface{}{
-		"BGP_GLOBALS_AF": map[string]interface{}{
-			"default|ipv6_unicast": map[string]interface{}{
-				"max_ibgp_paths": "24",
-			},
-		},
-	}
-	t.Run("Verify BGP_GLOBALS_AF ipv6 max_ibgp_paths mapping", verifyDbResult(rclient, "BGP_GLOBALS_AF|default|ipv6_unicast", expectedMap, false))
+	t.Run("Verify BGP_GLOBALS max_ibgp_paths mapping", verifyDbResult(rclient, "BGP_GLOBALS|default", expectedMap, false))
 	time.Sleep(1 * time.Second)
 
 	expectedGetJSON := "{\"openconfig-network-instance:maximum-paths\":24}"
@@ -934,19 +888,13 @@ func Test_openconfig_network_instance_bgp_global_use_multiple_paths_ibgp_maximum
 	time.Sleep(1 * time.Second)
 
 	expectedMap = map[string]interface{}{
-		"BGP_GLOBALS_AF": map[string]interface{}{
-			"default|ipv4_unicast": map[string]interface{}{},
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": map[string]interface{}{
+				"local_asn": "65100",
+			},
 		},
 	}
-	t.Run("Verify BGP_GLOBALS_AF ipv4 max_ibgp_paths cleared", verifyDbResult(rclient, "BGP_GLOBALS_AF|default|ipv4_unicast", expectedMap, false))
-	time.Sleep(1 * time.Second)
-
-	expectedMap = map[string]interface{}{
-		"BGP_GLOBALS_AF": map[string]interface{}{
-			"default|ipv6_unicast": map[string]interface{}{},
-		},
-	}
-	t.Run("Verify BGP_GLOBALS_AF ipv6 max_ibgp_paths cleared", verifyDbResult(rclient, "BGP_GLOBALS_AF|default|ipv6_unicast", expectedMap, false))
+	t.Run("Verify BGP_GLOBALS max_ibgp_paths cleared", verifyDbResult(rclient, "BGP_GLOBALS|default", expectedMap, false))
 	time.Sleep(1 * time.Second)
 
 	unloadDB(db.ConfigDB, cleanupTbl)
@@ -3092,34 +3040,34 @@ const niContainerRootUrl = "/openconfig-network-instance:network-instances"
 
 func niContainerTestRows() (map[string]interface{}, map[string]interface{}) {
 	return map[string]interface{}{
-			"BGP_GLOBALS": map[string]interface{}{
-				"default": map[string]interface{}{
-					"local_asn": "65200",
-					"router_id": "2.2.2.2",
-				},
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": map[string]interface{}{
+				"local_asn": "65200",
+				"router_id": "2.2.2.2",
 			},
-			"BGP_NEIGHBOR": map[string]interface{}{
-				"default|20.0.0.1": map[string]interface{}{
-					"admin_status": "up",
-					"asn":          "65300",
-				},
+		},
+		"BGP_NEIGHBOR": map[string]interface{}{
+			"default|20.0.0.1": map[string]interface{}{
+				"admin_status": "up",
+				"asn":          "65300",
 			},
-			"STATIC_ROUTE": map[string]interface{}{
-				"10.9.0.0/16": map[string]interface{}{
-					"nexthop": "20.0.0.9",
-				},
+		},
+		"STATIC_ROUTE": map[string]interface{}{
+			"10.9.0.0/16": map[string]interface{}{
+				"nexthop": "20.0.0.9",
 			},
-			"ROUTE_REDISTRIBUTE": map[string]interface{}{
-				"default|static|bgp|ipv4": map[string]interface{}{
-					"route_map": "TRM-RED",
-				},
+		},
+		"ROUTE_REDISTRIBUTE": map[string]interface{}{
+			"default|static|bgp|ipv4": map[string]interface{}{
+				"route_map": "TRM-RED",
 			},
-		}, map[string]interface{}{
-			"ROUTE_REDISTRIBUTE": map[string]interface{}{"default|static|bgp|ipv4": ""},
-			"STATIC_ROUTE":       map[string]interface{}{"10.9.0.0/16": ""},
-			"BGP_NEIGHBOR":       map[string]interface{}{"default|20.0.0.1": ""},
-			"BGP_GLOBALS":        map[string]interface{}{"default": ""},
-		}
+		},
+	}, map[string]interface{}{
+		"ROUTE_REDISTRIBUTE": map[string]interface{}{"default|static|bgp|ipv4": ""},
+		"STATIC_ROUTE":       map[string]interface{}{"10.9.0.0/16": ""},
+		"BGP_NEIGHBOR":       map[string]interface{}{"default|20.0.0.1": ""},
+		"BGP_GLOBALS":        map[string]interface{}{"default": ""},
+	}
 }
 
 func Test_openconfig_network_instance_container_get(t *testing.T) {
