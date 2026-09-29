@@ -60,6 +60,9 @@ func TestSubscribe_ni_bgp_nbr_state_paths(t *testing.T) {
 		// registers a field it does not serve is woken by changes it has
 		// nothing to report.
 		wantApplFlds map[string]string
+
+		// Field map registered for BGP_NEIGH_STATS, nil to skip the check.
+		wantStatsFlds map[string]string
 	}{
 		// The Phase 1 guarantee. An on-change subscription on session-state
 		// reads NEIGH_STATE_TABLE alone, and must not also watch
@@ -142,14 +145,26 @@ func TestSubscribe_ni_bgp_nbr_state_paths(t *testing.T) {
 			wantApplFlds: map[string]string{"peer_as": "peer-as"},
 		},
 		{
-			name:         "counter state leaf is sampled",
+			name:         "counter state leaf is sampled from stats table only",
 			uri:          niBgpNbrSubscNbrUrl + "/state",
 			requestURI:   niBgpNbrSubscNbrUrl + "/state/established-transitions",
 			wantOnChange: OnchangeDisable,
 			wantPType:    Sample,
-			wantStateKey: "11.0.0.155",
-			wantApplKey:  "default|11.0.0.155",
 			wantStatsKey: "default|11.0.0.155",
+			wantStatsFlds: map[string]string{
+				"established_transitions": "established-transitions",
+			},
+		},
+		{
+			name:         "last-established state leaf is sampled from stats table only",
+			uri:          niBgpNbrSubscNbrUrl + "/state",
+			requestURI:   niBgpNbrSubscNbrUrl + "/state/last-established",
+			wantOnChange: OnchangeDisable,
+			wantPType:    Sample,
+			wantStatsKey: "default|11.0.0.155",
+			wantStatsFlds: map[string]string{
+				"last_established": "last-established",
+			},
 		},
 		// The message counters read BGP_NEIGH_STATS alone, so they register
 		// neither of the other two tables.
@@ -314,8 +329,15 @@ func TestSubscribe_ni_bgp_nbr_state_paths(t *testing.T) {
 				if hasStatsTbl {
 					t.Fatalf("unexpected %s mapping: %v", niBgpNbrStatsTbl, out.dbDataMap)
 				}
-			} else if _, ok := statsTbl[tc.wantStatsKey]; !ok {
-				t.Fatalf("missing %s[%s]: %v", niBgpNbrStatsTbl, tc.wantStatsKey, out.dbDataMap)
+			} else {
+				flds, ok := statsTbl[tc.wantStatsKey]
+				if !ok {
+					t.Fatalf("missing %s[%s]: %v", niBgpNbrStatsTbl, tc.wantStatsKey, out.dbDataMap)
+				}
+				if tc.wantStatsFlds != nil && !reflect.DeepEqual(flds, tc.wantStatsFlds) {
+					t.Fatalf("%s[%s] field map=%v, want %v",
+						niBgpNbrStatsTbl, tc.wantStatsKey, flds, tc.wantStatsFlds)
+				}
 			}
 		})
 	}
