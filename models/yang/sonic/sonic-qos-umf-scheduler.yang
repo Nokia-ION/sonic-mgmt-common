@@ -1,0 +1,59 @@
+module sonic-qos-umf-scheduler {
+    namespace "http://github.com/Azure/sonic-qos-umf-scheduler";
+    prefix qus;
+
+    organization
+        "SONiC";
+
+    contact
+        "SONiC";
+
+    description
+        "SONIC QOS_UMF_SCHEDULER";
+
+    revision 2026-09-28 {
+        description
+        "Initial revision.";
+    }
+
+    container sonic-qos-umf-scheduler {
+        container QOS_UMF_SCHEDULER {
+            list QOS_UMF_SCHEDULER_LIST {
+                key "name";
+                description
+                  "The OpenConfig scheduler input behind each SCHEDULER entry of
+                  the same name. orchagent takes only SAI scheduler attributes
+                  in SCHEDULER, so the input, and the weight of a strict
+                  scheduler, which SAI does not take, are kept here.";
+
+                leaf name {
+                    type string;
+                }
+
+                leaf id {
+                    type string {
+                        length 1..64;
+                    }
+                }
+
+                leaf queue {
+                    type string {
+                        length 1..64;
+                    }
+                }
+
+                leaf input_type {
+                    type enumeration {
+                        enum QUEUE;
+                        enum IN_PROFILE;
+                        enum OUT_PROFILE;
+                    }
+                }
+
+                leaf weight {
+                    type uint64;
+                }
+            }
+        }
+    }
+}

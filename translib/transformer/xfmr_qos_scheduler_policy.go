@@ -3,6 +3,8 @@ package transformer
 import (
 	"errors"
 	"fmt"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -71,14 +73,31 @@ func Subscribe_qos_scheduler_policy_xfmr(inParams XfmrSubscInParams) (XfmrSubscO
 		}
 	}
 
-	if seq == "" {
-		seq = "*"
-	}
+	key := qosSchedSubscKey(inParams.dbs[db.ConfigDB], name, seq, pathInfo.Var("id"))
+	log.V(lvl.DEBUG).Infoln("XfmrSubscribe_qos_scheduler_policy_xfmr ", key)
+	return XfmrSubscOutParams{dbDataMap: RedisDbSubscribeMap{db.ConfigDB: {"SCHEDULER": {key: {}}}}}, nil
+}
+
+// qosSchedSubscKey is the SCHEDULER key, or key pattern, backing a scheduler
+// path. A sequence with several inputs has a row per input and none of its own.
+func qosSchedSubscKey(d *db.DB, name string, seq string, inputId string) string {
 	if name == "" {
 		name = "*"
 	}
-	log.V(lvl.DEBUG).Infoln("XfmrSubscribe_qos_scheduler_policy_xfmr")
-	return XfmrSubscOutParams{dbDataMap: RedisDbSubscribeMap{db.ConfigDB: {"SCHEDULER": {name + "@" + seq: {}}}}}, nil
+	if seq == "" {
+		return name + "@*"
+	}
+	key := name + "@" + seq
+	if name == "*" || d == nil {
+		return key
+	}
+	if _, err := d.GetEntry(&db.TableSpec{Name: "SCHEDULER"}, db.Key{Comp: []string{key}}); err == nil {
+		return key
+	}
+	if inputId != "" {
+		return key + "@" + inputId
+	}
+	return key + "@*"
 }
 
 var DbToYangPath_qos_scheduler_policy_path_xfmr PathXfmrDbToYangFunc = func(inParams XfmrDbToYgPathParams) error {
@@ -87,14 +106,18 @@ var DbToYangPath_qos_scheduler_policy_path_xfmr PathXfmrDbToYangFunc = func(inPa
 	if len(inParams.tblKeyComp) != 1 {
 		return fmt.Errorf("DbToYangPath_qos_scheduler_policy_path_xfmr: Invalid tblKey %v or tblEntry %v", inParams.tblKeyComp, inParams.tblEntry)
 	}
-	// The DB key will look like `scheduler_100gb@1` (<scheduler-policy>@<sequence>).
-	keySplit := strings.Split(inParams.tblKeyComp[0], "@")
-	if len(keySplit) != 2 {
+	// The DB key looks like `scheduler_100gb@1` (<scheduler-policy>@<sequence>),
+	// or `scheduler_100gb@1@BE1` for one input of a sequence with several.
+	spName, seq, inputId, ok := qosParseSchedulerKey(inParams.tblKeyComp[0])
+	if !ok {
 		return fmt.Errorf("DbToYangPath_qos_scheduler_policy_path_xfmr: Invalid tblKey %v or tblEntry %v", inParams.tblKeyComp, inParams.tblEntry)
 	}
 
-	inParams.ygPathKeys["/openconfig-qos:qos/scheduler-policies/scheduler-policy/name"] = keySplit[0]
-	inParams.ygPathKeys["/openconfig-qos:qos/scheduler-policies/scheduler-policy/schedulers/scheduler/sequence"] = keySplit[1]
+	inParams.ygPathKeys["/openconfig-qos:qos/scheduler-policies/scheduler-policy/name"] = spName
+	inParams.ygPathKeys["/openconfig-qos:qos/scheduler-policies/scheduler-policy/schedulers/scheduler/sequence"] = seq
+	if inputId != "" && strings.Contains(inParams.ygSchemaPath, "/inputs/input") {
+		inParams.ygPathKeys["/openconfig-qos:qos/scheduler-policies/scheduler-policy/schedulers/scheduler/inputs/input/id"] = inputId
+	}
 	return nil
 }
 
@@ -132,6 +155,197 @@ func getIntfsBySchedulerPolicyName(spName string, inParams XfmrParams) []string 
 	return s
 }
 
+const qosUmfSchedulerTbl = "QOS_UMF_SCHEDULER"
+
+// An input id becomes part of a SCHEDULER key when its sequence has several
+// inputs, so it is held to the characters that key allows.
+var qosSchedInputIdRe = regexp.MustCompile(`^[-a-zA-Z0-9_]{1,64}$`)
+
+// SCHEDULER fields shared by every input of a sequence.
+var qosSchedSeqFields = []string{"type", "meter_type", "cir", "pir", "cbs", "pbs"}
+
+// qosSchedulerKey names the SCHEDULER of one input. SONiC attaches a scheduler
+// to a single queue, so a sequence feeding several queues needs one scheduler
+// per queue, each carrying that queue's weight.
+func qosSchedulerKey(spName string, seq string, inputId string, nInputs int) string {
+	if nInputs > 1 {
+		return spName + "@" + seq + "@" + inputId
+	}
+	return spName + "@" + seq
+}
+
+// qosParseSchedulerKey splits a SCHEDULER key into its policy, its sequence
+// and, for a sequence with several inputs, the input id.
+func qosParseSchedulerKey(key string) (spName string, seq string, inputId string, ok bool) {
+	parts := strings.Split(key, "@")
+	switch len(parts) {
+	case 2:
+		return parts[0], parts[1], "", true
+	case 3:
+		return parts[0], parts[1], parts[2], true
+	}
+	return "", "", "", false
+}
+
+// qosSchedRow is one scheduler input as held in CONFIG_DB: the SCHEDULER row
+// orchagent programs, which takes only SAI scheduler attributes, and the
+// QOS_UMF_SCHEDULER row recording the OpenConfig input it came from. Rows
+// written before that split carry the input in SCHEDULER itself.
+type qosSchedRow struct {
+	key   string
+	sched db.Value
+	umf   db.Value
+}
+
+func (r qosSchedRow) get(field string) string {
+	if v, ok := r.umf.Field[field]; ok {
+		return v
+	}
+	if field == "input_type" {
+		field = "input-type"
+	}
+	return r.sched.Field[field]
+}
+
+func (r qosSchedRow) inputId() string {
+	if id := r.get("id"); id != "" {
+		return id
+	}
+	_, _, id, _ := qosParseSchedulerKey(r.key)
+	return id
+}
+
+func qosReadSchedRow(d *db.DB, key string) (qosSchedRow, error) {
+	row := qosSchedRow{key: key}
+	var err error
+	if row.sched, err = d.GetEntry(&db.TableSpec{Name: "SCHEDULER"}, db.Key{Comp: []string{key}}); err != nil {
+		return row, err
+	}
+	row.umf, _ = d.GetEntry(&db.TableSpec{Name: qosUmfSchedulerTbl}, db.Key{Comp: []string{key}})
+	return row, nil
+}
+
+// qosQueueSchedulerRefs indexes the QUEUE rows by the scheduler they name.
+func qosQueueSchedulerRefs(d *db.DB) map[string][]string {
+	refs := make(map[string][]string)
+	ts := &db.TableSpec{Name: qosQueueTbl}
+	keys, err := d.GetKeys(ts)
+	if err != nil {
+		return refs
+	}
+	for _, key := range keys {
+		if len(key.Comp) != 2 {
+			continue
+		}
+		qCfg, err := d.GetEntry(ts, key)
+		if err != nil {
+			continue
+		}
+		if sched := qCfg.Field["scheduler"]; sched != "" {
+			refs[sched] = append(refs[sched], key.Comp[0]+"|"+key.Comp[1])
+		}
+	}
+	return refs
+}
+
+// qosQueueIdInRequest reports whether the request numbers a queue itself.
+func qosQueueIdInRequest(qosObj *ocbinds.OpenconfigQos_Qos, name string) bool {
+	if qosObj == nil || qosObj.Queues == nil {
+		return false
+	}
+	q, ok := qosObj.Queues.Queue[name]
+	return ok && q != nil && q.Config != nil && q.Config.QueueId != nil
+}
+
+var qosSchedInputTypeName = map[ocbinds.E_OpenconfigQos_Qos_SchedulerPolicies_SchedulerPolicy_Schedulers_Scheduler_Inputs_Input_Config_InputType]string{
+	ocbinds.OpenconfigQos_Qos_SchedulerPolicies_SchedulerPolicy_Schedulers_Scheduler_Inputs_Input_Config_InputType_QUEUE:       "QUEUE",
+	ocbinds.OpenconfigQos_Qos_SchedulerPolicies_SchedulerPolicy_Schedulers_Scheduler_Inputs_Input_Config_InputType_IN_PROFILE:  "IN_PROFILE",
+	ocbinds.OpenconfigQos_Qos_SchedulerPolicies_SchedulerPolicy_Schedulers_Scheduler_Inputs_Input_Config_InputType_OUT_PROFILE: "OUT_PROFILE",
+}
+
+// qosSchedSeqValues derives the SCHEDULER fields a sequence sets on each of its
+// inputs. prev is any row the sequence already has, which an update is merged
+// into.
+func qosSchedSeqValues(inParams XfmrParams, spName string,
+	schedObj *ocbinds.OpenconfigQos_Qos_SchedulerPolicies_SchedulerPolicy_Schedulers_Scheduler,
+	prev *qosSchedRow) (map[string]string, error) {
+
+	fields := make(map[string]string)
+	var prevCir, prevPir uint64
+	var prevCirOk, prevPirOk bool
+	if prev != nil && inParams.oper != REPLACE {
+		if v, err := strconv.ParseUint(prev.sched.Field["cir"], 10, 64); err == nil {
+			prevCir, prevCirOk = v, true
+		}
+		if v, err := strconv.ParseUint(prev.sched.Field["pir"], 10, 64); err == nil {
+			prevPir, prevPirOk = v, true
+		}
+	}
+
+	/*
+	 * Every row carries a type: orchagent refuses a SCHEDULER field it does not
+	 * know, the NULL placeholder of an empty row included.
+	 */
+	schedType := ocbinds.OpenconfigQosTypes_QOS_SCHEDULER_TYPE_UNSET
+	strict := false
+	if schedObj.Config != nil {
+		schedType = schedObj.Config.Type
+		strict = schedObj.Config.Priority == ocbinds.OpenconfigQos_Qos_SchedulerPolicies_SchedulerPolicy_Schedulers_Scheduler_Config_Priority_STRICT
+	}
+	switch {
+	case strict:
+		fields["type"] = "STRICT"
+	case inParams.oper == UPDATE && prev != nil && prev.sched.Field["type"] != "":
+		/*
+		 * An update that leaves priority out keeps the one in force, rather
+		 * than turning a strict scheduler into a weighted one.
+		 */
+	default:
+		fields["type"] = "DWRR"
+	}
+
+	switch {
+	case schedType == ocbinds.OpenconfigQosTypes_QOS_SCHEDULER_TYPE_TWO_RATE_THREE_COLOR:
+		if schedObj.TwoRateThreeColor == nil || schedObj.TwoRateThreeColor.Config == nil {
+			break
+		}
+		t23c := schedObj.TwoRateThreeColor.Config
+		if t23c.Bc != nil {
+			fields["cbs"] = strconv.FormatUint(uint64(*t23c.Bc), 10)
+		}
+		if t23c.Be != nil {
+			fields["pbs"] = strconv.FormatUint(uint64(*t23c.Be), 10)
+		}
+		var cir, pir uint64
+		if t23c.Cir != nil {
+			cir = *t23c.Cir
+			if t23c.Pir == nil && prevPirOk && cir/8 > prevPir {
+				return nil, errors.New("PIR must be greater than or equal to CIR")
+			}
+			fields["cir"] = strconv.FormatUint(cir/8, 10)
+		}
+		if t23c.Pir != nil {
+			pir = *t23c.Pir
+			if (t23c.Cir == nil && prevCirOk && prevCir > pir/8) || (t23c.Cir != nil && cir > pir) {
+				return nil, errors.New("PIR must be greater than or equal to CIR")
+			}
+			fields["pir"] = strconv.FormatUint(pir/8, 10)
+		}
+	case schedObj.OneRateTwoColor != nil && schedObj.OneRateTwoColor.Config != nil:
+		t12c := schedObj.OneRateTwoColor.Config
+		if t12c.Bc != nil {
+			fields["cbs"] = strconv.FormatUint(uint64(*t12c.Bc), 10)
+		}
+		if t12c.Cir != nil {
+			fields["cir"] = strconv.FormatUint(*t12c.Cir/8, 10)
+		}
+	case schedType == ocbinds.OpenconfigQosTypes_QOS_SCHEDULER_TYPE_ONE_RATE_TWO_COLOR:
+		return nil, errors.New("Type is oneRateTwoColor but the config subtree is empty")
+	}
+	log.V(lvl.DEBUG).Infof("qosSchedSeqValues: %v: %v", spName, fields)
+	return fields, nil
+}
+
 var YangToDb_qos_scheduler_policy_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (map[string]map[string]db.Value, error) {
 	resMap := make(map[string]map[string]db.Value)
 	if inParams.oper == DELETE {
@@ -147,11 +361,9 @@ var YangToDb_qos_scheduler_policy_xfmr SubTreeXfmrYangToDb = func(inParams XfmrP
 		return resMap, nil
 	}
 	log.V(lvl.DEBUG).Infoln("YangToDb_qos_scheduler_policy_xfmr: ", inParams.ygRoot, inParams.uri)
-	log.V(lvl.DEBUG).Infoln("inParams: ", inParams)
 
 	pathInfo := NewPathInfo(inParams.uri)
 	spKey := pathInfo.Var("name")
-	log.V(lvl.DEBUG).Infoln("YangToDb: policy name: ", spKey)
 
 	targetUriPath, err := getYangPathFromUri(inParams.uri)
 	if err != nil {
@@ -162,8 +374,6 @@ var YangToDb_qos_scheduler_policy_xfmr SubTreeXfmrYangToDb = func(inParams XfmrP
 	if targetUriPath != "/openconfig-qos:qos/scheduler-policies/scheduler-policy" && inParams.requestUri == "/openconfig-qos:qos" {
 		return nil, nil
 	}
-
-	log.V(lvl.DEBUG).Infoln("targetUriPath: ", targetUriPath)
 
 	qosObj := getQosRoot(inParams.ygRoot)
 	if qosObj == nil {
@@ -176,30 +386,33 @@ var YangToDb_qos_scheduler_policy_xfmr SubTreeXfmrYangToDb = func(inParams XfmrP
 
 	var spList []string
 	if spKey == "" {
-		spList = make([]string, len(qosObj.SchedulerPolicies.SchedulerPolicy))
-		i := 0
 		for sp := range qosObj.SchedulerPolicies.SchedulerPolicy {
-			spList[i] = sp
-			i++
+			spList = append(spList, sp)
 		}
 	} else {
 		spList = []string{spKey}
 	}
 
-	schedEntry := make(map[string]db.Value)
-	/* update "Queue" table for newly created scheduler if the scheduler profile is used by intfs*/
-	queueTblMap := make(map[string]db.Value)
+	/*
+	 * A write below the input list names only some inputs, so it is merged
+	 * with the ones already there however it is sent.
+	 */
+	mergeInputs := inParams.oper != REPLACE || strings.Contains(inParams.requestUri, "/inputs")
+	seqInPath := strings.HasPrefix(targetUriPath, "/openconfig-qos:qos/scheduler-policies/scheduler-policy/schedulers/scheduler") && pathInfo.Var("sequence") != ""
+	// A replace of /qos drops every interface it leaves out, bindings and all.
+	rebindDbQueues := !(inParams.oper == REPLACE && inParams.requestUri == "/openconfig-qos:qos")
+	var queueRefs map[string][]string
+
 	queueMapMutex.RLock()
 	defer queueMapMutex.RUnlock()
 	for _, spName := range spList {
-		spObj, ok := qosObj.SchedulerPolicies.SchedulerPolicy[spName]
-		if !ok {
-			log.V(lvl.DEBUG).Infoln("YangToDb: No policy name: ", spName)
-			return resMap, nil
+		if strings.Contains(spName, "@") {
+			return nil, tlerr.InvalidArgs("Scheduler policy name %q may not contain '@', which separates the parts of a SCHEDULER key", spName)
 		}
-
-		if spObj.Schedulers == nil || spObj.Schedulers.Scheduler == nil || len(spObj.Schedulers.Scheduler) < 1 {
-			return resMap, nil
+		spObj, ok := qosObj.SchedulerPolicies.SchedulerPolicy[spName]
+		if !ok || spObj.Schedulers == nil || len(spObj.Schedulers.Scheduler) < 1 {
+			log.V(lvl.DEBUG).Infoln("YangToDb: no schedulers in policy ", spName)
+			continue
 		}
 
 		qMapType := FRONT_PANEL
@@ -209,40 +422,40 @@ var YangToDb_qos_scheduler_policy_xfmr SubTreeXfmrYangToDb = func(inParams XfmrP
 		maxSchedNum := getMaxSchedNum(spObj.Schedulers.Scheduler)
 
 		var seqVals []uint32
-		if strings.HasPrefix(targetUriPath, "/openconfig-qos:qos/scheduler-policies/scheduler-policy/schedulers/scheduler") && pathInfo.Var("sequence") != "" {
-			seq := pathInfo.Var("sequence")
-			seqVal, err := strconv.ParseUint(seq, 10, 32)
+		if seqInPath {
+			seqVal, err := strconv.ParseUint(pathInfo.Var("sequence"), 10, 32)
 			if err != nil {
 				log.V(lvl.DEBUG).Infof("Failed to convert sequence to int: %v", err)
 				return nil, nil
 			}
 			seqVals = []uint32{uint32(seqVal)}
 		} else {
-			seqVals = make([]uint32, len(spObj.Schedulers.Scheduler))
-			i := 0
 			for seq := range spObj.Schedulers.Scheduler {
-				seqVals[i] = seq
-				i++
+				seqVals = append(seqVals, seq)
 			}
 		}
 
+		dbRows := make(map[string]qosSchedRow)
+		for _, key := range qosSchedPolicySchedulers(inParams.d, spName) {
+			if row, err := qosReadSchedRow(inParams.d, key); err == nil {
+				dbRows[key] = row
+			}
+		}
+		intfs := getIntfsBySchedulerPolicyName(spName, inParams)
+		intfInRequest := make(map[string]bool, len(intfs))
+		for _, ifName := range intfs {
+			intfInRequest[ifName] = true
+		}
+		newKeys := make(map[string]bool)
+		newKeyOfInput := make(map[string]string)
+		seqDecided := make(map[string]bool)
+
 		for _, seqVal := range seqVals {
-			log.V(lvl.DEBUG).Infoln("YangToDb: Scheduler obj: ", spName, " seqVal ", seqVal)
 			seq := strconv.Itoa(int(seqVal))
-
-			if seq == "" {
-				log.V(lvl.DEBUG).Infoln("YangToDb: no sequence specified")
-				return resMap, fmt.Errorf("YangToDb: no sequence specified seq (%v) for sp (%v)", seqVal, spName)
-			}
-
-			schedObj, ok := spObj.Schedulers.Scheduler[uint32(seqVal)]
+			schedObj, ok := spObj.Schedulers.Scheduler[seqVal]
 			if !ok {
-				log.V(lvl.DEBUG).Infoln("YangToDb: No Scheduler obj: ", spName, " sequence: ", seq, " seqVal ", seqVal)
+				log.V(lvl.DEBUG).Infoln("YangToDb: No Scheduler obj: ", spName, " sequence: ", seq)
 				return resMap, fmt.Errorf("YangToDb: No Scheduler obj seq (%v) for sp (%v)", seqVal, spName)
-			}
-			if schedObj.Inputs == nil || schedObj.Inputs.Input == nil || len(schedObj.Inputs.Input) < 1 {
-				log.V(lvl.DEBUG).Infoln("YangToDb: No Input subtree present for Scheduler obj: ", spName, " seqVal ", seq)
-				continue
 			}
 
 			/*
@@ -254,228 +467,216 @@ var YangToDb_qos_scheduler_policy_xfmr SubTreeXfmrYangToDb = func(inParams XfmrP
 				if err := qosSchedulerToPolicer(inParams, spName, seqVal, clsName, schedObj, resMap); err != nil {
 					return resMap, err
 				}
+				seqDecided[seq] = true
 				continue
 			}
 
-			sched_key := spName + "@" + seq
-			schedVal := db.Value{Field: make(map[string]string)}
+			seqRows := make(map[string]qosSchedRow)
+			var seqPrev *qosSchedRow
+			for key, row := range dbRows {
+				if _, kseq, _, _ := qosParseSchedulerKey(key); kseq != seq {
+					continue
+				}
+				if id := row.inputId(); id != "" {
+					seqRows[id] = row
+				}
+				if seqPrev == nil || key < seqPrev.key {
+					r := row
+					seqPrev = &r
+				}
+			}
 
-			if (inParams.oper == CREATE) || (inParams.oper == REPLACE) || (inParams.oper == UPDATE) {
-				var cir, pir, prev_pir, prev_cir, prev_weight uint64 = 0, 0, 0, 0, 0
-				var prev_pir_exist, prev_cir_exist, prev_weight_exist bool = false, false, false
-				var val, queue_id string
+			ids := make(map[string]bool)
+			if schedObj.Inputs != nil {
+				for id := range schedObj.Inputs.Input {
+					ids[id] = true
+				}
+			}
+			if mergeInputs {
+				for id := range seqRows {
+					ids[id] = true
+				}
+			}
+			if len(ids) == 0 {
+				log.V(lvl.DEBUG).Infoln("YangToDb: No Input subtree present for Scheduler obj: ", spName, " seqVal ", seq)
+				continue
+			}
+			seqDecided[seq] = true
+			sortedIds := make([]string, 0, len(ids))
+			for id := range ids {
+				if id == "" {
+					return nil, errors.New("missing data, no input specified")
+				}
+				if len(ids) > 1 && !qosSchedInputIdRe.MatchString(id) {
+					return nil, tlerr.InvalidArgs("Scheduler policy %v sequence %v: input id %q may only use letters, digits, '-' and '_'",
+						spName, seq, id)
+				}
+				sortedIds = append(sortedIds, id)
+			}
+			sort.Strings(sortedIds)
 
-				log.V(lvl.DEBUG).Infoln("key: ", sched_key)
-				ts := &db.TableSpec{Name: "SCHEDULER"}
-				prev_entry, entry_err := inParams.d.GetEntry(ts, db.Key{Comp: []string{sched_key}})
-				if entry_err == nil {
-					log.V(lvl.DEBUG).Infoln("current entry: ", prev_entry)
-					if val, prev_cir_exist = prev_entry.Field["cir"]; prev_cir_exist {
-						prev_cir, err = strconv.ParseUint(val, 10, 64)
-						if err != nil {
-							prev_cir_exist = false
-							log.V(lvl.DEBUG).Infoln("error parsing previous cir value for scheduler ", spName, " sequence: ", seq)
+			seqFields, err := qosSchedSeqValues(inParams, spName, schedObj, seqPrev)
+			if err != nil {
+				log.V(lvl.ERROR).Info(err)
+				return nil, err
+			}
+
+			qMap, ok := ocQueueHwQueueMap[qMapType]
+			if !ok {
+				return nil, errors.New("Failed to get qos queue map: " + qMapType)
+			}
+
+			for _, id := range sortedIds {
+				key := qosSchedulerKey(spName, seq, id, len(sortedIds))
+				schedVal := db.Value{Field: make(map[string]string)}
+				umfVal := db.Value{Field: make(map[string]string)}
+
+				prev, hasPrev := seqRows[id]
+				if mergeInputs {
+					/*
+					 * An input moving to a key of its own when its sequence
+					 * gains or loses a sibling keeps what the request leaves out,
+					 * and one joining a sequence takes the sequence's settings.
+					 */
+					src := seqPrev
+					if hasPrev {
+						src = &prev
+						for _, f := range []string{"id", "queue", "input_type", "weight"} {
+							if v := prev.get(f); v != "" {
+								umfVal.Field[f] = v
+							}
 						}
 					}
-
-					if val, prev_pir_exist = prev_entry.Field["pir"]; prev_pir_exist {
-						prev_pir, err = strconv.ParseUint(val, 10, 64)
-						if err != nil {
-							prev_pir_exist = false
-							log.V(lvl.DEBUG).Infoln("error parsing previous pir value for scheduler ", spName, " sequence: ", seq)
-						}
-					}
-					if val, prev_weight_exist = prev_entry.Field["weight"]; prev_weight_exist {
-						prev_weight, err = strconv.ParseUint(val, 10, 32)
-						if err != nil {
-							prev_weight_exist = false
-							log.V(lvl.DEBUG).Infoln("error parsing previous weight value for scheduler ", spName, " sequence: ", seq)
+					if src != nil {
+						for _, f := range qosSchedSeqFields {
+							if v, ok := src.sched.Field[f]; ok {
+								schedVal.Field[f] = v
+							}
 						}
 					}
 				}
-				for idx := range schedObj.Inputs.Input {
-					log.V(lvl.DEBUG).Infoln("YangToDb: Scheduler obj: ", spName, " seqVal ", idx)
-					if idx == "" {
-						log.V(lvl.DEBUG).Infoln("YangToDb: no input id specified")
-						return nil, errors.New("missing data, no input specified")
-					}
-					idxObj, ok := schedObj.Inputs.Input[idx]
-					if !ok {
-						log.V(lvl.DEBUG).Infoln("YangToDb: No input obj: ", spName, " sequence: ", seq, " ID: ", idx)
-						return nil, errors.New("missing data, no input object present")
-					}
-					if idxObj.Config != nil {
-						if idxObj.Config.Weight != nil {
-							if schedObj.Config != nil && schedObj.Config.Priority == ocbinds.OpenconfigQos_Qos_SchedulerPolicies_SchedulerPolicy_Schedulers_Scheduler_Config_Priority_STRICT {
-								log.V(lvl.ERROR).Infoln("STRICT priority scheduling cannot be configured with weight.")
-								return nil, errors.New("STRICT priority scheduling cannot be configured with weight.")
-							}
-							schedVal.Field["weight"] = strconv.Itoa((int)(*idxObj.Config.Weight))
-							prev_weight = (uint64)(*idxObj.Config.Weight)
-						}
-						if idxObj.Config.Id == nil {
-							// id cannot be empty
-							return nil, errors.New("missing data, no input/config/id specified")
-						}
+				for f, v := range seqFields {
+					schedVal.Field[f] = v
+				}
 
-						schedVal.Field["id"] = *idxObj.Config.Id
-
-						queueName := *idxObj.Config.Id
-						if idxObj.Config.Queue != nil {
-							queueName = *idxObj.Config.Queue
+				umfVal.Field["id"] = id
+				if schedObj.Inputs != nil {
+					if in := schedObj.Inputs.Input[id]; in != nil && in.Config != nil {
+						if in.Config.Queue != nil {
+							umfVal.Field["queue"] = *in.Config.Queue
 						}
-						schedVal.Field["queue"] = queueName
-
-						qMap, ok := ocQueueHwQueueMap[qMapType]
-						if !ok {
-							return nil, errors.New("Failed to get qos queue map: " + qMapType)
+						if in.Config.Weight != nil {
+							umfVal.Field["weight"] = strconv.FormatUint(*in.Config.Weight, 10)
 						}
-						log.V(lvl.DEBUG).Infoln("YangToDb: Scheduler qMap: ", qMap, ", ocQueueHwQueueMap ", ocQueueHwQueueMap, ", qMapType ", qMapType)
-
-						queue_id, ok = qMap[queueName]
-						if !ok {
-							return nil, fmt.Errorf("Mismatch in oc queue (%v) to hw queue mapping (%v) for queue (%v)", queue_id, qMap, queueName)
-						} else if inParams.oper == REPLACE {
-							hw_queue_id := strconv.Itoa(int(maxSchedNum - uint32(seqVal)))
-							log.V(lvl.DEBUG).Infof("YangToDb: hw queue id = %v, maxSchedNum = %v, seqVal = %v", hw_queue_id, maxSchedNum, seqVal)
-							if queue_id != hw_queue_id {
-								return nil, fmt.Errorf("Failed consistent config check for oc queue (%v) to hw queue mapping (%v) for queue (%v), map (%v)", queue_id, hw_queue_id, queueName, qMap)
-							}
-						}
-
-						if idxObj.Config.InputType == ocbinds.OpenconfigQos_Qos_SchedulerPolicies_SchedulerPolicy_Schedulers_Scheduler_Inputs_Input_Config_InputType_QUEUE {
-							schedVal.Field["input-type"] = "QUEUE"
-						}
-					}
-					config_type_two_rate := false
-					if schedObj.Config != nil {
-						schedVal.Field["type"] = "DWRR"
-						if schedObj.Config.Priority == ocbinds.OpenconfigQos_Qos_SchedulerPolicies_SchedulerPolicy_Schedulers_Scheduler_Config_Priority_STRICT {
-							schedVal.Field["type"] = "STRICT"
-							if prev_weight != 0 && inParams.oper == UPDATE {
-								log.V(lvl.ERROR).Infoln("Strict priority scheduling can not be configured with weight")
-								return nil, errors.New("Strict priority scheduling can not be configured with weight")
-							}
-						}
-						if schedObj.Config.Type == ocbinds.OpenconfigQosTypes_QOS_SCHEDULER_TYPE_TWO_RATE_THREE_COLOR {
-							config_type_two_rate = true
-						}
-					}
-					if config_type_two_rate {
-						if schedObj.TwoRateThreeColor != nil && schedObj.TwoRateThreeColor.Config != nil {
-
-							if schedObj.TwoRateThreeColor.Config.Bc != nil {
-								cbs := (int)(*schedObj.TwoRateThreeColor.Config.Bc)
-								schedVal.Field["cbs"] = strconv.Itoa(cbs)
-							}
-
-							if schedObj.TwoRateThreeColor.Config.Be != nil {
-								pbs := (int)(*schedObj.TwoRateThreeColor.Config.Be)
-								schedVal.Field["pbs"] = strconv.Itoa(pbs)
-							}
-
-							if schedObj.TwoRateThreeColor.Config.Cir != nil {
-								cir = (uint64)(*schedObj.TwoRateThreeColor.Config.Cir)
-								if schedObj.TwoRateThreeColor.Config.Pir == nil {
-									if prev_pir_exist && (cir > prev_pir) {
-										log.V(lvl.ERROR).Infoln("PIR must be greater than or equal to CIR")
-										return nil, errors.New("PIR must be greater than or equal to CIR")
-									}
-								}
-								schedVal.Field["cir"] = strconv.FormatUint(cir/8, 10)
-							}
-							if schedObj.TwoRateThreeColor.Config.Pir != nil {
-								pir = (uint64)(*schedObj.TwoRateThreeColor.Config.Pir)
-								if schedObj.TwoRateThreeColor.Config.Cir == nil {
-									if prev_cir_exist && (prev_cir > pir) {
-										log.V(lvl.ERROR).Infoln("PIR must be greater than or equal to CIR")
-										return nil, errors.New("PIR must be greater than or equal to CIR")
-									}
-								} else {
-									if cir > pir {
-										log.V(lvl.ERROR).Infoln("PIR must be greater than or equal to CIR")
-										return nil, errors.New("PIR must be greater than or equal to CIR")
-									}
-								}
-								schedVal.Field["pir"] = strconv.FormatUint(pir/8, 10)
-							}
-
-							intfs := getIntfsBySchedulerPolicyName(spName, inParams)
-							if len(intfs) > 0 {
-								dbSpec := &db.TableSpec{Name: "PORT"}
-								for _, intf := range intfs {
-									log.V(lvl.DEBUG).Infoln("intf: ", intf)
-									speed, err := getCfgIntfSpeedMbps(inParams, intf)
-									if err != nil {
-										var ok bool
-										portCfg, err := inParams.d.GetEntry(dbSpec, db.Key{Comp: []string{intf}})
-										if err != nil {
-											continue
-										}
-										if speed, ok = portCfg.Field["speed"]; !ok {
-											continue
-										}
-									}
-									speed_Mbps, err := strconv.ParseUint(speed, 10, 64)
-									if err != nil {
-										continue
-									}
-									speed_Bps := speed_Mbps * 1000 * 1000
-									if cir > speed_Bps || pir > speed_Bps {
-										errmsg := fmt.Sprintf("PIR(%d)/(%d) CIR must be less than or equal to port (%s) speed (%d)", pir, cir, intf, speed_Bps)
-										log.V(lvl.DEBUG).Infoln(errmsg)
-										/*
-										 * TODO (b/194814696): Currently we have an issue where we are unable to
-										 * access incoming config for Interfaces to get interface
-										 * speed. Do not enforce this check till this capability is
-										 * available.
-										 */
-										//return nil, errors.New(errmsg)
-									}
-								}
-							}
-						}
-					} else {
-						if schedObj.OneRateTwoColor == nil || schedObj.OneRateTwoColor.Config == nil {
-							log.V(lvl.ERROR).Infoln("Type is oneRateTwoColor but the config subtree is empty")
-							return nil, errors.New("Type is oneRateTwoColor but the config subtree is empty")
-						}
-
-						if schedObj.OneRateTwoColor.Config.Bc != nil {
-							cbs := (int)(*schedObj.OneRateTwoColor.Config.Bc)
-							schedVal.Field["cbs"] = strconv.Itoa(cbs)
-						}
-
-						if schedObj.OneRateTwoColor.Config.Cir != nil {
-							cir = (uint64)(*schedObj.OneRateTwoColor.Config.Cir)
-							schedVal.Field["cir"] = strconv.FormatUint(cir/8, 10)
+						if name, ok := qosSchedInputTypeName[in.Config.InputType]; ok {
+							umfVal.Field["input_type"] = name
 						}
 					}
 				}
+				if umfVal.Field["queue"] == "" {
+					umfVal.Field["queue"] = id
+				}
 
-				schedEntry[sched_key] = schedVal
-				log.V(lvl.DEBUG).Infoln("YangToDb_qos_scheduler_policy_xfmr - entry_key : ", sched_key)
-				resMap["SCHEDULER"] = schedEntry
-
-				if inParams.oper == CREATE || inParams.oper == REPLACE || inParams.oper == UPDATE {
-					intfs := getIntfsBySchedulerPolicyName(spName, inParams)
-
-					for _, if_name := range intfs {
-						key := if_name + "|" + queue_id
-						db_spName := spName + "@" + seq
-						log.V(lvl.DEBUG).Infof("YangToDb_qos_scheduler_policy_xfmr --> key: %v, db_spName: %v", key, db_spName)
-
-						pTbl := &queueTblMap
-						if _, ok := (*pTbl)[key]; !ok {
-							(*pTbl)[key] = db.Value{Field: make(map[string]string)}
-						}
-						(*pTbl)[key].Field["scheduler"] = db_spName
-						if isSchedulerOnQueue(if_name) {
-							(*pTbl)[key].Field[SONIC_SCHEDULER_NODE_KEY] = SCHEDULER_NODE_QUEUE
+				/*
+				 * SAI takes a weight on a weighted scheduler only, so a strict
+				 * one keeps it in QOS_UMF_SCHEDULER alone.
+				 */
+				strict := schedVal.Field["type"] == "STRICT"
+				delete(schedVal.Field, "weight")
+				if w, ok := umfVal.Field["weight"]; ok && !strict {
+					if wv, err := strconv.ParseUint(w, 10, 64); err != nil || wv > 255 {
+						return nil, tlerr.InvalidArgs("Scheduler policy %v sequence %v input %v: weight %v is out of range 0..255",
+							spName, seq, id, w)
+					}
+					schedVal.Field["weight"] = w
+				}
+				if hasPrev && prev.key == key && inParams.oper != REPLACE {
+					/*
+					 * An update merges into the row, so what orchagent must not
+					 * see has to be removed from it: a weight on a scheduler
+					 * turned strict, and the input fields rows kept before
+					 * QOS_UMF_SCHEDULER.
+					 */
+					stale := db.Value{Field: make(map[string]string)}
+					for _, f := range []string{"id", "queue", "input-type"} {
+						if _, ok := prev.sched.Field[f]; ok {
+							stale.Field[f] = ""
 						}
 					}
-					resMap["QUEUE"] = queueTblMap
+					if _, ok := prev.sched.Field["weight"]; ok && strict {
+						stale.Field["weight"] = ""
+					}
+					if len(stale.Field) > 0 {
+						qosStageDelete(inParams, "SCHEDULER", key, stale)
+					}
 				}
+
+				queueName := umfVal.Field["queue"]
+				queueId, ok := qMap[queueName]
+				if !ok {
+					return nil, fmt.Errorf("Mismatch in oc queue (%v) to hw queue mapping (%v) for queue (%v)", queueId, qMap, queueName)
+				}
+				if inParams.oper == REPLACE && len(sortedIds) == 1 && !qosQueueIdInRequest(qosObj, queueName) {
+					hwQueueId := strconv.Itoa(int(maxSchedNum - seqVal))
+					if queueId != hwQueueId {
+						return nil, fmt.Errorf("Failed consistent config check for oc queue (%v) to hw queue mapping (%v) for queue (%v), map (%v)", queueId, hwQueueId, queueName, qMap)
+					}
+				}
+
+				qosMergeTable(resMap, "SCHEDULER", map[string]db.Value{key: schedVal})
+				qosMergeTable(resMap, qosUmfSchedulerTbl, map[string]db.Value{key: umfVal})
+				newKeys[key] = true
+				newKeyOfInput[seq+"@"+id] = key
+
+				for _, ifName := range intfs {
+					qVal := db.Value{Field: map[string]string{"scheduler": key}}
+					if isSchedulerOnQueue(ifName) {
+						qVal.Field[SONIC_SCHEDULER_NODE_KEY] = SCHEDULER_NODE_QUEUE
+					}
+					qosMergeTable(resMap, qosQueueTbl, map[string]db.Value{ifName + "|" + queueId: qVal})
+				}
+			}
+		}
+
+		/*
+		 * Rows of the sequences this request decides that it no longer writes
+		 * are removed, with the queues naming them. A queue of an interface
+		 * the request does not bind is moved to the row its input now has. It
+		 * rides with the rows written here, as a sub-operation would reach the
+		 * queue before the row it names exists, and a replace of a queue has
+		 * to restate the fields the queue already has.
+		 */
+		allSeqs := inParams.oper == REPLACE && !seqInPath
+		for key, row := range dbRows {
+			_, kseq, _, _ := qosParseSchedulerKey(key)
+			if newKeys[key] || (!allSeqs && !seqDecided[kseq]) {
+				continue
+			}
+			qosStageDelete(inParams, "SCHEDULER", key, db.Value{})
+			qosStageDelete(inParams, qosUmfSchedulerTbl, key, db.Value{})
+			if queueRefs == nil {
+				queueRefs = qosQueueSchedulerRefs(inParams.d)
+			}
+			newKey := newKeyOfInput[kseq+"@"+row.inputId()]
+			for _, qKey := range queueRefs[key] {
+				ifName := strings.SplitN(qKey, "|", 2)[0]
+				qosStageDelete(inParams, qosQueueTbl, qKey, qosEgressSchedUnbindVal(ifName))
+				if newKey == "" || !rebindDbQueues || intfInRequest[ifName] {
+					continue
+				}
+				qVal := db.Value{Field: make(map[string]string)}
+				if inParams.oper == REPLACE {
+					if cur, err := inParams.d.GetEntry(&db.TableSpec{Name: qosQueueTbl}, db.Key{Comp: strings.SplitN(qKey, "|", 2)}); err == nil {
+						for f, v := range cur.Field {
+							qVal.Field[f] = v
+						}
+					}
+				}
+				qVal.Field["scheduler"] = newKey
+				if isSchedulerOnQueue(ifName) {
+					qVal.Field[SONIC_SCHEDULER_NODE_KEY] = SCHEDULER_NODE_QUEUE
+				}
+				qosMergeTable(resMap, qosQueueTbl, map[string]db.Value{qKey: qVal})
 			}
 		}
 	}
@@ -663,6 +864,7 @@ var DbToYang_qos_scheduler_policy_xfmr SubTreeXfmrDbToYang = func(inParams XfmrP
 		log.V(lvl.ERROR).Infoln("Unable to get the data from the CONFIG DB")
 		return err
 	}
+	inputFilter := pathInfo.Var("id")
 	for _, key := range keys {
 		log.V(lvl.DEBUG).Infoln("current key: ", key)
 		if len(key.Comp) < 1 {
@@ -673,9 +875,9 @@ var DbToYang_qos_scheduler_policy_xfmr SubTreeXfmrDbToYang = func(inParams XfmrP
 		spname = key.Comp[0]
 		spseq = "0"
 		if strings.Contains(key.Comp[0], "@") {
-			if s := strings.Split(key.Comp[0], "@"); len(s) > 1 {
-				spname = s[0]
-				spseq = s[1]
+			var ok bool
+			if spname, spseq, _, ok = qosParseSchedulerKey(key.Comp[0]); !ok {
+				continue
 			}
 		}
 
@@ -717,7 +919,7 @@ var DbToYang_qos_scheduler_policy_xfmr SubTreeXfmrDbToYang = func(inParams XfmrP
 			spObj.State.Name = &spname
 		}
 
-		if !sched_config && !sched_state && !t23c_config && !t23c_state && !input_config && !input_config {
+		if !sched_config && !sched_state && !t23c_config && !t23c_state && !t12c_config && !t12c_state && !input_config && !input_state {
 			continue
 		}
 
@@ -743,12 +945,22 @@ var DbToYang_qos_scheduler_policy_xfmr SubTreeXfmrDbToYang = func(inParams XfmrP
 		schedConfig, errCfg := inParams.dbs[db.ConfigDB].GetEntry(dbSpec, key)
 		if errCfg != nil {
 			log.V(lvl.DEBUG).Infoln("Unable to get the data from the CONFIG DB")
+			continue
 		}
-		schedState, errState := inParams.dbs[db.ApplDB].GetEntry(dbSpec, key)
-		if errState != nil {
-			log.V(lvl.DEBUG).Infoln("Unable to get the data from the APPL STATE DB")
+		/*
+		 * A platform whose qosorch consumes CONFIG_DB directly keeps no APPL_DB
+		 * copy of the scheduler, so the configured one is what is in effect.
+		 */
+		schedState := schedConfig
+		if applDb := inParams.dbs[db.ApplDB]; applDb != nil {
+			if entry, err := applDb.GetEntry(dbSpec, key); err == nil {
+				schedState = entry
+			}
 		}
-		if errCfg != nil && errState != nil {
+		row := qosSchedRow{key: key.Comp[0], sched: schedConfig}
+		row.umf, _ = inParams.dbs[db.ConfigDB].GetEntry(&db.TableSpec{Name: qosUmfSchedulerTbl}, key)
+		inputId := row.inputId()
+		if inputFilter != "" && inputId != inputFilter {
 			continue
 		}
 		schedCfg, schedInfo, err := getSchedulerAttrFromDb(schedConfig, schedState)
@@ -792,7 +1004,7 @@ var DbToYang_qos_scheduler_policy_xfmr SubTreeXfmrDbToYang = func(inParams XfmrP
 				schedObj.OneRateTwoColor.State.Cir = &schedInfo.cir
 			}
 
-			if val, exist := schedConfig.Field["id"]; exist {
+			if val := inputId; val != "" && (input_config || input_state) {
 				intfObj, ok := schedObj.Inputs.Input[val]
 				if !ok {
 					intfObj, err = schedObj.Inputs.NewInput(val)
@@ -805,23 +1017,39 @@ var DbToYang_qos_scheduler_policy_xfmr SubTreeXfmrDbToYang = func(inParams XfmrP
 					ygot.BuildEmptyTree(intfObj)
 				}
 				intfObj.Id = &val
+				queue := row.get("queue")
+				var inputType ocbinds.E_OpenconfigQos_Qos_SchedulerPolicies_SchedulerPolicy_Schedulers_Scheduler_Inputs_Input_Config_InputType
+				for t, name := range qosSchedInputTypeName {
+					if row.get("input_type") == name {
+						inputType = t
+					}
+				}
+				/*
+				 * The weight lives in QOS_UMF_SCHEDULER, which also holds the one
+				 * a strict scheduler carries and SAI does not take.
+				 */
+				var weight *uint64
+				if w, err := strconv.ParseUint(row.get("weight"), 10, 64); err == nil {
+					weight = &w
+				}
 				if input_config {
 					intfObj.Config.Id = &val
-					intfObj.Config.Queue = &schedCfg.queue
-					intfObj.Config.InputType = schedCfg.inputType
-					if sched_config && schedCfg.priority != ocbinds.OpenconfigQos_Qos_SchedulerPolicies_SchedulerPolicy_Schedulers_Scheduler_Config_Priority_STRICT {
-						intfObj.Config.Weight = &schedCfg.weight
-					}
+					intfObj.Config.Queue = &queue
+					intfObj.Config.InputType = inputType
+					intfObj.Config.Weight = weight
 				}
 				if input_state {
-					intfObj.State.Id = &val
-					intfObj.State.Queue = &schedInfo.queue
-					intfObj.State.InputType = schedInfo.inputType
-					if sched_state && schedInfo.priority != ocbinds.OpenconfigQos_Qos_SchedulerPolicies_SchedulerPolicy_Schedulers_Scheduler_Config_Priority_STRICT {
-						intfObj.State.Weight = &schedInfo.weight
+					stateWeight := weight
+					if _, ok := row.umf.Field["weight"]; !ok {
+						if w, err := strconv.ParseUint(schedState.Field["weight"], 10, 64); err == nil {
+							stateWeight = &w
+						}
 					}
+					intfObj.State.Id = &val
+					intfObj.State.Queue = &queue
+					intfObj.State.InputType = inputType
+					intfObj.State.Weight = stateWeight
 				}
-
 			}
 		}
 	}

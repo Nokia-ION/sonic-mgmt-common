@@ -11,6 +11,12 @@ module sonic-scheduler {
     description
         "SONIC SCHEDULER";
 
+    revision 2026-09-28 {
+        description
+            "Allow <policy>@<sequence>@<input> names, one scheduler per input
+            of a sequence that feeds several queues.";
+    }
+
     revision 2019-05-15 {
         description
             "Initial revision.";
@@ -25,8 +31,8 @@ module sonic-scheduler {
 
                 leaf name{
                     type string {
-                        pattern "[a-zA-Z0-9]{1}([-a-zA-Z0-9_]{0,31})|[a-zA-Z0-9]{1}([-a-zA-Z0-9_]{0,31})([@]{1})([0-9]{1,3})";
-                        length 1..36;
+                        pattern "[a-zA-Z0-9]{1}([-a-zA-Z0-9_]{0,31})|[a-zA-Z0-9]{1}([-a-zA-Z0-9_]{0,31})([@]{1})([0-9]{1,3})|[a-zA-Z0-9]{1}([-a-zA-Z0-9_]{0,31})([@]{1})([0-9]{1,3})([@]{1})([-a-zA-Z0-9_]{1,64})";
+                        length 1..101;
                     }
                 }
                 leaf id{

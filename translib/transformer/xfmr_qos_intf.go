@@ -15,6 +15,77 @@ const qosQueueTbl = "QUEUE"
 
 func init() {
 	parseQueueMapJSONFile()
+	XlateFuncBind("YangToDb_qos_intf_ref_xfmr", YangToDb_qos_intf_ref_xfmr)
+	XlateFuncBind("DbToYang_qos_intf_ref_xfmr", DbToYang_qos_intf_ref_xfmr)
+}
+
+// YangToDb_qos_intf_ref_xfmr accepts an interface-ref naming the interface the
+// entry is keyed by. SONiC applies QoS to the port itself, so such a reference
+// has nothing to store. One naming another interface or a subinterface other
+// than 0 is refused rather than silently applied to the port.
+var YangToDb_qos_intf_ref_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (map[string]map[string]db.Value, error) {
+	resMap := make(map[string]map[string]db.Value)
+	if inParams.oper == DELETE {
+		return resMap, nil
+	}
+	qosIntfsObj := getQosIntfRoot(inParams.ygRoot)
+	if qosIntfsObj == nil {
+		return resMap, nil
+	}
+	ifNames := []string{}
+	if ifName := NewPathInfo(inParams.uri).Var("interface-id"); ifName != "" {
+		ifNames = append(ifNames, ifName)
+	} else {
+		for ifName := range qosIntfsObj.Interface {
+			ifNames = append(ifNames, ifName)
+		}
+	}
+	for _, ifName := range ifNames {
+		intfObj := qosIntfsObj.Interface[ifName]
+		if intfObj == nil || intfObj.InterfaceRef == nil || intfObj.InterfaceRef.Config == nil {
+			continue
+		}
+		cfg := intfObj.InterfaceRef.Config
+		if cfg.Interface != nil && *cfg.Interface != ifName {
+			return nil, tlerr.NotSupported("QoS interface %v: interface-ref must name %v, not %v",
+				ifName, ifName, *cfg.Interface)
+		}
+		if cfg.Subinterface != nil && *cfg.Subinterface != 0 {
+			return nil, tlerr.NotSupported("QoS interface %v: interface-ref subinterface %v is not supported, only 0",
+				ifName, *cfg.Subinterface)
+		}
+	}
+	return resMap, nil
+}
+
+// DbToYang_qos_intf_ref_xfmr reports the interface QoS is applied to, which is
+// always the one the entry is keyed by.
+var DbToYang_qos_intf_ref_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) error {
+	ifName := NewPathInfo(inParams.uri).Var("interface-id")
+	qosIntfsObj := getQosIntfRoot(inParams.ygRoot)
+	if ifName == "" || qosIntfsObj == nil {
+		return nil
+	}
+	intfObj, ok := qosIntfsObj.Interface[ifName]
+	if !ok {
+		var err error
+		if intfObj, err = qosIntfsObj.NewInterface(ifName); err != nil {
+			return err
+		}
+	}
+	if intfObj.InterfaceRef == nil {
+		intfObj.InterfaceRef = &ocbinds.OpenconfigQos_Qos_Interfaces_Interface_InterfaceRef{}
+	}
+	if intfObj.InterfaceRef.Config == nil {
+		intfObj.InterfaceRef.Config = &ocbinds.OpenconfigQos_Qos_Interfaces_Interface_InterfaceRef_Config{}
+	}
+	if intfObj.InterfaceRef.State == nil {
+		intfObj.InterfaceRef.State = &ocbinds.OpenconfigQos_Qos_Interfaces_Interface_InterfaceRef_State{}
+	}
+	name := ifName
+	intfObj.InterfaceRef.Config.Interface = &name
+	intfObj.InterfaceRef.State.Interface = &name
+	return nil
 }
 
 // return the first matching INTF Queue entry with a valid Queue Management Profile
@@ -138,8 +209,8 @@ func doGetIntfSchedulerPolicy(d *db.DB, if_name string) string {
 }
 
 // qosSchedPolicySchedulers lists the SCHEDULER keys belonging to one policy.
-// The keys are <policy>@<sequence>, so a prefix match alone would also collect
-// a policy whose name merely starts with this one.
+// The keys are <policy>@<sequence>[@<input>], so a prefix match alone would
+// also collect a policy whose name merely starts with this one.
 func qosSchedPolicySchedulers(d *db.DB, spName string) []string {
 	if d == nil || spName == "" {
 		return nil
@@ -154,8 +225,7 @@ func qosSchedPolicySchedulers(d *db.DB, spName string) []string {
 		if len(key.Comp) < 1 {
 			continue
 		}
-		parts := strings.Split(key.Comp[0], "@")
-		if len(parts) != 2 || parts[0] != spName {
+		if name, _, _, ok := qosParseSchedulerKey(key.Comp[0]); !ok || name != spName {
 			continue
 		}
 		schedKeys = append(schedKeys, key.Comp[0])
@@ -172,7 +242,6 @@ func qosBindEgressSchedPolicy(inParams XfmrParams, ifName string, spName string)
 		return nil, tlerr.NotFoundError{Format: "Scheduler policy " + spName + " not found"}
 	}
 
-	ts := &db.TableSpec{Name: "SCHEDULER"}
 	onQueue := isSchedulerOnQueue(ifName)
 	for _, schedKey := range schedKeys {
 		/*
@@ -180,7 +249,7 @@ func qosBindEgressSchedPolicy(inParams XfmrParams, ifName string, spName string)
 		 * missing scheduler. Skipping it would schedule some queues of the
 		 * interface and silently leave the rest unscheduled.
 		 */
-		schedCfg, err := inParams.d.GetEntry(ts, db.Key{Comp: []string{schedKey}})
+		row, err := qosReadSchedRow(inParams.d, schedKey)
 		if err != nil {
 			log.V(tlerr.ErrorSeverity(err)).Infof("qosBindEgressSchedPolicy: unable to read SCHEDULER|%v: %v", schedKey, err)
 			return nil, err
@@ -189,8 +258,8 @@ func qosBindEgressSchedPolicy(inParams XfmrParams, ifName string, spName string)
 		 * A policing scheduler meters a classifier rather than draining a
 		 * queue, so it names no queue and has no egress binding.
 		 */
-		queueName, ok := schedCfg.Field["queue"]
-		if !ok {
+		queueName := row.get("queue")
+		if queueName == "" {
 			continue
 		}
 		qid, err := getNativeQueueName(ifName, queueName)
@@ -305,7 +374,11 @@ func qosRequestPolicyQueues(inParams XfmrParams, ifName string, spName string) m
 			if input == nil || input.Config == nil || input.Config.Id == nil {
 				continue
 			}
-			qid, err := getNativeQueueName(ifName, *input.Config.Id)
+			queueName := *input.Config.Id
+			if input.Config.Queue != nil {
+				queueName = *input.Config.Queue
+			}
+			qid, err := getNativeQueueName(ifName, queueName)
 			if err != nil {
 				continue
 			}

@@ -1,0 +1,59 @@
+module sonic-qos-umf-wred-profile {
+    namespace "http://github.com/Azure/sonic-qos-umf-wred-profile";
+    prefix quw;
+
+    organization
+        "SONiC";
+
+    contact
+        "SONiC";
+
+    description
+        "SONIC QOS_UMF_WRED_PROFILE";
+
+    revision 2026-09-29 {
+        description
+        "Initial revision.";
+    }
+
+    container sonic-qos-umf-wred-profile {
+        container QOS_UMF_WRED_PROFILE {
+            list QOS_UMF_WRED_PROFILE_LIST {
+                key "name";
+                description
+                  "The OpenConfig uniform WRED settings behind each
+                  WRED_PROFILE entry of the same name. orchagent reads the
+                  WRED_PROFILE thresholds as int, so a larger OpenConfig
+                  threshold is clamped there and kept exactly here, together
+                  with drop and enable-ecn, which WRED_PROFILE cannot tell
+                  apart once ECN marking is on.";
+
+                leaf name {
+                    type string;
+                }
+
+                leaf min_threshold {
+                    type uint64;
+                }
+
+                leaf max_threshold {
+                    type uint64;
+                }
+
+                leaf max_drop_probability_percent {
+                    type uint8 {
+                        range 0..100;
+                    }
+                }
+
+                leaf enable_ecn {
+                    type boolean;
+                }
+
+                leaf drop {
+                    type boolean;
+                }
+            }
+        }
+    }
+}

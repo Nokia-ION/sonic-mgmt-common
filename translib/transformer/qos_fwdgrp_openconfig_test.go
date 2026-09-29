@@ -71,6 +71,10 @@ func qosFgCleanupTbl() map[string]interface{} {
 			qosSchedSp + "@0": "",
 			qosSchedSp + "@1": "",
 		},
+		"QOS_UMF_SCHEDULER": map[string]interface{}{
+			qosSchedSp + "@0": "",
+			qosSchedSp + "@1": "",
+		},
 	}
 }
 
@@ -124,19 +128,50 @@ func Test_qos_fwdgrp_create(t *testing.T) {
 
 // Test_qos_fwdgrp_no_fabric_priority covers creating a forwarding group without
 // a traffic class number. fabric-priority is an optional leaf, so a client can
-// send only a queue, and since the class is the key of every queue map entry the
-// group would write, it has to be refused rather than dereferenced.
+// send only a queue, as featureprofiles does. The group then takes the number
+// of the hardware queue it drains to as its class.
 func Test_qos_fwdgrp_no_fabric_priority(t *testing.T) {
 	defer qosFgSetup(t)()
 
-	t.Log("\n\n+++++++++++++ A new group with no fabric-priority is refused ++++++++++++")
+	t.Log("\n\n+++++++++++++ A group with only a queue takes the queue's number ++++++++++++")
 	url_body_json := `{"openconfig-qos:forwarding-group":[{
 		"name":"` + qosFgName + `",
 		"config":{"name":"` + qosFgName + `","output-queue":"` + qosFgQueue + `"}
 	}]}`
-	expErr := tlerr.InvalidArgsError{
-		Format: "fabric-priority is required for forwarding group " + qosFgName}
 	t.Run("Create forwarding group without priority",
+		processSetRequest(qosFgUrl, url_body_json, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expected_map := map[string]interface{}{"QOS_FWD_GROUP": map[string]interface{}{
+		qosFgName: map[string]interface{}{
+			"priority": qosFgQueueId,
+			"queue":    qosFgQueue,
+		}}}
+	t.Run("Verify class taken from the queue",
+		verifyDbResult(rclient, "QOS_FWD_GROUP|"+qosFgName, expected_map, false))
+
+	expected_map = map[string]interface{}{"TC_TO_QUEUE_MAP": map[string]interface{}{
+		"global_tc_to_queue_map": map[string]interface{}{qosFgQueueId: qosFgQueueId}}}
+	t.Run("Verify TC_TO_QUEUE_MAP",
+		verifyDbResult(rclient, "TC_TO_QUEUE_MAP|global_tc_to_queue_map", expected_map, false))
+
+	t.Log("\n\n+++++++++++++ Done ++++++++++++")
+}
+
+// Test_qos_fwdgrp_no_priority_no_queue covers a new forwarding group with
+// neither a traffic class number nor a queue to take one from. The class is the
+// key of every queue map entry the group would write, so it is refused.
+func Test_qos_fwdgrp_no_priority_no_queue(t *testing.T) {
+	defer qosFgSetup(t)()
+
+	t.Log("\n\n+++++++++++++ A group with no class and no queue is refused ++++++++++++")
+	url_body_json := `{"openconfig-qos:forwarding-group":[{
+		"name":"` + qosFgName + `",
+		"config":{"name":"` + qosFgName + `"}
+	}]}`
+	expErr := tlerr.InvalidArgsError{
+		Format: "fabric-priority or an output queue is required for forwarding group " + qosFgName}
+	t.Run("Create forwarding group without priority or queue",
 		processSetRequest(qosFgUrl, url_body_json, "PATCH", true, expErr))
 	time.Sleep(1 * time.Second)
 

@@ -47,6 +47,13 @@ module openconfig-qos-annot {
         }
     }
 
+    deviation /oc-qos:qos/oc-qos:interfaces/oc-qos:interface/oc-qos:interface-ref {
+      deviate add {
+        sonic-ext:table-name "NONE";
+        sonic-ext:subtree-transformer "qos_intf_ref_xfmr";
+      }
+    }
+
     deviation /oc-qos:qos/oc-qos:interfaces/oc-qos:interface/oc-qos:output {
       deviate add {
         sonic-ext:subtree-transformer "qos_get_one_intf_all_q_xfmr";
