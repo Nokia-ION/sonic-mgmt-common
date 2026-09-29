@@ -1647,7 +1647,9 @@ func convertOCAclRuleToInternalAclRule(d *db.DB, ruleData db.Value, seqId uint32
 		return nil, err
 	}
 	convertOCToInternalInputInterface(ruleData, aclName, ruleIndex, rule)
-	convertOCToInternalInputAction(ruleData, aclName, ruleIndex, rule)
+	if err := convertOCToInternalInputAction(ruleData, aclName, ruleIndex, rule); err != nil {
+		return nil, err
+	}
 
 	return portSets, nil
 }
@@ -2033,8 +2035,15 @@ func convertOCToInternalInputInterface(ruleData db.Value, aclName string, ruleIn
 	}
 }
 
-func convertOCToInternalInputAction(ruleData db.Value, aclName string, ruleIndex uint32, rule *ocbinds.OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry) {
+func convertOCToInternalInputAction(ruleData db.Value, aclName string, ruleIndex uint32, rule *ocbinds.OpenconfigAcl_Acl_AclSets_AclSet_AclEntries_AclEntry) error {
 	if rule.Actions != nil && rule.Actions.Config != nil {
+		// ACL_RULE has no logging action, so LOG_SYSLOG cannot be applied.
+		// Refuse it rather than accept a rule that silently does not log.
+		if rule.Actions.Config.LogAction == ocbinds.OpenconfigAcl_LOG_ACTION_LOG_SYSLOG {
+			return tlerr.NotSupported(
+				"log-action LOG_SYSLOG is not supported on rule %d of %s; only LOG_NONE is", ruleIndex, aclName)
+		}
+
 		switch rule.Actions.Config.ForwardingAction {
 		case ocbinds.OpenconfigAcl_FORWARDING_ACTION_ACCEPT:
 			ruleData.Field["PACKET_ACTION"] = "FORWARD"
@@ -2043,6 +2052,7 @@ func convertOCToInternalInputAction(ruleData db.Value, aclName string, ruleIndex
 		default:
 		}
 	}
+	return nil
 }
 
 func (app *AclApp) handleRuleFieldsDeletion(d *db.DB, aclKey string, ruleKey string) error {

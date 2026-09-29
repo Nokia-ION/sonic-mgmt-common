@@ -27,6 +27,7 @@ import (
 
 	db "github.com/Azure/sonic-mgmt-common/translib/db"
 	"github.com/Azure/sonic-mgmt-common/translib/path"
+	"github.com/Azure/sonic-mgmt-common/translib/tlerr"
 	"github.com/openconfig/ygot/ygot"
 )
 
@@ -515,6 +516,33 @@ func Test_AclApp_IcmpMatch(t *testing.T) {
 	t.Run("Verify_IPv6_Acl_Delete", processGetRequest(aclv6Url, "", true))
 }
 
+// Test_AclApp_LogAction checks that LOG_SYSLOG, which an ACL_RULE cannot carry,
+// is refused instead of being dropped, while LOG_NONE is accepted.
+func Test_AclApp_LogAction(t *testing.T) {
+	aclUrl := "/openconfig-acl:acl/acl-sets/acl-set[name=MyACL10][type=ACL_IPV6]"
+	ruleUrl := aclUrl + "/acl-entries/acl-entry[sequence-id=10]"
+
+	t.Run("Create_Acl", processSetRequest(aclUrl, logActionAclCreateJson, "POST", false))
+
+	t.Run("Create_Rule_With_Log_Syslog",
+		processSetRequestErrOfType(ruleUrl, logSyslogRuleCreateJson, "POST", tlerr.NotSupportedError{}))
+	t.Run("Verify_Rule_Not_Created", processGetRequest(ruleUrl, "", true))
+
+	t.Run("Create_Rule_With_Log_None", processSetRequest(ruleUrl, logNoneRuleCreateJson, "POST", false))
+	t.Run("Verify_Rule_Created", verifyRuleFields("MyACL10_ACL_IPV6", "RULE_10", map[string]string{
+		"PACKET_ACTION": "FORWARD", "ICMPV6_TYPE": "128"}))
+
+	t.Run("Update_Rule_To_Log_Syslog",
+		processSetRequestErrOfType(ruleUrl+"/actions/config", logSyslogActionUpdateJson, "PATCH", tlerr.NotSupportedError{}))
+	t.Run("Replace_Acl_With_Log_Syslog",
+		processSetRequestErrOfType(aclUrl, logSyslogAclReplaceJson, "PUT", tlerr.NotSupportedError{}))
+	t.Run("Verify_Rule_Unchanged", verifyRuleFields("MyACL10_ACL_IPV6", "RULE_10", map[string]string{
+		"PACKET_ACTION": "FORWARD", "ICMPV6_TYPE": "128"}))
+
+	t.Run("Delete_Acl", processDeleteRequest(aclUrl))
+	t.Run("Verify_Acl_Delete", processGetRequest(aclUrl, "", true))
+}
+
 func Test_AclApp_L2AclAndRule(t *testing.T) {
 	t.Skip("AclApp does not support L2 ACLs")
 
@@ -941,6 +969,12 @@ var icmpv6RuleNoTypeJson string = "{\"sequence-id\":7,\"config\":{\"sequence-id\
 // are grouped under; ECHO_REQUEST_CODE is the one of ECHO_REQUEST.
 var icmpv6GroupCodeJson string = "{\"type\":\"openconfig-icmpv6-types:DESTINATION_UNREACHABLE\",\"code\":\"openconfig-icmpv6-types:DST_UNREACHABLE_CODE\"}"
 var icmpv6OtherGroupCodeJson string = "{\"code\":\"openconfig-icmpv6-types:ECHO_REQUEST_CODE\"}"
+
+var logActionAclCreateJson string = "{\"config\":{\"name\":\"MyACL10\",\"type\":\"ACL_IPV6\",\"description\":\"log-action\"}}"
+var logSyslogRuleCreateJson string = "{\"sequence-id\":10,\"config\":{\"sequence-id\":10},\"ipv6\":{\"config\":{\"protocol\":58},\"icmpv6\":{\"config\":{\"type\":\"openconfig-icmpv6-types:ECHO_REQUEST\",\"code\":\"openconfig-icmpv6-types:ECHO_REQUEST_NO_CODE\"}}},\"actions\":{\"config\":{\"forwarding-action\":\"ACCEPT\",\"log-action\":\"LOG_SYSLOG\"}}}"
+var logNoneRuleCreateJson string = "{\"sequence-id\":10,\"config\":{\"sequence-id\":10},\"ipv6\":{\"config\":{\"protocol\":58},\"icmpv6\":{\"config\":{\"type\":\"openconfig-icmpv6-types:ECHO_REQUEST\",\"code\":\"openconfig-icmpv6-types:ECHO_REQUEST_NO_CODE\"}}},\"actions\":{\"config\":{\"forwarding-action\":\"ACCEPT\",\"log-action\":\"LOG_NONE\"}}}"
+var logSyslogActionUpdateJson string = "{\"forwarding-action\":\"ACCEPT\",\"log-action\":\"LOG_SYSLOG\"}"
+var logSyslogAclReplaceJson string = "{\"acl-set\":[{\"name\":\"MyACL10\",\"type\":\"ACL_IPV6\",\"config\":{\"name\":\"MyACL10\",\"type\":\"ACL_IPV6\"},\"acl-entries\":{\"acl-entry\":[" + logSyslogRuleCreateJson + "]}}]}"
 
 var emptyAclDescriptionJson string = "{\"openconfig-acl:description\":\"\"}"
 var emptyRuleDscpJson string = "{\"openconfig-acl:dscp\":0}"
