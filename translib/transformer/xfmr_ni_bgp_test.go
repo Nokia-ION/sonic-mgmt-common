@@ -3112,34 +3112,34 @@ const niContainerRootUrl = "/openconfig-network-instance:network-instances"
 
 func niContainerTestRows() (map[string]interface{}, map[string]interface{}) {
 	return map[string]interface{}{
-		"BGP_GLOBALS": map[string]interface{}{
-			"default": map[string]interface{}{
-				"local_asn": "65200",
-				"router_id": "2.2.2.2",
+			"BGP_GLOBALS": map[string]interface{}{
+				"default": map[string]interface{}{
+					"local_asn": "65200",
+					"router_id": "2.2.2.2",
+				},
 			},
-		},
-		"BGP_NEIGHBOR": map[string]interface{}{
-			"default|20.0.0.1": map[string]interface{}{
-				"admin_status": "up",
-				"asn":          "65300",
+			"BGP_NEIGHBOR": map[string]interface{}{
+				"default|20.0.0.1": map[string]interface{}{
+					"admin_status": "up",
+					"asn":          "65300",
+				},
 			},
-		},
-		"STATIC_ROUTE": map[string]interface{}{
-			"10.9.0.0/16": map[string]interface{}{
-				"nexthop": "20.0.0.9",
+			"STATIC_ROUTE": map[string]interface{}{
+				"10.9.0.0/16": map[string]interface{}{
+					"nexthop": "20.0.0.9",
+				},
 			},
-		},
-		"ROUTE_REDISTRIBUTE": map[string]interface{}{
-			"default|static|bgp|ipv4": map[string]interface{}{
-				"route_map": "TRM-RED",
+			"ROUTE_REDISTRIBUTE": map[string]interface{}{
+				"default|static|bgp|ipv4": map[string]interface{}{
+					"route_map": "TRM-RED",
+				},
 			},
-		},
-	}, map[string]interface{}{
-		"ROUTE_REDISTRIBUTE": map[string]interface{}{"default|static|bgp|ipv4": ""},
-		"STATIC_ROUTE":       map[string]interface{}{"10.9.0.0/16": ""},
-		"BGP_NEIGHBOR":       map[string]interface{}{"default|20.0.0.1": ""},
-		"BGP_GLOBALS":        map[string]interface{}{"default": ""},
-	}
+		}, map[string]interface{}{
+			"ROUTE_REDISTRIBUTE": map[string]interface{}{"default|static|bgp|ipv4": ""},
+			"STATIC_ROUTE":       map[string]interface{}{"10.9.0.0/16": ""},
+			"BGP_NEIGHBOR":       map[string]interface{}{"default|20.0.0.1": ""},
+			"BGP_GLOBALS":        map[string]interface{}{"default": ""},
+		}
 }
 
 func Test_openconfig_network_instance_container_get(t *testing.T) {
