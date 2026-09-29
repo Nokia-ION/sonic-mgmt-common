@@ -992,6 +992,15 @@ var Subscribe_ni_bgp_nbr_state_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSub
 			appliedOnly = true
 			break
 		}
+		if statsFld, ok := niBgpNbrStatsFldForLeaf[targetLeaf]; ok {
+			// Counter leaves on state read BGP_NEIGH_STATS only. Watching the
+			// session and applied tables as well would emit duplicate ONCE and
+			// SAMPLE snapshots for the same leaf.
+			result.dbDataMap = RedisDbSubscribeMap{db.StateDB: {
+				niBgpNbrStatsTbl: {nbrKey: {statsFld: targetLeaf}},
+			}}
+			break
+		}
 		result.dbDataMap = RedisDbSubscribeMap{db.StateDB: {
 			niBgpNbrStateTbl:   {neighborAddr: {niBgpNbrStateFld: niBgpNbrSessionStateLeaf}},
 			niBgpNbrAppliedTbl: {nbrKey: {}},
