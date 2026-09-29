@@ -761,6 +761,9 @@ var DbToYang_qos_get_one_intf_one_q_counters_xfmr SubTreeXfmrDbToYang = func(inP
 				return err
 			}
 			queueManagementProfileName := doGetIntfQueueManagementProfile(applStateDb, strings.Replace(dbQueueNames[0], ":", "|", 1))
+			if queueManagementProfileName == "" {
+				queueManagementProfileName = doGetIntfQueueManagementProfile(inParams.dbs[db.ConfigDB], strings.Replace(dbQueueNames[0], ":", "|", 1))
+			}
 			state.QueueManagementProfile = &queueManagementProfileName
 		}
 	}
@@ -1138,6 +1141,9 @@ func populateSchedulerPolicyOnEgressInterface(inParams XfmrParams, intfObj *ocbi
 			return err
 		}
 		schedulerPolicyName := doGetIntfSchedulerPolicy(applStateDb, *ifName)
+		if schedulerPolicyName == "" {
+			schedulerPolicyName = doGetIntfSchedulerPolicy(inParams.dbs[db.ConfigDB], *ifName)
+		}
 		log.V(lvl.DEBUG).Infof("Scheduler policy name %v", schedulerPolicyName)
 		state.Name = &schedulerPolicyName
 	}
@@ -1178,6 +1184,9 @@ func populateEgressInterface(inParams XfmrParams, intfObj *ocbinds.OpenconfigQos
 			return err
 		}
 		bufferAllocationProfileName := doGetIntfBufferAllocationProfile(applStateDb, true, *ifName)
+		if bufferAllocationProfileName == "" {
+			bufferAllocationProfileName = doGetIntfBufferAllocationProfile(inParams.dbs[db.ConfigDB], false, *ifName)
+		}
 		state.BufferAllocationProfile = &bufferAllocationProfileName
 	}
 
@@ -1371,17 +1380,20 @@ func populateEgressInterfaceQueues(inParams XfmrParams, queuesObj *ocbinds.Openc
 			log.V(lvl.ERROR).Info(err)
 			return err
 		}
-		queueManagementProfileName := doGetIntfQueueManagementProfile(applStateDb, strings.Replace(dbQueueName, ":", "|", 1))
-		state.QueueManagementProfile = &queueManagementProfileName
-
 		configDb := inParams.dbs[db.ConfigDB]
 		if configDb == nil {
 			err = errors.New("populateEgressInterfaceQueues: Unable to get ConfigDb")
 			log.V(lvl.ERROR).Info(err)
 			return err
 		}
-		queueManagementProfileName = doGetIntfQueueManagementProfile(configDb, strings.Replace(dbQueueName, ":", "|", 1))
-		cfg.QueueManagementProfile = &queueManagementProfileName
+		cfgQueueManagementProfileName := doGetIntfQueueManagementProfile(configDb, strings.Replace(dbQueueName, ":", "|", 1))
+		cfg.QueueManagementProfile = &cfgQueueManagementProfileName
+
+		queueManagementProfileName := doGetIntfQueueManagementProfile(applStateDb, strings.Replace(dbQueueName, ":", "|", 1))
+		if queueManagementProfileName == "" {
+			queueManagementProfileName = cfgQueueManagementProfileName
+		}
+		state.QueueManagementProfile = &queueManagementProfileName
 
 		val := uint64(0)
 		state.TransmitPkts = &val
@@ -1679,30 +1691,39 @@ func getQueueToTypeMap(qosObj *ocbinds.OpenconfigQos_Qos) (map[string]string, er
 }
 
 func prepareQueueNameToIdMap(qosObj *ocbinds.OpenconfigQos_Qos) error {
-	qm := newQueueNameToIdMap()
-	qtm, err := getQueueToTypeMap(qosObj)
-	if err == nil {
-		idsFound := false
-		if qosObj.Queues != nil && qosObj.Queues.Queue != nil {
-			for queueName, queueObj := range qosObj.Queues.Queue {
-				qconfigObj := queueObj.Config
-				if qconfigObj == nil || qconfigObj.QueueId == nil {
-					continue
-				}
-				idsFound = true
-				if intfType, ok := qtm[queueName]; ok {
-					qm[intfType][queueName] = strconv.Itoa(int(*qconfigObj.QueueId))
-				} else {
-					log.V(lvl.DEBUG).Infof("qtm miss! queue name = %v", queueName)
-				}
+	if err := buildQueueNameToIdMap(qosObj); err != nil {
+		return err
+	}
+	qosAddDefaultQueueIds(qosObj)
+	return nil
+}
 
+func buildQueueNameToIdMap(qosObj *ocbinds.OpenconfigQos_Qos) error {
+	qm := newQueueNameToIdMap()
+	/*
+	 * Buffer-allocation profiles tell CPU queues from front panel ones. A
+	 * numbered queue that no profile lists, as featureprofiles sends while
+	 * it builds its profile up one queue at a time, is a front panel queue.
+	 */
+	qtm, _ := getQueueToTypeMap(qosObj)
+	idsFound := false
+	if qosObj.Queues != nil && qosObj.Queues.Queue != nil {
+		for queueName, queueObj := range qosObj.Queues.Queue {
+			if queueObj == nil || queueObj.Config == nil || queueObj.Config.QueueId == nil {
+				continue
 			}
+			idsFound = true
+			intfType, ok := qtm[queueName]
+			if !ok {
+				intfType = FRONT_PANEL
+			}
+			qm[intfType][queueName] = strconv.Itoa(int(*queueObj.Config.QueueId))
 		}
-		if idsFound {
-			log.V(lvl.INFO).Infof("Skipping scheduler based derivation, since queue-id's provided")
-			commitToGlobalMap(qm)
-			return nil
-		}
+	}
+	if idsFound {
+		log.V(lvl.INFO).Infof("Skipping scheduler based derivation, since queue-id's provided")
+		commitToGlobalMap(qm)
+		return nil
 	}
 
 	//
@@ -1734,6 +1755,18 @@ func generateOCToHWQueueMap(spName, qMapType string, sp map[string]*ocbinds.Open
 	}
 	if spObj.Schedulers == nil || spObj.Schedulers.Scheduler == nil || len(spObj.Schedulers.Scheduler) < 1 {
 		return nil
+	}
+
+	/*
+	 * Deriving the queue from the sequence places one queue per sequence. A
+	 * sequence sharing several queues leaves the whole policy to the default
+	 * queue ids, so that derived and default ids never land on one queue.
+	 */
+	for _, schedObj := range spObj.Schedulers.Scheduler {
+		if schedObj != nil && schedObj.Inputs != nil && len(schedObj.Inputs.Input) > 1 {
+			log.V(lvl.INFO).Infof("Scheduler policy %v has a sequence with several inputs, using default queue ids", spName)
+			return nil
+		}
 	}
 
 	maxSchedNum := getMaxSchedNum(spObj.Schedulers.Scheduler)
@@ -1787,6 +1820,122 @@ func generateOCToHWQueueMap(spName, qMapType string, sp map[string]*ocbinds.Open
 	return nil
 }
 
+// qosStdQueueIds places the featureprofiles traffic classes on hardware queues
+// for a request that names a queue without giving it a queue-id. A platform
+// overrides it with FP_DEFAULT_QUEUE_IDS in its qos_queue_map.json.
+var qosStdQueueIds = map[string]string{
+	"BE1": "0", "BE0": "1", "AF1": "2", "AF2": "3", "AF3": "4", "AF4": "5", "NC1": "6",
+}
+
+const FP_DEFAULT_QUEUE_IDS = "front_panel_queue_ids"
+
+func qosDefaultQueueIds() map[string]string {
+	raw, ok := qMapStr[FP_DEFAULT_QUEUE_IDS].(map[string]interface{})
+	if !ok {
+		return qosStdQueueIds
+	}
+	ids := make(map[string]string, len(raw))
+	for name, id := range raw {
+		switch v := id.(type) {
+		case string:
+			ids[name] = v
+		case float64:
+			ids[name] = strconv.Itoa(int(v))
+		}
+	}
+	return ids
+}
+
+// qosRequestQueueNames lists the front panel queues a request refers to by name.
+func qosRequestQueueNames(qosObj *ocbinds.OpenconfigQos_Qos) []string {
+	var names []string
+	if qosObj.Queues != nil {
+		for name := range qosObj.Queues.Queue {
+			names = append(names, name)
+		}
+	}
+	if qosObj.ForwardingGroups != nil {
+		for _, fg := range qosObj.ForwardingGroups.ForwardingGroup {
+			if fg == nil || fg.Config == nil {
+				continue
+			}
+			for _, q := range []*string{fg.Config.OutputQueue, fg.Config.UnicastOutputQueue, fg.Config.MulticastOutputQueue} {
+				if q != nil && *q != "" {
+					names = append(names, *q)
+				}
+			}
+		}
+	}
+	if qosObj.SchedulerPolicies != nil {
+		for spName, sp := range qosObj.SchedulerPolicies.SchedulerPolicy {
+			if strings.HasPrefix(spName, "cpu") || sp == nil || sp.Schedulers == nil {
+				continue
+			}
+			for _, sched := range sp.Schedulers.Scheduler {
+				if sched == nil || sched.Inputs == nil {
+					continue
+				}
+				for _, input := range sched.Inputs.Input {
+					if input == nil || input.Config == nil {
+						continue
+					}
+					if input.Config.Queue != nil {
+						names = append(names, *input.Config.Queue)
+					} else if input.Config.Id != nil {
+						names = append(names, *input.Config.Id)
+					}
+				}
+			}
+		}
+	}
+	if qosObj.Interfaces != nil {
+		for ifName, intf := range qosObj.Interfaces.Interface {
+			if ifName == CPU || intf == nil || intf.Output == nil || intf.Output.Queues == nil {
+				continue
+			}
+			for name := range intf.Output.Queues.Queue {
+				names = append(names, name)
+			}
+		}
+	}
+	return names
+}
+
+// qosAddDefaultQueueIds places each front panel queue the request names, but
+// that neither a queue-id nor a scheduler placed, on its default hardware
+// queue. A hardware queue another name already holds is left to that name.
+func qosAddDefaultQueueIds(qosObj *ocbinds.OpenconfigQos_Qos) {
+	defaults := qosDefaultQueueIds()
+	queueMapMutex.Lock()
+	defer queueMapMutex.Unlock()
+	if ocQueueHwQueueMap == nil {
+		ocQueueHwQueueMap = newQueueNameToIdMap()
+	}
+	fp := ocQueueHwQueueMap[FRONT_PANEL]
+	if fp == nil {
+		fp = make(map[string]string)
+		ocQueueHwQueueMap[FRONT_PANEL] = fp
+	}
+	used := make(map[string]bool, len(fp))
+	for _, id := range fp {
+		used[id] = true
+	}
+	for _, name := range qosRequestQueueNames(qosObj) {
+		if _, ok := fp[name]; ok {
+			continue
+		}
+		if _, ok := ocQueueHwQueueMap[CPU][name]; ok {
+			continue
+		}
+		id, ok := defaults[name]
+		if !ok || used[id] {
+			continue
+		}
+		fp[name] = id
+		used[id] = true
+	}
+}
+
 var qos_pre_xfmr PreXfmrFunc = func(inParams XfmrParams) error {
 	if inParams.oper == GET || inParams.oper == DELETE || inParams.oper == UPDATE {
 		if ocQueueHwQueueMap != nil {
@@ -1802,6 +1951,13 @@ var qos_pre_xfmr PreXfmrFunc = func(inParams XfmrParams) error {
 		return nil
 	}
 
+	/*
+	 * A request that neither numbers its queues nor carries a scheduler keeps
+	 * the map in force, which after a restart is only in CONFIG_DB.
+	 */
+	if err := buildQueueNameToIdMapFromDb(inParams.d); err != nil {
+		return err
+	}
 	if err := prepareQueueNameToIdMap(qosObj); err != nil {
 		return err
 	}
@@ -1934,6 +2090,7 @@ var qos_post_xfmr PostXfmrFunc = func(inParams XfmrParams) error {
 			}
 
 			if requestUriPath == "/openconfig-qos:qos" {
+				qosDeleteFrontPanelQueues(inParams, retDbDataMap)
 				log.V(lvl.DEBUG).Infof("qos_post_xfmr - Updates retDbDataMap while scheduler %v", retDbDataMap)
 				log.V(lvl.DEBUG).Infof("qos_post_xfmr - Delete All schedulers except copp")
 				sKeys, _ := inParams.d.GetKeys(&db.TableSpec{Name: "SCHEDULER"})
@@ -1953,6 +2110,17 @@ var qos_post_xfmr PostXfmrFunc = func(inParams XfmrParams) error {
 						if _, ok := retDbDataMap["SCHEDULER"][sKey_str]; !ok {
 							retDbDataMap["SCHEDULER"][sKey_str] = db.Value{Field: make(map[string]string)}
 						}
+					}
+				}
+				if uKeys, err := inParams.d.GetKeys(&db.TableSpec{Name: qosUmfSchedulerTbl}); err == nil {
+					for _, uKey := range uKeys {
+						if isCoppScheduler(uKey.Get(0)) {
+							continue
+						}
+						if _, ok := retDbDataMap[qosUmfSchedulerTbl]; !ok {
+							retDbDataMap[qosUmfSchedulerTbl] = make(map[string]db.Value)
+						}
+						retDbDataMap[qosUmfSchedulerTbl][uKey.Get(0)] = db.Value{Field: make(map[string]string)}
 					}
 				}
 				/* Avoid Delete Copp scheduler policy */
@@ -1989,6 +2157,10 @@ var qos_post_xfmr PostXfmrFunc = func(inParams XfmrParams) error {
 				impliedTableDelete(inParams, "BUFFER_QUEUE")
 				impliedTableDelete(inParams, BUFFER_PG)
 				impliedTableDelete(inParams, QosFwdGroup)
+				qosImpliedIntfDelete(inParams)
+				qosImpliedSchedUnbind(inParams)
+				impliedTableDeleteExcept(inParams, "SCHEDULER", isCoppScheduler)
+				impliedTableDeleteExcept(inParams, qosUmfSchedulerTbl, isCoppScheduler)
 			}
 
 			// Cleanup unused BUFFER_PROFILEs
@@ -2007,6 +2179,140 @@ var qos_post_xfmr PostXfmrFunc = func(inParams XfmrParams) error {
 //
 // This function should only be at the appropriate request scope for tableName
 func impliedTableDelete(inParams XfmrParams, tableName string) {
+	impliedTableDeleteExcept(inParams, tableName, nil)
+}
+
+func isCoppScheduler(key string) bool {
+	return strings.Contains(key, "copp-scheduler-policy")
+}
+
+// qosImpliedIntfDelete stages the removal of the QoS bindings of every
+// interface a /qos REPLACE leaves out, so the maps, schedulers and profiles
+// they reference can go with them. The CPU port carries CoPP, which is not
+// modelled under /qos/interfaces.
+func qosImpliedIntfDelete(inParams XfmrParams) {
+	if inParams.dbDataMap == nil || inParams.oper != REPLACE {
+		return
+	}
+	qosObj := getQosRoot(inParams.ygRoot)
+	keepIntf := func(ifName string) bool {
+		if ifName == CPU {
+			return true
+		}
+		if qosObj == nil || qosObj.Interfaces == nil {
+			return false
+		}
+		_, ok := qosObj.Interfaces.Interface[ifName]
+		return ok
+	}
+
+	/*
+	 * The whole row goes, so it has to replace any field delete staged for the
+	 * same row rather than be merged into it.
+	 */
+	if keys, err := inParams.d.GetKeys(&db.TableSpec{Name: "PORT_QOS_MAP"}); err == nil {
+		for _, k := range keys {
+			if len(k.Comp) == 1 && !keepIntf(k.Comp[0]) {
+				qosStageDelete(inParams, "PORT_QOS_MAP", k.Comp[0], db.Value{})
+			}
+		}
+	}
+	if keys, err := inParams.d.GetKeys(&db.TableSpec{Name: qosQueueTbl}); err == nil {
+		for _, k := range keys {
+			if len(k.Comp) == 2 && !keepIntf(k.Comp[0]) {
+				qosStageDelete(inParams, qosQueueTbl, k.Comp[0]+inParams.d.Opts.KeySeparator+k.Comp[1], db.Value{})
+			}
+		}
+	}
+}
+
+// qosImpliedSchedUnbind stages the unbinding of the queues and ports still
+// naming a scheduler a /qos REPLACE removes. The scheduler policy transformer
+// only does this for the policies the request carries with schedulers, so a
+// policy left out or emptied would otherwise leave its schedulers in use.
+func qosImpliedSchedUnbind(inParams XfmrParams) {
+	if inParams.dbDataMap == nil || inParams.oper != REPLACE {
+		return
+	}
+	keys, err := inParams.d.GetKeys(&db.TableSpec{Name: "SCHEDULER"})
+	if err != nil {
+		return
+	}
+	intent := (*inParams.dbDataMap)[db.ConfigDB]
+	gone := make(map[string]bool)
+	for _, k := range keys {
+		key := strings.Join(k.Comp, inParams.d.Opts.KeySeparator)
+		if isCoppScheduler(key) {
+			continue
+		}
+		if _, ok := intent["SCHEDULER"][key]; !ok {
+			gone[key] = true
+		}
+	}
+	if len(gone) == 0 {
+		return
+	}
+	for _, tbl := range []string{qosQueueTbl, "PORT_QOS_MAP"} {
+		ts := &db.TableSpec{Name: tbl}
+		tkeys, err := inParams.d.GetKeys(ts)
+		if err != nil {
+			continue
+		}
+		for _, k := range tkeys {
+			if k.Len() == 0 || k.Get(0) == CPU {
+				continue
+			}
+			entry, err := inParams.d.GetEntry(ts, k)
+			if err != nil || !gone[entry.Get("scheduler")] {
+				continue
+			}
+			val := db.Value{Field: map[string]string{"scheduler": ""}}
+			if tbl == qosQueueTbl {
+				val = qosEgressSchedUnbindVal(k.Get(0))
+			}
+			qosStageFieldDelete(inParams, tbl, strings.Join(k.Comp, inParams.d.Opts.KeySeparator), val)
+		}
+	}
+}
+
+// qosStageFieldDelete stages the removal of some fields of a row, adding them
+// to a field delete already staged for it and leaving a whole row delete as is.
+func qosStageFieldDelete(inParams XfmrParams, table string, key string, val db.Value) {
+	if inParams.subOpDataMap != nil && inParams.subOpDataMap[DELETE] != nil {
+		if cur, ok := (*inParams.subOpDataMap[DELETE])[db.ConfigDB][table][key]; ok {
+			if len(cur.Field) == 0 {
+				return
+			}
+			for f, v := range val.Field {
+				cur.Field[f] = v
+			}
+			return
+		}
+	}
+	qosStageDelete(inParams, table, key, val)
+}
+
+// qosDeleteFrontPanelQueues makes a DELETE of /qos remove every front panel
+// QUEUE row, whose fields all come from /qos, so none keeps naming a scheduler
+// or profile the request deletes. CPU queues carry CoPP and stay.
+func qosDeleteFrontPanelQueues(inParams XfmrParams, retDbDataMap map[string]map[string]db.Value) {
+	keys, err := inParams.d.GetKeys(&db.TableSpec{Name: qosQueueTbl})
+	if err != nil {
+		return
+	}
+	for _, k := range keys {
+		if k.Len() != 2 || k.Get(0) == CPU {
+			continue
+		}
+		if retDbDataMap[qosQueueTbl] == nil {
+			retDbDataMap[qosQueueTbl] = make(map[string]db.Value)
+		}
+		retDbDataMap[qosQueueTbl][k.Get(0)+"|"+k.Get(1)] = db.Value{Field: make(map[string]string)}
+	}
+}
+
+// impliedTableDeleteExcept is impliedTableDelete sparing the keys keep accepts.
+func impliedTableDeleteExcept(inParams XfmrParams, tableName string, keep func(key string) bool) {
 	if inParams.dbDataMap == nil || inParams.oper != REPLACE {
 		return
 	}
@@ -2021,6 +2327,9 @@ func impliedTableDelete(inParams XfmrParams, tableName string) {
 	toDelete := map[string]db.Value{}
 	for _, k := range keys {
 		key := strings.Join(k.Comp, inParams.d.Opts.KeySeparator)
+		if keep != nil && keep(key) {
+			continue
+		}
 		if _, ok := intentConfigDbMap[tableName][key]; !ok {
 			toDelete[key] = db.Value{}
 		}

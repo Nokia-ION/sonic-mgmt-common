@@ -650,9 +650,10 @@ func qosTargetGroupToTc(inParams XfmrParams, name string) (string, error) {
 	}
 	qosObj := getQosRoot(inParams.ygRoot)
 	if qosObj != nil && qosObj.ForwardingGroups != nil {
-		if fg, ok := qosObj.ForwardingGroups.ForwardingGroup[name]; ok &&
-			fg.Config != nil && fg.Config.FabricPriority != nil {
-			return strconv.Itoa(int(*fg.Config.FabricPriority)), nil
+		if fg, ok := qosObj.ForwardingGroups.ForwardingGroup[name]; ok && fg != nil && fg.Config != nil {
+			queueMapMutex.RLock()
+			defer queueMapMutex.RUnlock()
+			return qosFwdGrpPriority(inParams, name, fg.Config)
 		}
 	}
 	if prio := get_fwd_group_priority(inParams, name); prio != "" {

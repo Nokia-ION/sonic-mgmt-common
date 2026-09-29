@@ -507,8 +507,14 @@ func fill_classifier_info_by_name(inParams XfmrParams, classifiers *ocbinds.Open
 	dbSpec := &db.TableSpec{Name: map_type}
 	mapCfg, err := inParams.d.GetEntry(dbSpec, key)
 
-	if fillActionState {
-		mapCfg, err = inParams.dbs[db.ApplDB].GetEntry(dbSpec, key)
+	/*
+	 * A platform whose qosorch consumes CONFIG_DB directly keeps no APPL_DB
+	 * copy of the map, so the configured one is what is in effect.
+	 */
+	if fillActionState && inParams.dbs[db.ApplDB] != nil {
+		if applMap, applErr := inParams.dbs[db.ApplDB].GetEntry(dbSpec, key); applErr == nil {
+			mapCfg, err = applMap, nil
+		}
 	}
 
 	if err != nil {

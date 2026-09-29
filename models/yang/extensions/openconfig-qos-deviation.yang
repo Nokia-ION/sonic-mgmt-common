@@ -20,7 +20,14 @@ module openconfig-qos-deviation {
   description
     "This module describes a YANG model for openconfig-qos deviations.";
 
-  oc-ext:openconfig-version "0.3.0";
+  oc-ext:openconfig-version "0.4.0";
+
+  revision "2026-09-28" {
+    description
+      "Restore the per interface interface-ref. It is accepted when it names the
+      interface the entry is keyed by, with no subinterface or subinterface 0.";
+    reference "0.4.0";
+  }
 
   revision "2026-08-24" {
     description
@@ -45,10 +52,6 @@ module openconfig-qos-deviation {
   }
 
   deviation /oc-qos:qos/oc-qos:interfaces/oc-qos:interface/oc-qos:input/oc-qos:virtual-output-queues {
-    deviate not-supported;
-  }
-
-  deviation /oc-qos:qos/oc-qos:interfaces/oc-qos:interface/oc-qos:interface-ref {
     deviate not-supported;
   }
 
