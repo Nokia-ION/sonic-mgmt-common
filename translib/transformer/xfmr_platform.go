@@ -177,6 +177,7 @@ const (
 	XCVR_BASE_STATE   = "/openconfig-platform:components/component/openconfig-platform-transceiver:transceiver/state"
 	XCVR_FORM_FACTOR  = "/openconfig-platform:components/component/openconfig-platform-transceiver:transceiver/state/form-factor"
 	XCVR_ETH_PMD      = "/openconfig-platform:components/component/openconfig-platform-transceiver:transceiver/state/ethernet-pmd"
+	XCVR_VENDOR_REV   = "/openconfig-platform:components/component/openconfig-platform-transceiver:transceiver/state/vendor-rev"
 	XCVR_BASE_PC      = "/openconfig-platform:components/component/openconfig-platform-transceiver:transceiver/physical-channels"
 	XCVR_BASE_CHANNEL = "/openconfig-platform:components/component/openconfig-platform-transceiver:transceiver/physical-channels/channel"
 
@@ -325,6 +326,7 @@ type XcvrInfo struct {
 	PartNo            string
 	SerialNo          string
 	HardwareRev       string
+	VendorRev         string
 	Type              string
 	ActiveFirmwareVer string
 	LatestFirmwareVer string
@@ -2968,6 +2970,7 @@ func getXcvrInfoFromDb(name string, d *db.DB) (XcvrInfo, error) {
 	xcvrInfo.PartNo = trimXcvrEepromString(xcvrEntry.Get("model"))
 	xcvrInfo.SerialNo = trimXcvrEepromString(xcvrEntry.Get("serial"))
 	xcvrInfo.HardwareRev = trimXcvrEepromString(xcvrEntry.Get("hardware_rev"))
+	xcvrInfo.VendorRev = trimXcvrEepromString(xcvrEntry.Get("vendor_rev"))
 	xcvrInfo.Type = xcvrEntry.Get("type")
 	xcvrInfo.LatestFirmwareVer = xcvrEntry.Get("latest_fw_rev")
 
@@ -3079,19 +3082,27 @@ func fillXcvrAggregatePower(xcvrState *ocbinds.OpenconfigPlatform_Components_Com
 		}
 	}
 
+	/* A leaf with no reading is cleared: translib pre-creates a targeted leaf
+	 * with its zero value, which would otherwise be served as 0. */
 	if rxCount > 0 && rxLinearSum > 0 {
 		ygot.BuildEmptyTree(xcvrState.InputPower)
 		rxDbm := 10 * math.Log10(rxLinearSum)
 		xcvrState.InputPower.Instant = &rxDbm
+	} else {
+		xcvrState.InputPower.Instant = nil
 	}
 	if txCount > 0 && txLinearSum > 0 {
 		ygot.BuildEmptyTree(xcvrState.OutputPower)
 		txDbm := 10 * math.Log10(txLinearSum)
 		xcvrState.OutputPower.Instant = &txDbm
+	} else {
+		xcvrState.OutputPower.Instant = nil
 	}
 	if biasCount > 0 {
 		ygot.BuildEmptyTree(xcvrState.LaserBiasCurrent)
 		xcvrState.LaserBiasCurrent.Instant = &biasSum
+	} else {
+		xcvrState.LaserBiasCurrent.Instant = nil
 	}
 }
 
@@ -3281,7 +3292,7 @@ func fillXcvrInfo(xcvrCom *ocbinds.OpenconfigPlatform_Components_Component,
 		if xcvrInfo.MfgName != "" {
 			xcvrEEPROMState.MfgName = &xcvrInfo.MfgName
 		}
-		if xcvrInfo.HardwareRev != "" {
+		if test_if_available(xcvrInfo.HardwareRev) {
 			xcvrEEPROMState.HardwareVersion = &xcvrInfo.HardwareRev
 		}
 		if test_if_available(xcvrInfo.ActiveFirmwareVer) {
@@ -3289,6 +3300,9 @@ func fillXcvrInfo(xcvrCom *ocbinds.OpenconfigPlatform_Components_Component,
 		}
 		if xcvrInfo.MfgDate != "" {
 			xcvrEEPROMState.MfgDate = &xcvrInfo.MfgDate
+		}
+		if test_if_available(xcvrInfo.VendorRev) {
+			xcvrState.VendorRev = &xcvrInfo.VendorRev
 		}
 		/* The module identifier string doubles as the component description. */
 		if test_if_available(xcvrInfo.Type) {
@@ -3369,38 +3383,48 @@ func fillXcvrInfo(xcvrCom *ocbinds.OpenconfigPlatform_Components_Component,
 	case COMP_STATE_TYPE:
 		xcvrEEPROMState.Type, _ = xcvrCom.State.To_OpenconfigPlatform_Components_Component_State_Type_Union(
 			ocbinds.OpenconfigPlatformTypes_OPENCONFIG_HARDWARE_COMPONENT_TRANSCEIVER)
+	/* A targeted leaf with no value is NotFound: translib pre-creates the leaf
+	 * with its zero value, so leaving it unset would serve "" or 0. */
 	case COMP_STATE_PARENT:
-		if test_if_available(xcvrInfo.Parent) {
-			xcvrEEPROMState.Parent = &xcvrInfo.Parent
+		if !test_if_available(xcvrInfo.Parent) {
+			return tlerr.NotFound("%s has no parent", name)
 		}
+		xcvrEEPROMState.Parent = &xcvrInfo.Parent
 	case COMP_STATE_SERIAL_NO:
-		if xcvrInfo.SerialNo != "" {
-			xcvrEEPROMState.SerialNo = &xcvrInfo.SerialNo
+		if xcvrInfo.SerialNo == "" {
+			return tlerr.NotFound("%s has no serial-no", name)
 		}
+		xcvrEEPROMState.SerialNo = &xcvrInfo.SerialNo
 	case COMP_STATE_PART_NO:
-		if xcvrInfo.PartNo != "" {
-			xcvrEEPROMState.PartNo = &xcvrInfo.PartNo
+		if xcvrInfo.PartNo == "" {
+			return tlerr.NotFound("%s has no part-no", name)
 		}
+		xcvrEEPROMState.PartNo = &xcvrInfo.PartNo
 	case COMP_STATE_MFG_NAME:
-		if xcvrInfo.MfgName != "" {
-			xcvrEEPROMState.MfgName = &xcvrInfo.MfgName
+		if xcvrInfo.MfgName == "" {
+			return tlerr.NotFound("%s has no mfg-name", name)
 		}
+		xcvrEEPROMState.MfgName = &xcvrInfo.MfgName
 	case COMP_STATE_HW_VER:
-		if xcvrInfo.HardwareRev != "" {
-			xcvrEEPROMState.HardwareVersion = &xcvrInfo.HardwareRev
+		if !test_if_available(xcvrInfo.HardwareRev) {
+			return tlerr.NotFound("%s has no hardware-version", name)
 		}
+		xcvrEEPROMState.HardwareVersion = &xcvrInfo.HardwareRev
 	case COMP_STATE_FIRM_VER:
-		if test_if_available(xcvrInfo.ActiveFirmwareVer) {
-			xcvrEEPROMState.FirmwareVersion = &xcvrInfo.ActiveFirmwareVer
+		if !test_if_available(xcvrInfo.ActiveFirmwareVer) {
+			return tlerr.NotFound("%s has no firmware-version", name)
 		}
+		xcvrEEPROMState.FirmwareVersion = &xcvrInfo.ActiveFirmwareVer
 	case COMP_STATE_DESCR:
-		if test_if_available(xcvrInfo.Type) {
-			xcvrEEPROMState.Description = &xcvrInfo.Type
+		if !test_if_available(xcvrInfo.Type) {
+			return tlerr.NotFound("%s has no description", name)
 		}
+		xcvrEEPROMState.Description = &xcvrInfo.Type
 	case COMP_STATE_MFG_DATE:
-		if xcvrInfo.MfgDate != "" {
-			xcvrEEPROMState.MfgDate = &xcvrInfo.MfgDate
+		if xcvrInfo.MfgDate == "" {
+			return tlerr.NotFound("%s has no mfg-date", name)
 		}
+		xcvrEEPROMState.MfgDate = &xcvrInfo.MfgDate
 	case COMP_STATE_OPER_STATUS:
 		xcvrEEPROMState.OperStatus = ocbinds.OpenconfigPlatformTypes_COMPONENT_OPER_STATUS_ACTIVE
 	case COMP_STATE_TEMP_CTR, COMP_STATE_TEMP:
@@ -3411,6 +3435,8 @@ func fillXcvrInfo(xcvrCom *ocbinds.OpenconfigPlatform_Components_Component,
 			}
 			ygot.BuildEmptyTree(xcvrEEPROMState.Temperature)
 			xcvrEEPROMState.Temperature.Instant = &float64val
+		} else if targetUriPath == COMP_STATE_TEMP {
+			return tlerr.NotFound("%s has no temperature", name)
 		}
 
 	case COMP_STATE_REMOVABLE:
@@ -3423,10 +3449,20 @@ func fillXcvrInfo(xcvrCom *ocbinds.OpenconfigPlatform_Components_Component,
 		}
 	case XCVR_ETH_PMD:
 		xcvrState.EthernetPmd = ethPmdTypeFromString(xcvrInfo.EthPmd)
+	case XCVR_VENDOR_REV:
+		if !test_if_available(xcvrInfo.VendorRev) {
+			return tlerr.NotFound("%s has no vendor-rev", name)
+		}
+		xcvrState.VendorRev = &xcvrInfo.VendorRev
 	case XCVR_INPUT_POWER, XCVR_INPUT_POWER_INSTANT,
 		XCVR_OUTPUT_POWER, XCVR_OUTPUT_POWER_INSTANT,
 		XCVR_LASER_BIAS, XCVR_LASER_BIAS_INSTANT:
 		fillXcvrAggregatePower(xcvrState, xcvrInfo)
+		if (targetUriPath == XCVR_INPUT_POWER_INSTANT && xcvrState.InputPower.Instant == nil) ||
+			(targetUriPath == XCVR_OUTPUT_POWER_INSTANT && xcvrState.OutputPower.Instant == nil) ||
+			(targetUriPath == XCVR_LASER_BIAS_INSTANT && xcvrState.LaserBiasCurrent.Instant == nil) {
+			return tlerr.NotFound("%s has no reading", name)
+		}
 	}
 	return err
 }

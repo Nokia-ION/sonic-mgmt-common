@@ -409,6 +409,31 @@ func TestFillXcvrAggregatePower(t *testing.T) {
 		}
 	})
 
+	t.Run("pre-created leaves with no reading are cleared", func(t *testing.T) {
+		xcvrState := newXcvrStateForTest(t)
+		rx, tx, bias := 0.0, 0.0, 0.0
+		xcvrState.InputPower.Instant = &rx
+		xcvrState.OutputPower.Instant = &tx
+		xcvrState.LaserBiasCurrent.Instant = &bias
+		var xcvrInfo XcvrInfo
+		xcvrInfo.Lanes[0] = XcvrLane{RxPowerLane: "-inf", TxPowerLane: "-inf", TxBiasLane: "N/A"}
+		for i := 1; i < XCVR_LANE_LIMIT; i++ {
+			xcvrInfo.Lanes[i] = XcvrLane{RxPowerLane: "N/A", TxPowerLane: "N/A", TxBiasLane: "N/A"}
+		}
+
+		fillXcvrAggregatePower(xcvrState, xcvrInfo)
+
+		if xcvrState.InputPower.Instant != nil {
+			t.Errorf("InputPower.Instant = %v, want nil", *xcvrState.InputPower.Instant)
+		}
+		if xcvrState.OutputPower.Instant != nil {
+			t.Errorf("OutputPower.Instant = %v, want nil", *xcvrState.OutputPower.Instant)
+		}
+		if xcvrState.LaserBiasCurrent.Instant != nil {
+			t.Errorf("LaserBiasCurrent.Instant = %v, want nil", *xcvrState.LaserBiasCurrent.Instant)
+		}
+	})
+
 	t.Run("all lanes dark leaves aggregate unset", func(t *testing.T) {
 		xcvrState := newXcvrStateForTest(t)
 		var xcvrInfo XcvrInfo
@@ -1353,6 +1378,113 @@ func TestFillXcvrTemperature(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A targeted leaf that an SFF module has no value for is NotFound, even when
+// translib has pre-created it with its zero value.
+func TestFillXcvrMissingLeafNotFound(t *testing.T) {
+	d, err := db.NewDB(getDBOptions(db.StateDB))
+	if err != nil {
+		t.Fatal("NewDB failed")
+	}
+	defer d.DeleteDB()
+	cfgdb, err := db.NewDB(getDBOptions(db.ConfigDB))
+	if err != nil {
+		t.Fatal("NewDB failed")
+	}
+	defer cfgdb.DeleteDB()
+	var dbs [db.MaxDB]*db.DB
+	dbs[db.StateDB] = d
+	dbs[db.ConfigDB] = cfgdb
+
+	const name = "Ethernet76"
+	seedXcvrInfoEntry(t, d, name, map[string]string{
+		"type":       "SFP/SFP+/SFP28",
+		"vendor_rev": "A   ",
+	})
+	seedXcvrDomEntry(t, d, name, map[string]string{
+		"rx1power": "-inf", "rx2power": "N/A", "rx3power": "N/A", "rx4power": "N/A",
+	})
+
+	for _, targetUriPath := range []string{COMP_STATE_FIRM_VER, COMP_STATE_HW_VER, XCVR_INPUT_POWER_INSTANT} {
+		t.Run(targetUriPath, func(t *testing.T) {
+			comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+			ygot.BuildEmptyTree(comp)
+			ygot.BuildEmptyTree(comp.Transceiver)
+			ygot.BuildEmptyTree(comp.Transceiver.State)
+			empty, zero := "", 0.0
+			comp.State.FirmwareVersion = &empty
+			comp.State.HardwareVersion = &empty
+			comp.Transceiver.State.InputPower.Instant = &zero
+
+			err := fillXcvrInfo(comp, name, false, "", targetUriPath, dbs)
+			if _, ok := err.(tlerr.NotFoundError); !ok {
+				t.Fatalf("fillXcvrInfo(%s) returned %T (%v), want tlerr.NotFoundError", targetUriPath, err, err)
+			}
+		})
+	}
+}
+
+// vendor-rev carries TRANSCEIVER_INFO vendor_rev with its padding trimmed, and
+// hardware-version carries hardware_rev only.
+func TestFillXcvrVendorRev(t *testing.T) {
+	d, err := db.NewDB(getDBOptions(db.StateDB))
+	if err != nil {
+		t.Fatal("NewDB failed")
+	}
+	defer d.DeleteDB()
+	cfgdb, err := db.NewDB(getDBOptions(db.ConfigDB))
+	if err != nil {
+		t.Fatal("NewDB failed")
+	}
+	defer cfgdb.DeleteDB()
+	var dbs [db.MaxDB]*db.DB
+	dbs[db.StateDB] = d
+	dbs[db.ConfigDB] = cfgdb
+
+	const cmisName = "Ethernet80"
+	seedXcvrInfoEntry(t, d, cmisName, map[string]string{
+		"type":         "QSFP-DD Double Density 8X Pluggable Transceiver",
+		"hardware_rev": "2.12",
+		"vendor_rev":   "1A",
+	})
+	seedXcvrDomEntry(t, d, cmisName, map[string]string{"temperature": "35.0"})
+
+	const sffName = "Ethernet84"
+	seedXcvrInfoEntry(t, d, sffName, map[string]string{
+		"type":       "SFP/SFP+/SFP28",
+		"vendor_rev": "A   ",
+	})
+	seedXcvrDomEntry(t, d, sffName, map[string]string{"temperature": "30.0"})
+
+	t.Run("cmis module", func(t *testing.T) {
+		comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+		ygot.BuildEmptyTree(comp)
+		if err := fillXcvrInfo(comp, cmisName, true, "", COMP, dbs); err != nil {
+			t.Fatalf("fillXcvrInfo() unexpected error: %v", err)
+		}
+		assertStrLeaf(t, comp.State.HardwareVersion, "2.12", "state/hardware-version")
+		assertStrLeaf(t, comp.Transceiver.State.VendorRev, "1A", "transceiver/state/vendor-rev")
+	})
+
+	t.Run("sff module", func(t *testing.T) {
+		comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+		ygot.BuildEmptyTree(comp)
+		if err := fillXcvrInfo(comp, sffName, true, "", COMP, dbs); err != nil {
+			t.Fatalf("fillXcvrInfo() unexpected error: %v", err)
+		}
+		assertStrLeafUnset(t, comp.State.HardwareVersion, "state/hardware-version")
+		assertStrLeaf(t, comp.Transceiver.State.VendorRev, "A", "transceiver/state/vendor-rev")
+	})
+
+	t.Run("targeted vendor-rev", func(t *testing.T) {
+		comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+		ygot.BuildEmptyTree(comp)
+		if err := fillXcvrInfo(comp, sffName, false, "", XCVR_VENDOR_REV, dbs); err != nil {
+			t.Fatalf("fillXcvrInfo() unexpected error: %v", err)
+		}
+		assertStrLeaf(t, comp.Transceiver.State.VendorRev, "A", "transceiver/state/vendor-rev")
+	})
 }
 
 // PSU_INFO.revision carries the PSU hardware revision on both the
