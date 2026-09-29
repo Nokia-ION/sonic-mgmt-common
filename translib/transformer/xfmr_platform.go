@@ -1878,14 +1878,14 @@ func getSysComponents(pf_cpts *ocbinds.OpenconfigPlatform_Components, targetUriP
 			case COMP_PS:
 				fallthrough
 			case COMP_PS_STATE:
-				fillPsuInfo(pf_comp, compName, true, true, targetUriPath, d)
+				return fillPsuInfo(pf_comp, compName, true, true, targetUriPath, d)
 			default:
-				fillPsuInfo(pf_comp, compName, false, true, targetUriPath, d)
+				return fillPsuInfo(pf_comp, compName, false, true, targetUriPath, d)
 			}
 		case CompTypeFan, CompTypeFanTray:
 			/* The type argument selects the FAN or FAN_TRAY identity that
 			 * state/type reports. */
-			fillFanInfo(pf_comp, compName, targetUriPath, d, compType)
+			return fillFanInfo(pf_comp, compName, targetUriPath, d, compType)
 		case CompTypeStorage:
 			ygot.BuildEmptyTree(pf_comp.Storage)
 			ygot.BuildEmptyTree(pf_comp.Storage.State)
@@ -2347,6 +2347,8 @@ func fillPsuInfo(psuCom *ocbinds.OpenconfigPlatform_Components_Component,
 		if psuInfo.Manufacturer != "" {
 			psuEepromState.MfgName = &psuInfo.Manufacturer
 		}
+	case COMP_STATE_MFG_DATE:
+		return tlerr.NotFound("%s has no mfg-date", name)
 	case COMP_STATE_PART_NO:
 		if psuInfo.Model_Name != "" {
 			psuEepromState.PartNo = &psuInfo.Model_Name
@@ -2531,12 +2533,18 @@ func fillFanInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 		comp.State.Location = &fanInfo.location
 	}
 	if allState || targetUriPath == COMP_STATE_MFG_DATE {
+		var mfg_date string
 		if fanInfo.mfgDate != "" && fanInfo.mfgDate != "N/A" {
-			if mfg_date := reformatMfgDate(fanInfo.mfgDate); mfg_date != "" {
-				comp.State.MfgDate = &mfg_date
-			} else {
+			if mfg_date = reformatMfgDate(fanInfo.mfgDate); mfg_date == "" {
 				log.V(lvl.WARNING).Infof("fan %s mfg-date expected format: MM-DD-YYYY HH:MM:SS, got %v", name, fanInfo.mfgDate)
 			}
+		}
+		/* A targeted leaf with no value is NotFound: translib pre-creates the
+		 * leaf as "", so leaving it unset would serve "". */
+		if mfg_date != "" {
+			comp.State.MfgDate = &mfg_date
+		} else if !allState {
+			return tlerr.NotFound("%s has no mfg-date", name)
 		}
 	}
 	if allState || targetUriPath == COMP_STATE_NAME {
@@ -4086,6 +4094,11 @@ func fillFirmwareInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 	if (pType == AllPaths || pType == AllCompPaths) && !statePresent && !cfgPresent {
 		return fmt.Errorf("Config and State DB entries not found for all paths; Error: %w", err)
 	}
+	/* The chassis manufacture date is in the system EEPROM when CHASSIS_INFO
+	 * does not carry it. */
+	if firmwareInfo.MfgDate == "" {
+		firmwareInfo.MfgDate = getSysEepromDbObj(stdb).Manufacture_Date
+	}
 
 	compState := comp.State
 	compCfg := comp.Config
@@ -4187,7 +4200,7 @@ func fillFirmwareInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 	case COMP_STATE_MFG_DATE:
 		mfg_date := reformatMfgDate(firmwareInfo.MfgDate)
 		if mfg_date == "" {
-			return fmt.Errorf("mfg_date field has invalid format in State DB: %s", firmwareInfo.MfgDate)
+			return tlerr.NotFound("%s has no mfg-date", name)
 		}
 		compState.MfgDate = &mfg_date
 	case COMP_STATE_OPER_STATUS:
