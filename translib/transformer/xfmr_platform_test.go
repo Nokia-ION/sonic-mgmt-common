@@ -1256,6 +1256,69 @@ func TestFillFirmwareInfoFieldFallbacks(t *testing.T) {
 	assertStrLeaf(t, comp.State.HardwareVersion, "0", "state/hardware-version")
 }
 
+// Chassis mfg-date comes from CHASSIS_INFO manufacture_date, falls back to the
+// EEPROM_INFO Manufacture Date, and is NotFound when neither has it.
+func TestFillFirmwareInfoMfgDate(t *testing.T) {
+	stdb, err := db.NewDB(getDBOptions(db.StateDB))
+	if err != nil {
+		t.Fatal("NewDB failed")
+	}
+	defer stdb.DeleteDB()
+	cfgdb, err := db.NewDB(getDBOptions(db.ConfigDB))
+	if err != nil {
+		t.Fatal("NewDB failed")
+	}
+	defer cfgdb.DeleteDB()
+
+	seedChassisInfoEntry(t, stdb, "chassis 10", map[string]string{"model": "3HE18723AARA01"})
+	seedChassisInfoEntry(t, stdb, "chassis 11", map[string]string{
+		"model":            "3HE18723AARA01",
+		"manufacture_date": "03/04/2024 10:00:00",
+	})
+	eepromTs := &db.TableSpec{Name: EEPROM_TBL}
+	eepromKey := db.Key{Comp: []string{"0x25"}}
+	if err := stdb.SetEntry(eepromTs, eepromKey, db.Value{Field: map[string]string{
+		"Len": "19", "Name": "Manufacture Date", "Value": "01/20/2025 15:53:08",
+	}}); err != nil {
+		t.Fatalf("failed to seed EEPROM_INFO: %v", err)
+	}
+	t.Cleanup(func() { stdb.DeleteEntry(eepromTs, eepromKey) })
+
+	cases := []struct {
+		name          string
+		chassis       string
+		pType         PathType
+		targetUriPath string
+		want          string
+	}{
+		{"eeprom whole component", "chassis 10", AllPaths, COMP, "2025-01-20"},
+		{"eeprom targeted leaf", "chassis 10", SingularPath, COMP_STATE_MFG_DATE, "2025-01-20"},
+		{"chassis_info wins", "chassis 11", SingularPath, COMP_STATE_MFG_DATE, "2024-03-04"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+			ygot.BuildEmptyTree(comp)
+			if err := fillFirmwareInfo(comp, c.chassis, c.pType, c.targetUriPath, stdb, cfgdb); err != nil {
+				t.Fatalf("fillFirmwareInfo() unexpected error: %v", err)
+			}
+			assertStrLeaf(t, comp.State.MfgDate, c.want, "state/mfg-date")
+		})
+	}
+
+	t.Run("no date anywhere", func(t *testing.T) {
+		if err := stdb.DeleteEntry(eepromTs, eepromKey); err != nil {
+			t.Fatalf("failed to delete EEPROM_INFO: %v", err)
+		}
+		comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+		ygot.BuildEmptyTree(comp)
+		err := fillFirmwareInfo(comp, "chassis 10", SingularPath, COMP_STATE_MFG_DATE, stdb, cfgdb)
+		if _, ok := err.(tlerr.NotFoundError); !ok {
+			t.Fatalf("fillFirmwareInfo() returned %T (%v), want tlerr.NotFoundError", err, err)
+		}
+	})
+}
+
 // A CMIS module reports its running firmware in TRANSCEIVER_FIRMWARE_INFO, and
 // its type string doubles as the component description. A module with no
 // firmware row still serves the rest of its inventory.
@@ -1539,6 +1602,57 @@ func TestFillPsuHardwareVersion(t *testing.T) {
 		}
 		assertStrLeafUnset(t, comp.State.HardwareVersion, "state/hardware-version")
 	})
+}
+
+// A targeted mfg-date on a PSU, fan or fan drawer with no date is NotFound,
+// even when translib has pre-created the leaf as "".
+func TestGetSysComponentsMfgDateNotFound(t *testing.T) {
+	d, err := db.NewDB(getDBOptions(db.StateDB))
+	if err != nil {
+		t.Fatal("NewDB failed")
+	}
+	defer d.DeleteDB()
+	seedPsuInfoEntry(t, d, "PSU9", map[string]string{"presence": "true", "status": "true"})
+	seedFanInfoEntry(t, d, "Fan9", map[string]string{"presence": "True", "status": "True"})
+	seedFanDrawerInfoEntry(t, d, "drawer9", map[string]string{"presence": "True", "mfg_date": "N/A"})
+
+	for _, name := range []string{"PSU9", "Fan9", "drawer9"} {
+		t.Run(name, func(t *testing.T) {
+			device := &ocbinds.Device{}
+			ygot.BuildEmptyTree(device)
+			comp, err := device.Components.NewComponent(name)
+			if err != nil {
+				t.Fatalf("creating the component failed: %v", err)
+			}
+			ygot.BuildEmptyTree(comp)
+			empty := ""
+			comp.State.MfgDate = &empty
+
+			var inParams XfmrParams
+			inParams.dbs[db.StateDB] = d
+			err = getSysComponents(device.Components, COMP_STATE_MFG_DATE, inParams, name, "")
+			if _, ok := err.(tlerr.NotFoundError); !ok {
+				t.Fatalf("getSysComponents(%q) returned %T (%v), want tlerr.NotFoundError", name, err, err)
+			}
+		})
+	}
+}
+
+// A fan mfg-date in MM/DD/YYYY form is served as YYYY-MM-DD on the targeted leaf.
+func TestFillFanMfgDate(t *testing.T) {
+	d, err := db.NewDB(getDBOptions(db.StateDB))
+	if err != nil {
+		t.Fatal("NewDB failed")
+	}
+	defer d.DeleteDB()
+	seedFanInfoEntry(t, d, "Fan10", map[string]string{"presence": "True", "mfg_date": "01/20/2025 15:53:08"})
+
+	comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+	ygot.BuildEmptyTree(comp)
+	if err := fillFanInfo(comp, "Fan10", COMP_STATE_MFG_DATE, d, CompTypeFan); err != nil {
+		t.Fatalf("fillFanInfo() unexpected error: %v", err)
+	}
+	assertStrLeaf(t, comp.State.MfgDate, "2025-01-20", "state/mfg-date")
 }
 
 // A PCIe component reports its own name, which a targeted GET of state/name
