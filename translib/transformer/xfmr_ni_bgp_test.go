@@ -900,6 +900,78 @@ func Test_openconfig_network_instance_bgp_global_use_multiple_paths_ibgp_maximum
 	unloadDB(db.ConfigDB, cleanupTbl)
 }
 
+func Test_openconfig_network_instance_bgp_global_afi_safi_ipv4_use_multiple_paths_ebgp_maximum_paths(t *testing.T) {
+	var url, urlInputBodyJSON string
+
+	preReqMap := map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": map[string]interface{}{
+				"local_asn": "65100",
+			},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"BGP_GLOBALS_AF": map[string]interface{}{"default|ipv4_unicast": ""},
+		"BGP_GLOBALS":    map[string]interface{}{"default": ""},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	url = "/openconfig-network-instance:network-instances/network-instance[name=default]/protocols/protocol[identifier=BGP][name=bgp]/bgp/global/afi-safis/afi-safi[afi-safi-name=IPV4_UNICAST]/use-multiple-paths/ebgp/config/maximum-paths"
+	urlInputBodyJSON = "{\"openconfig-network-instance:maximum-paths\":4}"
+	t.Run("PATCH global AFI-SAFI IPv4 eBGP maximum-paths", processSetRequest(url, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"BGP_GLOBALS_AF": map[string]interface{}{
+			"default|ipv4_unicast": map[string]interface{}{
+				"max_ebgp_paths": "4",
+			},
+		},
+	}
+	t.Run("Verify only IPv4 BGP_GLOBALS_AF max_ebgp_paths", verifyDbResult(rclient, "BGP_GLOBALS_AF|default|ipv4_unicast", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	expectedGetJSON := "{\"openconfig-network-instance:maximum-paths\":4}"
+	t.Run("GET global AFI-SAFI IPv4 eBGP maximum-paths", processGetRequest(url, nil, expectedGetJSON, false))
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_network_instance_bgp_global_afi_safi_ipv4_config_enabled(t *testing.T) {
+	var url, urlInputBodyJSON string
+
+	preReqMap := map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": map[string]interface{}{
+				"local_asn": "65100",
+			},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{"default": ""},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	url = "/openconfig-network-instance:network-instances/network-instance[name=default]/protocols/protocol[identifier=BGP][name=bgp]/bgp/global/afi-safis/afi-safi[afi-safi-name=IPV4_UNICAST]/config/enabled"
+	urlInputBodyJSON = "{\"openconfig-network-instance:enabled\":false}"
+	t.Run("PATCH global IPv4 AFI config enabled", processSetRequest(url, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": map[string]interface{}{
+				"local_asn":            "65100",
+				"default_ipv4_unicast": "false",
+			},
+		},
+	}
+	t.Run("Verify BGP_GLOBALS default_ipv4_unicast", verifyDbResult(rclient, "BGP_GLOBALS|default", expectedMap, false))
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
 func Test_openconfig_network_instance_bgp_peer_group_name(t *testing.T) {
 	var url, urlInputBodyJSON string
 
