@@ -2,6 +2,7 @@ package transformer
 
 import (
 	"errors"
+	"math"
 	"strconv"
 	"strings"
 
@@ -12,6 +13,37 @@ import (
 	log "github.com/golang/glog"
 	"github.com/openconfig/ygot/ygot"
 )
+
+const (
+	qosUmfWredTbl = "QOS_UMF_WRED_PROFILE"
+
+	// WRED_MAX_THRESHOLD in qos_queue_map.json is the largest WRED threshold,
+	// in bytes, the ASIC takes. Broadcom counts thresholds in buffer cells, so
+	// its limit is the cell size times the largest cell count.
+	WRED_MAX_THRESHOLD = "wred_max_threshold"
+)
+
+// qosWredMaxThreshold is the largest threshold WRED_PROFILE can carry: what
+// the platform declares, and never more than orchagent, which parses the
+// thresholds as int, can read.
+func qosWredMaxThreshold() uint64 {
+	if v, ok := qMapStr[WRED_MAX_THRESHOLD].(float64); ok && v >= 1 && v <= math.MaxInt32 {
+		return uint64(v)
+	}
+	return math.MaxInt32
+}
+
+// qosWredThreshold is the most of an OpenConfig threshold the platform can
+// take. featureprofiles sends 2^64-1 to mean no upper bound, which the largest
+// threshold the ASIC has stands for.
+func qosWredThreshold(th string) string {
+	limit := qosWredMaxThreshold()
+	v, err := strconv.ParseUint(th, 10, 64)
+	if err != nil || v > limit {
+		v = limit
+	}
+	return strconv.FormatUint(v, 10)
+}
 
 type QueueManagementProfileAttr struct {
 	minThreshold              uint64
@@ -79,16 +111,13 @@ func getIntfsByQueueManagementProfileName(queueManagementProfileName string, inP
 	return s
 }
 
-func GetQueueManagementProfilesByName(name string) []string {
+// The profile lookups run inside a request, which holds the ConfigDB lock, so
+// they read through the request's own ConfigDB handle rather than opening a
+// second connection, which would fail and make every profile look absent.
+
+func GetQueueManagementProfilesByName(d *db.DB, name string) []string {
 	var queueManagementProfilesList []string
 
-	d, err := db.NewDB(getDBOptions(db.ConfigDB))
-	if err != nil {
-		log.V(lvl.DEBUG).Infof("GetQueueManagementProfilesByName, unable to get configDB, error %v", err)
-		return queueManagementProfilesList
-	}
-
-	defer d.DeleteDB()
 	ts := &db.TableSpec{Name: "WRED_PROFILE"}
 	keyPattern := name
 	if name == "" {
@@ -111,17 +140,12 @@ func GetQueueManagementProfilesByName(name string) []string {
 	return queueManagementProfilesList
 }
 
-func getQueuesByQueueManagementProfileName(name string) []string {
+// getQueuesByQueueManagementProfileName lists the QUEUE keys, "<ifname>|<qid>",
+// whose wred_profile is name.
+func getQueuesByQueueManagementProfileName(d *db.DB, name string) []string {
 	var s []string
 
 	log.V(lvl.DEBUG).Info("name ", name)
-	d, err := db.NewDB(getDBOptions(db.ConfigDB))
-	if err != nil {
-		log.V(lvl.ERROR).Infof("getQueuesByQueueManagementProfileName, unable to get configDB, error %v", err)
-		return s
-	}
-	defer d.DeleteDB()
-
 	tblList := []string{"QUEUE"}
 	for _, tblName := range tblList {
 		dbSpec := &db.TableSpec{Name: tblName}
@@ -134,14 +158,8 @@ func getQueuesByQueueManagementProfileName(name string) []string {
 			if err != nil {
 				continue
 			}
-			wredProfile, ok := qCfg.Field["wred-profile"]
-			if !ok {
-				continue
-			}
-			wredProfile = wredProfile
-			if wredProfile == name {
-				queueName := key.Get(0)
-				s = append(s, queueName)
+			if wredProfile, ok := qCfg.Field["wred_profile"]; ok && wredProfile == name && key.Len() == 2 {
+				s = append(s, key.Get(0)+"|"+key.Get(1))
 			}
 		}
 	}
@@ -149,9 +167,9 @@ func getQueuesByQueueManagementProfileName(name string) []string {
 	return s
 }
 
-func isQueueManagementProfileActive(name string) bool {
+func isQueueManagementProfileActive(d *db.DB, name string) bool {
 	// read queues refering to the scheduler profile
-	queues := getQueuesByQueueManagementProfileName(name)
+	queues := getQueuesByQueueManagementProfileName(d, name)
 	if len(queues) == 0 {
 		log.V(lvl.DEBUG).Info("No active user of the queue management profile", name)
 		return false
@@ -159,29 +177,6 @@ func isQueueManagementProfileActive(name string) bool {
 
 	log.V(lvl.DEBUG).Info("queue management profile in active use!")
 	return true
-}
-
-func isQueueManagementProfileField(queueManagementProfileKey string, attr string) bool {
-	d, err := db.NewDB(getDBOptions(db.ConfigDB))
-	if err != nil {
-		log.V(lvl.ERROR).Infof("isQueueManagementProfileField, unable to get configDB, error %v", err)
-		return false
-	}
-
-	defer d.DeleteDB()
-	ts := &db.TableSpec{Name: "WRED_PROFILE"}
-	entry, err := d.GetEntry(ts, db.Key{Comp: []string{queueManagementProfileKey}})
-	if err != nil {
-		log.V(tlerr.ErrorSeverity(err)).Info("err in getting queue management profile entry: ", queueManagementProfileKey)
-		return false
-	}
-
-	if len(entry.Field) == 1 {
-		_, ok := entry.Field[attr]
-		return ok
-	}
-
-	return false
 }
 
 func qos_queue_management_profile_delete_xfmr(inParams XfmrParams) (map[string]map[string]db.Value, error) {
@@ -199,7 +194,7 @@ func qos_queue_management_profile_delete_xfmr(inParams XfmrParams) (map[string]m
 
 	var queueManagementProfiles []string
 	if name != "" {
-		queueManagementProfiles = GetQueueManagementProfilesByName(name)
+		queueManagementProfiles = GetQueueManagementProfilesByName(inParams.d, name)
 		if len(queueManagementProfiles) == 0 {
 			err = tlerr.InternalError{Format: "Instance Not found"}
 			log.V(lvl.ERROR).Info("Queue Management Profiles not found.")
@@ -212,97 +207,50 @@ func qos_queue_management_profile_delete_xfmr(inParams XfmrParams) (map[string]m
 		return qos_queue_management_profile_delete_by_name(inParams, name)
 	}
 
-	/* update "WRED" table */
-	queueManagementProfileEntry := make(map[string]db.Value)
+	if name == "" {
+		return qos_queue_management_profile_delete_by_name(inParams, name)
+	}
+	/*
+	 * A leaf of a profile has no value to fall back to in WRED_PROFILE, which
+	 * needs every threshold, so only the whole profile can be deleted.
+	 */
+	if targetUriPath != "/openconfig-qos:qos/queue-management-profiles/queue-management-profile" {
+		return resMap, tlerr.NotSupported("Queue management profile %v: deleting part of a profile is not supported, replace or delete the whole profile", name)
+	}
+
 	queueManagementProfileKey := name
-	queueManagementProfileEntry[queueManagementProfileKey] = db.Value{Field: make(map[string]string)}
-
-	if targetUriPath == "/openconfig-qos:qos/queue-management-profiles/queue-management-profile/wred/uniform/config/min-threshold" {
-		log.V(lvl.DEBUG).Info("Handling No min-threshold")
-		if isQueueManagementProfileActive(queueManagementProfileKey) &&
-			isQueueManagementProfileField(queueManagementProfileKey, "min-threshold") {
-			err = tlerr.InternalError{Format: "Last queue management profile used by interface cannot be deleted"}
-			log.V(lvl.DEBUG).Info("Not allow the last field to be deleted")
-			log.V(lvl.DEBUG).Info("Disallow to delete the last queue management profile in an actively used policy: ", queueManagementProfileKey)
-			return resMap, err
-		}
-		queueManagementProfileEntry[queueManagementProfileKey].Field["min-threshold"] = "0"
-	}
-
-	if targetUriPath == "/openconfig-qos:qos/queue-management-profiles/queue-management-profile/wred/uniform/config/max-threshold" {
-		log.V(lvl.DEBUG).Info("Handling No max-threshold")
-		if isQueueManagementProfileActive(queueManagementProfileKey) &&
-			isQueueManagementProfileField(queueManagementProfileKey, "max-threshold") {
-			err = tlerr.InternalError{Format: "Last queue management profile used by interface cannot be deleted"}
-			log.V(lvl.DEBUG).Info("Not allow the last field to be deleted")
-			log.V(lvl.DEBUG).Info("Disallow to delete the last queue management profile in an actively used policy: ", queueManagementProfileKey)
-			return resMap, err
-		}
-		queueManagementProfileEntry[queueManagementProfileKey].Field["max-threshold"] = "0"
-	}
-
-	if targetUriPath == "/openconfig-qos:qos/queue-management-profiles/queue-management-profile/wred/uniform/config/max-drop-probability-percent" {
-		log.V(lvl.DEBUG).Info("Handling No max-drop-probability-percent")
-		if isQueueManagementProfileActive(queueManagementProfileKey) &&
-			isQueueManagementProfileField(queueManagementProfileKey, "max-drop-probability-percent") {
-			err = tlerr.InternalError{Format: "Last queue management profile used by interface cannot be deleted"}
-			log.V(lvl.DEBUG).Info("Not allow the last field to be deleted")
-			log.V(lvl.DEBUG).Info("Disallow to delete the last queue management profile in an actively used policy: ", queueManagementProfileKey)
-			return resMap, err
-		}
-		queueManagementProfileEntry[queueManagementProfileKey].Field["max-drop-probability-percent"] = "0"
-	}
-
-	if targetUriPath == "/openconfig-qos:qos/queue-management-profiles/queue-management-profile/wred/uniform/config/enable-ecn" {
-		log.V(lvl.DEBUG).Info("Handling No enable-ecn")
-		if isQueueManagementProfileActive(queueManagementProfileKey) &&
-			isQueueManagementProfileField(queueManagementProfileKey, "enable-ecn") {
-			err = tlerr.InternalError{Format: "Last queue management profile used by interface cannot be deleted"}
-			log.V(lvl.DEBUG).Info("Not allow the last field to be deleted")
-			log.V(lvl.DEBUG).Info("Disallow to delete the last queue management profile in an actively used policy: ", queueManagementProfileKey)
-			return resMap, err
-		}
-		queueManagementProfileEntry[queueManagementProfileKey].Field["enable-ecn"] = "false"
-	}
-
-	if targetUriPath == "/openconfig-qos:qos/queue-management-profiles/queue-management-profile/wred/uniform/config/drop" {
-		log.V(lvl.DEBUG).Info("Handling No drop")
-		if isQueueManagementProfileActive(queueManagementProfileKey) &&
-			isQueueManagementProfileField(queueManagementProfileKey, "drop") {
-			err = tlerr.InternalError{Format: "Last queue management profile used by interface cannot be deleted"}
-			log.V(lvl.DEBUG).Info("Not allow the last field to be deleted")
-			log.V(lvl.DEBUG).Info("Disallow to delete the last queue management profile in an actively used policy: ", queueManagementProfileKey)
-			return resMap, err
-		}
-		queueManagementProfileEntry[queueManagementProfileKey].Field["drop"] = "false"
-	}
-
 	log.V(lvl.DEBUG).Info("qos_queue_management_profile_delete_xfmr - entry_key : ", queueManagementProfileKey)
-	resMap["WRED_PROFILE"] = queueManagementProfileEntry
+	resMap["WRED_PROFILE"] = map[string]db.Value{queueManagementProfileKey: {Field: make(map[string]string)}}
+	qosUmfWredDelete(inParams, resMap, []string{queueManagementProfileKey})
 
 	/* update "QUEUE" table for to-be-deleted queue management profile if it is used */
 	rtTblMap := make(map[string]db.Value)
-
-	if targetUriPath == "/openconfig-qos:qos/queue-management-profiles/queue-management-profile" {
-
-		// read queues referring to the queue management profile in db
-		keys := getQueuesByQueueManagementProfileName(queueManagementProfileKey)
-		for _, key := range keys {
-			log.V(lvl.DEBUG).Infof("qos_queue_management_profile_delete_xfmr: key: %v, profile_name: %v", key, queueManagementProfileKey)
-			_, ok := rtTblMap[key]
-			if !ok {
-				rtTblMap[key] = db.Value{Field: make(map[string]string)}
-			}
-			rtTblMap[key].Field["wred-profile"] = ""
-		}
-
-		if len(keys) != 0 {
-			resMap["QUEUE"] = rtTblMap
-		}
+	keys := getQueuesByQueueManagementProfileName(inParams.d, queueManagementProfileKey)
+	for _, key := range keys {
+		log.V(lvl.DEBUG).Infof("qos_queue_management_profile_delete_xfmr: key: %v, profile_name: %v", key, queueManagementProfileKey)
+		rtTblMap[key] = db.Value{Field: map[string]string{"wred_profile": ""}}
+	}
+	if len(keys) != 0 {
+		resMap["QUEUE"] = rtTblMap
 	}
 
 	log.V(lvl.DEBUG).Infof("qos_queue_management_profile_delete_xfmr --> resMap %v", resMap)
 	return resMap, err
+}
+
+// qosUmfWredDelete removes the QOS_UMF_WRED_PROFILE entries of the profiles
+// being deleted, where there are any.
+func qosUmfWredDelete(inParams XfmrParams, resMap map[string]map[string]db.Value, names []string) {
+	ts := &db.TableSpec{Name: qosUmfWredTbl}
+	for _, name := range names {
+		if _, err := inParams.d.GetEntry(ts, db.Key{Comp: []string{name}}); err != nil {
+			continue
+		}
+		if resMap[qosUmfWredTbl] == nil {
+			resMap[qosUmfWredTbl] = make(map[string]db.Value)
+		}
+		resMap[qosUmfWredTbl][name] = db.Value{Field: make(map[string]string)}
+	}
 }
 
 func qos_queue_management_profile_delete_all(inParams XfmrParams) (map[string]map[string]db.Value, error) {
@@ -316,13 +264,24 @@ func qos_queue_management_profile_delete_all(inParams XfmrParams) (map[string]ma
 	}
 
 	/* get all matching queue management profiles */
-	queueManagementProfileKeys := GetQueueManagementProfilesByName("")
+	queueManagementProfileKeys := GetQueueManagementProfilesByName(inParams.d, "")
+
+	// A DELETE of /qos removes the front panel queues too, so only a CPU queue keeps a profile in use.
+	reqPath, _ := getYangPathFromUri(inParams.requestUri)
+	wholeQos := reqPath == "/openconfig-qos:qos"
 
 	/* update "WRED_PROFILE" table */
 	queueManagementProfileEntry := make(map[string]db.Value)
 	var queue_management_profile_del bool = false
 	for _, queueManagementProfileKey := range queueManagementProfileKeys {
-		if isQueueManagementProfileActive(queueManagementProfileKey) {
+		inUse := false
+		for _, q := range getQueuesByQueueManagementProfileName(inParams.d, queueManagementProfileKey) {
+			if !wholeQos || strings.HasPrefix(q, CPU+"|") {
+				inUse = true
+				break
+			}
+		}
+		if inUse {
 			continue
 		}
 		queue_management_profile_del = true
@@ -332,6 +291,11 @@ func qos_queue_management_profile_delete_all(inParams XfmrParams) (map[string]ma
 	log.V(lvl.DEBUG).Info("qos_queue_management_profile_delete_all ")
 	if queue_management_profile_del {
 		resMap["WRED_PROFILE"] = queueManagementProfileEntry
+		deleted := make([]string, 0, len(queueManagementProfileEntry))
+		for key := range queueManagementProfileEntry {
+			deleted = append(deleted, key)
+		}
+		qosUmfWredDelete(inParams, resMap, deleted)
 	}
 
 	// no need to clean Queue DB as only unused queue management profile is allowed to be deleted
@@ -353,14 +317,14 @@ func qos_queue_management_profile_delete_by_name(inParams XfmrParams, name strin
 	}
 
 	// validation
-	if isQueueManagementProfileActive(name) {
+	if isQueueManagementProfileActive(inParams.d, name) {
 		err = tlerr.InternalError{Format: "Disallow to delete an active queue management profile"}
 		log.V(lvl.DEBUG).Info("Disallow to delete an active queue management profile: ", name)
 		return resMap, err
 	}
 
 	/* get all matching queue management profiles */
-	queueManagementProfileKeys := GetQueueManagementProfilesByName(name)
+	queueManagementProfileKeys := GetQueueManagementProfilesByName(inParams.d, name)
 
 	/* update "WRED_PROFILE" table */
 	queueManagementProfileEntry := make(map[string]db.Value)
@@ -371,6 +335,7 @@ func qos_queue_management_profile_delete_by_name(inParams XfmrParams, name strin
 
 	log.V(lvl.DEBUG).Info("qos_queue_management_profile_delete_by_name - : ", name)
 	resMap["WRED_PROFILE"] = queueManagementProfileEntry
+	qosUmfWredDelete(inParams, resMap, queueManagementProfileKeys)
 
 	// no need to clean Queue DB as only unused queue management profile is allowed to be deleted
 	return resMap, err
@@ -415,37 +380,96 @@ var YangToDb_qos_queue_management_profile_xfmr SubTreeXfmrYangToDb = func(inPara
 
 	if (inParams.oper == CREATE) || (inParams.oper == REPLACE) || (inParams.oper == UPDATE) {
 		var queue_id string
-		if queueManagementProfileObj.Wred.Uniform.Config.Drop != nil && ((bool)(*queueManagementProfileObj.Wred.Uniform.Config.Drop)) {
-			queueManagementProfileVal.Field["ecn"] = "ecn_none"
-			queueManagementProfileVal.Field["yellow_drop_probability"] = strconv.Itoa((int)(*queueManagementProfileObj.Wred.Uniform.Config.MaxDropProbabilityPercent))
-			queueManagementProfileVal.Field["red_drop_probability"] = strconv.Itoa((int)(*queueManagementProfileObj.Wred.Uniform.Config.MaxDropProbabilityPercent))
-			queueManagementProfileVal.Field["green_drop_probability"] = strconv.Itoa((int)(*queueManagementProfileObj.Wred.Uniform.Config.MaxDropProbabilityPercent))
-			queueManagementProfileVal.Field["yellow_min_threshold"] = strconv.FormatFloat((float64)(*queueManagementProfileObj.Wred.Uniform.Config.MinThreshold), 'f', -1, 64)
-			queueManagementProfileVal.Field["yellow_max_threshold"] = strconv.FormatFloat((float64)(*queueManagementProfileObj.Wred.Uniform.Config.MaxThreshold), 'f', -1, 64)
-			queueManagementProfileVal.Field["red_min_threshold"] = strconv.FormatFloat((float64)(*queueManagementProfileObj.Wred.Uniform.Config.MinThreshold), 'f', -1, 64)
-			queueManagementProfileVal.Field["red_max_threshold"] = strconv.FormatFloat((float64)(*queueManagementProfileObj.Wred.Uniform.Config.MaxThreshold), 'f', -1, 64)
-			queueManagementProfileVal.Field["green_min_threshold"] = strconv.FormatFloat((float64)(*queueManagementProfileObj.Wred.Uniform.Config.MinThreshold), 'f', -1, 64)
-			queueManagementProfileVal.Field["green_max_threshold"] = strconv.FormatFloat((float64)(*queueManagementProfileObj.Wred.Uniform.Config.MaxThreshold), 'f', -1, 64)
-			queueManagementProfileVal.Field["wred_yellow_enable"] = "true"
-			queueManagementProfileVal.Field["wred_green_enable"] = "true"
-			queueManagementProfileVal.Field["wred_red_enable"] = "true"
+		if queueManagementProfileObj.Wred == nil || queueManagementProfileObj.Wred.Uniform == nil ||
+			queueManagementProfileObj.Wred.Uniform.Config == nil {
+			return nil, tlerr.InvalidArgs("Queue management profile %v has no wred/uniform/config", queueManagementProfileName)
 		}
-		if queueManagementProfileObj.Wred.Uniform.Config.EnableEcn != nil && ((bool)(*queueManagementProfileObj.Wred.Uniform.Config.EnableEcn)) {
+		uniform := queueManagementProfileObj.Wred.Uniform.Config
+		/*
+		 * WRED_PROFILE has no averaging weight; the ASIC's default of 0, the
+		 * instantaneous queue depth, is what applies.
+		 */
+		if uniform.Weight != nil && *uniform.Weight != 0 {
+			return nil, tlerr.NotSupported("Queue management profile %v: WRED weight %v is not supported, only 0",
+				queueManagementProfileName, *uniform.Weight)
+		}
+		/*
+		 * A write that names one leaf, or updates the profile, keeps the
+		 * leaves it leaves out.
+		 */
+		umfVal := db.Value{Field: make(map[string]string)}
+		if inParams.oper != REPLACE || strings.Contains(inParams.requestUri, "/uniform/config/") {
+			if prev, err := inParams.d.GetEntry(&db.TableSpec{Name: qosUmfWredTbl},
+				db.Key{Comp: []string{queueManagementProfileKey}}); err == nil {
+				for field, val := range prev.Field {
+					if field != "NULL" {
+						umfVal.Field[field] = val
+					}
+				}
+			}
+		}
+		if uniform.MinThreshold != nil {
+			umfVal.Field["min_threshold"] = strconv.FormatUint(*uniform.MinThreshold, 10)
+		}
+		if uniform.MaxThreshold != nil {
+			umfVal.Field["max_threshold"] = strconv.FormatUint(*uniform.MaxThreshold, 10)
+		}
+		if uniform.MaxDropProbabilityPercent != nil {
+			umfVal.Field["max_drop_probability_percent"] = strconv.Itoa(int(*uniform.MaxDropProbabilityPercent))
+		}
+		if uniform.EnableEcn != nil {
+			umfVal.Field["enable_ecn"] = strconv.FormatBool(*uniform.EnableEcn)
+		}
+		if uniform.Drop != nil {
+			umfVal.Field["drop"] = strconv.FormatBool(*uniform.Drop)
+		}
+
+		/*
+		 * SAI marks an ECN capable packet where the WRED of its colour would
+		 * drop it, so marking needs WRED on as much as dropping does.
+		 */
+		enableEcn := umfVal.Field["enable_ecn"] == "true"
+		queueManagementProfileVal.Field["ecn"] = "ecn_none"
+		if enableEcn {
 			queueManagementProfileVal.Field["ecn"] = "ecn_all"
-			queueManagementProfileVal.Field["yellow_ecn_mark_probability"] = strconv.Itoa((int)(*queueManagementProfileObj.Wred.Uniform.Config.MaxDropProbabilityPercent))
-			queueManagementProfileVal.Field["red_ecn_mark_probability"] = strconv.Itoa((int)(*queueManagementProfileObj.Wred.Uniform.Config.MaxDropProbabilityPercent))
-			queueManagementProfileVal.Field["green_ecn_mark_probability"] = strconv.Itoa((int)(*queueManagementProfileObj.Wred.Uniform.Config.MaxDropProbabilityPercent))
-			queueManagementProfileVal.Field["yellow_ecn_mark_min_threshold"] = strconv.FormatFloat((float64)(*queueManagementProfileObj.Wred.Uniform.Config.MinThreshold), 'f', -1, 64)
-			queueManagementProfileVal.Field["yellow_ecn_mark_max_threshold"] = strconv.FormatFloat((float64)(*queueManagementProfileObj.Wred.Uniform.Config.MaxThreshold), 'f', -1, 64)
-			queueManagementProfileVal.Field["red_ecn_mark_min_threshold"] = strconv.FormatFloat((float64)(*queueManagementProfileObj.Wred.Uniform.Config.MinThreshold), 'f', -1, 64)
-			queueManagementProfileVal.Field["red_ecn_mark_max_threshold"] = strconv.FormatFloat((float64)(*queueManagementProfileObj.Wred.Uniform.Config.MaxThreshold), 'f', -1, 64)
-			queueManagementProfileVal.Field["green_ecn_mark_min_threshold"] = strconv.FormatFloat((float64)(*queueManagementProfileObj.Wred.Uniform.Config.MinThreshold), 'f', -1, 64)
-			queueManagementProfileVal.Field["green_ecn_mark_max_threshold"] = strconv.FormatFloat((float64)(*queueManagementProfileObj.Wred.Uniform.Config.MaxThreshold), 'f', -1, 64)
+		}
+		wredOn := strconv.FormatBool(enableEcn || umfVal.Field["drop"] == "true")
+		for _, color := range []string{"green", "yellow", "red"} {
+			queueManagementProfileVal.Field["wred_"+color+"_enable"] = wredOn
+			if th, ok := umfVal.Field["min_threshold"]; ok {
+				queueManagementProfileVal.Field[color+"_min_threshold"] = qosWredThreshold(th)
+			}
+			if th, ok := umfVal.Field["max_threshold"]; ok {
+				queueManagementProfileVal.Field[color+"_max_threshold"] = qosWredThreshold(th)
+			}
+			if prob, ok := umfVal.Field["max_drop_probability_percent"]; ok {
+				queueManagementProfileVal.Field[color+"_drop_probability"] = prob
+			}
+		}
+		/*
+		 * Earlier images put ECN settings in ecn_mark fields, which orchagent
+		 * rejects the whole profile for. A replace drops them with the rest of
+		 * the old entry; an update has to remove them itself.
+		 */
+		if inParams.oper != REPLACE {
+			if prev, err := inParams.d.GetEntry(&db.TableSpec{Name: "WRED_PROFILE"},
+				db.Key{Comp: []string{queueManagementProfileKey}}); err == nil {
+				stale := db.Value{Field: make(map[string]string)}
+				for field := range prev.Field {
+					if strings.Contains(field, "_ecn_mark_") {
+						stale.Field[field] = ""
+					}
+				}
+				if len(stale.Field) > 0 {
+					qosStageDelete(inParams, "WRED_PROFILE", queueManagementProfileKey, stale)
+				}
+			}
 		}
 		queueManagementProfileEntry := make(map[string]db.Value)
 		queueManagementProfileEntry[queueManagementProfileKey] = queueManagementProfileVal
 		log.V(lvl.DEBUG).Info("YangToDb_qos_queue_management_profile_xfmr - entry_key : ", queueManagementProfileKey)
 		resMap["WRED_PROFILE"] = queueManagementProfileEntry
+		resMap[qosUmfWredTbl] = map[string]db.Value{queueManagementProfileKey: umfVal}
 
 		/* update "Queue" table for newly created queue management profile if the queue management profile is used by intfs*/
 		queueTblMap := make(map[string]db.Value)
@@ -489,41 +513,41 @@ func setIfPresentUInt8(field *uint8, value db.Value, name string) {
 	}
 }
 
-func getQueueManagementProfileAttrFromDb(queueManagementProfileCfg db.Value, queueManagementProfileState db.Value) (QueueManagementProfileAttr, QueueManagementProfileAttr, error) {
-	var cfg, state QueueManagementProfileAttr
-
-	cfg.enableECN = false
-	cfg.drop = true
-	setIfPresentUInt64(&cfg.minThreshold, queueManagementProfileCfg, "yellow_min_threshold")
-	setIfPresentUInt64(&cfg.maxThreshold, queueManagementProfileCfg, "yellow_max_threshold")
-	setIfPresentUInt8(&cfg.maxDropProbabilityPercent, queueManagementProfileCfg, "yellow_drop_probability")
-
-	state.enableECN = false
-	state.drop = true
-	setIfPresentUInt64(&state.minThreshold, queueManagementProfileState, "yellow_min_threshold")
-	setIfPresentUInt64(&state.maxThreshold, queueManagementProfileState, "yellow_max_threshold")
-	setIfPresentUInt8(&state.maxDropProbabilityPercent, queueManagementProfileState, "yellow_drop_probability")
-	log.V(lvl.DEBUG).Infoln("max drop probability percent ", state.maxDropProbabilityPercent)
-
-	if ecn, exist := queueManagementProfileCfg.Field["ecn"]; exist {
-		if ecn == "ecn_all" {
-			cfg.enableECN = true
-			cfg.drop = false
-			setIfPresentUInt64(&cfg.minThreshold, queueManagementProfileCfg, "yellow_ecn_mark_min_threshold")
-			setIfPresentUInt64(&cfg.maxThreshold, queueManagementProfileCfg, "yellow_ecn_mark_max_threshold")
-			setIfPresentUInt8(&cfg.maxDropProbabilityPercent, queueManagementProfileCfg, "yellow_ecn_mark_probability")
-		}
+// qosWredAttr reads the uniform settings out of a WRED_PROFILE entry, which is
+// all there is of a profile configured outside OpenConfig.
+func qosWredAttr(entry db.Value) QueueManagementProfileAttr {
+	var attr QueueManagementProfileAttr
+	for _, color := range []string{"red", "yellow", "green"} {
+		setIfPresentUInt64(&attr.minThreshold, entry, color+"_min_threshold")
+		setIfPresentUInt64(&attr.maxThreshold, entry, color+"_max_threshold")
+		setIfPresentUInt8(&attr.maxDropProbabilityPercent, entry, color+"_drop_probability")
 	}
-	if ecn, exist := queueManagementProfileState.Field["ecn"]; exist {
-		if ecn == "ecn_all" {
-			state.enableECN = true
-			state.drop = false
-			setIfPresentUInt64(&state.minThreshold, queueManagementProfileState, "yellow_ecn_mark_min_threshold")
-			setIfPresentUInt64(&state.maxThreshold, queueManagementProfileState, "yellow_ecn_mark_max_threshold")
-			setIfPresentUInt8(&state.maxDropProbabilityPercent, queueManagementProfileState, "yellow_ecn_mark_probability")
-			log.V(lvl.DEBUG).Infoln("max drop probability percent ", state.maxDropProbabilityPercent)
-		}
+	ecn := entry.Field["ecn"]
+	attr.enableECN = ecn != "" && ecn != "ecn_none"
+	attr.drop = !attr.enableECN && (entry.Field["wred_green_enable"] == "true" ||
+		entry.Field["wred_yellow_enable"] == "true" || entry.Field["wred_red_enable"] == "true")
+	return attr
+}
+
+// qosOverlayUmfWred puts back what WRED_PROFILE cannot hold: a threshold
+// beyond what orchagent takes, and drop next to enable-ecn.
+func qosOverlayUmfWred(attr *QueueManagementProfileAttr, umf db.Value) {
+	setIfPresentUInt64(&attr.minThreshold, umf, "min_threshold")
+	setIfPresentUInt64(&attr.maxThreshold, umf, "max_threshold")
+	setIfPresentUInt8(&attr.maxDropProbabilityPercent, umf, "max_drop_probability_percent")
+	if val, ok := umf.Field["enable_ecn"]; ok {
+		attr.enableECN = val == "true"
 	}
+	if val, ok := umf.Field["drop"]; ok {
+		attr.drop = val == "true"
+	}
+}
+
+func getQueueManagementProfileAttrFromDb(queueManagementProfileCfg db.Value, queueManagementProfileState db.Value, umf db.Value) (QueueManagementProfileAttr, QueueManagementProfileAttr, error) {
+	cfg := qosWredAttr(queueManagementProfileCfg)
+	state := qosWredAttr(queueManagementProfileState)
+	qosOverlayUmfWred(&cfg, umf)
+	qosOverlayUmfWred(&state, umf)
 	return cfg, state, nil
 }
 
@@ -540,16 +564,24 @@ var DbToYang_qos_queue_management_profile_xfmr SubTreeXfmrDbToYang = func(inPara
 	if qosObj == nil {
 		ygot.BuildEmptyTree(qosObj)
 	}
+	const qmpPath = "/openconfig-qos:qos/queue-management-profiles/queue-management-profile"
 	var queue_management_profile_config, queue_management_profile_state bool
+	var uniform_config, uniform_state bool
 	switch {
-	case strings.Compare(targetUriPath, "/openconfig-qos:qos/queue-management-profiles") == 0:
+	case strings.Compare(targetUriPath, "/openconfig-qos:qos/queue-management-profiles") == 0,
+		strings.Compare(targetUriPath, qmpPath) == 0:
 		queue_management_profile_config, queue_management_profile_state = true, true
-	case strings.Compare(targetUriPath, "/openconfig-qos:qos/queue-management-profiles/queue-management-profile") == 0:
-		queue_management_profile_config, queue_management_profile_state = true, true
-	case strings.HasPrefix(targetUriPath, "/openconfig-qos:qos/queue-management-profiles/queue-management-profile/config"):
+		uniform_config, uniform_state = true, true
+	case strings.HasPrefix(targetUriPath, qmpPath+"/config"):
 		queue_management_profile_config = true
-	case strings.HasPrefix(targetUriPath, "/openconfig-qos:qos/queue-management-profiles/queue-management-profile/state"):
+	case strings.HasPrefix(targetUriPath, qmpPath+"/state"):
 		queue_management_profile_state = true
+	case targetUriPath == qmpPath+"/wred" || targetUriPath == qmpPath+"/wred/uniform":
+		uniform_config, uniform_state = true, true
+	case strings.HasPrefix(targetUriPath, qmpPath+"/wred/uniform/config"):
+		uniform_config = true
+	case strings.HasPrefix(targetUriPath, qmpPath+"/wred/uniform/state"):
+		uniform_state = true
 	default:
 		errStr := "Invalid URI"
 		log.V(lvl.ERROR).Info(errStr)
@@ -617,28 +649,40 @@ var DbToYang_qos_queue_management_profile_xfmr SubTreeXfmrDbToYang = func(inPara
 		if errCfg != nil {
 			log.V(lvl.DEBUG).Info("Unable to get the data from the CONFIG DB")
 		}
-		queueManagementProfileState, errState := inParams.dbs[db.ApplDB].GetEntry(dbSpec, key)
-		if errState != nil {
-			log.V(lvl.DEBUG).Info("Unable to get the data from the APPL STATE DB")
+		/*
+		 * A platform whose qosorch consumes CONFIG_DB directly keeps no APPL_DB
+		 * copy of the profile, so the configured one is what is in effect.
+		 */
+		queueManagementProfileState, errState := queueManagementProfileConfig, errCfg
+		if applDb := inParams.dbs[db.ApplDB]; applDb != nil {
+			if entry, err := applDb.GetEntry(dbSpec, key); err == nil {
+				queueManagementProfileState, errState = entry, nil
+			}
 		}
 		if errCfg != nil && errState != nil {
 			continue
 		}
-		queueManagementProfileCfg, queueManagementProfileInfo, err := getQueueManagementProfileAttrFromDb(queueManagementProfileConfig, queueManagementProfileState)
+		umf, _ := inParams.dbs[db.ConfigDB].GetEntry(&db.TableSpec{Name: qosUmfWredTbl}, key)
+		queueManagementProfileCfg, queueManagementProfileInfo, err := getQueueManagementProfileAttrFromDb(queueManagementProfileConfig, queueManagementProfileState, umf)
 		if err == nil {
-			if queue_management_profile_config {
+			var weight uint32
+			if uniform_config {
+				ygot.BuildEmptyTree(queueManagementProfileObj.Wred.Uniform)
 				queueManagementProfileObj.Wred.Uniform.Config.MaxDropProbabilityPercent = &queueManagementProfileCfg.maxDropProbabilityPercent
 				queueManagementProfileObj.Wred.Uniform.Config.MinThreshold = &queueManagementProfileCfg.minThreshold
 				queueManagementProfileObj.Wred.Uniform.Config.MaxThreshold = &queueManagementProfileCfg.maxThreshold
 				queueManagementProfileObj.Wred.Uniform.Config.EnableEcn = &queueManagementProfileCfg.enableECN
 				queueManagementProfileObj.Wred.Uniform.Config.Drop = &queueManagementProfileCfg.drop
+				queueManagementProfileObj.Wred.Uniform.Config.Weight = &weight
 			}
-			if queue_management_profile_state {
+			if uniform_state {
+				ygot.BuildEmptyTree(queueManagementProfileObj.Wred.Uniform)
 				queueManagementProfileObj.Wred.Uniform.State.MaxDropProbabilityPercent = &queueManagementProfileInfo.maxDropProbabilityPercent
 				queueManagementProfileObj.Wred.Uniform.State.MinThreshold = &queueManagementProfileInfo.minThreshold
 				queueManagementProfileObj.Wred.Uniform.State.MaxThreshold = &queueManagementProfileInfo.maxThreshold
 				queueManagementProfileObj.Wred.Uniform.State.EnableEcn = &queueManagementProfileInfo.enableECN
 				queueManagementProfileObj.Wred.Uniform.State.Drop = &queueManagementProfileInfo.drop
+				queueManagementProfileObj.Wred.Uniform.State.Weight = &weight
 			}
 		}
 	}

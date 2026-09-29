@@ -52,6 +52,9 @@ func get_fwd_group_priority(inParams XfmrParams, name string) string {
 }
 
 func get_queue_from_tc(d *db.DB, tc string) string {
+	if d == nil {
+		return ""
+	}
 	comp_key := db.Key{Comp: []string{TcToQueueKey}}
 	tc_map, err := d.GetEntry(&db.TableSpec{Name: "TC_TO_QUEUE_MAP"}, comp_key)
 	if err != nil {
@@ -75,6 +78,9 @@ func get_uc_queue_from_tc(d *db.DB, tc string) string {
 }
 
 func get_queue_from_uc_mc_helper(d *db.DB, tc, prefix string) string {
+	if d == nil {
+		return ""
+	}
 	comp_key := db.Key{Comp: []string{TcToUcMcQueueKey}}
 	tc_map, err := d.GetEntry(&db.TableSpec{Name: "TC_TO_UC_MC_QUEUE_MAP"}, comp_key)
 	if err != nil {
@@ -285,18 +291,63 @@ func assignMapsToInterfaces(qosObj *ocbinds.OpenconfigQos_Qos, tableKey string, 
 // fabric-priority is the class number and the key of every queue map entry
 // written for the group, so it is needed even by a request that only changes a
 // queue. It is an optional leaf, so a client may leave it out when updating a
-// group that already has one, and then the recorded class stands.
+// group that already has one, and then the recorded class stands. A group
+// given only its output queue, as featureprofiles configures one, takes the
+// class numbered after that queue's hardware queue.
+//
+// The caller holds queueMapMutex.
 func qosFwdGrpPriority(inParams XfmrParams, name string,
 	cfg *ocbinds.OpenconfigQos_Qos_ForwardingGroups_ForwardingGroup_Config) (string, error) {
 
 	if cfg.FabricPriority != nil {
 		return strconv.Itoa(int(*cfg.FabricPriority)), nil
 	}
+	if inParams.oper == UPDATE {
+		if priority := get_fwd_group_priority(inParams, name); priority != "" {
+			return priority, nil
+		}
+	}
+	if tc, err := qosFwdGrpTcFromQueue(name, cfg); tc != "" || err != nil {
+		return tc, err
+	}
 	if priority := get_fwd_group_priority(inParams, name); priority != "" {
 		return priority, nil
 	}
 	return "", tlerr.InvalidArgsError{
-		Format: "fabric-priority is required for forwarding group " + name}
+		Format: "fabric-priority or an output queue is required for forwarding group " + name}
+}
+
+// qosFwdGrpTcFromQueue returns the hardware queue number of the group's output
+// queue, to serve as its traffic class, or an empty string if the group names
+// no queue.
+func qosFwdGrpTcFromQueue(name string,
+	cfg *ocbinds.OpenconfigQos_Qos_ForwardingGroups_ForwardingGroup_Config) (string, error) {
+
+	var qid string
+	var ok bool
+	switch {
+	case cfg.OutputQueue != nil && *cfg.OutputQueue != "":
+		if qid, ok = ocQueueHwQueueMap[FRONT_PANEL][*cfg.OutputQueue]; !ok {
+			return "", tlerr.New("Unknown queue " + *cfg.OutputQueue)
+		}
+	case cfg.UnicastOutputQueue != nil && *cfg.UnicastOutputQueue != "":
+		for _, qMapType := range queueTypes {
+			if qid, ok = ocQueueHwQueueMap[qMapType][*cfg.UnicastOutputQueue]; ok {
+				break
+			}
+		}
+		if !ok {
+			return "", tlerr.New("Unknown queue " + *cfg.UnicastOutputQueue)
+		}
+	default:
+		return "", nil
+	}
+	if tc, err := strconv.ParseUint(qid, 10, 8); err != nil || tc > 9 {
+		return "", tlerr.InvalidArgsError{
+			Format: "fabric-priority is required for forwarding group " + name +
+				": its queue is hardware queue " + qid + ", beyond traffic class 9"}
+	}
+	return qid, nil
 }
 
 func prepareTcQueueMapDbVal(table_key, qname string, priority string, dbval db.Value) error {
@@ -308,6 +359,10 @@ func prepareTcQueueMapDbVal(table_key, qname string, priority string, dbval db.V
 		return tlerr.New("Unknown queue " + qname)
 	}
 
+	if prev, ok := dbval.Field[priority]; ok && prev != dbQueue {
+		return tlerr.InvalidArgsError{
+			Format: "Forwarding groups of traffic class " + priority + " name different queues"}
+	}
 	dbval.Field[priority] = dbQueue
 	return nil
 }
@@ -386,16 +441,29 @@ func fill_fwd_grp_info_by_name(inParams XfmrParams, fgrps *ocbinds.OpenconfigQos
 		fg.Config.MulticastOutputQueue = &multicast_output_queue
 	}
 
+	/*
+	 * A platform whose qosorch consumes CONFIG_DB directly has no APPL_DB copy
+	 * of the queue maps, so the configured one is what is in effect.
+	 */
 	if queueStr != "" {
 		oq := get_queue_from_tc(inParams.dbs[db.ApplDB], prioStr)
+		if oq == "" {
+			oq = get_queue_from_tc(inParams.d, prioStr)
+		}
 		fg.State.OutputQueue = &oq
 	}
 	if uqueueStr != "" {
 		uoq := get_uc_queue_from_tc(inParams.dbs[db.ApplDB], prioStr)
+		if uoq == "" {
+			uoq = get_uc_queue_from_tc(inParams.d, prioStr)
+		}
 		fg.State.UnicastOutputQueue = &uoq
 	}
 	if mqueueStr != "" {
 		moq := get_mc_queue_from_tc(inParams.dbs[db.ApplDB], prioStr)
+		if moq == "" {
+			moq = get_mc_queue_from_tc(inParams.d, prioStr)
+		}
 		fg.State.MulticastOutputQueue = &moq
 	}
 
