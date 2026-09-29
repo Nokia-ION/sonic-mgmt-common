@@ -266,9 +266,22 @@ func qos_queue_management_profile_delete_all(inParams XfmrParams) (map[string]ma
 	/* get all matching queue management profiles */
 	queueManagementProfileKeys := GetQueueManagementProfilesByName(inParams.d, "")
 
-	// A DELETE of /qos removes the front panel queues too, so only a CPU queue keeps a profile in use.
+	/*
+	 * A DELETE of /qos removes the front panel queues too, and a REPLACE of it
+	 * those of the interfaces it leaves out, so a queue keeps a profile in use
+	 * only when it is a CPU queue or its interface is in the request. This
+	 * also runs for the deletes a REPLACE implies, which come as a DELETE.
+	 */
 	reqPath, _ := getYangPathFromUri(inParams.requestUri)
 	wholeQos := reqPath == "/openconfig-qos:qos"
+	qosObj := getQosRoot(inParams.ygRoot)
+	queueStays := func(qKey string) bool {
+		ifName := strings.SplitN(qKey, "|", 2)[0]
+		if !wholeQos || ifName == CPU {
+			return true
+		}
+		return qosObj != nil && qosObj.Interfaces != nil && qosObj.Interfaces.Interface[ifName] != nil
+	}
 
 	/* update "WRED_PROFILE" table */
 	queueManagementProfileEntry := make(map[string]db.Value)
@@ -276,7 +289,7 @@ func qos_queue_management_profile_delete_all(inParams XfmrParams) (map[string]ma
 	for _, queueManagementProfileKey := range queueManagementProfileKeys {
 		inUse := false
 		for _, q := range getQueuesByQueueManagementProfileName(inParams.d, queueManagementProfileKey) {
-			if !wholeQos || strings.HasPrefix(q, CPU+"|") {
+			if queueStays(q) {
 				inUse = true
 				break
 			}
