@@ -1337,21 +1337,16 @@ func buildNiBgpHierResMap(s *ygot.GoStruct, niName, protoName string) (map[strin
 		if bgpObj.Global.RouteSelectionOptions != nil && bgpObj.Global.RouteSelectionOptions.Config != nil && bgpObj.Global.RouteSelectionOptions.Config.AlwaysCompareMed != nil {
 			gFields[niBgpAlwaysCompareMedFld] = strconv.FormatBool(*bgpObj.Global.RouteSelectionOptions.Config.AlwaysCompareMed)
 		}
-		if len(gFields) > 0 {
-			res = mergeDbResMapFields(res, makeNiBgpGlobalsResMap(niName, gFields))
-		}
-
-		gAfFields := map[string]string{}
 		if bgpObj.Global.UseMultiplePaths != nil {
 			if bgpObj.Global.UseMultiplePaths.Ebgp != nil && bgpObj.Global.UseMultiplePaths.Ebgp.Config != nil && bgpObj.Global.UseMultiplePaths.Ebgp.Config.MaximumPaths != nil {
-				gAfFields[niBgpMaxEbgpPathsFld] = strconv.FormatUint(uint64(*bgpObj.Global.UseMultiplePaths.Ebgp.Config.MaximumPaths), 10)
+				gFields[niBgpMaxEbgpPathsFld] = strconv.FormatUint(uint64(*bgpObj.Global.UseMultiplePaths.Ebgp.Config.MaximumPaths), 10)
 			}
 			if bgpObj.Global.UseMultiplePaths.Ibgp != nil && bgpObj.Global.UseMultiplePaths.Ibgp.Config != nil && bgpObj.Global.UseMultiplePaths.Ibgp.Config.MaximumPaths != nil {
-				gAfFields[niBgpMaxIbgpPathsFld] = strconv.FormatUint(uint64(*bgpObj.Global.UseMultiplePaths.Ibgp.Config.MaximumPaths), 10)
+				gFields[niBgpMaxIbgpPathsFld] = strconv.FormatUint(uint64(*bgpObj.Global.UseMultiplePaths.Ibgp.Config.MaximumPaths), 10)
 			}
 		}
-		if len(gAfFields) > 0 {
-			res = mergeDbResMapFields(res, makeNiBgpGlobalsAfResMap(niName, gAfFields))
+		if len(gFields) > 0 {
+			res = mergeDbResMapFields(res, makeNiBgpGlobalsResMap(niName, gFields))
 		}
 	}
 
@@ -1542,35 +1537,21 @@ func populateNiBgpHierToYangFromDb(cfgDb *db.DB, ygRoot *ygot.GoStruct, niName, 
 				}
 			}
 		}
-	}
-
-	// Global AF fields from BGP_GLOBALS_AF.
-	if afKeys, err := cfgDb.GetKeys(&db.TableSpec{Name: niBgpGlobalsAfTbl}); err == nil {
-		for _, k := range afKeys {
-			parts := k.Comp
-			if len(parts) != 2 || parts[0] != niName {
-				continue
-			}
-			afEntry, afErr := cfgDb.GetEntry(&db.TableSpec{Name: niBgpGlobalsAfTbl}, db.Key{Comp: []string{parts[0], parts[1]}})
-			if afErr != nil {
-				continue
-			}
-			if mpStr, ok := afEntry.Field[niBgpMaxEbgpPathsFld]; ok && strings.TrimSpace(mpStr) != "" {
-				if mpVal, convErr := strconv.ParseUint(strings.TrimSpace(mpStr), 10, 32); convErr == nil {
-					ebgpCfg := getNiBgpGlobalUseMpEbgpCfgObj(ygRoot, niName, protoName, true)
-					if ebgpCfg != nil {
-						mp := uint32(mpVal)
-						ebgpCfg.MaximumPaths = &mp
-					}
+		if mpStr, ok := gEntry.Field[niBgpMaxEbgpPathsFld]; ok && strings.TrimSpace(mpStr) != "" {
+			if mpVal, convErr := strconv.ParseUint(strings.TrimSpace(mpStr), 10, 32); convErr == nil {
+				ebgpCfg := getNiBgpGlobalUseMpEbgpCfgObj(ygRoot, niName, protoName, true)
+				if ebgpCfg != nil {
+					mp := uint32(mpVal)
+					ebgpCfg.MaximumPaths = &mp
 				}
 			}
-			if mpStr, ok := afEntry.Field[niBgpMaxIbgpPathsFld]; ok && strings.TrimSpace(mpStr) != "" {
-				if mpVal, convErr := strconv.ParseUint(strings.TrimSpace(mpStr), 10, 32); convErr == nil {
-					ibgpCfg := getNiBgpGlobalUseMpIbgpCfgObj(ygRoot, niName, protoName, true)
-					if ibgpCfg != nil {
-						mp := uint32(mpVal)
-						ibgpCfg.MaximumPaths = &mp
-					}
+		}
+		if mpStr, ok := gEntry.Field[niBgpMaxIbgpPathsFld]; ok && strings.TrimSpace(mpStr) != "" {
+			if mpVal, convErr := strconv.ParseUint(strings.TrimSpace(mpStr), 10, 32); convErr == nil {
+				ibgpCfg := getNiBgpGlobalUseMpIbgpCfgObj(ygRoot, niName, protoName, true)
+				if ibgpCfg != nil {
+					mp := uint32(mpVal)
+					ibgpCfg.MaximumPaths = &mp
 				}
 			}
 		}
@@ -1898,10 +1879,10 @@ var YangToDb_ni_bgp_global_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPara
 			return makeNiBgpGlobalsResMap(reqInfo.niName, map[string]string{niBgpAlwaysCompareMedFld: ""}), nil
 		case "maximum-paths":
 			if reqInfo.targetPathKind == niBgpTargetUseMpEbgpConfig {
-				return makeNiBgpGlobalsAfResMap(reqInfo.niName, map[string]string{niBgpMaxEbgpPathsFld: ""}), nil
+				return makeNiBgpGlobalsResMap(reqInfo.niName, map[string]string{niBgpMaxEbgpPathsFld: ""}), nil
 			}
 			if reqInfo.targetPathKind == niBgpTargetUseMpIbgpConfig {
-				return makeNiBgpGlobalsAfResMap(reqInfo.niName, map[string]string{niBgpMaxIbgpPathsFld: ""}), nil
+				return makeNiBgpGlobalsResMap(reqInfo.niName, map[string]string{niBgpMaxIbgpPathsFld: ""}), nil
 			}
 			return res, tlerr.NotSupportedError{Format: "DELETE not supported for this maximum-paths path", Path: inParams.requestUri}
 		default:
@@ -1965,14 +1946,14 @@ var YangToDb_ni_bgp_global_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPara
 				return res, err
 			}
 			fields[niBgpMaxEbgpPathsFld] = strconv.FormatUint(uint64(*mp), 10)
-			return makeNiBgpGlobalsAfResMap(reqInfo.niName, fields), nil
+			return makeNiBgpGlobalsResMap(reqInfo.niName, fields), nil
 		}
 		mp, err := parseNiBgpUseMpIbgpMaxPaths(inParams)
 		if err != nil {
 			return res, err
 		}
 		fields[niBgpMaxIbgpPathsFld] = strconv.FormatUint(uint64(*mp), 10)
-		return makeNiBgpGlobalsAfResMap(reqInfo.niName, fields), nil
+		return makeNiBgpGlobalsResMap(reqInfo.niName, fields), nil
 	default:
 		switch reqInfo.targetPathKind {
 		case niBgpTargetGlobalCfg:
@@ -2024,7 +2005,7 @@ var YangToDb_ni_bgp_global_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPara
 			if len(fields) == 0 {
 				return res, tlerr.InvalidArgsError{Format: "BGP global use-multiple-paths eBGP config payload missing supported field (maximum-paths)"}
 			}
-			return makeNiBgpGlobalsAfResMap(reqInfo.niName, fields), nil
+			return makeNiBgpGlobalsResMap(reqInfo.niName, fields), nil
 		case niBgpTargetUseMpIbgpConfig:
 			if mp, ok := parseNiBgpUseMpEbgpMaxPathsFromParam(inParams.param); ok {
 				fields[niBgpMaxIbgpPathsFld] = strconv.FormatUint(uint64(*mp), 10)
@@ -2038,7 +2019,7 @@ var YangToDb_ni_bgp_global_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPara
 			if len(fields) == 0 {
 				return res, tlerr.InvalidArgsError{Format: "BGP global use-multiple-paths iBGP config payload missing supported field (maximum-paths)"}
 			}
-			return makeNiBgpGlobalsAfResMap(reqInfo.niName, fields), nil
+			return makeNiBgpGlobalsResMap(reqInfo.niName, fields), nil
 		}
 	}
 
@@ -2132,50 +2113,42 @@ var DbToYang_ni_bgp_global_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrPara
 	}
 
 	if reqInfo.targetPathKind == niBgpTargetUseMpEbgpConfig {
+		entry, err := cfgDb.GetEntry(&db.TableSpec{Name: niBgpGlobalsTbl}, db.Key{Comp: []string{reqInfo.niName}})
+		if err != nil {
+			return err
+		}
 		ebgpCfgObj := getNiBgpGlobalUseMpEbgpCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.protoName, true)
 		if ebgpCfgObj == nil {
 			return tlerr.InvalidArgsError{Format: "Unable to locate BGP global use-multiple-paths eBGP config object in YANG tree"}
 		}
-		for _, afi := range []string{niBgpAfiSafiIPv4, niBgpAfiSafiIPv6} {
-			entry, err := cfgDb.GetEntry(&db.TableSpec{Name: niBgpGlobalsAfTbl}, db.Key{Comp: []string{reqInfo.niName, afi}})
-			if err != nil {
-				continue
-			}
-			mpStr, ok := entry.Field[niBgpMaxEbgpPathsFld]
-			if !ok || strings.TrimSpace(mpStr) == "" {
-				continue
-			}
+		mpStr, ok := entry.Field[niBgpMaxEbgpPathsFld]
+		if ok && strings.TrimSpace(mpStr) != "" {
 			mpVal, err := strconv.ParseUint(strings.TrimSpace(mpStr), 10, 32)
 			if err != nil {
 				return err
 			}
 			mp := uint32(mpVal)
 			ebgpCfgObj.MaximumPaths = &mp
-			break
 		}
 		return nil
 	}
 	if reqInfo.targetPathKind == niBgpTargetUseMpIbgpConfig {
+		entry, err := cfgDb.GetEntry(&db.TableSpec{Name: niBgpGlobalsTbl}, db.Key{Comp: []string{reqInfo.niName}})
+		if err != nil {
+			return err
+		}
 		ibgpCfgObj := getNiBgpGlobalUseMpIbgpCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.protoName, true)
 		if ibgpCfgObj == nil {
 			return tlerr.InvalidArgsError{Format: "Unable to locate BGP global use-multiple-paths iBGP config object in YANG tree"}
 		}
-		for _, afi := range []string{niBgpAfiSafiIPv4, niBgpAfiSafiIPv6} {
-			entry, err := cfgDb.GetEntry(&db.TableSpec{Name: niBgpGlobalsAfTbl}, db.Key{Comp: []string{reqInfo.niName, afi}})
-			if err != nil {
-				continue
-			}
-			mpStr, ok := entry.Field[niBgpMaxIbgpPathsFld]
-			if !ok || strings.TrimSpace(mpStr) == "" {
-				continue
-			}
+		mpStr, ok := entry.Field[niBgpMaxIbgpPathsFld]
+		if ok && strings.TrimSpace(mpStr) != "" {
 			mpVal, err := strconv.ParseUint(strings.TrimSpace(mpStr), 10, 32)
 			if err != nil {
 				return err
 			}
 			mp := uint32(mpVal)
 			ibgpCfgObj.MaximumPaths = &mp
-			break
 		}
 		return nil
 	}
