@@ -2503,6 +2503,11 @@ var intf_pre_xfmr PreXfmrFunc = func(inParams XfmrParams) error {
 				errStr += requestUriPath
 				return tlerr.InvalidArgsError{Format: errStr}
 			}
+		case "/openconfig-interfaces:interfaces/interface/config":
+			if inParams.oper == DELETE {
+				errStr += requestUriPath
+				return tlerr.InvalidArgsError{Format: errStr}
+			}
 		}
 	}
 	return err
