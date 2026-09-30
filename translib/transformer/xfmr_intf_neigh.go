@@ -232,10 +232,10 @@ func yangToDbIntfNeighXfmr(inParams XfmrParams, ipv6 bool) (map[string]map[strin
 		return neighMap, errors.New("Invalid interface type")
 	}
 	if intfType != IntfTypeEthernet && intfType != IntfTypePortChannel {
+		if inParams.oper == DELETE && !isNeighborPath(inParams.requestUri) {
+			return neighMap, nil
+		}
 		return neighMap, tlerr.NotSupported(ipVersion + " neighbors are only supported on Ethernet and PortChannel interfaces")
-	}
-	if IntfTypeVlan == intfType {
-		return neighMap, nil
 	}
 
 	if inParams.oper == DELETE {
