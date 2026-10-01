@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/Azure/sonic-mgmt-common/translib/db"
+	"github.com/Azure/sonic-mgmt-common/translib/ocbinds"
 )
 
 func TestBridgeIdToMacPriorityDottedFormat(t *testing.T) {
@@ -75,6 +76,19 @@ func TestBridgeIdToMacPriorityRemoteRoot(t *testing.T) {
 	}
 	if mac != "b8:6a:97:e2:4e:9c" {
 		t.Fatalf("expected mac b8:6a:97:e2:4e:9c, got %q", mac)
+	}
+}
+
+func TestMapPortStateToOcDiscarding(t *testing.T) {
+	// Alternate ports are published as DISCARDING; OC has no DISCARDING identity.
+	if got := mapPortStateToOc("DISCARDING"); got != ocbinds.OpenconfigSpanningTreeTypes_STP_PORT_STATE_BLOCKING {
+		t.Fatalf("DISCARDING must map to BLOCKING, got %v", got)
+	}
+	if got := mapPortStateToOc("BLOCKING"); got != ocbinds.OpenconfigSpanningTreeTypes_STP_PORT_STATE_BLOCKING {
+		t.Fatalf("BLOCKING must map to BLOCKING, got %v", got)
+	}
+	if got := mapPortStateToOc("FORWARDING"); got != ocbinds.OpenconfigSpanningTreeTypes_STP_PORT_STATE_FORWARDING {
+		t.Fatalf("FORWARDING must map to FORWARDING, got %v", got)
 	}
 }
 

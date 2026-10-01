@@ -663,7 +663,9 @@ func mapPortStateToOc(state string) ocbinds.E_OpenconfigSpanningTreeTypes_STP_PO
 		return ocbinds.OpenconfigSpanningTreeTypes_STP_PORT_STATE_LISTENING
 	case "LEARNING":
 		return ocbinds.OpenconfigSpanningTreeTypes_STP_PORT_STATE_LEARNING
-	case "BLOCKING":
+	case "BLOCKING", "DISCARDING":
+		// MSTP publishes BLOCKING as DISCARDING (MSTP_STATE_STRING). Alternate
+		// and backup ports stay in that state, so map it to the OC BLOCKING identity.
 		return ocbinds.OpenconfigSpanningTreeTypes_STP_PORT_STATE_BLOCKING
 	case "FORWARDING":
 		return ocbinds.OpenconfigSpanningTreeTypes_STP_PORT_STATE_FORWARDING
