@@ -868,6 +868,27 @@ const (
 	GNMI_CERT_ID = "certificate_id"
 )
 
+// grpcServerDefaultDscp is the YANG default of the grpc-server config/dscp
+// leaf, or nil if the model declares none.
+var grpcServerDefaultDscp = yangDefaultUint8("OpenconfigSystem_System_GrpcServers_GrpcServer_Config", "dscp")
+
+// yangDefaultUint8 returns the YANG default of leaf in the ygot struct named
+// structName, or nil if the leaf has no parsable default.
+func yangDefaultUint8(structName, leaf string) *uint8 {
+	entry := ocbinds.SchemaTree[structName]
+	if entry == nil || entry.Dir[leaf] == nil || entry.Dir[leaf].Default == "" {
+		log.Warningf("no YANG default for %s/%s", structName, leaf)
+		return nil
+	}
+	d, err := strconv.ParseUint(entry.Dir[leaf].Default, 10, 8)
+	if err != nil {
+		log.Warningf("bad YANG default %q for %s/%s: %v", entry.Dir[leaf].Default, structName, leaf, err)
+		return nil
+	}
+	v := uint8(d)
+	return &v
+}
+
 // validateCertificateId rejects a binding to an SSL profile the device does not
 // have. gNSI Certz publishes a CREDENTIALS|CERT|<profile> entry for every
 // profile holding credentials, so that table is the list of bindable ids. The
@@ -1104,14 +1125,26 @@ var DbToYang_grpc_server_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) er
 					serverObj.Config.Port = &port
 				}
 			}
+		}
+		// An unset or out-of-range dscp leaves the server marking with the
+		// YANG default, so report that rather than leaving the leaf absent.
+		var cfgDscp *uint8
+		if grpcServerDefaultDscp != nil {
+			d := *grpcServerDefaultDscp
+			cfgDscp = &d
+		}
+		if gnmiCfgOk {
 			if dscpStr := gnmiCfg.Get("dscp"); dscpStr != "" {
-				if d, derr := strconv.ParseUint(dscpStr, 10, 8); derr == nil {
-					cfgDscp := uint8(d)
-					stDscp := cfgDscp
-					serverObj.Config.Dscp = &cfgDscp
-					serverObj.State.Dscp = &stDscp
+				if d, derr := strconv.ParseUint(dscpStr, 10, 8); derr == nil && d <= 63 {
+					v := uint8(d)
+					cfgDscp = &v
 				}
 			}
+		}
+		if cfgDscp != nil {
+			stDscp := *cfgDscp
+			serverObj.Config.Dscp = cfgDscp
+			serverObj.State.Dscp = &stDscp
 		}
 		// There is a single gRPC listener and a single binding for it in
 		// GNMI|gnmi, but this list is keyed from CREDENTIALS|CERT, so every
