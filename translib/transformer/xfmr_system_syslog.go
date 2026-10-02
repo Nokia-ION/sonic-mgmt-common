@@ -17,6 +17,7 @@ import (
 
 const (
 	SYSLOG_SERVER_TABLE_NAME                     = "SYSLOG_SERVER"
+	SYSLOG_LOGGING_PATH                          = "/openconfig-system:system/logging"
 	SYSLOG_SERVERS_PATH                          = "/openconfig-system:system/logging/remote-servers"
 	SYSLOG_SERVER_PATH                           = "/openconfig-system:system/logging/remote-servers/remote-server"
 	syslogServerKeyField                         = "host"
@@ -214,6 +215,107 @@ func syslogTransportSecurityFromParam(param interface{}) (bool, bool) {
 	return false, false
 }
 
+func syslogTrimmedString(v *string) string {
+	if v == nil {
+		return ""
+	}
+	return strings.TrimSpace(*v)
+}
+
+func syslogParseHostFromParam(param interface{}) (string, bool) {
+	switch val := param.(type) {
+	case string:
+		s := strings.TrimSpace(val)
+		return s, s != ""
+	case *string:
+		if val != nil {
+			s := strings.TrimSpace(*val)
+			return s, s != ""
+		}
+	}
+	return "", false
+}
+
+func syslogCheckRemoteServerHostKey(targetKey string, server *ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer) error {
+	if targetKey == "" || server == nil {
+		return nil
+	}
+	if host := syslogTrimmedString(server.Host); host != "" && host != targetKey {
+		return tlerr.InvalidArgsError{
+			Format: fmt.Sprintf("remote-server host payload (%s) does not match key (%s)", host, targetKey),
+		}
+	}
+	if server.Config != nil {
+		if host := syslogTrimmedString(server.Config.Host); host != "" && host != targetKey {
+			return tlerr.InvalidArgsError{
+				Format: fmt.Sprintf("remote-server config host payload (%s) does not match key (%s)", host, targetKey),
+			}
+		}
+	}
+	return nil
+}
+
+func syslogCheckRemoteServerHostLeafParam(targetUriPath, targetKey string, param interface{}) error {
+	if targetKey == "" || !strings.HasSuffix(targetUriPath, "/host") {
+		return nil
+	}
+	if host, ok := syslogParseHostFromParam(param); ok && host != targetKey {
+		return tlerr.InvalidArgsError{
+			Format: fmt.Sprintf("remote-server host payload (%s) does not match key (%s)", host, targetKey),
+		}
+	}
+	return nil
+}
+
+// syslogPathInfoForTarget picks uri vs requestUri for path/key resolution.
+// Subtree transformers run with uri at the mount point (e.g. /remote-servers).
+// requestUri is the client path and may be an ancestor (/logging), the list
+// (/remote-servers), or a keyed instance (/remote-server[host=...]).
+func syslogPathInfoForTarget(inParams XfmrParams) *PathInfo {
+	pathInfo := NewPathInfo(inParams.uri)
+	if inParams.requestUri == "" || inParams.requestUri == inParams.uri {
+		return pathInfo
+	}
+	reqPathInfo := NewPathInfo(inParams.requestUri)
+	// Ancestor or list-level client path: classify from subtree callback uri.
+	if reqPathInfo.Var(syslogServerKeyField) == "" {
+		return pathInfo
+	}
+	// Keyed client path while callback uri has no host key.
+	if pathInfo.Var(syslogServerKeyField) == "" {
+		return reqPathInfo
+	}
+	reqPath, err := getYangPathFromUri(inParams.requestUri)
+	if err != nil {
+		return pathInfo
+	}
+	uriPath, err := getYangPathFromUri(inParams.uri)
+	if err != nil {
+		return reqPathInfo
+	}
+	if isMoreSpecificPath(reqPath, uriPath) {
+		return reqPathInfo
+	}
+	return pathInfo
+}
+
+func syslogEffectiveUri(inParams XfmrParams) string {
+	return syslogPathInfoForTarget(inParams).Path
+}
+
+func syslogTargetFromParams(inParams XfmrParams) (string, string, error) {
+	pathInfo := syslogPathInfoForTarget(inParams)
+	targetUriPath, err := getYangPathFromUri(pathInfo.Path)
+	if err != nil {
+		return "", "", err
+	}
+	targetKey := inParams.key
+	if targetKey == "" {
+		targetKey = pathInfo.Var(syslogServerKeyField)
+	}
+	return targetUriPath, targetKey, nil
+}
+
 func syslogServerFromLeafUpdate(inParams XfmrParams, targetUriPath, host string, servers map[string]*ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer) *ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer {
 	if servers != nil && servers[host] != nil {
 		return servers[host]
@@ -339,7 +441,7 @@ func syslogSeverityFromURI(uri string) (string, error) {
 	return "", tlerr.InvalidArgsError{Format: fmt.Sprintf("unsupported syslog severity %s", severityName)}
 }
 
-func applySelectorToFields(fields map[string]string, server *ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer, uri string) error {
+func applySelectorToFields(fields map[string]string, server *ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer, uri string, mergeMode syslogDbMergeMode) error {
 	severity := ""
 	facility := ""
 	var err error
@@ -349,13 +451,25 @@ func applySelectorToFields(fields map[string]string, server *ocbinds.OpenconfigS
 			return err
 		}
 	}
-	if severity == "" {
+	selectorLeafReplace := mergeMode == syslogMergeConfigFieldsOnly && isSyslogSelectorLeafPath(uri)
+	selectorContainerReplace := mergeMode == syslogMergeConfigFieldsOnly && isSyslogSelectorContainerReplacePath(uri)
+	// Leaf REPLACE on config/facility or config/severity must not pull the
+	// other selector field from URI list keys; preserve it from CONFIG_DB.
+	// Container/list REPLACE (/selectors, /selector, /selector/config) must
+	// not use URI keys or DB for omitted fields; omitted leaves are deleted.
+	skipSeverityFromURI := selectorLeafReplace && isSyslogSelectorFacilityLeafPath(uri)
+	skipFacilityFromURI := selectorLeafReplace && isSyslogSelectorSeverityLeafPath(uri)
+	if selectorContainerReplace {
+		skipSeverityFromURI = true
+		skipFacilityFromURI = true
+	}
+	if severity == "" && !skipSeverityFromURI {
 		severity, err = syslogSeverityFromURI(uri)
 		if err != nil {
 			return err
 		}
 	}
-	if facility == "" {
+	if facility == "" && !skipFacilityFromURI {
 		facility, err = syslogFacilityFromURI(uri)
 		if err != nil {
 			return err
@@ -396,21 +510,40 @@ func syslogSelectorFromSelectors(selectors *ocbinds.OpenconfigSystem_System_Logg
 	return "", "", nil
 }
 
-func populateSyslogServerSelectors(serverObj *ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer, dbSeverity, dbFacility string) error {
-	ocSeverity, ok := dbSeverityToOc(dbSeverity)
-	if !ok {
+func populateSyslogServerSelectors(serverObj *ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer, dbSeverity, dbFacility string, hasSeverity, hasFacility bool) error {
+	if !hasSeverity && !hasFacility {
 		return nil
 	}
-	ocFacility, ok := dbFacilityToOc(dbFacility)
-	if !ok {
-		ocFacility = ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_ALL
+	var ocSeverity ocbinds.E_OpenconfigSystemLogging_SyslogSeverity
+	if hasSeverity {
+		mapped, ok := dbSeverityToOc(dbSeverity)
+		if !ok {
+			return nil
+		}
+		ocSeverity = mapped
+	}
+	var ocFacility ocbinds.E_OpenconfigSystemLogging_SYSLOG_FACILITY
+	if hasFacility {
+		mapped, ok := dbFacilityToOc(dbFacility)
+		if !ok {
+			return nil
+		}
+		ocFacility = mapped
 	}
 	if serverObj.Selectors == nil {
 		serverObj.Selectors = &ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer_Selectors{}
 	}
+	keyFacility := ocFacility
+	if !hasFacility {
+		keyFacility = ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_UNSET
+	}
+	keySeverity := ocSeverity
+	if !hasSeverity {
+		keySeverity = ocbinds.OpenconfigSystemLogging_SyslogSeverity_UNSET
+	}
 	selectorKey := ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer_Selectors_Selector_Key{
-		Facility: ocFacility,
-		Severity: ocSeverity,
+		Facility: keyFacility,
+		Severity: keySeverity,
 	}
 	selector, err := serverObj.Selectors.NewSelector(selectorKey.Facility, selectorKey.Severity)
 	if err != nil {
@@ -427,10 +560,16 @@ func populateSyslogServerSelectors(serverObj *ocbinds.OpenconfigSystem_System_Lo
 	if selector.State == nil {
 		selector.State = &ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer_Selectors_Selector_State{}
 	}
-	selector.Config.Facility = ocFacility
-	selector.Config.Severity = ocSeverity
-	selector.State.Facility = ocFacility
-	selector.State.Severity = ocSeverity
+	if hasFacility {
+		selector.Facility = ocFacility
+		selector.Config.Facility = ocFacility
+		selector.State.Facility = ocFacility
+	}
+	if hasSeverity {
+		selector.Severity = ocSeverity
+		selector.Config.Severity = ocSeverity
+		selector.State.Severity = ocSeverity
+	}
 	return nil
 }
 
@@ -509,30 +648,200 @@ func applySyslogTlsSemantics(fields map[string]string, cfg *ocbinds.OpenconfigSy
 	return delFields, nil
 }
 
-func syslogServerDbMutationFromYang(cfgDb *db.DB, host string, server *ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer, mergeExisting bool, uri string) (db.Value, map[string]string, error) {
-	fields := syslogServerConfigToDbFields(nil)
+type syslogDbMergeMode int
+
+const (
+	syslogMergeNone syslogDbMergeMode = 0
+	syslogMergeAll  syslogDbMergeMode = 1
+	// REPLACE on the remote-server config container: replace config leaves from
+	// payload and preserve selector fields (severity/facility).
+	syslogMergeSelectorsOnly syslogDbMergeMode = 2
+	// REPLACE on selectors subtree: replace selector leaves from payload and
+	// preserve server config fields (port/source/vrf/TLS).
+	syslogMergeConfigFieldsOnly syslogDbMergeMode = 3
+)
+
+var syslogConfigDbFields = []string{
+	SYSLOG_FIELD_PORT,
+	SYSLOG_FIELD_SOURCE,
+	SYSLOG_FIELD_VRF,
+	SYSLOG_FIELD_TRANSPORT_SEC,
+	SYSLOG_FIELD_TLS_PROFILE_ID,
+	SYSLOG_FIELD_PROTOCOL,
+}
+
+var syslogSelectorDbFields = []string{
+	SYSLOG_FIELD_SEVERITY,
+	SYSLOG_FIELD_FACILITY,
+}
+
+func isSyslogConfigContainerPath(targetUriPath string) bool {
+	path := strings.TrimSuffix(targetUriPath, "/")
+	if !strings.HasSuffix(path, "/config") {
+		return false
+	}
+	if strings.Contains(path, "/config/") {
+		return false
+	}
+	return !isSyslogSelectorSubtreePath(path)
+}
+
+func isSyslogSelectorSubtreePath(targetUriPath string) bool {
+	return strings.Contains(targetUriPath, "/selectors")
+}
+
+func isSyslogSelectorFacilityLeafPath(uri string) bool {
+	path := strings.TrimSuffix(uri, "/")
+	return strings.HasSuffix(path, "/config/facility")
+}
+
+func isSyslogSelectorSeverityLeafPath(uri string) bool {
+	path := strings.TrimSuffix(uri, "/")
+	return strings.HasSuffix(path, "/config/severity")
+}
+
+func isSyslogSelectorLeafPath(uri string) bool {
+	return isSyslogSelectorFacilityLeafPath(uri) || isSyslogSelectorSeverityLeafPath(uri)
+}
+
+// Container/list REPLACE paths under selectors (not individual leaves).
+func isSyslogSelectorContainerReplacePath(uri string) bool {
+	return isSyslogSelectorSubtreePath(uri) && !isSyslogSelectorLeafPath(uri)
+}
+
+func syslogResolveDbMergeMode(oper Operation, targetUriPath string, isListOp, isServerOp bool, targetKey string) syslogDbMergeMode {
+	if isListOp || targetKey == "" {
+		return syslogMergeNone
+	}
+	if oper == UPDATE {
+		return syslogMergeAll
+	}
+	if oper != REPLACE {
+		return syslogMergeNone
+	}
+	if isServerOp {
+		return syslogMergeNone
+	}
+	if isSyslogConfigContainerPath(targetUriPath) {
+		return syslogMergeSelectorsOnly
+	}
+	if isSyslogSelectorSubtreePath(targetUriPath) {
+		return syslogMergeConfigFieldsOnly
+	}
+	return syslogMergeAll
+}
+
+func syslogPreserveConfigFields(fields, existing map[string]string) {
+	for _, k := range syslogConfigDbFields {
+		if v, ok := existing[k]; ok {
+			fields[k] = v
+		}
+	}
+}
+
+func syslogPreserveSelectorFields(fields, existing map[string]string) {
+	if sev, ok := existing[SYSLOG_FIELD_SEVERITY]; ok {
+		fields[SYSLOG_FIELD_SEVERITY] = sev
+	}
+	if fac, ok := existing[SYSLOG_FIELD_FACILITY]; ok {
+		fields[SYSLOG_FIELD_FACILITY] = fac
+	}
+}
+
+func syslogPreserveUnsetSelectorFields(fields, existing map[string]string) {
+	if !fieldsHasKey(fields, SYSLOG_FIELD_SEVERITY) {
+		if sev, ok := existing[SYSLOG_FIELD_SEVERITY]; ok && sev != "" {
+			fields[SYSLOG_FIELD_SEVERITY] = sev
+		}
+	}
+	if !fieldsHasKey(fields, SYSLOG_FIELD_FACILITY) {
+		if fac, ok := existing[SYSLOG_FIELD_FACILITY]; ok && fac != "" {
+			fields[SYSLOG_FIELD_FACILITY] = fac
+		}
+	}
+}
+
+func syslogConfigReplaceDelFields(existing, fields map[string]string) map[string]string {
+	delFields := make(map[string]string)
+	for _, k := range syslogConfigDbFields {
+		old, hadOld := existing[k]
+		if hadOld && !fieldsHasKey(fields, k) {
+			delFields[k] = old
+		}
+	}
+	return delFields
+}
+
+func syslogSelectorReplaceDelFields(existing, fields map[string]string) map[string]string {
+	delFields := make(map[string]string)
+	for _, k := range syslogSelectorDbFields {
+		old, hadOld := existing[k]
+		if hadOld && !fieldsHasKey(fields, k) {
+			delFields[k] = old
+		}
+	}
+	return delFields
+}
+
+func fieldsHasKey(fields map[string]string, key string) bool {
+	_, ok := fields[key]
+	return ok
+}
+
+func mergeSyslogDelFields(dst, src map[string]string) map[string]string {
+	if dst == nil {
+		dst = make(map[string]string)
+	}
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
+func syslogServerDbMutationFromYang(cfgDb *db.DB, host string, server *ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer, mergeMode syslogDbMergeMode, uri string) (db.Value, map[string]string, error) {
+	fields := map[string]string{nullKey: nullKey}
 	existing := map[string]string{}
-	if mergeExisting && cfgDb != nil {
+	if cfgDb != nil {
 		if entry, err := dbGetEntry(cfgDb, &db.TableSpec{Name: SYSLOG_SERVER_TABLE_NAME}, db.Key{Comp: []string{host}}); err == nil {
 			for k, v := range entry.Field {
-				fields[k] = v
 				existing[k] = v
 			}
 		}
+	}
+	switch mergeMode {
+	case syslogMergeAll:
+		for k, v := range existing {
+			fields[k] = v
+		}
+	case syslogMergeSelectorsOnly:
+		syslogPreserveSelectorFields(fields, existing)
+	case syslogMergeConfigFieldsOnly:
+		syslogPreserveConfigFields(fields, existing)
 	}
 	var cfg *ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer_Config
 	if server != nil && server.Config != nil {
 		cfg = server.Config
 		for k, v := range syslogServerConfigToDbFields(cfg) {
-			fields[k] = v
+			if k != nullKey {
+				fields[k] = v
+			}
 		}
 	}
-	if err := applySelectorToFields(fields, server, uri); err != nil {
+	if err := applySelectorToFields(fields, server, uri, mergeMode); err != nil {
 		return db.Value{}, nil, err
+	}
+	if mergeMode == syslogMergeConfigFieldsOnly && isSyslogSelectorLeafPath(uri) {
+		syslogPreserveUnsetSelectorFields(fields, existing)
 	}
 	delFields, err := applySyslogTlsSemantics(fields, cfg, existing)
 	if err != nil {
 		return db.Value{}, nil, err
+	}
+	if mergeMode == syslogMergeSelectorsOnly {
+		delFields = mergeSyslogDelFields(delFields, syslogConfigReplaceDelFields(existing, fields))
+	}
+	if mergeMode == syslogMergeConfigFieldsOnly && isSyslogSelectorContainerReplacePath(uri) {
+		delFields = mergeSyslogDelFields(delFields, syslogSelectorReplaceDelFields(existing, fields))
 	}
 	if err := validateSyslogServerDbFields(fields); err != nil {
 		return db.Value{}, nil, err
@@ -543,8 +852,8 @@ func syslogServerDbMutationFromYang(cfgDb *db.DB, host string, server *ocbinds.O
 	return db.Value{Field: fields}, delFields, nil
 }
 
-func syslogServerDbValueFromYang(cfgDb *db.DB, host string, server *ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer, mergeExisting bool, uri string) (db.Value, error) {
-	value, _, err := syslogServerDbMutationFromYang(cfgDb, host, server, mergeExisting, uri)
+func syslogServerDbValueFromYang(cfgDb *db.DB, host string, server *ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer, mergeMode syslogDbMergeMode, uri string) (db.Value, error) {
+	value, _, err := syslogServerDbMutationFromYang(cfgDb, host, server, mergeMode, uri)
 	return value, err
 }
 
@@ -565,8 +874,8 @@ func addSyslogYangAuxFields(inParams XfmrParams, host string, fields map[string]
 	inParams.yangAuxValMap[SYSLOG_SERVER_TABLE_NAME][host] = entry
 }
 
-func storeSyslogServerDbMutation(inParams XfmrParams, cfgDb *db.DB, syslogTableOps map[string]db.Value, host string, server *ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer, mergeExisting bool) error {
-	value, delFields, err := syslogServerDbMutationFromYang(cfgDb, host, server, mergeExisting, inParams.uri)
+func storeSyslogServerDbMutation(inParams XfmrParams, cfgDb *db.DB, syslogTableOps map[string]db.Value, host string, server *ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer, mergeMode syslogDbMergeMode) error {
+	value, delFields, err := syslogServerDbMutationFromYang(cfgDb, host, server, mergeMode, syslogEffectiveUri(inParams))
 	if err != nil {
 		return err
 	}
@@ -677,9 +986,10 @@ func populateSyslogServerFromDbEntry(host string, entry db.Value) *ocbinds.Openc
 		serverObj.Config.NetworkInstance = ygot.String(vrf)
 		serverObj.State.NetworkInstance = ygot.String(vrf)
 	}
-	if severity, ok := entry.Field[SYSLOG_FIELD_SEVERITY]; ok {
-		dbFacility := entry.Field[SYSLOG_FIELD_FACILITY]
-		_ = populateSyslogServerSelectors(serverObj, severity, dbFacility)
+	dbSeverity, hasSeverity := entry.Field[SYSLOG_FIELD_SEVERITY]
+	dbFacility, hasFacility := entry.Field[SYSLOG_FIELD_FACILITY]
+	if hasSeverity || hasFacility {
+		_ = populateSyslogServerSelectors(serverObj, dbSeverity, dbFacility, hasSeverity, hasFacility)
 	}
 	return serverObj
 }
@@ -762,8 +1072,8 @@ var YangToDb_remote_servers_list_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPa
 	if inParams.invokeCRUSubtreeOnce != nil {
 		*inParams.invokeCRUSubtreeOnce = true
 	}
-	log.V(lvl.DEBUG).Infof("Inside YangToDb_remote_servers_list_xfmr: op=%v, uri=%s",
-		inParams.oper, inParams.uri)
+	log.V(lvl.DEBUG).Infof("Inside YangToDb_remote_servers_list_xfmr: op=%v, uri=%s, requestUri=%s",
+		inParams.oper, inParams.uri, inParams.requestUri)
 	cfgDb := inParams.dbs[db.ConfigDB]
 	if cfgDb == nil {
 		cfgDb, err = db.NewDB(getDBOptions(db.ConfigDB))
@@ -779,13 +1089,12 @@ var YangToDb_remote_servers_list_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPa
 	dbMutations := map[string]map[string]db.Value{
 		SYSLOG_SERVER_TABLE_NAME: syslogTableOps,
 	}
-	targetUriPath, err := getYangPathFromUri(inParams.uri)
+	targetUriPath, targetKey, err := syslogTargetFromParams(inParams)
 	if err != nil {
 		return nil, tlerr.InternalError{
-			Format: fmt.Sprintf("Failed to get YANG path from URI %s: %v", inParams.uri, err),
+			Format: fmt.Sprintf("Failed to get YANG path from URI %s: %v", syslogEffectiveUri(inParams), err),
 		}
 	}
-	targetKey := keyFromInParamsOrUri(inParams, syslogServerKeyField)
 	isListOp := targetUriPath == SYSLOG_SERVERS_PATH ||
 		(targetUriPath == SYSLOG_SERVER_PATH && targetKey == "")
 	isServerOp := targetUriPath == SYSLOG_SERVER_PATH && targetKey != ""
@@ -898,21 +1207,34 @@ var YangToDb_remote_servers_list_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPa
 		newServersMap = make(map[string]*ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer)
 	}
 	if inParams.oper == UPDATE || inParams.oper == REPLACE {
-		// UPDATE must merge existing DB state even at list URI so profile-only
-		// changes on an already-TLS server see transport-security/protocol from DB.
-		mergeExisting := inParams.oper == UPDATE
+		if err := syslogCheckRemoteServerHostLeafParam(targetUriPath, targetKey, inParams.param); err != nil {
+			return nil, err
+		}
+		mergeMode := syslogResolveDbMergeMode(inParams.oper, targetUriPath, isListOp, isServerOp, targetKey)
 		if isListOp {
+			listMergeMode := mergeMode
+			if inParams.oper == REPLACE {
+				listMergeMode = syslogMergeNone
+			}
 			for host, server := range newServersMap {
-				if err := storeSyslogServerDbMutation(inParams, cfgDb, syslogTableOps, host, server, mergeExisting); err != nil {
+				if err := syslogCheckRemoteServerHostKey(host, server); err != nil {
+					return nil, err
+				}
+				if err := storeSyslogServerDbMutation(inParams, cfgDb, syslogTableOps, host, server, listMergeMode); err != nil {
 					return nil, err
 				}
 			}
 		} else if targetKey != "" {
+			if server := newServersMap[targetKey]; server != nil {
+				if err := syslogCheckRemoteServerHostKey(targetKey, server); err != nil {
+					return nil, err
+				}
+			}
 			if inParams.oper == REPLACE && isServerOp && newServersMap[targetKey] == nil {
 				syslogTableOps[targetKey] = db.Value{}
 			} else {
 				server := syslogServerFromLeafUpdate(inParams, targetUriPath, targetKey, newServersMap)
-				if err := storeSyslogServerDbMutation(inParams, cfgDb, syslogTableOps, targetKey, server, mergeExisting); err != nil {
+				if err := storeSyslogServerDbMutation(inParams, cfgDb, syslogTableOps, targetKey, server, mergeMode); err != nil {
 					return nil, err
 				}
 			}

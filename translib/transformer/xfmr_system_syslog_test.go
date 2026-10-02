@@ -48,6 +48,40 @@ func newSyslogRemoteServerWithSeverity(host string, severity ocbinds.E_Openconfi
 	return newSyslogRemoteServerWithSelector(host, ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_ALL, severity)
 }
 
+func newSyslogRemoteServerWithFacilityOnly(host string, facility ocbinds.E_OpenconfigSystemLogging_SYSLOG_FACILITY) *ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer {
+	server := newSyslogRemoteServer(host, nil, nil, nil, nil, nil)
+	server.Selectors = &ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer_Selectors{}
+	selectorKey := ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer_Selectors_Selector_Key{
+		Facility: facility,
+		Severity: ocbinds.OpenconfigSystemLogging_SyslogSeverity_NOTICE,
+	}
+	selector, err := server.Selectors.NewSelector(selectorKey.Facility, selectorKey.Severity)
+	if err != nil {
+		panic(err)
+	}
+	selector.Config = &ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer_Selectors_Selector_Config{
+		Facility: facility,
+	}
+	return server
+}
+
+func newSyslogRemoteServerWithSeverityOnly(host string, severity ocbinds.E_OpenconfigSystemLogging_SyslogSeverity) *ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer {
+	server := newSyslogRemoteServer(host, nil, nil, nil, nil, nil)
+	server.Selectors = &ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer_Selectors{}
+	selectorKey := ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer_Selectors_Selector_Key{
+		Facility: ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_ALL,
+		Severity: severity,
+	}
+	selector, err := server.Selectors.NewSelector(selectorKey.Facility, selectorKey.Severity)
+	if err != nil {
+		panic(err)
+	}
+	selector.Config = &ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer_Selectors_Selector_Config{
+		Severity: severity,
+	}
+	return server
+}
+
 func newSyslogRemoteServerWithSelector(host string, facility ocbinds.E_OpenconfigSystemLogging_SYSLOG_FACILITY, severity ocbinds.E_OpenconfigSystemLogging_SyslogSeverity) *ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer {
 	server := newSyslogRemoteServer(host, nil, nil, nil, nil, nil)
 	server.Selectors = &ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer_Selectors{}
@@ -225,8 +259,26 @@ func TestPopulateSyslogServerFromDbEntry_Severity(t *testing.T) {
 		if selector.Config == nil || selector.Config.Severity != ocbinds.OpenconfigSystemLogging_SyslogSeverity_NOTICE {
 			t.Fatalf("unexpected selector severity: %#v", selector.Config)
 		}
-		if selector.Config.Facility != ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_ALL {
+		if selector.Config.Facility != ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_UNSET {
 			t.Fatalf("unexpected selector facility: %v", selector.Config.Facility)
+		}
+	}
+}
+
+func TestPopulateSyslogServerFromDbEntry_FacilityOnly(t *testing.T) {
+	entry := db.Value{Field: map[string]string{
+		SYSLOG_FIELD_FACILITY: "local4",
+	}}
+	server := populateSyslogServerFromDbEntry(syslogTestHost1, entry)
+	if server.Selectors == nil || len(server.Selectors.Selector) != 1 {
+		t.Fatalf("expected one selector, got %#v", server.Selectors)
+	}
+	for _, selector := range server.Selectors.Selector {
+		if selector.Config == nil || selector.Config.Facility != ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_LOCAL4 {
+			t.Fatalf("unexpected selector facility: %#v", selector.Config)
+		}
+		if selector.Config.Severity != ocbinds.OpenconfigSystemLogging_SyslogSeverity_UNSET {
+			t.Fatalf("unexpected selector severity: %v", selector.Config.Severity)
 		}
 	}
 }
@@ -373,7 +425,7 @@ func TestSyslogSeverityMapping(t *testing.T) {
 
 func TestSyslogServerDbValueFromURI(t *testing.T) {
 	uri := SYSLOG_SERVER_PATH + "/selectors/selector[facility=ALL][severity=NOTICE]/config/severity"
-	value, err := syslogServerDbValueFromYang(nil, syslogTestHost1, nil, false, uri)
+	value, err := syslogServerDbValueFromYang(nil, syslogTestHost1, nil, syslogMergeNone, uri)
 	if err != nil {
 		t.Fatalf("syslogServerDbValueFromYang() error = %v", err)
 	}
@@ -385,7 +437,7 @@ func TestSyslogServerDbValueFromURI(t *testing.T) {
 	}
 
 	local1URI := SYSLOG_SERVER_PATH + "/selectors/selector[facility=LOCAL1][severity=NOTICE]/config/severity"
-	value, err = syslogServerDbValueFromYang(nil, syslogTestHost1, nil, false, local1URI)
+	value, err = syslogServerDbValueFromYang(nil, syslogTestHost1, nil, syslogMergeNone, local1URI)
 	if err != nil {
 		t.Fatalf("syslogServerDbValueFromYang() error = %v", err)
 	}
@@ -673,6 +725,7 @@ func TestYangToDb_Syslog_Servers(t *testing.T) {
 		name           string
 		op             Operation
 		uri            string
+		requestUri     string
 		key            string
 		ygRoot         func() *ocbinds.Device
 		serverState    map[string]db.Value
@@ -682,6 +735,90 @@ func TestYangToDb_Syslog_Servers(t *testing.T) {
 		wantAux        map[string]map[string]db.Value
 		wantErr        bool
 	}{
+		{
+			name: "Server: REPLACE updates keyed server only",
+			op:   REPLACE,
+			uri:  SYSLOG_SERVER_PATH,
+			key:  syslogTestHost1,
+			ygRoot: func() *ocbinds.Device {
+				port := uint16(518)
+				tsTrue := true
+				return newSyslogDevice(map[string]*ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer{
+					syslogTestHost1: newSyslogRemoteServer(syslogTestHost1, &tsTrue, ygot.String(syslogTestProfile), &port, nil, nil),
+				})
+			},
+			serverState: map[string]db.Value{
+				syslogTestHost1: {Field: map[string]string{nullKey: nullKey}},
+				syslogTestHost2: {Field: map[string]string{nullKey: nullKey}},
+			},
+			wantMap: map[string]map[string]db.Value{
+				SYSLOG_SERVER_TABLE_NAME: {
+					syslogTestHost1: {Field: syslogTlsServerFields("518", "tls", "true", syslogTestProfile)},
+				},
+			},
+		},
+		{
+			name: "Server: REPLACE rejects host payload mismatch",
+			op:   REPLACE,
+			uri:  SYSLOG_SERVER_PATH,
+			key:  syslogTestHost1,
+			ygRoot: func() *ocbinds.Device {
+				return newSyslogDevice(map[string]*ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer{
+					syslogTestHost1: newSyslogRemoteServer(syslogTestHost2, nil, nil, nil, nil, nil),
+				})
+			},
+			wantErr: true,
+		},
+		{
+			name:       "Logging container: REPLACE via requestUri replaces remote-servers list",
+			op:         REPLACE,
+			uri:        SYSLOG_SERVERS_PATH,
+			requestUri: SYSLOG_LOGGING_PATH,
+			ygRoot: func() *ocbinds.Device {
+				port := uint16(518)
+				tsTrue := true
+				return newSyslogDevice(map[string]*ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer{
+					syslogTestHost1: newSyslogRemoteServer(syslogTestHost1, &tsTrue, ygot.String(syslogTestProfile), &port, nil, nil),
+					syslogTestHost2: newSyslogRemoteServer(syslogTestHost2, &tsTrue, ygot.String(syslogTestProfile), &port, nil, nil),
+				})
+			},
+			serverState: map[string]db.Value{
+				syslogTestHost3: {Field: map[string]string{nullKey: nullKey}},
+			},
+			wantMap: map[string]map[string]db.Value{
+				SYSLOG_SERVER_TABLE_NAME: {
+					syslogTestHost1: {Field: syslogTlsServerFields("518", "tls", "true", syslogTestProfile)},
+					syslogTestHost2: {Field: syslogTlsServerFields("518", "tls", "true", syslogTestProfile)},
+				},
+			},
+			wantSubDel: map[string]map[string]db.Value{
+				SYSLOG_SERVER_TABLE_NAME: {
+					syslogTestHost3: {},
+				},
+			},
+		},
+		{
+			name:       "Server: REPLACE via requestUri does not prune other servers",
+			op:         REPLACE,
+			uri:        SYSLOG_SERVERS_PATH,
+			requestUri: SYSLOG_SERVER_PATH + "[host=" + syslogTestHost1 + "]",
+			ygRoot: func() *ocbinds.Device {
+				port := uint16(518)
+				tsTrue := true
+				return newSyslogDevice(map[string]*ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer{
+					syslogTestHost1: newSyslogRemoteServer(syslogTestHost1, &tsTrue, ygot.String(syslogTestProfile), &port, nil, nil),
+				})
+			},
+			serverState: map[string]db.Value{
+				syslogTestHost1: {Field: map[string]string{nullKey: nullKey}},
+				syslogTestHost2: {Field: map[string]string{nullKey: nullKey}},
+			},
+			wantMap: map[string]map[string]db.Value{
+				SYSLOG_SERVER_TABLE_NAME: {
+					syslogTestHost1: {Field: syslogTlsServerFields("518", "tls", "true", syslogTestProfile)},
+				},
+			},
+		},
 		{
 			name: "List: REPLACE deletes missing servers",
 			op:   REPLACE,
@@ -907,6 +1044,321 @@ func TestYangToDb_Syslog_Servers(t *testing.T) {
 						SYSLOG_FIELD_PROTOCOL: "udp",
 						SYSLOG_FIELD_SEVERITY: "notice",
 						SYSLOG_FIELD_FACILITY: "*",
+					}},
+				},
+			},
+		},
+		{
+			name: "REPLACE config container clears unset config fields and keeps selectors",
+			op:   REPLACE,
+			uri:  SYSLOG_SERVER_PATH + "/config",
+			key:  syslogTestHost3,
+			ygRoot: func() *ocbinds.Device {
+				port := uint16(524)
+				return newSyslogDevice(map[string]*ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer{
+					syslogTestHost3: newSyslogRemoteServer(syslogTestHost3, nil, nil, &port, nil, nil),
+				})
+			},
+			serverState: map[string]db.Value{
+				syslogTestHost3: {Field: map[string]string{
+					nullKey:                     nullKey,
+					SYSLOG_FIELD_PORT:           "520",
+					SYSLOG_FIELD_PROTOCOL:       "tls",
+					SYSLOG_FIELD_TRANSPORT_SEC:  "true",
+					SYSLOG_FIELD_TLS_PROFILE_ID: syslogTestProfile,
+					SYSLOG_FIELD_SOURCE:         "1.1.1.1",
+					SYSLOG_FIELD_VRF:            "mgmt",
+					SYSLOG_FIELD_SEVERITY:       "notice",
+					SYSLOG_FIELD_FACILITY:       "*",
+				}},
+			},
+			wantMap: map[string]map[string]db.Value{
+				SYSLOG_SERVER_TABLE_NAME: {},
+			},
+			wantSubReplace: map[string]map[string]db.Value{
+				SYSLOG_SERVER_TABLE_NAME: {
+					syslogTestHost3: {Field: map[string]string{
+						nullKey:               nullKey,
+						SYSLOG_FIELD_PORT:     "524",
+						SYSLOG_FIELD_PROTOCOL: "udp",
+						SYSLOG_FIELD_SEVERITY: "notice",
+						SYSLOG_FIELD_FACILITY: "*",
+					}},
+				},
+			},
+			wantAux: map[string]map[string]db.Value{
+				SYSLOG_SERVER_TABLE_NAME: {
+					syslogTestHost3: {Field: map[string]string{
+						SYSLOG_FIELD_SOURCE:         "1.1.1.1",
+						SYSLOG_FIELD_VRF:            "mgmt",
+						SYSLOG_FIELD_TRANSPORT_SEC:  "true",
+						SYSLOG_FIELD_TLS_PROFILE_ID: syslogTestProfile,
+					}},
+				},
+			},
+		},
+		{
+			name: "REPLACE selector instance deletes omitted facility",
+			op:   REPLACE,
+			uri:  SYSLOG_SERVER_PATH + "/selectors/selector[facility=ALL][severity=NOTICE]",
+			key:  syslogTestHost3,
+			ygRoot: func() *ocbinds.Device {
+				server := newSyslogRemoteServer(syslogTestHost3, nil, nil, nil, nil, nil)
+				server.Selectors = &ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer_Selectors{}
+				selectorKey := ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer_Selectors_Selector_Key{
+					Facility: ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_ALL,
+					Severity: ocbinds.OpenconfigSystemLogging_SyslogSeverity_NOTICE,
+				}
+				selector, err := server.Selectors.NewSelector(selectorKey.Facility, selectorKey.Severity)
+				if err != nil {
+					panic(err)
+				}
+				selector.Config = &ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer_Selectors_Selector_Config{
+					Severity: ocbinds.OpenconfigSystemLogging_SyslogSeverity_NOTICE,
+				}
+				return newSyslogDevice(map[string]*ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer{
+					syslogTestHost3: server,
+				})
+			},
+			serverState: map[string]db.Value{
+				syslogTestHost3: {Field: map[string]string{
+					nullKey:               nullKey,
+					SYSLOG_FIELD_PORT:     "6514",
+					SYSLOG_FIELD_PROTOCOL: "udp",
+					SYSLOG_FIELD_SEVERITY: "notice",
+					SYSLOG_FIELD_FACILITY: "local1",
+				}},
+			},
+			wantMap: map[string]map[string]db.Value{
+				SYSLOG_SERVER_TABLE_NAME: {},
+			},
+			wantSubReplace: map[string]map[string]db.Value{
+				SYSLOG_SERVER_TABLE_NAME: {
+					syslogTestHost3: {Field: map[string]string{
+						nullKey:               nullKey,
+						SYSLOG_FIELD_PORT:     "6514",
+						SYSLOG_FIELD_PROTOCOL: "udp",
+						SYSLOG_FIELD_SEVERITY: "notice",
+					}},
+				},
+			},
+			wantAux: map[string]map[string]db.Value{
+				SYSLOG_SERVER_TABLE_NAME: {
+					syslogTestHost3: {Field: map[string]string{
+						SYSLOG_FIELD_FACILITY: "local1",
+					}},
+				},
+			},
+		},
+		{
+			name: "REPLACE selector facility deletes omitted severity",
+			op:   REPLACE,
+			uri:  SYSLOG_SERVER_PATH + "/selectors/selector[facility=ALL][severity=DEBUG]",
+			key:  syslogTestHost3,
+			ygRoot: func() *ocbinds.Device {
+				server := newSyslogRemoteServer(syslogTestHost3, nil, nil, nil, nil, nil)
+				server.Selectors = &ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer_Selectors{}
+				selectorKey := ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer_Selectors_Selector_Key{
+					Facility: ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_LOCAL1,
+					Severity: ocbinds.OpenconfigSystemLogging_SyslogSeverity_NOTICE,
+				}
+				selector, err := server.Selectors.NewSelector(selectorKey.Facility, selectorKey.Severity)
+				if err != nil {
+					panic(err)
+				}
+				selector.Config = &ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer_Selectors_Selector_Config{
+					Facility: ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_LOCAL1,
+				}
+				return newSyslogDevice(map[string]*ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer{
+					syslogTestHost3: server,
+				})
+			},
+			serverState: map[string]db.Value{
+				syslogTestHost3: {Field: map[string]string{
+					nullKey:               nullKey,
+					SYSLOG_FIELD_PORT:     "6514",
+					SYSLOG_FIELD_PROTOCOL: "udp",
+					SYSLOG_FIELD_SEVERITY: "debug",
+					SYSLOG_FIELD_FACILITY: "local1",
+				}},
+			},
+			wantMap: map[string]map[string]db.Value{
+				SYSLOG_SERVER_TABLE_NAME: {},
+			},
+			wantSubReplace: map[string]map[string]db.Value{
+				SYSLOG_SERVER_TABLE_NAME: {
+					syslogTestHost3: {Field: map[string]string{
+						nullKey:               nullKey,
+						SYSLOG_FIELD_PORT:     "6514",
+						SYSLOG_FIELD_PROTOCOL: "udp",
+						SYSLOG_FIELD_FACILITY: "local1",
+					}},
+				},
+			},
+			wantAux: map[string]map[string]db.Value{
+				SYSLOG_SERVER_TABLE_NAME: {
+					syslogTestHost3: {Field: map[string]string{
+						SYSLOG_FIELD_SEVERITY: "debug",
+					}},
+				},
+			},
+		},
+		{
+			name: "REPLACE selector config container deletes omitted facility",
+			op:   REPLACE,
+			uri:  SYSLOG_SERVER_PATH + "/selectors/selector[facility=LOCAL1][severity=DEBUG]/config",
+			key:  syslogTestHost3,
+			ygRoot: func() *ocbinds.Device {
+				server := newSyslogRemoteServer(syslogTestHost3, nil, nil, nil, nil, nil)
+				server.Selectors = &ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer_Selectors{}
+				selectorKey := ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer_Selectors_Selector_Key{
+					Facility: ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_LOCAL1,
+					Severity: ocbinds.OpenconfigSystemLogging_SyslogSeverity_DEBUG,
+				}
+				selector, err := server.Selectors.NewSelector(selectorKey.Facility, selectorKey.Severity)
+				if err != nil {
+					panic(err)
+				}
+				selector.Config = &ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer_Selectors_Selector_Config{
+					Severity: ocbinds.OpenconfigSystemLogging_SyslogSeverity_ERROR,
+				}
+				return newSyslogDevice(map[string]*ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer{
+					syslogTestHost3: server,
+				})
+			},
+			serverState: map[string]db.Value{
+				syslogTestHost3: {Field: map[string]string{
+					nullKey:               nullKey,
+					SYSLOG_FIELD_PORT:     "6514",
+					SYSLOG_FIELD_PROTOCOL: "udp",
+					SYSLOG_FIELD_SEVERITY: "debug",
+					SYSLOG_FIELD_FACILITY: "local1",
+				}},
+			},
+			wantMap: map[string]map[string]db.Value{
+				SYSLOG_SERVER_TABLE_NAME: {},
+			},
+			wantSubReplace: map[string]map[string]db.Value{
+				SYSLOG_SERVER_TABLE_NAME: {
+					syslogTestHost3: {Field: map[string]string{
+						nullKey:               nullKey,
+						SYSLOG_FIELD_PORT:     "6514",
+						SYSLOG_FIELD_PROTOCOL: "udp",
+						SYSLOG_FIELD_SEVERITY: "error",
+					}},
+				},
+			},
+			wantAux: map[string]map[string]db.Value{
+				SYSLOG_SERVER_TABLE_NAME: {
+					syslogTestHost3: {Field: map[string]string{
+						SYSLOG_FIELD_FACILITY: "local1",
+					}},
+				},
+			},
+		},
+		{
+			name: "REPLACE selector preserves existing server config fields",
+			op:   REPLACE,
+			uri:  SYSLOG_SERVER_PATH + "/selectors/selector[facility=ALL][severity=NOTICE]/config/severity",
+			key:  syslogTestHost1,
+			ygRoot: func() *ocbinds.Device {
+				return newSyslogDevice(map[string]*ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer{
+					syslogTestHost1: newSyslogRemoteServerWithSeverity(syslogTestHost1, ocbinds.OpenconfigSystemLogging_SyslogSeverity_WARNING),
+				})
+			},
+			serverState: map[string]db.Value{
+				syslogTestHost1: {Field: map[string]string{
+					nullKey:                     nullKey,
+					SYSLOG_FIELD_PORT:           "6514",
+					SYSLOG_FIELD_PROTOCOL:       "tls",
+					SYSLOG_FIELD_TRANSPORT_SEC:  "true",
+					SYSLOG_FIELD_TLS_PROFILE_ID: syslogTestProfile,
+					SYSLOG_FIELD_SOURCE:         "1.1.1.1",
+					SYSLOG_FIELD_VRF:            "mgmt",
+					SYSLOG_FIELD_SEVERITY:       "notice",
+					SYSLOG_FIELD_FACILITY:       "*",
+				}},
+			},
+			wantMap: map[string]map[string]db.Value{
+				SYSLOG_SERVER_TABLE_NAME: {
+					syslogTestHost1: {Field: map[string]string{
+						nullKey:                     nullKey,
+						SYSLOG_FIELD_PORT:           "6514",
+						SYSLOG_FIELD_PROTOCOL:       "tls",
+						SYSLOG_FIELD_TRANSPORT_SEC:  "true",
+						SYSLOG_FIELD_TLS_PROFILE_ID: syslogTestProfile,
+						SYSLOG_FIELD_SOURCE:         "1.1.1.1",
+						SYSLOG_FIELD_VRF:            "mgmt",
+						SYSLOG_FIELD_SEVERITY:       "warn",
+						SYSLOG_FIELD_FACILITY:       "*",
+					}},
+				},
+			},
+		},
+		{
+			name: "REPLACE selector config/facility leaf preserves existing severity",
+			op:   REPLACE,
+			uri:  SYSLOG_SERVER_PATH + "/selectors/selector[facility=ALL][severity=NOTICE]/config/facility",
+			key:  syslogTestHost3,
+			ygRoot: func() *ocbinds.Device {
+				return newSyslogDevice(map[string]*ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer{
+					syslogTestHost3: newSyslogRemoteServerWithFacilityOnly(
+						syslogTestHost3,
+						ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_LOCAL2,
+					),
+				})
+			},
+			serverState: map[string]db.Value{
+				syslogTestHost3: {Field: map[string]string{
+					nullKey:               nullKey,
+					SYSLOG_FIELD_PORT:     "6514",
+					SYSLOG_FIELD_PROTOCOL: "udp",
+					SYSLOG_FIELD_SEVERITY: "warn",
+					SYSLOG_FIELD_FACILITY: "local1",
+				}},
+			},
+			wantMap: map[string]map[string]db.Value{
+				SYSLOG_SERVER_TABLE_NAME: {
+					syslogTestHost3: {Field: map[string]string{
+						nullKey:               nullKey,
+						SYSLOG_FIELD_PORT:     "6514",
+						SYSLOG_FIELD_PROTOCOL: "udp",
+						SYSLOG_FIELD_SEVERITY: "warn",
+						SYSLOG_FIELD_FACILITY: "local2",
+					}},
+				},
+			},
+		},
+		{
+			name: "REPLACE selector config/severity leaf preserves existing facility",
+			op:   REPLACE,
+			uri:  SYSLOG_SERVER_PATH + "/selectors/selector[facility=ALL][severity=NOTICE]/config/severity",
+			key:  syslogTestHost3,
+			ygRoot: func() *ocbinds.Device {
+				return newSyslogDevice(map[string]*ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer{
+					syslogTestHost3: newSyslogRemoteServerWithSeverityOnly(
+						syslogTestHost3,
+						ocbinds.OpenconfigSystemLogging_SyslogSeverity_WARNING,
+					),
+				})
+			},
+			serverState: map[string]db.Value{
+				syslogTestHost3: {Field: map[string]string{
+					nullKey:               nullKey,
+					SYSLOG_FIELD_PORT:     "6514",
+					SYSLOG_FIELD_PROTOCOL: "udp",
+					SYSLOG_FIELD_SEVERITY: "notice",
+					SYSLOG_FIELD_FACILITY: "local1",
+				}},
+			},
+			wantMap: map[string]map[string]db.Value{
+				SYSLOG_SERVER_TABLE_NAME: {
+					syslogTestHost3: {Field: map[string]string{
+						nullKey:               nullKey,
+						SYSLOG_FIELD_PORT:     "6514",
+						SYSLOG_FIELD_PROTOCOL: "udp",
+						SYSLOG_FIELD_SEVERITY: "warn",
+						SYSLOG_FIELD_FACILITY: "local1",
 					}},
 				},
 			},
@@ -1343,6 +1795,7 @@ func TestYangToDb_Syslog_Servers(t *testing.T) {
 				ygRoot:        &ygRoot,
 				oper:          tt.op,
 				uri:           tt.uri,
+				requestUri:    tt.requestUri,
 				key:           tt.key,
 				subOpDataMap:  make(map[Operation]*map[db.DBNum]map[string]map[string]db.Value),
 				yangAuxValMap: make(map[string]map[string]db.Value),
