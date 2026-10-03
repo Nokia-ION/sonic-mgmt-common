@@ -394,6 +394,31 @@ func TestSyslogSelectorFieldTransformers(t *testing.T) {
 	if ocFields["facility"] != ocbinds.OpenconfigSystemLogging_SYSLOG_FACILITY_SYSTEM_DAEMON {
 		t.Fatalf("DbToYang_syslog_selector_facility_fld_xfmr() = %v; want DAEMON", ocFields["facility"])
 	}
+
+	selectorDbDataMap := RedisDbMap{
+		db.ConfigDB: map[string]map[string]db.Value{
+			SYSLOG_SERVER_TABLE_NAME: {
+				syslogTestHost1: {Field: map[string]string{
+					SYSLOG_FIELD_FACILITY: "local4",
+					SYSLOG_FIELD_SEVERITY: "warn",
+				}},
+			},
+		},
+	}
+	selectorKeys, err := DbToYang_syslog_selector_key_xfmr(XfmrParams{
+		curDb:     db.ConfigDB,
+		dbDataMap: &selectorDbDataMap,
+		key:       syslogTestHost1,
+	})
+	if err != nil {
+		t.Fatalf("DbToYang_syslog_selector_key_xfmr() error = %v", err)
+	}
+	if selectorKeys["facility"] != "LOCAL4" {
+		t.Fatalf("DbToYang_syslog_selector_key_xfmr() facility = %v; want LOCAL4", selectorKeys["facility"])
+	}
+	if selectorKeys["severity"] != "WARNING" {
+		t.Fatalf("DbToYang_syslog_selector_key_xfmr() severity = %v; want WARNING", selectorKeys["severity"])
+	}
 }
 
 func TestSyslogSeverityMapping(t *testing.T) {
@@ -1841,4 +1866,139 @@ func TestYangToDb_Syslog_Servers(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSubscribe_Syslog_RemoteServers(t *testing.T) {
+	assertOnChange := func(t *testing.T, out XfmrSubscOutParams) {
+		if out.isVirtualTbl {
+			t.Fatalf("isVirtualTbl=true, want false for ON_CHANGE subscribe")
+		}
+		if out.onChange != OnchangeEnable {
+			t.Fatalf("onChange=%v, want OnchangeEnable", out.onChange)
+		}
+		if out.nOpts == nil || out.nOpts.pType != OnChange {
+			t.Fatalf("nOpts=%v, want OnChange notification type", out.nOpts)
+		}
+	}
+
+	t.Run("CRUD parent check is virtual", func(t *testing.T) {
+		out, err := Subscribe_remote_servers_list_xfmr(XfmrSubscInParams{
+			uri:        SYSLOG_SERVER_PATH + "/selectors",
+			requestURI: "",
+			subscProc:  TRANSLATE_SUBSCRIBE,
+		})
+		if err != nil {
+			t.Fatalf("Subscribe failed: %v", err)
+		}
+		if !out.isVirtualTbl {
+			t.Fatalf("expected virtual table when requestURI is empty")
+		}
+	})
+
+	t.Run("Subscribe all servers", func(t *testing.T) {
+		out, err := Subscribe_remote_servers_list_xfmr(XfmrSubscInParams{
+			uri:        SYSLOG_SERVERS_PATH,
+			requestURI: SYSLOG_SERVERS_PATH,
+			subscProc:  TRANSLATE_SUBSCRIBE,
+		})
+		if err != nil {
+			t.Fatalf("Subscribe failed: %v", err)
+		}
+		assertOnChange(t, out)
+		fields, ok := out.dbDataMap[db.ConfigDB][SYSLOG_SERVER_TABLE_NAME]["*"]
+		if !ok {
+			t.Fatalf("missing wildcard SYSLOG_SERVER watch: %v", out.dbDataMap)
+		}
+		for dbFld, yangLeaf := range syslogServerConfigSubscribeFields {
+			if fields[dbFld] != yangLeaf {
+				t.Fatalf("field map[%s]=%q, want %q; got %v", dbFld, fields[dbFld], yangLeaf, fields)
+			}
+		}
+		if _, ok := fields[SYSLOG_FIELD_SEVERITY]; !ok {
+			t.Fatalf("missing severity watch: %v", fields)
+		}
+		if _, ok := fields[SYSLOG_FIELD_FACILITY]; !ok {
+			t.Fatalf("missing facility watch: %v", fields)
+		}
+	})
+
+	t.Run("Subscribe specific server selectors container", func(t *testing.T) {
+		uri := SYSLOG_SERVER_PATH + "[host=" + syslogTestHost1 + "]/selectors"
+		out, err := Subscribe_remote_servers_list_xfmr(XfmrSubscInParams{
+			uri:        uri,
+			requestURI: uri,
+			subscProc:  TRANSLATE_SUBSCRIBE,
+		})
+		if err != nil {
+			t.Fatalf("Subscribe failed: %v", err)
+		}
+		assertOnChange(t, out)
+		if _, ok := out.dbDataMap[db.ConfigDB][SYSLOG_SERVER_TABLE_NAME][syslogTestHost1]; !ok {
+			t.Fatalf("missing keyed SYSLOG_SERVER watch: %v", out.dbDataMap)
+		}
+	})
+
+	t.Run("Subscribe selectors with wildcard list keys", func(t *testing.T) {
+		uri := SYSLOG_SERVER_PATH + "[host=" + syslogTestHost1 + "]/selectors/selector"
+		out, err := Subscribe_remote_servers_list_xfmr(XfmrSubscInParams{
+			uri:        uri,
+			requestURI: uri,
+			subscProc:  TRANSLATE_SUBSCRIBE,
+		})
+		if err != nil {
+			t.Fatalf("Subscribe failed: %v", err)
+		}
+		assertOnChange(t, out)
+		fields := out.dbDataMap[db.ConfigDB][SYSLOG_SERVER_TABLE_NAME][syslogTestHost1]
+		if fields[SYSLOG_FIELD_SEVERITY] != "{severity}" || fields[SYSLOG_FIELD_FACILITY] != "{facility}" {
+			t.Fatalf("expected selector key placeholders, got %v", fields)
+		}
+		if _, ok := fields[SYSLOG_FIELD_SEVERITY]; !ok {
+			t.Fatalf("missing severity watch on selector subscribe: %v", fields)
+		}
+		if _, ok := fields[SYSLOG_FIELD_FACILITY]; !ok {
+			t.Fatalf("missing facility watch on selector subscribe: %v", fields)
+		}
+	})
+
+	t.Run("Subscribe selector severity leaf", func(t *testing.T) {
+		uri := SYSLOG_SERVER_PATH + "[host=" + syslogTestHost1 + "]/selectors"
+		requestURI := SYSLOG_SERVER_PATH + "/selectors/selector[facility=ALL][severity=NOTICE]/config/severity"
+		out, err := Subscribe_remote_servers_list_xfmr(XfmrSubscInParams{
+			uri:        uri,
+			requestURI: requestURI,
+			subscProc:  TRANSLATE_SUBSCRIBE,
+		})
+		if err != nil {
+			t.Fatalf("Subscribe failed: %v", err)
+		}
+		assertOnChange(t, out)
+		fields := out.dbDataMap[db.ConfigDB][SYSLOG_SERVER_TABLE_NAME][syslogTestHost1]
+		if _, ok := fields[SYSLOG_FIELD_SEVERITY]; !ok {
+			t.Fatalf("missing severity watch: %v", fields)
+		}
+		if _, ok := fields[SYSLOG_FIELD_FACILITY]; ok {
+			t.Fatalf("did not expect facility watch on severity leaf: %v", fields)
+		}
+	})
+
+	t.Run("Subscribe wildcard host selectors", func(t *testing.T) {
+		uri := SYSLOG_SERVER_PATH + "/selectors/selector"
+		out, err := Subscribe_remote_servers_list_xfmr(XfmrSubscInParams{
+			uri:        uri,
+			requestURI: uri,
+			subscProc:  TRANSLATE_SUBSCRIBE,
+		})
+		if err != nil {
+			t.Fatalf("Subscribe failed: %v", err)
+		}
+		assertOnChange(t, out)
+		fields := out.dbDataMap[db.ConfigDB][SYSLOG_SERVER_TABLE_NAME]["*"]
+		if _, ok := fields[SYSLOG_FIELD_SEVERITY]; !ok {
+			t.Fatalf("missing severity watch: %v", fields)
+		}
+		if _, ok := fields[SYSLOG_FIELD_FACILITY]; !ok {
+			t.Fatalf("missing facility watch: %v", fields)
+		}
+	})
 }
