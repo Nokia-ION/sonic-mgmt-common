@@ -20,6 +20,8 @@ package transformer
 
 import (
 	"testing"
+
+	"github.com/Azure/sonic-mgmt-common/translib/db"
 )
 
 func TestRstpIntfNameFromDbKey(t *testing.T) {
@@ -132,5 +134,52 @@ func TestRstpIntfConfigFieldsCostDoesNotWriteDefaultPriority(t *testing.T) {
 	fields = rstpIntfConfigFieldsFromRequest(inParams, "Ethernet4", STP_RSTP_INTF_CONFIG)
 	if fields["priority"] != "10" || fields["path_cost"] != "1000" {
 		t.Fatalf("fields=%v, want priority=10 path_cost=1000", fields)
+	}
+}
+
+func TestSubscribeRstpIntfStateLeafUsesNamedPortOnly(t *testing.T) {
+	leaves := []struct {
+		leaf  string
+		field string
+	}{
+		{leaf: "port-priority", field: "priority"},
+		{leaf: "port-state", field: "port_state"},
+		{leaf: "role", field: "role"},
+	}
+	for _, tc := range leaves {
+		uri := "/openconfig-spanning-tree:stp/rstp/interfaces/interface[name=Ethernet2]/state/" + tc.leaf
+		out, err := Subscribe_stp_rstp_intf_xfmr(XfmrSubscInParams{uri: uri, requestURI: uri})
+		if err != nil {
+			t.Fatalf("%s: %v", tc.leaf, err)
+		}
+		if _, ok := out.dbDataMap[db.ApplDB]; ok {
+			t.Fatalf("%s: APPL_DB must not be subscribed; a second table repeats the ONCE snapshot", tc.leaf)
+		}
+		keys := out.dbDataMap[db.ConfigDB][STP_MST_PORT_TBL]
+		if len(keys) != 1 {
+			t.Fatalf("%s: keys=%v, want one STP_MST_PORT key", tc.leaf, keys)
+		}
+		fields, ok := keys["0|Ethernet2"]
+		if !ok {
+			t.Fatalf("%s: key=%v, want 0|Ethernet2", tc.leaf, keys)
+		}
+		if fields[tc.field] != tc.leaf {
+			t.Fatalf("%s: fields=%v, want %s -> %s", tc.leaf, fields, tc.field, tc.leaf)
+		}
+		if _, wild := keys["0|*"]; wild {
+			t.Fatalf("%s: wildcard port key would duplicate the leaf once per STP port", tc.leaf)
+		}
+	}
+}
+
+func TestSubscribeRstpIntfStateListKeepsWildcard(t *testing.T) {
+	uri := "/openconfig-spanning-tree:stp/rstp/interfaces/interface/state/port-state"
+	out, err := Subscribe_stp_rstp_intf_xfmr(XfmrSubscInParams{uri: uri, requestURI: uri})
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys := out.dbDataMap[db.ConfigDB][STP_MST_PORT_TBL]
+	if _, ok := keys["0|*"]; !ok {
+		t.Fatalf("list subscribe keys=%v, want 0|*", keys)
 	}
 }

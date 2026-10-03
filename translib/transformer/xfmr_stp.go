@@ -1195,8 +1195,14 @@ func rstpIntfDbKey(ifName, targetUriPath string) string {
 	return mstPortAppKey(ifName)
 }
 
+func isRstpMstPortSubscribeTable(tblName string) bool {
+	return tblName == STP_MST_PORT_APP_TBL ||
+		tblName == applStateTablePrefix+STP_MST_PORT_APP_TBL ||
+		tblName == STP_MST_PORT_TBL
+}
+
 func rstpIntfNameFromTblKey(params XfmrDbToYgPathParams) (string, error) {
-	if params.tblName != STP_MST_PORT_APP_TBL && params.tblName != STP_MST_PORT_TBL {
+	if !isRstpMstPortSubscribeTable(params.tblName) {
 		return "", errors.New("wrong table for RSTP interface path xfmr")
 	}
 	if len(params.tblKeyComp) >= 2 {
@@ -2212,14 +2218,101 @@ var YangToDb_stp_rstp_intf_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) 
 	return res, nil
 }
 
+// rstpSubscribeIntfName returns the interface named in a subscribe URI.
+// An absent or wildcard name stays "*", so a list subscription still walks every port.
+func rstpSubscribeIntfName(uri string) string {
+	name := NewPathInfo(uri).Var("name")
+	if name == "" || name == "*" {
+		return "*"
+	}
+	return name
+}
+
+func rstpSubscribeTargetLeaf(uriPath string) string {
+	idx := strings.LastIndex(uriPath, "/")
+	if idx < 0 || idx == len(uriPath)-1 {
+		return ""
+	}
+	switch leaf := uriPath[idx+1:]; leaf {
+	case "interface", "interfaces", "config", "state", "counters", "rstp", "stp":
+		return ""
+	default:
+		return leaf
+	}
+}
+
+// rstpStateSubscribeFields maps one operational leaf to the APPL_DB field that
+// carries it. db field -> yang leaf. A container subscribe keeps every field.
+func rstpStateSubscribeFields(uriPath string) map[string]string {
+	switch rstpSubscribeTargetLeaf(uriPath) {
+	case "port-priority":
+		return map[string]string{"priority": "port-priority"}
+	case "cost":
+		return map[string]string{"path_cost": "cost"}
+	case "port-num":
+		return map[string]string{"port_number": "port-num"}
+	case "port-state":
+		return map[string]string{"port_state": "port-state"}
+	case "role":
+		return map[string]string{"role": "role"}
+	case "designated-cost":
+		return map[string]string{"desig_cost": "designated-cost"}
+	case "designated-root-address", "designated-root-priority":
+		return map[string]string{"desig_root": rstpSubscribeTargetLeaf(uriPath)}
+	case "designated-bridge-address", "designated-bridge-priority":
+		return map[string]string{"desig_bridge": rstpSubscribeTargetLeaf(uriPath)}
+	case "designated-port-priority", "designated-port-num":
+		return map[string]string{"desig_port": rstpSubscribeTargetLeaf(uriPath)}
+	case "forward-transisitions":
+		return map[string]string{"fwd_transitions": "forward-transisitions"}
+	case "bpdu-sent":
+		return map[string]string{"bpdu_sent": "bpdu-sent"}
+	case "bpdu-received":
+		return map[string]string{"bpdu_received": "bpdu-received"}
+	default:
+		return map[string]string{"*": ""}
+	}
+}
+
+func rstpConfigSubscribeFields(uriPath string) map[string]string {
+	switch rstpSubscribeTargetLeaf(uriPath) {
+	case "port-priority":
+		return map[string]string{"priority": "port-priority"}
+	case "cost":
+		return map[string]string{"path_cost": "cost"}
+	default:
+		return map[string]string{"path_cost": "cost", "priority": "port-priority"}
+	}
+}
+
 var Subscribe_stp_rstp_intf_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSubscInParams) (XfmrSubscOutParams, error) {
 	var result XfmrSubscOutParams
 	result.dbDataMap = make(RedisDbSubscribeMap)
-	result.dbDataMap[db.ConfigDB] = map[string]map[string]map[string]string{
-		STP_MST_PORT_TBL: {mstPortCfgKey("*"): {"path_cost": "", "priority": ""}},
+
+	ifName := rstpSubscribeIntfName(inParams.requestURI)
+	if ifName == "*" {
+		ifName = rstpSubscribeIntfName(inParams.uri)
 	}
-	result.dbDataMap[db.ApplDB] = map[string]map[string]map[string]string{
-		STP_MST_PORT_APP_TBL: {mstPortAppKey("*"): {"*": ""}},
+	reqPath, _, _ := XfmrRemoveXPATHPredicates(inParams.requestURI)
+	if reqPath == "" {
+		reqPath, _, _ = XfmrRemoveXPATHPredicates(inParams.uri)
+	}
+
+	if strings.Contains(reqPath, "/state") {
+		result.dbDataMap[db.ConfigDB] = map[string]map[string]map[string]string{
+			STP_MST_PORT_TBL: {mstPortCfgKey(ifName): rstpStateSubscribeFields(reqPath)},
+		}
+		return result, nil
+	}
+	if strings.Contains(reqPath, "/config") {
+		result.dbDataMap[db.ConfigDB] = map[string]map[string]map[string]string{
+			STP_MST_PORT_TBL: {mstPortCfgKey(ifName): rstpConfigSubscribeFields(reqPath)},
+		}
+		return result, nil
+	}
+
+	result.dbDataMap[db.ConfigDB] = map[string]map[string]map[string]string{
+		STP_MST_PORT_TBL: {mstPortCfgKey(ifName): {"path_cost": "cost", "priority": "port-priority"}},
 	}
 	return result, nil
 }
