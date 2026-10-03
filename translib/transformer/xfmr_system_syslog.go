@@ -675,6 +675,40 @@ var syslogSelectorDbFields = []string{
 	SYSLOG_FIELD_FACILITY,
 }
 
+// DB field to YANG leaf names for ON_CHANGE subscribe on remote-servers.
+// Matches openconfig-system-annot.yang field-name deviations on remote-server
+// config/state leaves.
+var syslogServerConfigSubscribeFields = map[string]string{
+	SYSLOG_FIELD_PORT:           "remote-port",
+	SYSLOG_FIELD_SOURCE:         "source-address",
+	SYSLOG_FIELD_VRF:            "network-instance",
+	SYSLOG_FIELD_TRANSPORT_SEC:  "transport-security",
+	SYSLOG_FIELD_TLS_PROFILE_ID: "tls-profile-id",
+}
+
+func syslogServerSubscribeWatchFields(requestURI string) map[string]string {
+	subPath := strings.TrimSuffix(requestURI, "/")
+	switch {
+	case strings.HasSuffix(subPath, "/severity"):
+		return map[string]string{SYSLOG_FIELD_SEVERITY: ""}
+	case strings.HasSuffix(subPath, "/facility"):
+		return map[string]string{SYSLOG_FIELD_FACILITY: ""}
+	case strings.Contains(subPath, "/selectors"):
+		return map[string]string{
+			SYSLOG_FIELD_SEVERITY: "{severity}",
+			SYSLOG_FIELD_FACILITY: "{facility}",
+		}
+	default:
+		fields := make(map[string]string, len(syslogServerConfigSubscribeFields)+2)
+		for dbFld, yangLeaf := range syslogServerConfigSubscribeFields {
+			fields[dbFld] = yangLeaf
+		}
+		fields[SYSLOG_FIELD_SEVERITY] = "{severity}"
+		fields[SYSLOG_FIELD_FACILITY] = "{facility}"
+		return fields
+	}
+}
+
 func isSyslogConfigContainerPath(targetUriPath string) bool {
 	path := strings.TrimSuffix(targetUriPath, "/")
 	if !strings.HasSuffix(path, "/config") {
@@ -1049,19 +1083,32 @@ var DbToYang_remote_servers_list_xfmr SubTreeXfmrDbToYang = func(inParams XfmrPa
 var Subscribe_remote_servers_list_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSubscInParams) (XfmrSubscOutParams, error) {
 	var result XfmrSubscOutParams
 	result.dbDataMap = make(RedisDbSubscribeMap)
+
+	// CRUD parent-existence checks invoke this callback without requestURI.
+	// Defer validation to the YangToDb/DbToYang subtree so first-time server
+	// creation is not rejected when SYSLOG_SERVER|host does not exist yet.
+	if inParams.subscProc == TRANSLATE_EXISTS || inParams.requestURI == "" {
+		result.isVirtualTbl = true
+		return result, nil
+	}
+
 	pathInfo := NewPathInfo(inParams.uri)
 	host := pathInfo.Var(syslogServerKeyField)
 	if host == "" {
 		host = "*"
 	}
-	log.V(lvl.DEBUG).Infof("Subscribe_remote_servers_list_xfmr: path=%v host=%v proc=%v",
-		inParams.uri, host, inParams.subscProc)
-	if host != "*" {
-		result.isVirtualTbl = true
-		return result, nil
-	}
+
+	log.V(lvl.DEBUG).Infof("Subscribe_remote_servers_list_xfmr: path=%v host=%v proc=%v requestURI=%v",
+		inParams.uri, host, inParams.subscProc, inParams.requestURI)
+
+	result.isVirtualTbl = false
+	result.onChange = OnchangeEnable
+	result.nOpts = &notificationOpts{pType: OnChange}
+
+	watchFields := syslogServerSubscribeWatchFields(inParams.requestURI)
+
 	result.dbDataMap[db.ConfigDB] = map[string]map[string]map[string]string{
-		SYSLOG_SERVER_TABLE_NAME: {host: {}},
+		SYSLOG_SERVER_TABLE_NAME: {host: watchFields},
 	}
 	return result, nil
 }
@@ -1275,8 +1322,72 @@ var YangToDb_syslog_selector_key_xfmr KeyXfmrYangToDb = func(inParams XfmrParams
 	return keyFromInParamsOrUri(inParams, syslogServerKeyField), nil
 }
 
+func syslogSelectorKeysFromDb(inParams XfmrParams) (map[string]interface{}, error) {
+	result := make(map[string]interface{})
+	host := keyFromInParamsOrUri(inParams, syslogServerKeyField)
+	if host == "" {
+		host = inParams.key
+	}
+	if host == "" {
+		return result, nil
+	}
+
+	var severity, facility string
+	var hasSeverity, hasFacility bool
+
+	if inParams.dbDataMap != nil {
+		data := (*inParams.dbDataMap)[inParams.curDb]
+		if serverData, ok := data[SYSLOG_SERVER_TABLE_NAME]; ok {
+			if entry, ok := serverData[host]; ok {
+				if sev, ok := entry.Field[SYSLOG_FIELD_SEVERITY]; ok && sev != "" {
+					severity = sev
+					hasSeverity = true
+				}
+				if fac, ok := entry.Field[SYSLOG_FIELD_FACILITY]; ok && fac != "" {
+					facility = fac
+					hasFacility = true
+				}
+			}
+		}
+	}
+
+	if inParams.d != nil && (!hasSeverity || !hasFacility) {
+		entry, err := inParams.d.GetEntry(&db.TableSpec{Name: SYSLOG_SERVER_TABLE_NAME}, db.Key{Comp: []string{host}})
+		if err == nil {
+			if !hasSeverity {
+				if sev, ok := entry.Field[SYSLOG_FIELD_SEVERITY]; ok && sev != "" {
+					severity = sev
+					hasSeverity = true
+				}
+			}
+			if !hasFacility {
+				if fac, ok := entry.Field[SYSLOG_FIELD_FACILITY]; ok && fac != "" {
+					facility = fac
+					hasFacility = true
+				}
+			}
+		}
+	}
+
+	if hasFacility {
+		if ocFac, ok := dbFacilityToOc(facility); ok {
+			if name, err := ygot.EnumName(ocFac); err == nil {
+				result["facility"] = name
+			}
+		}
+	}
+	if hasSeverity {
+		if ocSev, ok := dbSeverityToOc(severity); ok {
+			if name, err := ygot.EnumName(ocSev); err == nil {
+				result["severity"] = name
+			}
+		}
+	}
+	return result, nil
+}
+
 var DbToYang_syslog_selector_key_xfmr KeyXfmrDbToYang = func(inParams XfmrParams) (map[string]interface{}, error) {
-	return make(map[string]interface{}), nil
+	return syslogSelectorKeysFromDb(inParams)
 }
 
 var YangToDb_syslog_selector_severity_fld_xfmr FieldXfmrYangToDb = func(inParams XfmrParams) (map[string]string, error) {
