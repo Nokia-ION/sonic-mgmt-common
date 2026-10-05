@@ -213,19 +213,53 @@ func TestSubscribe_ni_bgp_nbr_state_paths(t *testing.T) {
 			wantApplFlds: map[string]string{"local_address": "local-address"},
 		},
 		{
-			name:         "transport container keyed is on-change on both fields",
+			name:         "transport local-port leaf keyed is on-change",
+			uri:          niBgpNbrSubscNbrUrl + "/transport/state",
+			requestURI:   niBgpNbrSubscNbrUrl + "/transport/state/local-port",
+			wantOnChange: OnchangeEnable,
+			wantPType:    OnChange,
+			wantApplKey:  "default|11.0.0.155",
+			wantApplFlds: map[string]string{"local_port": "local-port"},
+		},
+		{
+			name:         "transport remote-port leaf keyed is on-change",
+			uri:          niBgpNbrSubscNbrUrl + "/transport/state",
+			requestURI:   niBgpNbrSubscNbrUrl + "/transport/state/remote-port",
+			wantOnChange: OnchangeEnable,
+			wantPType:    OnChange,
+			wantApplKey:  "default|11.0.0.155",
+			wantApplFlds: map[string]string{"remote_port": "remote-port"},
+		},
+		{
+			name:         "transport container keyed is on-change on mapped fields",
 			uri:          niBgpNbrSubscNbrUrl + "/transport",
 			requestURI:   niBgpNbrSubscNbrUrl + "/transport",
 			wantOnChange: OnchangeEnable,
 			wantPType:    OnChange,
 			wantApplKey:  "default|11.0.0.155",
 			wantApplFlds: map[string]string{
-				"local_address":  "local-address",
-				"remote_address": "remote-address",
+				"local_address":  "state/local-address",
+				"remote_address": "state/remote-address",
+				"local_port":     "state/local-port",
+				"remote_port":    "state/remote-port",
 			},
 		},
 		{
-			name:         "transport state container keyed is on-change on both fields",
+			name:         "transport container subscribe with trimmed uri uses requestURI",
+			uri:          niBgpNbrSubscNbrUrl,
+			requestURI:   niBgpNbrSubscNbrUrl + "/transport",
+			wantOnChange: OnchangeEnable,
+			wantPType:    OnChange,
+			wantApplKey:  "default|11.0.0.155",
+			wantApplFlds: map[string]string{
+				"local_address":  "state/local-address",
+				"remote_address": "state/remote-address",
+				"local_port":     "state/local-port",
+				"remote_port":    "state/remote-port",
+			},
+		},
+		{
+			name:         "transport state container keyed is on-change on mapped fields",
 			uri:          niBgpNbrSubscNbrUrl + "/transport/state",
 			requestURI:   niBgpNbrSubscNbrUrl + "/transport/state",
 			wantOnChange: OnchangeEnable,
@@ -234,6 +268,8 @@ func TestSubscribe_ni_bgp_nbr_state_paths(t *testing.T) {
 			wantApplFlds: map[string]string{
 				"local_address":  "local-address",
 				"remote_address": "remote-address",
+				"local_port":     "local-port",
+				"remote_port":    "remote-port",
 			},
 		},
 		{
@@ -446,5 +482,28 @@ func TestSubscribe_ni_bgp_nbr_state_protocol_instance_name(t *testing.T) {
 		subscProc:  TRANSLATE_SUBSCRIBE,
 	}); err != nil {
 		t.Fatalf("an unkeyed protocol list must not be refused: %v", err)
+	}
+}
+
+func Test_niBgpNbrUriIsTransportState(t *testing.T) {
+	pfx := niBgpNbrSubscNbrUrl
+	for _, tc := range []struct {
+		uri  string
+		want bool
+	}{
+		{pfx + "/transport", true},
+		{pfx + "/transport/state", true},
+		{pfx + "/transport/state/local-address", true},
+		{pfx + "/transport/state/remote-address", true},
+		{pfx + "/transport/state/local-port", true},
+		{pfx + "/transport/state/remote-port", true},
+		{pfx + "/transport/config", false},
+		{pfx + "/transport/config/local-address", false},
+		{pfx + "/transport/config/passive-mode", false},
+		{pfx + "/state", false},
+	} {
+		if got := niBgpNbrUriIsTransportState(tc.uri); got != tc.want {
+			t.Errorf("niBgpNbrUriIsTransportState(%s)=%v, want %v", tc.uri, got, tc.want)
+		}
 	}
 }
