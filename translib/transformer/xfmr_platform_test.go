@@ -1319,6 +1319,75 @@ func TestFillFirmwareInfoMfgDate(t *testing.T) {
 	})
 }
 
+// Chassis oper-status is ACTIVE. CHASSIS_INFO does not carry it.
+func TestFillFirmwareInfoOperStatus(t *testing.T) {
+	stdb, err := db.NewDB(getDBOptions(db.StateDB))
+	if err != nil {
+		t.Fatal("NewDB failed")
+	}
+	defer stdb.DeleteDB()
+	cfgdb, err := db.NewDB(getDBOptions(db.ConfigDB))
+	if err != nil {
+		t.Fatal("NewDB failed")
+	}
+	defer cfgdb.DeleteDB()
+
+	seedChassisInfoEntry(t, stdb, "chassis 1", map[string]string{
+		"serial": "LL2503K1024", "model": "3HE18723AARA01", "revision": "0",
+	})
+
+	fill := func(name string, pType PathType, uri string) *ocbinds.OpenconfigPlatform_Components_Component {
+		t.Helper()
+		comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+		ygot.BuildEmptyTree(comp)
+		if err := fillFirmwareInfo(comp, name, pType, uri, stdb, cfgdb); err != nil {
+			t.Fatalf("fillFirmwareInfo() unexpected error: %v", err)
+		}
+		return comp
+	}
+	active := ocbinds.OpenconfigPlatformTypes_COMPONENT_OPER_STATUS_ACTIVE
+
+	if got := fill("chassis 1", SingularPath, COMP_STATE_OPER_STATUS).State.OperStatus; got != active {
+		t.Errorf("targeted oper-status = %v, want ACTIVE", got)
+	}
+	if got := fill("chassis 1", StatePaths, COMP_ST).State.OperStatus; got != active {
+		t.Errorf("state oper-status = %v, want ACTIVE", got)
+	}
+}
+
+// A temperature sensor that is present reports oper-status ACTIVE.
+func TestFillTempSensorOperStatus(t *testing.T) {
+	stdb, err := db.NewDB(getDBOptions(db.StateDB))
+	if err != nil {
+		t.Fatal("NewDB failed")
+	}
+	defer stdb.DeleteDB()
+
+	name := "exhaust_sensor_1"
+	seedTempInfoEntry(t, stdb, name, map[string]string{"temperature": "42.5"})
+	active := ocbinds.OpenconfigPlatformTypes_COMPONENT_OPER_STATUS_ACTIVE
+
+	for _, c := range []struct {
+		name  string
+		pType PathType
+		uri   string
+	}{
+		{"targeted leaf", SingularPath, COMP_STATE_OPER_STATUS},
+		{"state container", StatePaths, COMP_ST},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+			ygot.BuildEmptyTree(comp)
+			if err := fillTempSensorInfo(comp, name, c.pType, c.uri, stdb); err != nil {
+				t.Fatalf("fillTempSensorInfo() unexpected error: %v", err)
+			}
+			if comp.State.OperStatus != active {
+				t.Errorf("oper-status = %v, want ACTIVE", comp.State.OperStatus)
+			}
+		})
+	}
+}
+
 // A CMIS module reports its running firmware in TRANSCEIVER_FIRMWARE_INFO, and
 // its type string doubles as the component description. A module with no
 // firmware row still serves the rest of its inventory.
