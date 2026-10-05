@@ -1683,10 +1683,18 @@ func buildNiBgpHierResMap(s *ygot.GoStruct, niName, protoName string) (map[strin
 						afFields[niBgpNbrSendCommFld] = comm
 					}
 					if afiObj.ApplyPolicy != nil && afiObj.ApplyPolicy.Config != nil {
-						if importPolicy, ok := niBgpFirstPolicyName(afiObj.ApplyPolicy.Config.ImportPolicy); ok {
+						importPolicy, ok, err := niBgpSinglePolicyName(afiObj.ApplyPolicy.Config.ImportPolicy, "neighbor", "import-policy")
+						if err != nil {
+							return res, err
+						}
+						if ok {
 							afFields[niBgpNbrRouteMapInFld] = importPolicy
 						}
-						if exportPolicy, ok := niBgpFirstPolicyName(afiObj.ApplyPolicy.Config.ExportPolicy); ok {
+						exportPolicy, ok, err := niBgpSinglePolicyName(afiObj.ApplyPolicy.Config.ExportPolicy, "neighbor", "export-policy")
+						if err != nil {
+							return res, err
+						}
+						if ok {
 							afFields[niBgpNbrRouteMapOutFld] = exportPolicy
 						}
 					}
@@ -1753,10 +1761,18 @@ func buildNiBgpHierResMap(s *ygot.GoStruct, niName, protoName string) (map[strin
 					}
 					if afiObj.ApplyPolicy != nil && afiObj.ApplyPolicy.Config != nil {
 						applyFields := map[string]string{}
-						if exportPolicy, ok := niBgpFirstPolicyName(afiObj.ApplyPolicy.Config.ExportPolicy); ok {
+						exportPolicy, ok, err := niBgpSinglePolicyName(afiObj.ApplyPolicy.Config.ExportPolicy, "peer-group", niBgpPgExportPolicyLeaf)
+						if err != nil {
+							return res, err
+						}
+						if ok {
 							applyFields[niBgpPgRouteMapOutFld] = exportPolicy
 						}
-						if importPolicy, ok := niBgpFirstPolicyName(afiObj.ApplyPolicy.Config.ImportPolicy); ok {
+						importPolicy, ok, err := niBgpSinglePolicyName(afiObj.ApplyPolicy.Config.ImportPolicy, "peer-group", niBgpPgImportPolicyLeaf)
+						if err != nil {
+							return res, err
+						}
+						if ok {
 							applyFields[niBgpPgRouteMapInFld] = importPolicy
 						}
 						if len(applyFields) > 0 {
