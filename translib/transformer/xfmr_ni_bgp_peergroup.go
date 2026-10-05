@@ -45,6 +45,8 @@ const (
 	niBgpPgMaxPrefixesLeaf   = "max-prefixes"
 	niBgpPgExportPolicyLeaf  = "export-policy"
 	niBgpPgImportPolicyLeaf  = "import-policy"
+	niBgpDefExportPolicyLeaf = "default-export-policy"
+	niBgpDefImportPolicyLeaf = "default-import-policy"
 	niBgpPgAsnFld            = "asn"
 	niBgpPgKeepaliveFld      = "keepalive"
 	niBgpPgHoldTimeFld       = "holdtime"
@@ -75,7 +77,10 @@ var niBgpPgCfgReqUriRe = regexp.MustCompile(niBgpPgUriPfx + `/config(?:/(peer-gr
 var niBgpPgTimersReqUriRe = regexp.MustCompile(niBgpPgUriPfx + `/timers/config(?:/(keepalive-interval|hold-time))?$`)
 var niBgpPgAfV4PfxReqUriRe = regexp.MustCompile(niBgpPgUriPfx + `/afi-safis/afi-safi(?:\[afi-safi-name=(?:IPV4_UNICAST|ipv4-unicast)\])?/ipv4-unicast/prefix-limit/config(?:/(max-prefixes))?$`)
 var niBgpPgAfV6PfxReqUriRe = regexp.MustCompile(niBgpPgUriPfx + `/afi-safis/afi-safi(?:\[afi-safi-name=(?:IPV6_UNICAST|ipv6-unicast)\])?/ipv6-unicast/prefix-limit/config(?:/(max-prefixes))?$`)
-var niBgpPgAfApplyReqUriRe = regexp.MustCompile(niBgpPgUriPfx + `/afi-safis/afi-safi\[afi-safi-name=([^\]]+)\]/apply-policy/config(?:/(export-policy|import-policy))?$`)
+
+// The apply-policy container and its config container are one target: the
+// config container is the only writable child.
+var niBgpPgAfApplyReqUriRe = regexp.MustCompile(niBgpPgUriPfx + `/afi-safis/afi-safi\[afi-safi-name=([^\]]+)\]/apply-policy(?:/config(?:/(export-policy|import-policy|default-export-policy|default-import-policy))?)?$`)
 
 var niBgpPgAfCfgReqUriRe = regexp.MustCompile(niBgpPgUriPfx + `/afi-safis/afi-safi\[afi-safi-name=([^\]]+)\]/config(?:/(afi-safi-name|enabled|send-community-type))?$`)
 
@@ -707,7 +712,7 @@ func niBgpPgPayloadAfiSafiName(param interface{}) (string, bool) {
 // payload carries. Naming an address family under a peer-group activates it
 // there, so the row carries admin_status even when enabled is absent, which is
 // what frrcfgd needs to emit "neighbor <peer-group> activate".
-func niBgpPgAfInstFields(afObj *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_PeerGroups_PeerGroup_AfiSafis_AfiSafi, afiSafi string) map[string]string {
+func niBgpPgAfInstFields(afObj *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_PeerGroups_PeerGroup_AfiSafis_AfiSafi, afiSafi string) (map[string]string, error) {
 	fields := map[string]string{}
 	enabled := true
 	if afObj != nil && afObj.Config != nil && afObj.Config.Enabled != nil {
@@ -715,13 +720,31 @@ func niBgpPgAfInstFields(afObj *ocbinds.OpenconfigNetworkInstance_NetworkInstanc
 	}
 	fields[niBgpPgAdminStatusFld] = niBgpPgEnabledToAdminStatus(enabled)
 	if afObj == nil {
-		return fields
+		return fields, nil
+	}
+	if afObj.Config != nil && len(afObj.Config.SendCommunityType) > 0 {
+		comm, err := niBgpSendCommunityTypeToField(nil, afObj.Config.SendCommunityType, "peer-group")
+		if err != nil {
+			return nil, err
+		}
+		fields[niBgpPgSendCommFld] = comm
 	}
 	if afObj.ApplyPolicy != nil && afObj.ApplyPolicy.Config != nil {
-		if policy, ok := niBgpFirstPolicyName(afObj.ApplyPolicy.Config.ImportPolicy); ok {
+		cfg := afObj.ApplyPolicy.Config
+		if err := niBgpApplyPolicyDefaultsErr("peer-group", cfg.DefaultImportPolicy, cfg.DefaultExportPolicy); err != nil {
+			return nil, err
+		}
+		policy, ok, err := niBgpSinglePolicyName(cfg.ImportPolicy, "peer-group", niBgpPgImportPolicyLeaf)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
 			fields[niBgpPgRouteMapInFld] = policy
 		}
-		if policy, ok := niBgpFirstPolicyName(afObj.ApplyPolicy.Config.ExportPolicy); ok {
+		if policy, ok, err = niBgpSinglePolicyName(cfg.ExportPolicy, "peer-group", niBgpPgExportPolicyLeaf); err != nil {
+			return nil, err
+		}
+		if ok {
 			fields[niBgpPgRouteMapOutFld] = policy
 		}
 	}
@@ -731,17 +754,54 @@ func niBgpPgAfInstFields(afObj *ocbinds.OpenconfigNetworkInstance_NetworkInstanc
 		if afObj.Ipv6Unicast != nil && afObj.Ipv6Unicast.PrefixLimit != nil && afObj.Ipv6Unicast.PrefixLimit.Config != nil && afObj.Ipv6Unicast.PrefixLimit.Config.MaxPrefixes != nil {
 			fields[niBgpPgMaxPfxLimitFld] = strconv.FormatUint(uint64(*afObj.Ipv6Unicast.PrefixLimit.Config.MaxPrefixes), 10)
 		}
-		return fields
+		return fields, nil
 	}
 	if afObj.Ipv4Unicast != nil && afObj.Ipv4Unicast.PrefixLimit != nil && afObj.Ipv4Unicast.PrefixLimit.Config != nil && afObj.Ipv4Unicast.PrefixLimit.Config.MaxPrefixes != nil {
 		fields[niBgpPgMaxPfxLimitFld] = strconv.FormatUint(uint64(*afObj.Ipv4Unicast.PrefixLimit.Config.MaxPrefixes), 10)
 	}
-	return fields
+	return fields, nil
+}
+
+// niBgpPgAfInstOwnedFlds are the BGP_PEER_GROUP_AF fields an afi-safi instance
+// maps. A REPLACE of the instance clears those the payload leaves out and
+// keeps every other field of the row.
+var niBgpPgAfInstOwnedFlds = map[string]bool{
+	niBgpPgAdminStatusFld: true,
+	niBgpPgSendCommFld:    true,
+	niBgpPgRouteMapInFld:  true,
+	niBgpPgRouteMapOutFld: true,
+	niBgpPgMaxPfxLimitFld: true,
+}
+
+// niBgpPgAfInstWrite maps the row of one afi-safi instance a write carries. A
+// nil row means the write has already been staged and nothing is to be returned
+// for it.
+func niBgpPgAfInstWrite(inParams XfmrParams, reqInfo *niBgpPgReqInfo, afiSafi string, fields map[string]string) (map[string]string, error) {
+	if inParams.oper == REPLACE {
+		existing := niBgpCfgDbEntry(inParams, niBgpPeerGroupAfTbl, reqInfo.niName, reqInfo.peerGroupName, afiSafi)
+		return niBgpReplaceRowFields(existing, fields, niBgpPgAfInstOwnedFlds), nil
+	}
+	staged, err := niBgpPgStaleRouteMaps(inParams, reqInfo.niName, reqInfo.peerGroupName, afiSafi, fields)
+	if err != nil || staged {
+		return nil, err
+	}
+	return fields, nil
+}
+
+// niBgpPgParentRowIfMissing adds the BGP_PEER_GROUP row an address-family
+// write depends on, unless CONFIG_DB already holds it. A REPLACE anchored above
+// the config containers rewrites each row it returns as a whole, so returning
+// an existing parent would empty it.
+func niBgpPgParentRowIfMissing(inParams XfmrParams, res map[string]map[string]db.Value, niName, pgName string) map[string]map[string]db.Value {
+	if parent := niBgpCfgDbEntry(inParams, niBgpPeerGroupTbl, niName, pgName); parent.IsPopulated() {
+		return res
+	}
+	return ensureNiBgpPgParentRow(res, niName, pgName)
 }
 
 // buildNiBgpPgAfisResMap maps every afi-safi an afi-safis container payload
 // carries, so that one request can create or update both families.
-func buildNiBgpPgAfisResMap(s *ygot.GoStruct, reqInfo *niBgpPgReqInfo) (map[string]map[string]db.Value, error) {
+func buildNiBgpPgAfisResMap(inParams XfmrParams, s *ygot.GoStruct, reqInfo *niBgpPgReqInfo) (map[string]map[string]db.Value, error) {
 	pgObj := getNiBgpPeerGroupObj(s, reqInfo.niName, reqInfo.protoName, reqInfo.peerGroupName, false)
 	if pgObj == nil || pgObj.AfiSafis == nil || len(pgObj.AfiSafis.AfiSafi) == 0 {
 		return nil, tlerr.InvalidArgsError{Format: "BGP peer-group afi-safis payload does not name any afi-safi"}
@@ -753,9 +813,18 @@ func buildNiBgpPgAfisResMap(s *ygot.GoStruct, reqInfo *niBgpPgReqInfo) (map[stri
 		if !ok {
 			return nil, tlerr.InvalidArgsError{Format: fmt.Sprintf("unsupported afi-safi-name for network-instance BGP peer-group AFI-SAFI mapping: %v", afiEnum)}
 		}
-		rows[reqInfo.niName+"|"+reqInfo.peerGroupName+"|"+afiSafi] = db.Value{Field: niBgpPgAfInstFields(afObj, afiSafi)}
+		fields, err := niBgpPgAfInstFields(afObj, afiSafi)
+		if err != nil {
+			return nil, err
+		}
+		if fields, err = niBgpPgAfInstWrite(inParams, reqInfo, afiSafi, fields); err != nil {
+			return nil, err
+		}
+		if fields != nil {
+			rows[reqInfo.niName+"|"+reqInfo.peerGroupName+"|"+afiSafi] = db.Value{Field: fields}
+		}
 	}
-	return ensureNiBgpPgParentRow(map[string]map[string]db.Value{niBgpPeerGroupAfTbl: rows}, reqInfo.niName, reqInfo.peerGroupName), nil
+	return niBgpPgParentRowIfMissing(inParams, map[string]map[string]db.Value{niBgpPeerGroupAfTbl: rows}, reqInfo.niName, reqInfo.peerGroupName), nil
 }
 
 // niBgpPgDbAfiSafis lists the address families a peer-group holds a row for,
@@ -795,6 +864,9 @@ func populateNiBgpPgAfFromDb(cfgDb *db.DB, ygRoot *ygot.GoStruct, niName, protoN
 		afObj.Config.AfiSafiName = afiKey
 		if enabled, ok := niBgpPgAdminStatusToEnabled(entry.Field[niBgpPgAdminStatusFld]); ok {
 			afObj.Config.Enabled = enabled
+		}
+		if comm, ok := niBgpSendCommunityTypeFromDb(entry.Field[niBgpPgSendCommFld]); ok {
+			afObj.Config.SendCommunityType = comm
 		}
 	}
 	if afObj.ApplyPolicy != nil && afObj.ApplyPolicy.Config != nil {
@@ -934,51 +1006,148 @@ func parseNiBgpPgMaxPrefixesFromParam(param interface{}) (*uint32, bool) {
 	return nil, false
 }
 
-// The two apply-policy leaves are leaf-lists of policy names and are parsed
-// the same way, so the leaf being written is what the caller tracks, not this
-// function.
-func parseNiBgpPgApplyPolicyFromParam(param interface{}) (string, bool) {
-	switch val := param.(type) {
+// niBgpPolicyNames collects the policy names an apply-policy leaf-list value
+// carries, in whichever shape translib hands the value over.
+func niBgpPolicyNames(v interface{}) []string {
+	var names []string
+	add := func(s string) {
+		if s = strings.TrimSpace(s); s != "" {
+			names = append(names, s)
+		}
+	}
+	switch val := v.(type) {
 	case string:
-		v := strings.TrimSpace(val)
-		return v, v != ""
+		add(val)
 	case *string:
 		if val != nil {
-			v := strings.TrimSpace(*val)
-			return v, v != ""
+			add(*val)
 		}
 	case []string:
-		for _, item := range val {
-			v := strings.TrimSpace(item)
-			if v != "" {
-				return v, true
-			}
+		for _, s := range val {
+			add(s)
 		}
 	case []interface{}:
 		for _, item := range val {
-			s, ok := item.(string)
-			if !ok {
-				continue
-			}
-			v := strings.TrimSpace(s)
-			if v != "" {
-				return v, true
+			if s, ok := item.(string); ok {
+				add(s)
 			}
 		}
 	}
-	return "", false
+	return names
 }
 
-// niBgpFirstPolicyName picks the policy to store out of an apply-policy
-// leaf-list. CONFIG_DB holds one route-map per direction, so only the first
-// name a payload carries can be kept.
-func niBgpFirstPolicyName(policies []string) (string, bool) {
-	for _, p := range policies {
-		if v := strings.TrimSpace(p); v != "" {
-			return v, true
+// niBgpSinglePolicyName picks the policy to store out of an apply-policy
+// leaf-list value. CONFIG_DB holds one route-map per direction, so a request
+// naming more than one is refused rather than cut down to its first name.
+func niBgpSinglePolicyName(v interface{}, scope, leaf string) (string, bool, error) {
+	names := niBgpPolicyNames(v)
+	switch {
+	case len(names) == 0:
+		return "", false, nil
+	case len(names) > 1:
+		return "", false, tlerr.NotSupportedError{Format: fmt.Sprintf("BGP %s apply-policy %s accepts one policy, since CONFIG_DB holds a single route-map per direction, and the request carries %d", scope, leaf, len(names))}
+	}
+	return names[0], true, nil
+}
+
+// niBgpApplyPolicyDefaultLeafErr refuses default-import-policy and
+// default-export-policy. CONFIG_DB has no field for either, so a write would
+// otherwise succeed without changing anything. A policy whose statements end in
+// ACCEPT_ROUTE or REJECT_ROUTE, attached through import-policy or
+// export-policy, is how either outcome is configured.
+func niBgpApplyPolicyDefaultLeafErr(scope, leaf string) error {
+	return tlerr.NotSupportedError{Format: fmt.Sprintf("BGP %s apply-policy %s is not supported; attach a policy ending in ACCEPT_ROUTE or REJECT_ROUTE through import-policy or export-policy instead", scope, leaf)}
+}
+
+func niBgpApplyPolicyDefaultsErr(scope string, defImport, defExport ocbinds.E_OpenconfigRoutingPolicy_DefaultPolicyType) error {
+	if defImport != ocbinds.OpenconfigRoutingPolicy_DefaultPolicyType_UNSET {
+		return niBgpApplyPolicyDefaultLeafErr(scope, "default-import-policy")
+	}
+	if defExport != ocbinds.OpenconfigRoutingPolicy_DefaultPolicyType_UNSET {
+		return niBgpApplyPolicyDefaultLeafErr(scope, "default-export-policy")
+	}
+	return nil
+}
+
+// niBgpStageSubOp adds rows to one sub-operation of the request. A subtree
+// transformer only returns rows for the operation it was called for, so a
+// write that also has to clear fields, or must not run as the request's own
+// operation, rides along this way.
+func niBgpStageSubOp(inParams XfmrParams, oper Operation, rows map[string]map[string]db.Value) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	if inParams.subOpDataMap == nil {
+		return tlerr.InternalError{Format: "BGP apply-policy write has no sub-operation map to stage into"}
+	}
+	if inParams.subOpDataMap[oper] == nil {
+		subOpMap := make(RedisDbMap)
+		inParams.subOpDataMap[oper] = &subOpMap
+	}
+	subOpMap := *inParams.subOpDataMap[oper]
+	subOpMap[db.ConfigDB] = mergeDbResMapFields(subOpMap[db.ConfigDB], rows)
+	return nil
+}
+
+// niBgpCfgDbEntry reads a CONFIG_DB row through the request's handle, so that
+// rows staged earlier in the same transaction are seen. A missing row reads as
+// an empty one.
+func niBgpCfgDbEntry(inParams XfmrParams, table string, key ...string) db.Value {
+	if inParams.d == nil {
+		return db.Value{}
+	}
+	entry, err := inParams.d.GetEntry(&db.TableSpec{Name: table}, db.Key{Comp: key})
+	if err != nil {
+		return db.Value{}
+	}
+	return entry
+}
+
+// niBgpReplaceRowFields renders the row a REPLACE of an afi-safi instance
+// writes. The row is replaced as a whole, so the fields that other subtrees own
+// are carried over from CONFIG_DB, and only the fields the instance owns follow
+// the payload.
+func niBgpReplaceRowFields(existing db.Value, fields map[string]string, owned map[string]bool) map[string]string {
+	row := make(map[string]string, len(fields))
+	for f, v := range existing.Field {
+		if f != "NULL" && !owned[f] {
+			row[f] = v
 		}
 	}
-	return "", false
+	for f, v := range fields {
+		row[f] = v
+	}
+	return row
+}
+
+// niBgpPgStaleRouteMaps stages the removal of a route-map a write is about to
+// change. The route-map fields of BGP_PEER_GROUP_AF are leaf-lists, which an
+// update merges into rather than replaces, and CVL holds each to one element.
+// Deleting every field of a row leaves a NULL placeholder that the update then
+// keeps, so a row holding nothing but stale route-maps is instead replaced with
+// fields as a whole. It reports true when it has staged that replace, in which
+// case the caller must not return the row itself.
+func niBgpPgStaleRouteMaps(inParams XfmrParams, niName, pgName, afiSafi string, fields map[string]string) (bool, error) {
+	existing := niBgpCfgDbEntry(inParams, niBgpPeerGroupAfTbl, niName, pgName, afiSafi)
+	stale := map[string]string{}
+	for _, fld := range []string{niBgpPgRouteMapInFld, niBgpPgRouteMapOutFld} {
+		v, ok := fields[fld]
+		if !ok || !existing.Has(fld) {
+			continue
+		}
+		if cur := strings.TrimSpace(existing.Get(fld)); cur != "" && cur != v {
+			stale[fld] = ""
+		}
+	}
+	if len(stale) == 0 {
+		return false, nil
+	}
+	for fld := range existing.Field {
+		if _, ok := stale[fld]; !ok && fld != "NULL" {
+			return false, niBgpStageSubOp(inParams, DELETE, makeNiBgpPgAfResMap(niName, pgName, afiSafi, stale))
+		}
+	}
+	return true, niBgpStageSubOp(inParams, REPLACE, makeNiBgpPgAfResMap(niName, pgName, afiSafi, fields))
 }
 
 // niBgpPgApplyPolicyFields renders the CONFIG_DB fields of an apply-policy
@@ -987,44 +1156,127 @@ func niBgpFirstPolicyName(policies []string) (string, bool) {
 func niBgpPgApplyPolicyFields(inParams XfmrParams, reqInfo *niBgpPgReqInfo) (map[string]string, error) {
 	var importPolicies, exportPolicies []string
 	if applyCfgObj := getNiBgpPeerGroupAfApplyPolicyCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.protoName, reqInfo.peerGroupName, reqInfo.afiSafi, false); applyCfgObj != nil {
+		if err := niBgpApplyPolicyDefaultsErr("peer-group", applyCfgObj.DefaultImportPolicy, applyCfgObj.DefaultExportPolicy); err != nil {
+			return nil, err
+		}
 		importPolicies = applyCfgObj.ImportPolicy
 		exportPolicies = applyCfgObj.ExportPolicy
+	}
+
+	// A request naming one leaf carries its value in param; the ygot tree
+	// holds it otherwise.
+	leafPolicy := func(leaf string, fromTree []string) (string, error) {
+		policy, ok, err := niBgpSinglePolicyName(inParams.param, "peer-group", leaf)
+		if err == nil && !ok {
+			policy, ok, err = niBgpSinglePolicyName(fromTree, "peer-group", leaf)
+		}
+		if err != nil {
+			return "", err
+		}
+		if !ok {
+			return "", tlerr.InvalidArgsError{Format: "BGP peer-group AFI-SAFI apply-policy " + leaf + " is missing in request payload"}
+		}
+		return policy, nil
 	}
 
 	fields := map[string]string{}
 	switch reqInfo.targetLeaf {
 	case niBgpPgExportPolicyLeaf:
-		policy, ok := parseNiBgpPgApplyPolicyFromParam(inParams.param)
-		if !ok {
-			if policy, ok = niBgpFirstPolicyName(exportPolicies); !ok {
-				return nil, tlerr.InvalidArgsError{Format: "BGP peer-group AFI-SAFI apply-policy export-policy is missing in request payload"}
-			}
+		policy, err := leafPolicy(niBgpPgExportPolicyLeaf, exportPolicies)
+		if err != nil {
+			return nil, err
 		}
 		fields[niBgpPgRouteMapOutFld] = policy
 	case niBgpPgImportPolicyLeaf:
-		policy, ok := parseNiBgpPgApplyPolicyFromParam(inParams.param)
-		if !ok {
-			if policy, ok = niBgpFirstPolicyName(importPolicies); !ok {
-				return nil, tlerr.InvalidArgsError{Format: "BGP peer-group AFI-SAFI apply-policy import-policy is missing in request payload"}
-			}
+		policy, err := leafPolicy(niBgpPgImportPolicyLeaf, importPolicies)
+		if err != nil {
+			return nil, err
 		}
 		fields[niBgpPgRouteMapInFld] = policy
 	case "":
 		// The container itself. param names the container rather than a leaf,
 		// so the value of each leaf can only come from the ygot tree.
-		if policy, ok := niBgpFirstPolicyName(exportPolicies); ok {
+		policy, ok, err := niBgpSinglePolicyName(exportPolicies, "peer-group", niBgpPgExportPolicyLeaf)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
 			fields[niBgpPgRouteMapOutFld] = policy
 		}
-		if policy, ok := niBgpFirstPolicyName(importPolicies); ok {
+		if policy, ok, err = niBgpSinglePolicyName(importPolicies, "peer-group", niBgpPgImportPolicyLeaf); err != nil {
+			return nil, err
+		}
+		if ok {
 			fields[niBgpPgRouteMapInFld] = policy
 		}
-		if len(fields) == 0 {
+		if len(fields) == 0 && inParams.oper != REPLACE {
 			return nil, tlerr.InvalidArgsError{Format: "BGP peer-group AFI-SAFI apply-policy config payload carries neither import-policy nor export-policy"}
 		}
+	case niBgpDefImportPolicyLeaf, niBgpDefExportPolicyLeaf:
+		return nil, niBgpApplyPolicyDefaultLeafErr("peer-group", reqInfo.targetLeaf)
 	default:
 		return nil, tlerr.NotSupportedError{Format: "unsupported leaf under peer-group AFI-SAFI apply-policy config"}
 	}
 	return fields, nil
+}
+
+// niBgpPgApplyPolicyDelete maps a DELETE of apply-policy to the route-map
+// fields the row actually holds. Deleting an absent leaf-list field queues no
+// write, which translib refuses, so a delete with nothing to remove returns no
+// rows and succeeds as a no-op.
+func niBgpPgApplyPolicyDelete(inParams XfmrParams, reqInfo *niBgpPgReqInfo, flds ...string) map[string]map[string]db.Value {
+	existing := niBgpCfgDbEntry(inParams, niBgpPeerGroupAfTbl, reqInfo.niName, reqInfo.peerGroupName, reqInfo.afiSafi)
+	fields := map[string]string{}
+	for _, fld := range flds {
+		if existing.Has(fld) {
+			fields[fld] = ""
+		}
+	}
+	if len(fields) == 0 {
+		return map[string]map[string]db.Value{}
+	}
+	return makeNiBgpPgAfResMap(reqInfo.niName, reqInfo.peerGroupName, reqInfo.afiSafi, fields)
+}
+
+// niBgpPgApplyPolicyWrite maps a write to apply-policy. A REPLACE of either
+// container clears the direction its payload leaves out. A REPLACE runs as an
+// update of the fields it names: the apply-policy container is not a terminal
+// node, so translib would otherwise rewrite the whole row from what this
+// returns.
+func niBgpPgApplyPolicyWrite(inParams XfmrParams, reqInfo *niBgpPgReqInfo) (map[string]map[string]db.Value, error) {
+	fields, err := niBgpPgApplyPolicyFields(inParams, reqInfo)
+	if err != nil {
+		return nil, err
+	}
+	staged, err := niBgpPgStaleRouteMaps(inParams, reqInfo.niName, reqInfo.peerGroupName, reqInfo.afiSafi, fields)
+	if err != nil {
+		return nil, err
+	}
+	if staged {
+		return map[string]map[string]db.Value{}, nil
+	}
+	res := makeNiBgpPgAfResMap(reqInfo.niName, reqInfo.peerGroupName, reqInfo.afiSafi, fields)
+	if inParams.oper != REPLACE {
+		return res, nil
+	}
+	if reqInfo.targetLeaf == "" {
+		existing := niBgpCfgDbEntry(inParams, niBgpPeerGroupAfTbl, reqInfo.niName, reqInfo.peerGroupName, reqInfo.afiSafi)
+		clear := map[string]string{}
+		for _, fld := range []string{niBgpPgRouteMapInFld, niBgpPgRouteMapOutFld} {
+			if _, ok := fields[fld]; !ok && existing.Has(fld) {
+				clear[fld] = ""
+			}
+		}
+		if err := niBgpStageSubOp(inParams, DELETE, makeNiBgpPgAfResMap(reqInfo.niName, reqInfo.peerGroupName, reqInfo.afiSafi, clear)); err != nil {
+			return nil, err
+		}
+	}
+	if len(fields) > 0 {
+		if err := niBgpStageSubOp(inParams, UPDATE, res); err != nil {
+			return nil, err
+		}
+	}
+	return map[string]map[string]db.Value{}, nil
 }
 
 var YangToDb_ni_bgp_pg_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (map[string]map[string]db.Value, error) {
@@ -1080,14 +1332,13 @@ var YangToDb_ni_bgp_pg_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) 
 			switch reqInfo.targetLeaf {
 			case "":
 				// The container delete takes both directions with it.
-				return makeNiBgpPgAfResMap(reqInfo.niName, reqInfo.peerGroupName, reqInfo.afiSafi, map[string]string{
-					niBgpPgRouteMapInFld:  "",
-					niBgpPgRouteMapOutFld: "",
-				}), nil
+				return niBgpPgApplyPolicyDelete(inParams, reqInfo, niBgpPgRouteMapInFld, niBgpPgRouteMapOutFld), nil
 			case niBgpPgExportPolicyLeaf:
-				return makeNiBgpPgAfResMap(reqInfo.niName, reqInfo.peerGroupName, reqInfo.afiSafi, map[string]string{niBgpPgRouteMapOutFld: ""}), nil
+				return niBgpPgApplyPolicyDelete(inParams, reqInfo, niBgpPgRouteMapOutFld), nil
 			case niBgpPgImportPolicyLeaf:
-				return makeNiBgpPgAfResMap(reqInfo.niName, reqInfo.peerGroupName, reqInfo.afiSafi, map[string]string{niBgpPgRouteMapInFld: ""}), nil
+				return niBgpPgApplyPolicyDelete(inParams, reqInfo, niBgpPgRouteMapInFld), nil
+			case niBgpDefImportPolicyLeaf, niBgpDefExportPolicyLeaf:
+				return res, niBgpApplyPolicyDefaultLeafErr("peer-group", reqInfo.targetLeaf)
 			default:
 				return res, tlerr.NotSupportedError{Format: "DELETE supported only for /peer-groups/peer-group/afi-safis/afi-safi/apply-policy/config, its import-policy leaf, or its export-policy leaf", Path: inParams.requestUri}
 			}
@@ -1150,11 +1401,21 @@ var YangToDb_ni_bgp_pg_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) 
 			*inParams.invokeCRUSubtreeOnce = true
 		}
 		if reqInfo.targetPath == niBgpPgTargetAfis {
-			return buildNiBgpPgAfisResMap(wrappedRoot, reqInfo)
+			return buildNiBgpPgAfisResMap(inParams, wrappedRoot, reqInfo)
 		}
 		afObj := getNiBgpPeerGroupAfObjByName(wrappedRoot, reqInfo.niName, reqInfo.protoName, reqInfo.peerGroupName, reqInfo.afiSafi, false)
-		return ensureNiBgpPgParentRow(
-			makeNiBgpPgAfResMap(reqInfo.niName, reqInfo.peerGroupName, reqInfo.afiSafi, niBgpPgAfInstFields(afObj, reqInfo.afiSafi)),
+		fields, err := niBgpPgAfInstFields(afObj, reqInfo.afiSafi)
+		if err != nil {
+			return res, err
+		}
+		if fields, err = niBgpPgAfInstWrite(inParams, reqInfo, reqInfo.afiSafi, fields); err != nil {
+			return res, err
+		}
+		if fields == nil {
+			return niBgpPgParentRowIfMissing(inParams, res, reqInfo.niName, reqInfo.peerGroupName), nil
+		}
+		return niBgpPgParentRowIfMissing(inParams,
+			makeNiBgpPgAfResMap(reqInfo.niName, reqInfo.peerGroupName, reqInfo.afiSafi, fields),
 			reqInfo.niName, reqInfo.peerGroupName), nil
 	}
 
@@ -1226,11 +1487,9 @@ var YangToDb_ni_bgp_pg_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) 
 	if reqInfo.targetPath == niBgpPgTargetAfApplyCfg {
 		switch reqInfo.targetLeaf {
 		case "", niBgpPgExportPolicyLeaf, niBgpPgImportPolicyLeaf:
-			fields, err := niBgpPgApplyPolicyFields(inParams, reqInfo)
-			if err != nil {
-				return res, err
-			}
-			return makeNiBgpPgAfResMap(reqInfo.niName, reqInfo.peerGroupName, reqInfo.afiSafi, fields), nil
+			return niBgpPgApplyPolicyWrite(inParams, reqInfo)
+		case niBgpDefImportPolicyLeaf, niBgpDefExportPolicyLeaf:
+			return res, niBgpApplyPolicyDefaultLeafErr("peer-group", reqInfo.targetLeaf)
 		default:
 			return res, tlerr.NotSupportedError{Format: "unsupported leaf under peer-group AFI-SAFI apply-policy config", Path: inParams.requestUri}
 		}
