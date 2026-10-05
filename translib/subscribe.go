@@ -299,10 +299,12 @@ func IsSubscribeSupported(req IsSubscribeRequest) ([]*IsSubscribeResponse, error
 			continue
 		}
 
-		// Split target_defined request into separate on_change and sample
-		// sub-requests if required.
+		// Split mixed on_change / sample subtrees. TARGET_DEFINED also registers
+		// separate SAMPLE subscriptions for the sample legs; explicit ON_CHANGE
+		// only strips sample siblings from the cached translation.
+		sampleSplits := trInfo.segregateSampleSubpaths()
 		if p.Mode == TargetDefined {
-			for _, xInfo := range trInfo.segregateSampleSubpaths() {
+			for _, xInfo := range sampleSplits {
 				xr := newIsSubscribeResponse(p.ID, xInfo.path)
 				xr.IsSubPath = true
 				resp = append(resp, xr)
