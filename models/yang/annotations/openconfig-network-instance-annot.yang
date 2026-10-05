@@ -565,10 +565,38 @@ module openconfig-network-instance-annot {
       }
     }
 
+    // transport/config is CONFIG_DB (local_addr, passive_mode). It must be
+    // annotated onto the neighbor config transformer; otherwise it inherits
+    // the transport container's STATE_DB annotation below and SET/DELETE
+    // never reach BGP_NEIGHBOR. tcp-mss and mtu-discovery have no CONFIG_DB
+    // field and are left unmapped.
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:bgp/oc-netinst:neighbors/oc-netinst:neighbor/oc-netinst:transport/oc-netinst:config {
+      deviate add {
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "ni_bgp_nbr_cfg_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:bgp/oc-netinst:neighbors/oc-netinst:neighbor/oc-netinst:transport/oc-netinst:config/oc-netinst:local-address {
+      deviate add {
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "ni_bgp_nbr_cfg_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:bgp/oc-netinst:neighbors/oc-netinst:neighbor/oc-netinst:transport/oc-netinst:config/oc-netinst:passive-mode {
+      deviate add {
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "ni_bgp_nbr_cfg_xfmr";
+      }
+    }
+
     // The applied transport addresses come from the same row, so the transport
     // subtree is annotated onto the same transformer. Without an annotation
     // here the nearest annotated ancestor is the neighbor list, whose dispatch
     // maps CONFIG_DB only and would report nothing for these leaves.
+    // transport/config is annotated separately above so SET/GET/DELETE of the
+    // configured source address and passive-mode do not land here.
     deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:bgp/oc-netinst:neighbors/oc-netinst:neighbor/oc-netinst:transport {
       deviate add {
           sonic-ext:db-name "STATE_DB";
@@ -591,6 +619,20 @@ module openconfig-network-instance-annot {
     }
 
     deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:bgp/oc-netinst:neighbors/oc-netinst:neighbor/oc-netinst:transport/oc-netinst:state/oc-netinst:remote-address {
+      deviate add {
+          sonic-ext:db-name "STATE_DB";
+          sonic-ext:subtree-transformer "ni_bgp_nbr_state_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:bgp/oc-netinst:neighbors/oc-netinst:neighbor/oc-netinst:transport/oc-netinst:state/oc-netinst:local-port {
+      deviate add {
+          sonic-ext:db-name "STATE_DB";
+          sonic-ext:subtree-transformer "ni_bgp_nbr_state_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:bgp/oc-netinst:neighbors/oc-netinst:neighbor/oc-netinst:transport/oc-netinst:state/oc-netinst:remote-port {
       deviate add {
           sonic-ext:db-name "STATE_DB";
           sonic-ext:subtree-transformer "ni_bgp_nbr_state_xfmr";

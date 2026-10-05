@@ -61,6 +61,8 @@ const (
 	niBgpNbrAppliedPeerGrpFld   = "peer_group"
 	niBgpNbrAppliedLocalAddrFld = "local_address"
 	niBgpNbrAppliedRmtAddrFld   = "remote_address"
+	niBgpNbrAppliedLocalPortFld = "local_port"
+	niBgpNbrAppliedRmtPortFld   = "remote_port"
 	// The negotiated capabilities, as a list; the trailing @ is SONiC's
 	// mark for a field holding one.
 	niBgpNbrAppliedSuppCapsFld = "supported_capabilities@"
@@ -96,6 +98,8 @@ const (
 	niBgpNbrPeerGrpLeaf      = "peer-group"
 	niBgpNbrLocalAddrLeaf    = "local-address"
 	niBgpNbrRmtAddrLeaf      = "remote-address"
+	niBgpNbrLocalPortLeaf    = "local-port"
+	niBgpNbrRmtPortLeaf      = "remote-port"
 	niBgpNbrSuppCapsLeaf     = "supported-capabilities"
 	niBgpNbrEstTransLeaf     = "established-transitions"
 	niBgpNbrLastEstLeaf      = "last-established"
@@ -130,7 +134,19 @@ var niBgpNbrMessagesReqUriRe = regexp.MustCompile(niBgpNbrStateUriPfx +
 // matched so that a request anchored at either is served rather than falling
 // back to the BGP container dispatch, which maps CONFIG_DB only.
 var niBgpNbrTransportReqUriRe = regexp.MustCompile(niBgpNbrStateUriPfx +
-	`/transport(?:/state(?:/(local-address|remote-address))?)?$`)
+	`/transport(?:/state(?:/(local-address|remote-address|local-port|remote-port))?)?$`)
+
+// niBgpNbrUriIsTransportState reports a subscribe uri that belongs to the
+// applied transport addresses, not to transport/config. The bare transport
+// container is included because that is how a request on the sibling of state
+// is served today.
+func niBgpNbrUriIsTransportState(uri string) bool {
+	u := strings.TrimSuffix(strings.TrimSpace(uri), "/")
+	if strings.Contains(u, "/transport/config") {
+		return false
+	}
+	return strings.HasSuffix(u, "/"+niBgpNbrTransportSubtree) || strings.Contains(u, "/"+niBgpNbrTransportSubtree+"/"+niBgpNbrStateSubtree)
+}
 
 const niBgpNbrStateUriPfx = `^/openconfig-network-instance:network-instances/network-instance\[name=([^\]]+)\]` +
 	`/protocols/protocol\[identifier=(?:[-A-Za-z0-9_.]+:)?BGP\]\[name=([^\]]+)\]` +
@@ -154,6 +170,31 @@ var niBgpNbrAppliedFldForLeaf = map[string]string{
 var niBgpNbrAppliedFldForTransportLeaf = map[string]string{
 	niBgpNbrLocalAddrLeaf: niBgpNbrAppliedLocalAddrFld,
 	niBgpNbrRmtAddrLeaf:   niBgpNbrAppliedRmtAddrFld,
+	niBgpNbrLocalPortLeaf: niBgpNbrAppliedLocalPortFld,
+	niBgpNbrRmtPortLeaf:   niBgpNbrAppliedRmtPortFld,
+}
+
+// niBgpNbrTransportSubscribeYangLeaf names a transport state leaf in the
+// subscribe db map. A subscription anchored on the bare transport container
+// must carry the state/ prefix, because the leaves live under transport/state
+// rather than directly under transport. A subscription already anchored on
+// transport/state or on one of its leaves keeps the bare leaf name.
+func niBgpNbrTransportSubscribeYangLeaf(subscribeUri, yangLeaf string) string {
+	u := strings.TrimSuffix(strings.TrimSpace(subscribeUri), "/")
+	if strings.HasSuffix(u, "/"+niBgpNbrTransportSubtree) &&
+		!strings.HasSuffix(u, "/"+niBgpNbrTransportSubtree+"/"+niBgpNbrStateSubtree) {
+		return niBgpNbrStateSubtree + "/" + yangLeaf
+	}
+	return yangLeaf
+}
+
+func niBgpNbrTransportSubscribeFlds(subscribeUri string) map[string]string {
+	return map[string]string{
+		niBgpNbrAppliedLocalAddrFld: niBgpNbrTransportSubscribeYangLeaf(subscribeUri, niBgpNbrLocalAddrLeaf),
+		niBgpNbrAppliedRmtAddrFld:   niBgpNbrTransportSubscribeYangLeaf(subscribeUri, niBgpNbrRmtAddrLeaf),
+		niBgpNbrAppliedLocalPortFld: niBgpNbrTransportSubscribeYangLeaf(subscribeUri, niBgpNbrLocalPortLeaf),
+		niBgpNbrAppliedRmtPortFld:   niBgpNbrTransportSubscribeYangLeaf(subscribeUri, niBgpNbrRmtPortLeaf),
+	}
 }
 
 // niBgpNbrStatsFldForLeaf maps the leaves of the state container that come from
@@ -523,6 +564,23 @@ func niBgpNbrAppliedStr(entry db.Value, field string) (string, bool) {
 	return raw, raw != ""
 }
 
+// niBgpNbrAppliedUint16 returns a parsed applied port field. An absent or
+// empty field is treated as unset; a present value that is not a uint16 is
+// an error, the same as an unparseable peer-as.
+func niBgpNbrAppliedUint16(entry db.Value, field, neighborAddr string) (uint16, bool, error) {
+	raw, ok := niBgpNbrAppliedStr(entry, field)
+	if !ok {
+		return 0, false, nil
+	}
+	v, err := strconv.ParseUint(raw, 10, 16)
+	if err != nil {
+		return 0, false, tlerr.InvalidArgsError{
+			Format: fmt.Sprintf("unrecognized %s.%s value %q for neighbor %s", niBgpNbrAppliedTbl, field, raw, neighborAddr),
+		}
+	}
+	return uint16(v), true, nil
+}
+
 // populateNiBgpNbrAppliedStateLeaves fills the state container leaves that come
 // from the applied row. Only the requested leaf is filled when the request
 // targets one, so that a leaf request does not report its siblings.
@@ -867,11 +925,24 @@ func populateNiBgpNbrTransportStateFromDb(inParams XfmrParams, stateDb *db.DB, r
 		return nil
 	}
 
+	wants := func(leaf string) bool { return reqInfo.targetLeaf == "" || reqInfo.targetLeaf == leaf }
+
 	localAddr, hasLocal := niBgpNbrAppliedStr(entry, niBgpNbrAppliedLocalAddrFld)
 	remoteAddr, hasRemote := niBgpNbrAppliedStr(entry, niBgpNbrAppliedRmtAddrFld)
-	wantLocal := (reqInfo.targetLeaf == "" || reqInfo.targetLeaf == niBgpNbrLocalAddrLeaf) && hasLocal
-	wantRemote := (reqInfo.targetLeaf == "" || reqInfo.targetLeaf == niBgpNbrRmtAddrLeaf) && hasRemote
-	if !wantLocal && !wantRemote {
+	localPort, hasLocalPort, err := niBgpNbrAppliedUint16(entry, niBgpNbrAppliedLocalPortFld, reqInfo.neighborAddr)
+	if err != nil {
+		return err
+	}
+	remotePort, hasRemotePort, err := niBgpNbrAppliedUint16(entry, niBgpNbrAppliedRmtPortFld, reqInfo.neighborAddr)
+	if err != nil {
+		return err
+	}
+
+	wantLocal := wants(niBgpNbrLocalAddrLeaf) && hasLocal
+	wantRemote := wants(niBgpNbrRmtAddrLeaf) && hasRemote
+	wantLocalPort := wants(niBgpNbrLocalPortLeaf) && hasLocalPort
+	wantRemotePort := wants(niBgpNbrRmtPortLeaf) && hasRemotePort
+	if !wantLocal && !wantRemote && !wantLocalPort && !wantRemotePort {
 		return nil
 	}
 
@@ -886,6 +957,14 @@ func populateNiBgpNbrTransportStateFromDb(inParams XfmrParams, stateDb *db.DB, r
 	if wantRemote {
 		addr := remoteAddr
 		transportObj.RemoteAddress = &addr
+	}
+	if wantLocalPort {
+		port := localPort
+		transportObj.LocalPort = &port
+	}
+	if wantRemotePort {
+		port := remotePort
+		transportObj.RemotePort = &port
 	}
 	return nil
 }
@@ -966,20 +1045,22 @@ var Subscribe_ni_bgp_nbr_state_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSub
 	appliedOnly := false
 
 	switch {
-	case strings.Contains(inParams.uri, "/"+niBgpNbrTransportSubtree):
-		// Both transport leaves come from the applied row. A request anchored
-		// on one of them watches that field alone, so the other one moving does
-		// not wake it.
-		transportFlds := map[string]string{
-			niBgpNbrAppliedLocalAddrFld: niBgpNbrLocalAddrLeaf,
-			niBgpNbrAppliedRmtAddrFld:   niBgpNbrRmtAddrLeaf,
-		}
+	case niBgpNbrUriIsTransportState(leafUri):
+		// The mapped transport state leaves come from the applied row. A
+		// request anchored on one of them watches that field alone, so a
+		// sibling moving does not wake it. /transport/config is not a state
+		// path and must not register here. leafUri is used rather than uri
+		// because the subscribe path trims a trailing leaf off uri before
+		// calling this callback.
+		transportFlds := niBgpNbrTransportSubscribeFlds(leafUri)
 		if fld, ok := niBgpNbrAppliedFldForTransportLeaf[targetLeaf]; ok {
-			transportFlds = map[string]string{fld: targetLeaf}
+			transportFlds = map[string]string{
+				fld: niBgpNbrTransportSubscribeYangLeaf(leafUri, targetLeaf),
+			}
 		}
 		result.dbDataMap = RedisDbSubscribeMap{db.StateDB: {niBgpNbrAppliedTbl: {nbrKey: transportFlds}}}
 		appliedOnly = true
-	case strings.Contains(inParams.uri, "/"+niBgpNbrMessagesSubtree):
+	case strings.Contains(leafUri, "/"+niBgpNbrMessagesSubtree):
 		result.dbDataMap = RedisDbSubscribeMap{db.StateDB: {niBgpNbrStatsTbl: {nbrKey: {}}}}
 	default:
 		if appliedFld, ok := niBgpNbrAppliedFldForLeaf[targetLeaf]; ok {

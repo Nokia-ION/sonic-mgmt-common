@@ -1469,10 +1469,11 @@ func (c *CVL) validateLeafRef(node *xmlquery.Node,
 				//check if node value matched with any leafref.
 				//If so non-existence of leafref in DB will be treated as failure.
 				if ctxtVal != "" {
-					// BGP_NEIGHBOR neighbor key is a union of ip-address and interface
-					// references. Prefer the ip-address branch for valid IP literals so
-					// leafref alternatives do not spuriously fail first-time neighbor creates.
-					if !(tblName == "BGP_NEIGHBOR" && nodeName == "neighbor" && net.ParseIP(ctxtVal) != nil) {
+					// BGP_NEIGHBOR neighbor and local_addr are unions of ip-address
+					// and interface references. Prefer the ip-address branch for valid
+					// IP literals so leafref alternatives do not spuriously fail an
+					// otherwise valid address.
+					if !(tblName == "BGP_NEIGHBOR" && (nodeName == "neighbor" || nodeName == "local_addr") && net.ParseIP(ctxtVal) != nil) {
 						nodeValMatchedWithLeafref = c.yp.IsLeafrefMatchedInUnion(tblInfo.module,
 							fmt.Sprintf("/%s:%s/%s/%s_LIST/%s", tblInfo.modelName,
 								tblInfo.modelName, tblInfo.redisTableName,

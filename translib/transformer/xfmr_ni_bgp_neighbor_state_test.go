@@ -138,6 +138,8 @@ func niBgpNbrAppliedRow() map[string]interface{} {
 		"peer_group":       "PG1",
 		"local_address":    "11.0.0.154",
 		"remote_address":   "11.0.0.155",
+		"local_port":       "48810",
+		"remote_port":      "179",
 	}
 }
 
@@ -230,8 +232,18 @@ func Test_openconfig_network_instance_bgp_neighbor_applied_transport_state(t *te
 			`{"openconfig-network-instance:remote-address":"11.0.0.155"}`, false))
 	time.Sleep(1 * time.Second)
 
+	t.Run("GET BGP neighbor applied transport local-port",
+		processGetRequest(niBgpNbrTransportUrl+"/state/local-port", nil,
+			`{"openconfig-network-instance:local-port":48810}`, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET BGP neighbor applied transport remote-port",
+		processGetRequest(niBgpNbrTransportUrl+"/state/remote-port", nil,
+			`{"openconfig-network-instance:remote-port":179}`, false))
+	time.Sleep(1 * time.Second)
+
 	expectedGetJSON := `{"openconfig-network-instance:state":` +
-		`{"local-address":"11.0.0.154","remote-address":"11.0.0.155"}}`
+		`{"local-address":"11.0.0.154","local-port":48810,"remote-address":"11.0.0.155","remote-port":179}}`
 	t.Run("GET BGP neighbor transport state container",
 		processGetRequest(niBgpNbrTransportUrl+"/state", nil, expectedGetJSON, false))
 	time.Sleep(1 * time.Second)
@@ -240,7 +252,7 @@ func Test_openconfig_network_instance_bgp_neighbor_applied_transport_state(t *te
 	// container is served here. Without it the nearest annotated ancestor is the
 	// neighbor list, whose dispatch maps CONFIG_DB and would report nothing.
 	expectedGetJSON = `{"openconfig-network-instance:transport":{"state":` +
-		`{"local-address":"11.0.0.154","remote-address":"11.0.0.155"}}}`
+		`{"local-address":"11.0.0.154","local-port":48810,"remote-address":"11.0.0.155","remote-port":179}}}`
 	t.Run("GET BGP neighbor transport container",
 		processGetRequest(niBgpNbrTransportUrl, nil, expectedGetJSON, false))
 	time.Sleep(1 * time.Second)
@@ -269,6 +281,10 @@ func Test_openconfig_network_instance_bgp_neighbor_applied_absent_fields(t *test
 
 	t.Run("GET BGP neighbor applied local-address when FRR bound none",
 		processGetRequest(niBgpNbrTransportUrl+"/state/local-address", nil, "", true, notFound))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET BGP neighbor applied local-port when FRR bound none",
+		processGetRequest(niBgpNbrTransportUrl+"/state/local-port", nil, "", true, notFound))
 	time.Sleep(1 * time.Second)
 
 	expectedGetJSON := `{"openconfig-network-instance:state":` +

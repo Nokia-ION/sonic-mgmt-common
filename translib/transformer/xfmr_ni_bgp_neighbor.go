@@ -58,6 +58,14 @@ const (
 	niBgpNbrConnectRetryLeaf = "connect-retry"
 	niBgpNbrHoldTimeLeaf     = "hold-time"
 	niBgpNbrKeepaliveLeaf    = "keepalive-interval"
+	// transport/config is the same shape as timers/config: its leaves land in
+	// BGP_NEIGHBOR beside the neighbor config container, so it has its own
+	// target kind. Only local-address and passive-mode are mapped; tcp-mss
+	// and mtu-discovery have no CONFIG_DB field.
+	niBgpNbrTargetTransportCfg = "neighbor-transport-config"
+	niBgpNbrLocalAddrFld       = "local_addr"
+	niBgpNbrPassiveModeFld     = "passive_mode"
+	niBgpNbrPassiveModeLeaf    = "passive-mode"
 	// The levels of the neighbor hierarchy that sit above the config
 	// containers. Each resolves to a target kind the write and read paths
 	// switch on, the same shape the table-connection mapping uses.
@@ -76,6 +84,7 @@ const niBgpNbrUriPfx = niBgpProtoUriPfx + `/bgp/neighbors/neighbor\[neighbor-add
 
 var niBgpNbrReqUriRe = regexp.MustCompile(niBgpNbrUriPfx + `/config(?:/(peer-group|enabled|peer-as|send-community|auth-password))?$`)
 var niBgpNbrTimersReqUriRe = regexp.MustCompile(niBgpNbrUriPfx + `/timers/config(?:/(connect-retry|hold-time|keepalive-interval))?$`)
+var niBgpNbrTransportCfgReqUriRe = regexp.MustCompile(niBgpNbrUriPfx + `/transport/config(?:/(local-address|passive-mode))?$`)
 var niBgpNbrAsPathOptReqUriRe = regexp.MustCompile(niBgpNbrUriPfx + `/as-path-options/config(?:/(allow-own-as))?$`)
 var niBgpNbrAfApplyReqUriRe = regexp.MustCompile(niBgpNbrUriPfx + `/afi-safis/afi-safi\[afi-safi-name=([^\]]+)\]/apply-policy/config(?:/(import-policy|export-policy))?$`)
 var niBgpNbrAfCfgReqUriRe = regexp.MustCompile(niBgpNbrUriPfx + `/afi-safis/afi-safi\[afi-safi-name=([^\]]+)\]/config(?:/(afi-safi-name|enabled|send-community-type))?$`)
@@ -145,6 +154,20 @@ func matchNiBgpNbrRequestUri(uri string) (*niBgpNbrReqInfo, error) {
 			neighborAddr: m[3],
 			targetLeaf:   leaf,
 			targetPath:   niBgpNbrTargetTimersCfg,
+		}, nil
+	}
+	m = niBgpNbrTransportCfgReqUriRe.FindStringSubmatch(uri)
+	if len(m) >= 4 {
+		leaf := ""
+		if len(m) >= 5 {
+			leaf = m[4]
+		}
+		return &niBgpNbrReqInfo{
+			niName:       m[1],
+			protoName:    m[2],
+			neighborAddr: m[3],
+			targetLeaf:   leaf,
+			targetPath:   niBgpNbrTargetTransportCfg,
 		}, nil
 	}
 	m = niBgpNbrAsPathOptReqUriRe.FindStringSubmatch(uri)
@@ -671,6 +694,14 @@ func getNiBgpNbrTimersCfgObj(s *ygot.GoStruct, niName, protoName, neighborAddr s
 	return nbrObj.Timers.Config
 }
 
+func getNiBgpNbrTransportCfgObj(s *ygot.GoStruct, niName, protoName, neighborAddr string, createIfMissing bool) *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Neighbors_Neighbor_Transport_Config {
+	nbrObj := getNiBgpNbrObj(s, niName, protoName, neighborAddr, createIfMissing)
+	if nbrObj == nil || nbrObj.Transport == nil {
+		return nil
+	}
+	return nbrObj.Transport.Config
+}
+
 // parseNiBgpNbrTimerValue reads a timer out of a leaf targeted payload. The
 // OpenConfig leaves are decimal64 while BGP_NEIGHBOR stores whole seconds, so
 // only values that survive the narrowing are accepted.
@@ -807,6 +838,163 @@ func parseNiBgpNbrPeerGroupFromParam(param interface{}) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+func parseNiBgpNbrLocalAddressFromParam(param interface{}) (string, bool) {
+	if param == nil {
+		return "", false
+	}
+	if addr, ok := parseNiBgpNbrPeerGroupValue(param); ok {
+		return addr, true
+	}
+
+	rv := reflect.ValueOf(param)
+	for rv.IsValid() && (rv.Kind() == reflect.Interface || rv.Kind() == reflect.Ptr) {
+		if rv.IsNil() {
+			return "", false
+		}
+		rv = rv.Elem()
+	}
+	if !rv.IsValid() {
+		return "", false
+	}
+
+	if rv.Kind() == reflect.Struct {
+		fv := rv.FieldByName("LocalAddress")
+		if fv.IsValid() && fv.CanInterface() {
+			if addr, ok := parseNiBgpNbrPeerGroupValue(fv.Interface()); ok {
+				return addr, true
+			}
+		}
+	}
+
+	if rv.Kind() == reflect.Map {
+		for _, mk := range rv.MapKeys() {
+			k := fmt.Sprint(mk.Interface())
+			if k == niBgpNbrLocalAddrLeaf || strings.HasSuffix(k, ":"+niBgpNbrLocalAddrLeaf) {
+				mv := rv.MapIndex(mk)
+				if mv.IsValid() && mv.CanInterface() {
+					if addr, ok := parseNiBgpNbrPeerGroupValue(mv.Interface()); ok {
+						return addr, true
+					}
+				}
+			}
+		}
+	}
+	return "", false
+}
+
+func parseNiBgpNbrLocalAddress(inParams XfmrParams) (string, error) {
+	reqInfo, err := parseNiBgpNbrRequestUri(inParams.requestUri)
+	if err != nil {
+		return "", err
+	}
+	if addr, ok := parseNiBgpNbrLocalAddressFromParam(inParams.param); ok {
+		return addr, nil
+	}
+	trObj := getNiBgpNbrTransportCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.protoName, reqInfo.neighborAddr, false)
+	if trObj == nil || trObj.LocalAddress == nil || strings.TrimSpace(*trObj.LocalAddress) == "" {
+		return "", tlerr.InvalidArgsError{Format: "BGP neighbor transport local-address is missing in request payload"}
+	}
+	return strings.TrimSpace(*trObj.LocalAddress), nil
+}
+
+func parseNiBgpNbrPassiveModeFromParam(param interface{}) (*bool, bool) {
+	if param == nil {
+		return nil, false
+	}
+	if passive, ok := parseNiBgpNbrEnabledValue(param); ok {
+		return passive, true
+	}
+
+	rv := reflect.ValueOf(param)
+	for rv.IsValid() && (rv.Kind() == reflect.Interface || rv.Kind() == reflect.Ptr) {
+		if rv.IsNil() {
+			return nil, false
+		}
+		rv = rv.Elem()
+	}
+	if !rv.IsValid() {
+		return nil, false
+	}
+
+	if rv.Kind() == reflect.Struct {
+		fv := rv.FieldByName("PassiveMode")
+		if fv.IsValid() && fv.CanInterface() {
+			if passive, ok := parseNiBgpNbrEnabledValue(fv.Interface()); ok {
+				return passive, true
+			}
+		}
+	}
+
+	if rv.Kind() == reflect.Map {
+		for _, mk := range rv.MapKeys() {
+			k := fmt.Sprint(mk.Interface())
+			if k == niBgpNbrPassiveModeLeaf || strings.HasSuffix(k, ":"+niBgpNbrPassiveModeLeaf) {
+				mv := rv.MapIndex(mk)
+				if mv.IsValid() && mv.CanInterface() {
+					if passive, ok := parseNiBgpNbrEnabledValue(mv.Interface()); ok {
+						return passive, true
+					}
+				}
+			}
+		}
+	}
+	return nil, false
+}
+
+func parseNiBgpNbrPassiveMode(inParams XfmrParams) (*bool, error) {
+	reqInfo, err := parseNiBgpNbrRequestUri(inParams.requestUri)
+	if err != nil {
+		return nil, err
+	}
+	if passive, ok := parseNiBgpNbrPassiveModeFromParam(inParams.param); ok {
+		return passive, nil
+	}
+	trObj := getNiBgpNbrTransportCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.protoName, reqInfo.neighborAddr, false)
+	if trObj == nil || trObj.PassiveMode == nil {
+		return nil, tlerr.InvalidArgsError{Format: "BGP neighbor transport passive-mode is missing in request payload"}
+	}
+	return trObj.PassiveMode, nil
+}
+
+func niBgpNbrTransportCfgFields(inParams XfmrParams, reqInfo *niBgpNbrReqInfo) (map[string]string, error) {
+	fields := map[string]string{}
+	switch reqInfo.targetLeaf {
+	case niBgpNbrLocalAddrLeaf:
+		addr, err := parseNiBgpNbrLocalAddress(inParams)
+		if err != nil {
+			return nil, err
+		}
+		fields[niBgpNbrLocalAddrFld] = addr
+	case niBgpNbrPassiveModeLeaf:
+		passive, err := parseNiBgpNbrPassiveMode(inParams)
+		if err != nil {
+			return nil, err
+		}
+		fields[niBgpNbrPassiveModeFld] = strconv.FormatBool(*passive)
+	case "":
+		if addr, ok := parseNiBgpNbrLocalAddressFromParam(inParams.param); ok {
+			fields[niBgpNbrLocalAddrFld] = addr
+		}
+		if passive, ok := parseNiBgpNbrPassiveModeFromParam(inParams.param); ok {
+			fields[niBgpNbrPassiveModeFld] = strconv.FormatBool(*passive)
+		}
+		if trObj := getNiBgpNbrTransportCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.protoName, reqInfo.neighborAddr, false); trObj != nil {
+			if trObj.LocalAddress != nil && strings.TrimSpace(*trObj.LocalAddress) != "" {
+				fields[niBgpNbrLocalAddrFld] = strings.TrimSpace(*trObj.LocalAddress)
+			}
+			if trObj.PassiveMode != nil {
+				fields[niBgpNbrPassiveModeFld] = strconv.FormatBool(*trObj.PassiveMode)
+			}
+		}
+		if len(fields) == 0 {
+			return nil, tlerr.InvalidArgsError{Format: "BGP neighbor transport config payload carries neither local-address nor passive-mode"}
+		}
+	default:
+		return nil, tlerr.NotSupportedError{Format: "unsupported leaf under neighbor transport config", Path: inParams.requestUri}
+	}
+	return fields, nil
 }
 
 func parseNiBgpNbrPeerGroup(inParams XfmrParams) (string, error) {
@@ -1617,6 +1805,24 @@ var YangToDb_ni_bgp_nbr_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 				return res, tlerr.NotSupportedError{Format: "DELETE supported only for /neighbors/neighbor/timers/config, its connect-retry leaf, its hold-time leaf, or its keepalive-interval leaf", Path: inParams.requestUri}
 			}
 		}
+		if reqInfo.targetPath == niBgpNbrTargetTransportCfg {
+			switch reqInfo.targetLeaf {
+			case "":
+				// The container delete takes both mapped transport leaves and
+				// leaves the BGP_NEIGHBOR row in place. frrcfgd turns each
+				// cleared field into the corresponding "no neighbor ..." command.
+				return makeNiBgpNbrResMap(reqInfo.niName, reqInfo.neighborAddr, map[string]string{
+					niBgpNbrLocalAddrFld:   "",
+					niBgpNbrPassiveModeFld: "",
+				}), nil
+			case niBgpNbrLocalAddrLeaf:
+				return makeNiBgpNbrResMap(reqInfo.niName, reqInfo.neighborAddr, map[string]string{niBgpNbrLocalAddrFld: ""}), nil
+			case niBgpNbrPassiveModeLeaf:
+				return makeNiBgpNbrResMap(reqInfo.niName, reqInfo.neighborAddr, map[string]string{niBgpNbrPassiveModeFld: ""}), nil
+			default:
+				return res, tlerr.NotSupportedError{Format: "DELETE supported only for /neighbors/neighbor/transport/config, its local-address leaf, or its passive-mode leaf", Path: inParams.requestUri}
+			}
+		}
 		if reqInfo.targetPath == "neighbor-as-path-options-config" {
 			switch reqInfo.targetLeaf {
 			case "", "allow-own-as":
@@ -1734,6 +1940,14 @@ var YangToDb_ni_bgp_nbr_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 		default:
 			return res, tlerr.NotSupportedError{Format: "unsupported leaf under neighbor timers config", Path: inParams.requestUri}
 		}
+	}
+
+	if reqInfo.targetPath == niBgpNbrTargetTransportCfg {
+		fields, err := niBgpNbrTransportCfgFields(inParams, reqInfo)
+		if err != nil {
+			return res, err
+		}
+		return makeNiBgpNbrResMap(reqInfo.niName, reqInfo.neighborAddr, fields), nil
 	}
 
 	if reqInfo.targetPath == "neighbor-as-path-options-config" {
@@ -1936,6 +2150,28 @@ var DbToYang_ni_bgp_nbr_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams)
 				}
 				iv := uint16(ival)
 				tmObj.KeepaliveInterval = &iv
+			}
+		}
+		return nil
+	}
+
+	if reqInfo.targetPath == niBgpNbrTargetTransportCfg {
+		trObj := getNiBgpNbrTransportCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.protoName, reqInfo.neighborAddr, true)
+		if trObj == nil {
+			return tlerr.InvalidArgsError{Format: "Unable to locate BGP neighbor transport config object in YANG tree"}
+		}
+		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == niBgpNbrLocalAddrLeaf {
+			if addr := strings.TrimSpace(entry.Field[niBgpNbrLocalAddrFld]); addr != "" {
+				trObj.LocalAddress = &addr
+			}
+		}
+		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == niBgpNbrPassiveModeLeaf {
+			if raw := strings.TrimSpace(entry.Field[niBgpNbrPassiveModeFld]); raw != "" {
+				passive, err := strconv.ParseBool(raw)
+				if err != nil {
+					return tlerr.InvalidArgsError{Format: fmt.Sprintf("invalid BGP_NEIGHBOR.passive_mode value %q for neighbor %s in %s", raw, reqInfo.neighborAddr, reqInfo.niName)}
+				}
+				trObj.PassiveMode = &passive
 			}
 		}
 		return nil
