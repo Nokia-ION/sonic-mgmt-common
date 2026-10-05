@@ -1303,7 +1303,7 @@ func compTypesForSubscriptionUri(uri string) []componentType {
 	} else if strings.HasPrefix(uri, "/openconfig-platform:components/component/boot-loader") {
 		cTypes = []componentType{CompTypeBootLoader}
 	} else if strings.HasPrefix(uri, "/openconfig-platform:components/component/state/oper-status") {
-		cTypes = []componentType{CompTypeFan, CompTypeNWStack, CompTypeOS}
+		cTypes = []componentType{CompTypeFan, CompTypeNWStack, CompTypeOS, CompTypeChassis, CompTypeTemp, CompTypePsu, CompTypeFanTray}
 	} else if strings.HasPrefix(uri, "/openconfig-platform:components/component/oc-transceiver:transceiver") {
 		cTypes = []componentType{CompTypeXcvr}
 	} else if strings.HasPrefix(uri, COMP_STATE_PARENT) || strings.HasPrefix(uri, COMP_STATE_INSTALL_POSITION) || strings.HasPrefix(uri, COMP_STATE_INSTALL_COMPONENT) || strings.HasPrefix(uri, COMP_STATE_REMOVABLE) {
@@ -3550,6 +3550,8 @@ func fillTempSensorInfo(temp *ocbinds.OpenconfigPlatform_Components_Component,
 			tempState.Type, _ = tempState.To_OpenconfigPlatform_Components_Component_State_Type_Union(
 				ocbinds.OpenconfigPlatformTypes_OPENCONFIG_HARDWARE_COMPONENT_CPU)
 		}
+		/* TEMPERATURE_INFO has no oper-status. A sensor that is present is ACTIVE. */
+		tempState.OperStatus = ocbinds.OpenconfigPlatformTypes_COMPONENT_OPER_STATUS_ACTIVE
 		if tempInfo.Current != "" {
 			cur, terr := strconv.ParseFloat(tempInfo.Current, 64)
 			if terr != nil {
@@ -3591,6 +3593,8 @@ func fillTempSensorInfo(temp *ocbinds.OpenconfigPlatform_Components_Component,
 			tempState.Type, _ = tempState.To_OpenconfigPlatform_Components_Component_State_Type_Union(
 				ocbinds.OpenconfigPlatformTypes_OPENCONFIG_HARDWARE_COMPONENT_CPU)
 		}
+	case COMP_STATE_OPER_STATUS:
+		tempState.OperStatus = ocbinds.OpenconfigPlatformTypes_COMPONENT_OPER_STATUS_ACTIVE
 	case TEMP_INSTANT:
 		if tempInfo.Current != "" {
 			cur, terr := strconv.ParseFloat(tempInfo.Current, 64)
@@ -4135,6 +4139,8 @@ func fillFirmwareInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 			if operStatus, err := operStatusFromString(firmwareInfo.OperStatus); err == nil {
 				compState.OperStatus = operStatus
 			}
+		} else {
+			compState.OperStatus = ocbinds.OpenconfigPlatformTypes_COMPONENT_OPER_STATUS_ACTIVE
 		}
 		// State Part No
 		if firmwareInfo.PartNo != "" {
@@ -4205,9 +4211,8 @@ func fillFirmwareInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 		compState.MfgDate = &mfg_date
 	case COMP_STATE_OPER_STATUS:
 		if firmwareInfo.OperStatus == "" {
-			return errors.New("oper_status field not present in State DB")
-		}
-		if operStatus, err := operStatusFromString(firmwareInfo.OperStatus); err == nil {
+			compState.OperStatus = ocbinds.OpenconfigPlatformTypes_COMPONENT_OPER_STATUS_ACTIVE
+		} else if operStatus, err := operStatusFromString(firmwareInfo.OperStatus); err == nil {
 			compState.OperStatus = operStatus
 		} else {
 			return fmt.Errorf("oper_status invalid field value in State DB: %s", firmwareInfo.OperStatus)
