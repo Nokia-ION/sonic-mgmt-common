@@ -399,11 +399,16 @@ func (reqXlator *subscribeReqXlator) translateTargetNodePath(trgtYgxPath *yangXp
 }
 
 func (pathXltr *subscribePathXlator) getSubscribeMode(xfmrSubsOutParam *XfmrSubscOutParams) NotificationType {
-	if pathXltr.subReq.subReqMode != TargetDefined {
-		return pathXltr.subReq.subReqMode
+	if pathXltr.subReq.subReqMode == Sample {
+		return Sample
 	}
 
-	if pathXltr.parentXlateInfo != nil &&
+	// TARGET_DEFINED inherits sample from a sampled parent. For an explicit
+	// ON_CHANGE request, still classify each node from xfmr/yang flags below;
+	// blindly returning the request mode would mark CONFIG_DB siblings such as
+	// transport/config as on-change and break initial sync on .../transport.
+	if pathXltr.subReq.subReqMode == TargetDefined &&
+		pathXltr.parentXlateInfo != nil &&
 		(pathXltr.parentXlateInfo.PType == Sample && len(pathXltr.parentXlateInfo.DbKeyXlateInfo) > 0) {
 		return Sample
 	}
