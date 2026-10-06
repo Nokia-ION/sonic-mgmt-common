@@ -98,9 +98,14 @@ func stripWildcardListKeys(uri string) (string, bool) {
 // answer to the question and leaves the caller to pick the instances it
 // wanted.
 //
-// The deepest keyless list wins, which keeps the answer no broader than the
-// schema forces it to be. A list that is itself the target is left alone,
-// since that already returns every instance.
+// A list that is itself the target is left alone, since that already returns
+// every instance.
+//
+// Only one keyless list above the target can be served this way. Serving the
+// deeper of two would still leave a keyless list above it, which translib
+// cannot bind either, and serving the outer one would leave the caller a
+// payload it can only split at one level. Such a request is rejected rather
+// than answered wrongly.
 //
 // Only OpenConfig paths are rewritten. The sonic-yang paths reach the DB
 // through a separate field-level extraction that handles a keyless list on
@@ -109,30 +114,39 @@ func stripWildcardListKeys(uri string) (string, bool) {
 // Returns the shortened URI, the key leaf names of that list, and whether
 // anything changed. The key names let a caller that wants per instance answers
 // split the list payload back up by instance.
-func truncateToKeylessList(uri string) (string, []string, bool) {
+func truncateToKeylessList(uri string) (string, []string, bool, error) {
 	if strings.HasPrefix(uri, "/sonic") {
-		return uri, nil, false
+		return uri, nil, false, nil
 	}
 
 	gPath, err := ygot.StringToPath(uri, ygot.StructuredPath)
 	if err != nil {
-		return uri, nil, false
+		return uri, nil, false, nil
 	}
 
+	listUri := ""
 	for i := len(gPath.Elem) - 2; i >= 0; i-- {
 		if len(gPath.Elem[i].Key) != 0 {
 			continue
 		}
-		listUri, perr := ygot.PathToString(&gnmi.Path{Elem: gPath.Elem[:i+1]})
+		p, perr := ygot.PathToString(&gnmi.Path{Elem: gPath.Elem[:i+1]})
 		if perr != nil {
-			return uri, nil, false
+			return uri, nil, false, nil
 		}
-		if transformer.IsListNode(listUri) {
-			return listUri, transformer.ListKeyNames(listUri), true
+		if !transformer.IsListNode(p) {
+			continue
 		}
+		if listUri != "" {
+			return uri, nil, false, tlerr.NotSupported(
+				"wildcard or keyless keys on more than one list are not supported: %s", uri)
+		}
+		listUri = p
 	}
 
-	return uri, nil, false
+	if listUri == "" {
+		return uri, nil, false, nil
+	}
+	return listUri, transformer.ListKeyNames(listUri), true, nil
 }
 
 func getYangPathFromUri(uri string) (string, error) {

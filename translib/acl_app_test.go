@@ -22,6 +22,7 @@ package translib
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -872,6 +873,48 @@ func Test_StripWildcardListKeys(t *testing.T) {
 			}
 			if got != tc.want {
 				t.Errorf("uri = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func Test_TruncateToKeylessList(t *testing.T) {
+	tests := []struct {
+		uri         string
+		want        string
+		wantKeys    []string
+		wantChanged bool
+		wantErr     bool
+	}{{
+		uri:         "/openconfig-acl:acl/acl-sets/acl-set[name=ACL1][type=ACL_IPV4]/acl-entries/acl-entry/state/sequence-id",
+		want:        "/openconfig-acl:acl/acl-sets/acl-set[name=ACL1][type=ACL_IPV4]/acl-entries/acl-entry",
+		wantKeys:    []string{"sequence-id"},
+		wantChanged: true,
+	}, {
+		// The target list itself already returns every instance.
+		uri:  "/openconfig-acl:acl/acl-sets/acl-set[name=ACL1][type=ACL_IPV4]/acl-entries/acl-entry",
+		want: "/openconfig-acl:acl/acl-sets/acl-set[name=ACL1][type=ACL_IPV4]/acl-entries/acl-entry",
+	}, {
+		// Serving the inner list would leave the outer one unbound.
+		uri:     "/openconfig-acl:acl/acl-sets/acl-set/acl-entries/acl-entry/state/sequence-id",
+		want:    "/openconfig-acl:acl/acl-sets/acl-set/acl-entries/acl-entry/state/sequence-id",
+		wantErr: true,
+	}}
+
+	for _, tc := range tests {
+		t.Run(tc.uri, func(t *testing.T) {
+			got, keys, changed, err := truncateToKeylessList(tc.uri)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tc.wantErr)
+			}
+			if changed != tc.wantChanged {
+				t.Errorf("changed = %v, want %v", changed, tc.wantChanged)
+			}
+			if got != tc.want {
+				t.Errorf("uri = %q, want %q", got, tc.want)
+			}
+			if !reflect.DeepEqual(keys, tc.wantKeys) {
+				t.Errorf("keys = %v, want %v", keys, tc.wantKeys)
 			}
 		})
 	}
