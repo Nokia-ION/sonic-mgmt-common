@@ -49,6 +49,7 @@ const (
 	VRRP_FIELD_VIRTUAL_LLA        = "virtual_link_local"
 	VRRP_FIELD_TRACK_PRIO_INCR    = "priority_increment"
 	VRRP_STATE_FIELD_EFF_PRIORITY = "effective_priority"
+	VRRP_STATE_FIELD_STATE        = "state"
 )
 
 type vrrpGroupData struct {
@@ -64,6 +65,21 @@ type vrrpGroupData struct {
 	priorityDecrement  uint8
 	currentPriority    uint8
 	hasCurrentPriority bool
+	vrrpState          ocbinds.E_OpenconfigIfIpVrrpExt_VrrpStateType
+	hasVrrpState       bool
+}
+
+func parseVrrpState(value string) (ocbinds.E_OpenconfigIfIpVrrpExt_VrrpStateType, bool) {
+	switch strings.ToUpper(strings.TrimSpace(value)) {
+	case "INITIALIZE":
+		return ocbinds.OpenconfigIfIpVrrpExt_VrrpStateType_INITIALIZE, true
+	case "BACKUP":
+		return ocbinds.OpenconfigIfIpVrrpExt_VrrpStateType_BACKUP, true
+	case "MASTER":
+		return ocbinds.OpenconfigIfIpVrrpExt_VrrpStateType_MASTER, true
+	default:
+		return ocbinds.OpenconfigIfIpVrrpExt_VrrpStateType_UNSET, false
+	}
 }
 
 func init() {
@@ -1964,6 +1980,9 @@ func populateRoutedVlanVrrpGroup(grpObj *ocbinds.OpenconfigInterfaces_Interfaces
 	if grp.hasCurrentPriority {
 		grpObj.State.CurrentPriority = &grp.currentPriority
 	}
+	if grp.hasVrrpState {
+		grpObj.State.VrrpState = grp.vrrpState
+	}
 	grpObj.State.VirtualAddress = append(grpObj.State.VirtualAddress[:0], grp.virtualAddresses...)
 
 	grpObj.Config.PreemptDelay = &grp.preemptDelay
@@ -2001,6 +2020,9 @@ func populateRoutedVlanIPv6VrrpGroup(grpObj *ocbinds.OpenconfigInterfaces_Interf
 	// Left unset when vrrpd's value is unavailable; see mergeIntfVrrpStateData.
 	if grp.hasCurrentPriority {
 		grpObj.State.CurrentPriority = &grp.currentPriority
+	}
+	if grp.hasVrrpState {
+		grpObj.State.VrrpState = grp.vrrpState
 	}
 	grpObj.State.VirtualAddress = append(grpObj.State.VirtualAddress[:0], grp.virtualAddresses...)
 
@@ -2040,6 +2062,9 @@ func populateSubIntfIPv4VrrpGroup(grpObj *ocbinds.OpenconfigInterfaces_Interface
 	if grp.hasCurrentPriority {
 		grpObj.State.CurrentPriority = &grp.currentPriority
 	}
+	if grp.hasVrrpState {
+		grpObj.State.VrrpState = grp.vrrpState
+	}
 	grpObj.State.VirtualAddress = append(grpObj.State.VirtualAddress[:0], grp.virtualAddresses...)
 
 	grpObj.Config.PreemptDelay = &grp.preemptDelay
@@ -2077,6 +2102,9 @@ func populateSubIntfIPv6VrrpGroup(grpObj *ocbinds.OpenconfigInterfaces_Interface
 	// Left unset when vrrpd's value is unavailable; see mergeIntfVrrpStateData.
 	if grp.hasCurrentPriority {
 		grpObj.State.CurrentPriority = &grp.currentPriority
+	}
+	if grp.hasVrrpState {
+		grpObj.State.VrrpState = grp.vrrpState
 	}
 	grpObj.State.VirtualAddress = append(grpObj.State.VirtualAddress[:0], grp.virtualAddresses...)
 
@@ -2240,6 +2268,17 @@ func mergeIntfVrrpStateData(stateDb *db.DB, ifName string, targetVrid string, st
 
 		grp.currentPriority = uint8(prio)
 		grp.hasCurrentPriority = true
+
+		stateStr := entry.Get(VRRP_STATE_FIELD_STATE)
+		if state, ok := parseVrrpState(stateStr); ok {
+			grp.vrrpState = state
+			grp.hasVrrpState = true
+		} else if strings.TrimSpace(stateStr) != "" {
+			log.Warningf(
+				"VRRP state table=%s key=%v has unusable %s=%q",
+				stateTbl, keyComp, VRRP_STATE_FIELD_STATE, stateStr)
+		}
+
 		vrrpData[uint8(vrid)] = grp
 	}
 
