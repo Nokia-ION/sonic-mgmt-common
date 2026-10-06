@@ -164,6 +164,9 @@ var rpolPrefixEntryReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:ro
 // a GET or a SET on one is answered by walking the whole instance, so the
 // DELETE path recognises these shapes on their own.
 var rpolPolicyDefInstanceReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]$`)
+
+// A statement's conditions container, or one of the containers under it.
+var rpolStmtCondReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/conditions(?:/((?:[A-Za-z0-9_.-]+:)?(?:match-prefix-set|bgp-conditions)))?$`)
 var rpolStmtInstanceReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]$`)
 var rpolCommunitySetInstanceReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/defined-sets/(?:[A-Za-z0-9_.-]+:)?bgp-defined-sets/(?:[A-Za-z0-9_.-]+:)?community-sets/(?:[A-Za-z0-9_.-]+:)?community-set\[(?:[A-Za-z0-9_.-]+:)?community-set-name=([^\]]+)\]$`)
 var rpolExtCommunitySetInstanceReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/defined-sets/(?:[A-Za-z0-9_.-]+:)?bgp-defined-sets/(?:[A-Za-z0-9_.-]+:)?ext-community-sets/(?:[A-Za-z0-9_.-]+:)?ext-community-set\[(?:[A-Za-z0-9_.-]+:)?ext-community-set-name=([^\]]+)\]$`)
@@ -557,7 +560,7 @@ func getRpolPolicyStmtActionsCfgObj(s *ygot.GoStruct, policyName, stmtName strin
 			return nil
 		}
 	}
-	ygot.BuildEmptyTree(stmtObj)
+	rpolBuildStmtTree(stmtObj, createIfMissing)
 	return stmtObj.Actions.Config
 }
 
@@ -606,11 +609,34 @@ func getRpolPolicyStmtActionsStateObj(s *ygot.GoStruct, policyName, stmtName str
 	if stmtObj == nil {
 		return nil
 	}
-	ygot.BuildEmptyTree(stmtObj)
+	rpolBuildStmtTree(stmtObj, createIfMissing)
 	if stmtObj.Actions == nil {
 		return nil
 	}
 	return stmtObj.Actions.State
+}
+
+// rpolBuildStmtTree fills in the containers below a statement, and with deep
+// set, every container below those too. ygot.BuildEmptyTree creates only the
+// children that are nil, so a container translib has already created for a
+// GET keeps nil children of its own, and a getter reaching through it would
+// dereference one of them. A write keeps the single level, since its handlers
+// tell an absent payload container from an empty one.
+func rpolBuildStmtTree(obj ygot.GoStruct, deep bool) {
+	ygot.BuildEmptyTree(obj)
+	if !deep {
+		return
+	}
+	v := reflect.ValueOf(obj).Elem()
+	for i := 0; i < v.NumField(); i++ {
+		f := v.Field(i)
+		if f.Kind() != reflect.Ptr || f.IsNil() || f.Elem().Kind() != reflect.Struct {
+			continue
+		}
+		if child, ok := f.Interface().(ygot.GoStruct); ok {
+			rpolBuildStmtTree(child, true)
+		}
+	}
 }
 
 func getRpolPolicyStmtObj(s *ygot.GoStruct, policyName, stmtName string, createIfMissing bool) *ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement {
@@ -661,7 +687,7 @@ func getRpolPolicyStmtObj(s *ygot.GoStruct, policyName, stmtName string, createI
 			return nil
 		}
 	}
-	ygot.BuildEmptyTree(stmtObj)
+	rpolBuildStmtTree(stmtObj, createIfMissing)
 	return stmtObj
 }
 
@@ -713,7 +739,7 @@ func getRpolPolicyStmtCondMatchPrefixSetStateObj(s *ygot.GoStruct, policyName, s
 			return nil
 		}
 	}
-	ygot.BuildEmptyTree(stmtObj)
+	rpolBuildStmtTree(stmtObj, createIfMissing)
 	return stmtObj.Conditions.MatchPrefixSet.State
 }
 
@@ -765,7 +791,7 @@ func getRpolPolicyStmtCondMatchPrefixSetCfgObj(s *ygot.GoStruct, policyName, stm
 			return nil
 		}
 	}
-	ygot.BuildEmptyTree(stmtObj)
+	rpolBuildStmtTree(stmtObj, createIfMissing)
 	return stmtObj.Conditions.MatchPrefixSet.Config
 }
 
@@ -817,7 +843,7 @@ func getRpolPolicyStmtBgpActionsCfgObj(s *ygot.GoStruct, policyName, stmtName st
 			return nil
 		}
 	}
-	ygot.BuildEmptyTree(stmtObj)
+	rpolBuildStmtTree(stmtObj, createIfMissing)
 	return stmtObj.Actions.BgpActions.Config
 }
 
@@ -869,7 +895,7 @@ func getRpolPolicyStmtBgpConditionsStateObj(s *ygot.GoStruct, policyName, stmtNa
 			return nil
 		}
 	}
-	ygot.BuildEmptyTree(stmtObj)
+	rpolBuildStmtTree(stmtObj, createIfMissing)
 	return stmtObj.Conditions.BgpConditions.State
 }
 
@@ -921,7 +947,7 @@ func getRpolPolicyStmtBgpConditionsCfgObj(s *ygot.GoStruct, policyName, stmtName
 			return nil
 		}
 	}
-	ygot.BuildEmptyTree(stmtObj)
+	rpolBuildStmtTree(stmtObj, createIfMissing)
 	return stmtObj.Conditions.BgpConditions.Config
 }
 
@@ -1075,7 +1101,7 @@ func getRpolPolicyStmtBgpSetAsPathPrependStateObj(s *ygot.GoStruct, policyName, 
 			return nil
 		}
 	}
-	ygot.BuildEmptyTree(stmtObj)
+	rpolBuildStmtTree(stmtObj, createIfMissing)
 	return stmtObj.Actions.BgpActions.SetAsPathPrepend.State
 }
 
@@ -1127,7 +1153,7 @@ func getRpolPolicyStmtBgpSetAsPathPrependCfgObj(s *ygot.GoStruct, policyName, st
 			return nil
 		}
 	}
-	ygot.BuildEmptyTree(stmtObj)
+	rpolBuildStmtTree(stmtObj, createIfMissing)
 	return stmtObj.Actions.BgpActions.SetAsPathPrepend.Config
 }
 
@@ -1179,7 +1205,7 @@ func getRpolPolicyStmtBgpSetCommunityCfgObj(s *ygot.GoStruct, policyName, stmtNa
 			return nil
 		}
 	}
-	ygot.BuildEmptyTree(stmtObj)
+	rpolBuildStmtTree(stmtObj, createIfMissing)
 	if stmtObj.Actions.BgpActions.SetCommunity == nil {
 		if !createIfMissing {
 			return nil
@@ -1283,7 +1309,7 @@ func getRpolPolicyStmtBgpSetCommunityRefStateObj(s *ygot.GoStruct, policyName, s
 			return nil
 		}
 	}
-	ygot.BuildEmptyTree(stmtObj)
+	rpolBuildStmtTree(stmtObj, createIfMissing)
 	if stmtObj.Actions.BgpActions.SetCommunity == nil {
 		if !createIfMissing {
 			return nil
@@ -1353,7 +1379,7 @@ func getRpolPolicyStmtBgpSetCommunityRefCfgObj(s *ygot.GoStruct, policyName, stm
 			return nil
 		}
 	}
-	ygot.BuildEmptyTree(stmtObj)
+	rpolBuildStmtTree(stmtObj, createIfMissing)
 	if stmtObj.Actions.BgpActions.SetCommunity == nil {
 		if !createIfMissing {
 			return nil
@@ -1423,7 +1449,7 @@ func getRpolPolicyStmtBgpSetCommunityInlineStateObj(s *ygot.GoStruct, policyName
 			return nil
 		}
 	}
-	ygot.BuildEmptyTree(stmtObj)
+	rpolBuildStmtTree(stmtObj, createIfMissing)
 	if stmtObj.Actions.BgpActions.SetCommunity == nil {
 		if !createIfMissing {
 			return nil
@@ -1493,7 +1519,7 @@ func getRpolPolicyStmtBgpSetCommunityInlineCfgObj(s *ygot.GoStruct, policyName, 
 			return nil
 		}
 	}
-	ygot.BuildEmptyTree(stmtObj)
+	rpolBuildStmtTree(stmtObj, createIfMissing)
 	if stmtObj.Actions.BgpActions.SetCommunity == nil {
 		if !createIfMissing {
 			return nil
@@ -2715,6 +2741,129 @@ func validateRpolMatchPfxSetOptions(inParams XfmrParams, reqInfo *rpolReqInfo) e
 	return tlerr.NotSupportedError{Format: "routing-policy match-prefix-set match-set-options supports only ANY"}
 }
 
+var rpolMatchPrefixSetFlds = []string{rpolMatchPrefixSetFld, rpolMatchIpv6PrefixSetFld}
+var rpolBgpConditionsFlds = []string{rpolMatchMedFld, rpolMatchOriginFld, rpolMatchLocalPrefFld, rpolMatchCommunityFld, rpolMatchExtCommunityFld}
+
+// rpolStageSubOp merges rows into the sub-operation of oper, so that several
+// nodes replayed by one container request can each stage their own.
+func rpolStageSubOp(inParams XfmrParams, oper Operation, rows map[string]map[string]db.Value) error {
+	if inParams.subOpDataMap == nil {
+		return tlerr.InternalError{Format: "routing-policy write has no sub-operation map to stage into"}
+	}
+	if inParams.subOpDataMap[oper] == nil {
+		subOpMap := make(RedisDbMap)
+		inParams.subOpDataMap[oper] = &subOpMap
+	}
+	subOpMap := *inParams.subOpDataMap[oper]
+	subOpMap[db.ConfigDB] = mergeDbResMapFields(subOpMap[db.ConfigDB], rows)
+	return nil
+}
+
+// rpolStageStaleMatchPrefixSet removes the prefix-set of the other address
+// family when a write moves a statement to a set of this one. A statement
+// matches one prefix-set, while ROUTE_MAP spells the two families as separate
+// fields, so a write naming only the new one would leave both in place.
+//
+// An update deletes the stale field, or the whole row when that field is all
+// it holds, since deleting the last field of a row leaves a NULL placeholder
+// that the update then keeps. A REPLACE cannot carry that delete: translib
+// drops a sub-operation DELETE for a row the REPLACE also names, yet writes a
+// leaf-level REPLACE as a partial update. It is staged instead as a REPLACE of
+// the whole row, and true tells the caller not to return the row itself.
+func rpolStageStaleMatchPrefixSet(inParams XfmrParams, reqInfo *rpolReqInfo, fields map[string]string) (bool, error) {
+	stale := rpolMatchIpv6PrefixSetFld
+	if _, v6 := fields[rpolMatchIpv6PrefixSetFld]; v6 {
+		stale = rpolMatchPrefixSetFld
+	}
+	entry, err := inParams.dbs[db.ConfigDB].GetEntry(&db.TableSpec{Name: rpolRouteMapTbl}, db.Key{Comp: []string{reqInfo.policyName, reqInfo.stmtName}})
+	if err != nil || strings.TrimSpace(entry.Get(stale)) == "" {
+		return false, nil
+	}
+	if inParams.oper == REPLACE {
+		owned := map[string]bool{rpolMatchPrefixSetFld: true, rpolMatchIpv6PrefixSetFld: true}
+		row := niBgpReplaceRowFields(entry, fields, owned)
+		rpolAddAuxField(inParams, reqInfo, stale)
+		return true, rpolStageSubOp(inParams, REPLACE, makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, row))
+	}
+	for fld := range entry.Field {
+		if fld != stale && fld != "NULL" {
+			return false, rpolStageSubOp(inParams, DELETE, makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, map[string]string{stale: ""}))
+		}
+	}
+	return false, rpolStageSubOp(inParams, DELETE, makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, nil))
+}
+
+// rpolAddAuxField lists a ROUTE_MAP field as one the REPLACE drops. A REPLACE
+// at a terminal node whose row keeps fields it does not name is written as a
+// partial update, which would leave that field in place.
+func rpolAddAuxField(inParams XfmrParams, reqInfo *rpolReqInfo, fld string) {
+	if inParams.yangAuxValMap == nil {
+		return
+	}
+	key := reqInfo.policyName + "|" + reqInfo.stmtName
+	if inParams.yangAuxValMap[rpolRouteMapTbl] == nil {
+		inParams.yangAuxValMap[rpolRouteMapTbl] = make(map[string]db.Value)
+	}
+	entry := inParams.yangAuxValMap[rpolRouteMapTbl][key]
+	if entry.Field == nil {
+		entry.Field = make(map[string]string)
+	}
+	entry.Field[fld] = ""
+	inParams.yangAuxValMap[rpolRouteMapTbl][key] = entry
+}
+
+// rpolStmtCondOwnedFlds names the ROUTE_MAP fields that a REPLACE anchored at a
+// statement's conditions, or at a container under it, takes over. The
+// statement is returned too, since the payload need not mention it.
+func rpolStmtCondOwnedFlds(uri string) (string, string, map[string]bool) {
+	m := rpolStmtCondReqUriRe.FindStringSubmatch(uri)
+	if m == nil {
+		return "", "", nil
+	}
+	var flds []string
+	switch rpolStripModulePrefix(m[3]) {
+	case "match-prefix-set":
+		flds = rpolMatchPrefixSetFlds
+	case "bgp-conditions":
+		flds = rpolBgpConditionsFlds
+	default:
+		flds = append(append([]string{}, rpolMatchPrefixSetFlds...), rpolBgpConditionsFlds...)
+	}
+	owned := make(map[string]bool, len(flds))
+	for _, f := range flds {
+		owned[f] = true
+	}
+	return m[1], m[2], owned
+}
+
+// rpolReplaceStmtRow keeps a REPLACE of part of a statement to that part. A
+// statement is one ROUTE_MAP row, and translib writes a REPLACE above the leaf
+// level as the whole row, so the fields the replaced subtree does not own are
+// carried over from CONFIG_DB rather than dropped with it.
+func rpolReplaceStmtRow(inParams XfmrParams, res map[string]map[string]db.Value, policyName, stmtName string, owned map[string]bool) map[string]map[string]db.Value {
+	existing, err := inParams.dbs[db.ConfigDB].GetEntry(&db.TableSpec{Name: rpolRouteMapTbl}, db.Key{Comp: []string{policyName, stmtName}})
+	if err != nil {
+		return res
+	}
+	key := policyName + "|" + stmtName
+	var fields map[string]string
+	if row, ok := res[rpolRouteMapTbl][key]; ok {
+		fields = row.Field
+	}
+	row := niBgpReplaceRowFields(existing, fields, owned)
+	if len(row) == 0 {
+		row["NULL"] = "NULL"
+	}
+	if res == nil {
+		res = make(map[string]map[string]db.Value)
+	}
+	if res[rpolRouteMapTbl] == nil {
+		res[rpolRouteMapTbl] = make(map[string]db.Value)
+	}
+	res[rpolRouteMapTbl][key] = db.Value{Field: row}
+	return res
+}
+
 func rpolMatchActionToMatchSetOptions(v string) (ocbinds.E_OpenconfigBgpPolicy_MatchSetOptionsType, bool) {
 	switch strings.ToUpper(strings.TrimSpace(v)) {
 	case rpolMatchActionAny:
@@ -2944,6 +3093,11 @@ func rpolYangToDbXfmr(inParams XfmrParams) (res map[string]map[string]db.Value, 
 		if err != nil {
 			return res, err
 		}
+		if inParams.oper == REPLACE {
+			if policyName, stmtName, owned := rpolStmtCondOwnedFlds(inParams.requestUri); owned != nil {
+				res = rpolReplaceStmtRow(inParams, res, policyName, stmtName, owned)
+			}
+		}
 		if len(res) == 0 {
 			return res, tlerr.InvalidArgsError{Format: "routing-policy container payload does not include currently supported mapped fields"}
 		}
@@ -3145,6 +3299,13 @@ func rpolYangToDbXfmr(inParams XfmrParams) (res map[string]map[string]db.Value, 
 		default:
 			return res, tlerr.InvalidArgsError{Format: fmt.Sprintf("unsupported PREFIX_SET mode %s for set %s", mode, pfxSet)}
 		}
+		staged, err := rpolStageStaleMatchPrefixSet(inParams, reqInfo, fields)
+		if err != nil {
+			return res, err
+		}
+		if staged {
+			return res, nil
+		}
 		return makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, fields), nil
 	}
 	if reqInfo.targetPath == rpolTargetStmtBgpActionsCfg {
@@ -3240,10 +3401,9 @@ func rpolYangToDbXfmr(inParams XfmrParams) (res map[string]map[string]db.Value, 
 				// the value, and set_med, set_metric and set_metric_action are
 				// a uint32, a uint32 and an enum. It has to be deleted, which a
 				// DELETE sub-operation carries alongside this update.
-				subOpMap := map[db.DBNum]map[string]map[string]db.Value{
-					db.ConfigDB: makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, medClear),
+				if err := rpolStageSubOp(inParams, DELETE, makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, medClear)); err != nil {
+					return res, err
 				}
-				inParams.subOpDataMap[DELETE] = &subOpMap
 			}
 		}
 
