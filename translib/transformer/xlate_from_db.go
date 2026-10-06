@@ -32,10 +32,28 @@ import (
 	"github.com/Azure/sonic-mgmt-common/translib/tlerr"
 	log "github.com/golang/glog"
 	"github.com/openconfig/goyang/pkg/yang"
+	"github.com/openconfig/ygot/ygot"
 	"github.com/openconfig/ygot/ytypes"
 )
 
 type typeMapOfInterface map[string]interface{}
+
+// ygParentObjType and ygSchemaName describe the ygot binding for a log line.
+// Both are nil when the request could not be bound to a ygot object, which is
+// exactly when the error paths that log them run.
+func ygParentObjType(obj *ygot.GoStruct) reflect.Type {
+	if obj == nil {
+		return nil
+	}
+	return reflect.TypeOf(*obj)
+}
+
+func ygSchemaName(schema *yang.Entry) string {
+	if schema == nil {
+		return ""
+	}
+	return schema.Name
+}
 
 type DbToYangXfmrInputArgs struct {
 	InParamsForGet *xlateFromDbParams
@@ -1015,7 +1033,7 @@ func yangListDataFill(inParamsForGet xlateFromDbParams, isFirstCall bool, isOcMd
 		err := ygotXlator{&ygotCtx}.translate()
 		if err != nil {
 			log.Warningf("yangListDataFill: error in unmarshaling the parent uri: %v; error: %v; "+
-				"parent obj: %v", parentUriPath, err, reflect.TypeOf(*inParamsForGet.ygParentObj))
+				"parent obj: %v", parentUriPath, err, ygParentObjType(inParamsForGet.ygParentObj))
 			return err
 		} else {
 			inParamsForGet.ygParentObj = ygotCtx.trgtYgObj
@@ -1161,8 +1179,8 @@ func yangListInstanceDataFill(inParamsForGet xlateFromDbParams, isFirstCall bool
 				}
 				if ygotCtx.err != nil {
 					log.Warningf("yangListInstanceDataFill: error in unmarshalling the URI: %v, relUri: %v, "+
-						"ygNode: %v, ygot parent obj: %v; error: %v", curUri, inParamsForGet.relUri, inParamsForGet.ygSchema.Name,
-						reflect.TypeOf(*inParamsForGet.ygParentObj), ygotCtx.err)
+						"ygNode: %v, ygot parent obj: %v; error: %v", curUri, inParamsForGet.relUri, ygSchemaName(inParamsForGet.ygSchema),
+						ygParentObjType(inParamsForGet.ygParentObj), ygotCtx.err)
 					return curMap, ygotCtx.err
 				}
 			}
@@ -1187,8 +1205,8 @@ func yangListInstanceDataFill(inParamsForGet xlateFromDbParams, isFirstCall bool
 				err := ygotXlator{&ygotCtx}.translate()
 				if err != nil {
 					log.Warningf("yangListInstanceDataFill: error in unmarshalling the URI: %v, relUri: %v, "+
-						"ygNode: %v, ygot parent obj: %v; error: %v", curUri, linParamsForGet.relUri, linParamsForGet.ygSchema.Name,
-						reflect.TypeOf(*linParamsForGet.ygParentObj), err)
+						"ygNode: %v, ygot parent obj: %v; error: %v", curUri, linParamsForGet.relUri, ygSchemaName(linParamsForGet.ygSchema),
+						ygParentObjType(linParamsForGet.ygParentObj), err)
 					return nil, err
 				}
 				if ygotCtx.trgtYgObj != nil {
@@ -1250,8 +1268,8 @@ func yangListInstanceDataFill(inParamsForGet xlateFromDbParams, isFirstCall bool
 				err := ygotXlator{&ygotCtx}.translate()
 				if err != nil {
 					log.Warningf("yangListInstanceDataFill: error in unmarshalling the URI: %v, relUri: %v, "+
-						"ygNode: %v, ygot parent obj: %v; error: %v", curUri, linParamsForGet.relUri, linParamsForGet.ygSchema.Name,
-						reflect.TypeOf(*linParamsForGet.ygParentObj), err)
+						"ygNode: %v, ygot parent obj: %v; error: %v", curUri, linParamsForGet.relUri, ygSchemaName(linParamsForGet.ygSchema),
+						ygParentObjType(linParamsForGet.ygParentObj), err)
 					return curMap, err
 				}
 				if ygotCtx.trgtYgObj != nil {
@@ -1492,7 +1510,7 @@ func yangDataFill(inParamsForGet xlateFromDbParams, isOcMdl bool) error {
 	}
 
 	log.V(5).Infof("yangDataFill: uri: %v; parent obj: %v; inParamsForGet.relUri: %v; xpath: %v",
-		inParamsForGet.uri, reflect.TypeOf(*inParamsForGet.ygParentObj), inParamsForGet.relUri, xpath)
+		inParamsForGet.uri, ygParentObjType(inParamsForGet.ygParentObj), inParamsForGet.relUri, xpath)
 
 	yangNode, ok := xYangSpecMap[xpath]
 
@@ -1512,7 +1530,7 @@ func yangDataFill(inParamsForGet xlateFromDbParams, isOcMdl bool) error {
 			err := ygotXlator{&ygotCtx}.translate()
 			if err != nil {
 				log.Warningf("error in unmarshalling the uri: %v; error: %v; parent obj: %v; schema: %v",
-					inParamsForGet.relUri, err, reflect.TypeOf(*inParamsForGet.ygParentObj), inParamsForGet.ygSchema.Name)
+					inParamsForGet.relUri, err, ygParentObjType(inParamsForGet.ygParentObj), ygSchemaName(inParamsForGet.ygSchema))
 				return err
 			} else if ygotCtx.trgtYgObj == nil {
 				// Unkeyed list: GetOrCreateTargetNode returns the list map, not a GoStruct.
@@ -1522,7 +1540,7 @@ func yangDataFill(inParamsForGet xlateFromDbParams, isOcMdl bool) error {
 				inParamsForGet.ygSchema = ygotCtx.trgtYgSchema
 				inParamsForGet.relUri = ""
 			}
-			log.V(5).Infof("yangDataFill: after uri marshalling: uri: %v; parent obj: %v", inParamsForGet.uri, reflect.TypeOf(*inParamsForGet.ygParentObj))
+			log.V(5).Infof("yangDataFill: after uri marshalling: uri: %v; parent obj: %v", inParamsForGet.uri, ygParentObjType(inParamsForGet.ygParentObj))
 		}
 
 		for yangChldName := range yangNode.yangEntry.Dir {
@@ -1622,7 +1640,7 @@ func yangDataFill(inParamsForGet xlateFromDbParams, isOcMdl bool) error {
 						}
 						if err := ytypes.Unmarshal(inParamsForGet.ygSchema, *inParamsForGet.ygParentObj, fldValMap); err != nil {
 							log.Warningf("yangDataFill: error in object unmarshalling: %v; schema: %v; parent obj: %v, "+
-								"resFldValMap: %v", err, inParamsForGet.ygSchema.Name, reflect.TypeOf(*inParamsForGet.ygParentObj), fldValMap)
+								"resFldValMap: %v", err, ygSchemaName(inParamsForGet.ygSchema), ygParentObjType(inParamsForGet.ygParentObj), fldValMap)
 							return err
 						}
 					}
@@ -2090,8 +2108,8 @@ func dbDataToYangJsonCreate(inParamsForGet xlateFromDbParams) (string, bool, err
 								err := ygotXlator{&ygotCtx}.translate()
 								if err != nil {
 									log.Warningf("dbDataToYangJsonCreate: error in unmarshalling the URI: %v, relUri: %v, "+
-										"ygNode: %v, ygot parent obj: %v; inParamsForGet.relUri: %v; error: %v", inParamsForGet.uri, parentUriPath, inParamsForGet.ygSchema.Name,
-										reflect.TypeOf(*inParamsForGet.ygParentObj), inParamsForGet.relUri, err)
+										"ygNode: %v, ygot parent obj: %v; inParamsForGet.relUri: %v; error: %v", inParamsForGet.uri, parentUriPath, ygSchemaName(inParamsForGet.ygSchema),
+										ygParentObjType(inParamsForGet.ygParentObj), inParamsForGet.relUri, err)
 									return "", true, err
 								}
 								if ygotCtx.trgtYgObj == nil {
@@ -2106,7 +2124,7 @@ func dbDataToYangJsonCreate(inParamsForGet xlateFromDbParams) (string, bool, err
 							}
 							if err := ytypes.Unmarshal(inParamsForGet.ygSchema, *inParamsForGet.ygParentObj, fldValMap); err != nil {
 								log.Warningf("yangDataFill: error in object unmarshalling: %v; schema: %v; parent obj: %v, "+
-									"resFldValMap: %v", inParamsForGet.ygSchema.Name, reflect.TypeOf(*inParamsForGet.ygParentObj), fldValMap)
+									"resFldValMap: %v", ygSchemaName(inParamsForGet.ygSchema), ygParentObjType(inParamsForGet.ygParentObj), fldValMap)
 								return "", true, err
 							}
 						}

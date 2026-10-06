@@ -507,7 +507,12 @@ func Get(req GetRequest) (GetResponse, error) {
 	var servedPath string
 	var servedListKeys []string
 	if req.ListFallback {
-		if p, keys, ok := truncateToKeylessList(path); ok {
+		p, keys, ok, terr := truncateToKeylessList(path)
+		if terr != nil {
+			resp = GetResponse{Payload: payload, ErrSrc: ProtoErr}
+			return resp, terr
+		}
+		if ok {
 			log.Info("Get: target below a keyless list, serving path = ", p)
 			path = p
 			servedPath = p
