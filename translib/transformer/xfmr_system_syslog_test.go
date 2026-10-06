@@ -13,10 +13,11 @@ import (
 )
 
 const (
-	syslogTestHost1   = "10.1.1.1"
-	syslogTestHost2   = "10.1.1.2"
-	syslogTestHost3   = "100.120.198.176"
-	syslogTestProfile = "siem-east"
+	syslogTestHost1          = "10.1.1.1"
+	syslogTestHost2          = "10.1.1.2"
+	syslogTestHost3          = "100.120.198.176"
+	syslogTestProfile        = "siem-east"
+	syslogTestPermittedPeers = "syslog.example.com"
 )
 
 func newSyslogRemoteServer(host string, transportSecurity *bool, profileID *string, remotePort *uint16, sourceAddress, networkInstance *string) *ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer {
@@ -31,6 +32,9 @@ func newSyslogRemoteServer(host string, transportSecurity *bool, profileID *stri
 	}
 	if profileID != nil {
 		server.Config.TlsProfileId = profileID
+	}
+	if transportSecurity != nil && *transportSecurity && profileID != nil {
+		server.Config.TlsPermittedPeers = ygot.String(syslogTestPermittedPeers)
 	}
 	if remotePort != nil {
 		server.Config.RemotePort = remotePort
@@ -151,7 +155,64 @@ func syslogTlsServerFields(port, protocol, transportSecurity, profileID string) 
 	if port != "" {
 		fields[SYSLOG_FIELD_PORT] = port
 	}
+	if protocol == "tls" {
+		fields[SYSLOG_FIELD_TLS_PERMITTED_PEERS] = syslogTestPermittedPeers
+	}
 	return fields
+}
+
+func TestIsSyslogTlsPermittedPeersLeafPath(t *testing.T) {
+	tests := []struct {
+		path string
+		want bool
+	}{
+		{SYSLOG_SERVER_PATH + "/config/tls-permitted-peers", true},
+		{SYSLOG_SERVER_PATH + "/config/openconfig-system-logging-ext:tls-permitted-peers", true},
+		{SYSLOG_SERVER_PATH + "/config/openconfig-system-logging-ext:tls-permitted-peers/", true},
+		{SYSLOG_SERVER_PATH + "/config/tls-profile-id", false},
+		{SYSLOG_SERVER_PATH + "/config", false},
+	}
+	for _, tt := range tests {
+		if got := isSyslogTlsPermittedPeersLeafPath(tt.path); got != tt.want {
+			t.Errorf("isSyslogTlsPermittedPeersLeafPath(%q) = %v, want %v", tt.path, got, tt.want)
+		}
+	}
+}
+
+func TestNormalizeSyslogTlsPermittedPeers(t *testing.T) {
+	tests := []struct {
+		name        string
+		in          string
+		want        string
+		wantErr     bool
+		errContains string
+	}{
+		{name: "single name", in: "syslog.example.com", want: "syslog.example.com"},
+		{name: "list is trimmed", in: " a.example.com , b.example.com ", want: "a.example.com,b.example.com"},
+		{name: "leading wildcard label", in: "*.example.com", want: "*.example.com"},
+		{name: "empty input", in: "  ", want: ""},
+		{name: "empty entry", in: "a.example.com,,b.example.com", wantErr: true, errContains: "empty entry"},
+		{name: "space inside name", in: "bad peer", wantErr: true, errContains: "not a valid DNS name"},
+		{name: "bare wildcard", in: "*", wantErr: true, errContains: "not a valid DNS name"},
+		{name: "leading hyphen", in: "-bad.example.com", wantErr: true, errContains: "not a valid DNS name"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := normalizeSyslogTlsPermittedPeers(tt.in)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("normalizeSyslogTlsPermittedPeers(%q) error = %v, wantErr %v", tt.in, err, tt.wantErr)
+			}
+			if tt.wantErr {
+				if !strings.Contains(err.Error(), tt.errContains) {
+					t.Fatalf("error = %v, want substring %q", err, tt.errContains)
+				}
+				return
+			}
+			if got != tt.want {
+				t.Fatalf("normalizeSyslogTlsPermittedPeers(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
 }
 
 func TestSyslogServerConfigToDbFields(t *testing.T) {
@@ -181,6 +242,7 @@ func TestSyslogServerConfigToDbFields(t *testing.T) {
 				Host:              ygot.String(syslogTestHost3),
 				TransportSecurity: &tsTrue,
 				TlsProfileId:      ygot.String(syslogTestProfile),
+				TlsPermittedPeers: ygot.String(syslogTestPermittedPeers),
 			},
 			want: syslogTlsServerFields("", "tls", "true", syslogTestProfile),
 		},
@@ -190,6 +252,7 @@ func TestSyslogServerConfigToDbFields(t *testing.T) {
 				Host:              ygot.String(syslogTestHost3),
 				TransportSecurity: &tsTrue,
 				TlsProfileId:      ygot.String(syslogTestProfile),
+				TlsPermittedPeers: ygot.String(syslogTestPermittedPeers),
 				RemotePort:        &port200,
 			},
 			want: syslogTlsServerFields("200", "tls", "true", syslogTestProfile),
@@ -562,11 +625,13 @@ func TestApplySyslogTlsSemantics(t *testing.T) {
 			cfg: &ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer_Config{
 				TransportSecurity: &tsTrue,
 				TlsProfileId:      ygot.String(syslogTestProfile),
+				TlsPermittedPeers: ygot.String(syslogTestPermittedPeers),
 			},
 			fields: map[string]string{
-				nullKey:                     nullKey,
-				SYSLOG_FIELD_TRANSPORT_SEC:  "true",
-				SYSLOG_FIELD_TLS_PROFILE_ID: syslogTestProfile,
+				nullKey:                          nullKey,
+				SYSLOG_FIELD_TRANSPORT_SEC:       "true",
+				SYSLOG_FIELD_TLS_PROFILE_ID:      syslogTestProfile,
+				SYSLOG_FIELD_TLS_PERMITTED_PEERS: syslogTestPermittedPeers,
 			},
 			wantFields: syslogTlsServerFields("", "tls", "true", syslogTestProfile),
 		},
@@ -575,13 +640,15 @@ func TestApplySyslogTlsSemantics(t *testing.T) {
 			cfg: &ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer_Config{
 				TransportSecurity: &tsTrue,
 				TlsProfileId:      ygot.String(syslogTestProfile),
+				TlsPermittedPeers: ygot.String(syslogTestPermittedPeers),
 				RemotePort:        &port200,
 			},
 			fields: map[string]string{
-				nullKey:                     nullKey,
-				SYSLOG_FIELD_PORT:           "200",
-				SYSLOG_FIELD_TRANSPORT_SEC:  "true",
-				SYSLOG_FIELD_TLS_PROFILE_ID: syslogTestProfile,
+				nullKey:                          nullKey,
+				SYSLOG_FIELD_PORT:                "200",
+				SYSLOG_FIELD_TRANSPORT_SEC:       "true",
+				SYSLOG_FIELD_TLS_PROFILE_ID:      syslogTestProfile,
+				SYSLOG_FIELD_TLS_PERMITTED_PEERS: syslogTestPermittedPeers,
 			},
 			wantFields: syslogTlsServerFields("200", "tls", "true", syslogTestProfile),
 		},
@@ -590,6 +657,7 @@ func TestApplySyslogTlsSemantics(t *testing.T) {
 			cfg: &ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer_Config{
 				TransportSecurity: &tsTrue,
 				TlsProfileId:      ygot.String(syslogTestProfile),
+				TlsPermittedPeers: ygot.String(syslogTestPermittedPeers),
 			},
 			existing: map[string]string{
 				nullKey:               nullKey,
@@ -597,11 +665,12 @@ func TestApplySyslogTlsSemantics(t *testing.T) {
 				SYSLOG_FIELD_PROTOCOL: "udp",
 			},
 			fields: map[string]string{
-				nullKey:                     nullKey,
-				SYSLOG_FIELD_PORT:           "514",
-				SYSLOG_FIELD_PROTOCOL:       "udp",
-				SYSLOG_FIELD_TRANSPORT_SEC:  "true",
-				SYSLOG_FIELD_TLS_PROFILE_ID: syslogTestProfile,
+				nullKey:                          nullKey,
+				SYSLOG_FIELD_PORT:                "514",
+				SYSLOG_FIELD_PROTOCOL:            "udp",
+				SYSLOG_FIELD_TRANSPORT_SEC:       "true",
+				SYSLOG_FIELD_TLS_PROFILE_ID:      syslogTestProfile,
+				SYSLOG_FIELD_TLS_PERMITTED_PEERS: syslogTestPermittedPeers,
 			},
 			wantFields: syslogTlsServerFields("514", "tls", "true", syslogTestProfile),
 		},
@@ -612,11 +681,12 @@ func TestApplySyslogTlsSemantics(t *testing.T) {
 			},
 			existing: syslogTlsServerFields("6514", "tls", "true", syslogTestProfile),
 			fields: map[string]string{
-				nullKey:                     nullKey,
-				SYSLOG_FIELD_PORT:           "6514",
-				SYSLOG_FIELD_PROTOCOL:       "tls",
-				SYSLOG_FIELD_TRANSPORT_SEC:  "true",
-				SYSLOG_FIELD_TLS_PROFILE_ID: newProfile,
+				nullKey:                          nullKey,
+				SYSLOG_FIELD_PORT:                "6514",
+				SYSLOG_FIELD_PROTOCOL:            "tls",
+				SYSLOG_FIELD_TRANSPORT_SEC:       "true",
+				SYSLOG_FIELD_TLS_PROFILE_ID:      newProfile,
+				SYSLOG_FIELD_TLS_PERMITTED_PEERS: syslogTestPermittedPeers,
 			},
 			wantFields: syslogTlsServerFields("6514", "tls", "true", newProfile),
 		},
@@ -658,10 +728,11 @@ func TestApplySyslogTlsSemantics(t *testing.T) {
 			},
 			existing: syslogTlsServerFields("6514", "tls", "true", syslogTestProfile),
 			fields: map[string]string{
-				nullKey:                     nullKey,
-				SYSLOG_FIELD_PROTOCOL:       "tls",
-				SYSLOG_FIELD_TRANSPORT_SEC:  "false",
-				SYSLOG_FIELD_TLS_PROFILE_ID: syslogTestProfile,
+				nullKey:                          nullKey,
+				SYSLOG_FIELD_PROTOCOL:            "tls",
+				SYSLOG_FIELD_TRANSPORT_SEC:       "false",
+				SYSLOG_FIELD_TLS_PROFILE_ID:      syslogTestProfile,
+				SYSLOG_FIELD_TLS_PERMITTED_PEERS: syslogTestPermittedPeers,
 			},
 			wantFields: map[string]string{
 				nullKey:                    nullKey,
@@ -669,7 +740,8 @@ func TestApplySyslogTlsSemantics(t *testing.T) {
 				SYSLOG_FIELD_TRANSPORT_SEC: "false",
 			},
 			wantDel: map[string]string{
-				SYSLOG_FIELD_TLS_PROFILE_ID: syslogTestProfile,
+				SYSLOG_FIELD_TLS_PROFILE_ID:      syslogTestProfile,
+				SYSLOG_FIELD_TLS_PERMITTED_PEERS: syslogTestPermittedPeers,
 			},
 		},
 		{
@@ -693,11 +765,12 @@ func TestApplySyslogTlsSemantics(t *testing.T) {
 			},
 			existing: syslogTlsServerFields("200", "tls", "true", syslogTestProfile),
 			fields: map[string]string{
-				nullKey:                     nullKey,
-				SYSLOG_FIELD_PORT:           "200",
-				SYSLOG_FIELD_PROTOCOL:       "tls",
-				SYSLOG_FIELD_TRANSPORT_SEC:  "false",
-				SYSLOG_FIELD_TLS_PROFILE_ID: syslogTestProfile,
+				nullKey:                          nullKey,
+				SYSLOG_FIELD_PORT:                "200",
+				SYSLOG_FIELD_PROTOCOL:            "tls",
+				SYSLOG_FIELD_TRANSPORT_SEC:       "false",
+				SYSLOG_FIELD_TLS_PROFILE_ID:      syslogTestProfile,
+				SYSLOG_FIELD_TLS_PERMITTED_PEERS: syslogTestPermittedPeers,
 			},
 			wantFields: map[string]string{
 				nullKey:                    nullKey,
@@ -706,8 +779,58 @@ func TestApplySyslogTlsSemantics(t *testing.T) {
 				SYSLOG_FIELD_TRANSPORT_SEC: "false",
 			},
 			wantDel: map[string]string{
+				SYSLOG_FIELD_TLS_PROFILE_ID:      syslogTestProfile,
+				SYSLOG_FIELD_TLS_PERMITTED_PEERS: syslogTestPermittedPeers,
+			},
+		},
+		{
+			name: "TLS without permitted peers is rejected",
+			cfg: &ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer_Config{
+				TransportSecurity: &tsTrue,
+				TlsProfileId:      ygot.String(syslogTestProfile),
+			},
+			fields: map[string]string{
+				nullKey:                     nullKey,
+				SYSLOG_FIELD_TRANSPORT_SEC:  "true",
 				SYSLOG_FIELD_TLS_PROFILE_ID: syslogTestProfile,
 			},
+			wantErr:     true,
+			errContains: "tls-permitted-peers is required",
+		},
+		{
+			name: "Permitted peers without transport-security is rejected",
+			cfg: &ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer_Config{
+				TlsPermittedPeers: ygot.String(syslogTestPermittedPeers),
+			},
+			existing: map[string]string{
+				nullKey:               nullKey,
+				SYSLOG_FIELD_PORT:     "514",
+				SYSLOG_FIELD_PROTOCOL: "udp",
+			},
+			fields: map[string]string{
+				nullKey:                          nullKey,
+				SYSLOG_FIELD_PORT:                "514",
+				SYSLOG_FIELD_PROTOCOL:            "udp",
+				SYSLOG_FIELD_TLS_PERMITTED_PEERS: syslogTestPermittedPeers,
+			},
+			wantErr:     true,
+			errContains: "transport-security true is required when tls-permitted-peers is set",
+		},
+		{
+			name: "Invalid permitted peer is rejected",
+			cfg: &ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer_Config{
+				TransportSecurity: &tsTrue,
+				TlsProfileId:      ygot.String(syslogTestProfile),
+				TlsPermittedPeers: ygot.String("bad peer"),
+			},
+			fields: map[string]string{
+				nullKey:                          nullKey,
+				SYSLOG_FIELD_TRANSPORT_SEC:       "true",
+				SYSLOG_FIELD_TLS_PROFILE_ID:      syslogTestProfile,
+				SYSLOG_FIELD_TLS_PERMITTED_PEERS: "bad peer",
+			},
+			wantErr:     true,
+			errContains: "is not a valid DNS name",
 		},
 	}
 
@@ -962,7 +1085,8 @@ func TestYangToDb_Syslog_Servers(t *testing.T) {
 			wantAux: map[string]map[string]db.Value{
 				SYSLOG_SERVER_TABLE_NAME: {
 					syslogTestHost3: {Field: map[string]string{
-						SYSLOG_FIELD_TLS_PROFILE_ID: syslogTestProfile,
+						SYSLOG_FIELD_TLS_PROFILE_ID:      syslogTestProfile,
+						SYSLOG_FIELD_TLS_PERMITTED_PEERS: syslogTestPermittedPeers,
 					}},
 				},
 			},
@@ -1086,15 +1210,16 @@ func TestYangToDb_Syslog_Servers(t *testing.T) {
 			},
 			serverState: map[string]db.Value{
 				syslogTestHost3: {Field: map[string]string{
-					nullKey:                     nullKey,
-					SYSLOG_FIELD_PORT:           "520",
-					SYSLOG_FIELD_PROTOCOL:       "tls",
-					SYSLOG_FIELD_TRANSPORT_SEC:  "true",
-					SYSLOG_FIELD_TLS_PROFILE_ID: syslogTestProfile,
-					SYSLOG_FIELD_SOURCE:         "1.1.1.1",
-					SYSLOG_FIELD_VRF:            "mgmt",
-					SYSLOG_FIELD_SEVERITY:       "notice",
-					SYSLOG_FIELD_FACILITY:       "*",
+					nullKey:                          nullKey,
+					SYSLOG_FIELD_PORT:                "520",
+					SYSLOG_FIELD_PROTOCOL:            "tls",
+					SYSLOG_FIELD_TRANSPORT_SEC:       "true",
+					SYSLOG_FIELD_TLS_PROFILE_ID:      syslogTestProfile,
+					SYSLOG_FIELD_TLS_PERMITTED_PEERS: syslogTestPermittedPeers,
+					SYSLOG_FIELD_SOURCE:              "1.1.1.1",
+					SYSLOG_FIELD_VRF:                 "mgmt",
+					SYSLOG_FIELD_SEVERITY:            "notice",
+					SYSLOG_FIELD_FACILITY:            "*",
 				}},
 			},
 			wantMap: map[string]map[string]db.Value{
@@ -1114,10 +1239,11 @@ func TestYangToDb_Syslog_Servers(t *testing.T) {
 			wantAux: map[string]map[string]db.Value{
 				SYSLOG_SERVER_TABLE_NAME: {
 					syslogTestHost3: {Field: map[string]string{
-						SYSLOG_FIELD_SOURCE:         "1.1.1.1",
-						SYSLOG_FIELD_VRF:            "mgmt",
-						SYSLOG_FIELD_TRANSPORT_SEC:  "true",
-						SYSLOG_FIELD_TLS_PROFILE_ID: syslogTestProfile,
+						SYSLOG_FIELD_SOURCE:              "1.1.1.1",
+						SYSLOG_FIELD_VRF:                 "mgmt",
+						SYSLOG_FIELD_TRANSPORT_SEC:       "true",
+						SYSLOG_FIELD_TLS_PROFILE_ID:      syslogTestProfile,
+						SYSLOG_FIELD_TLS_PERMITTED_PEERS: syslogTestPermittedPeers,
 					}},
 				},
 			},
@@ -1293,29 +1419,31 @@ func TestYangToDb_Syslog_Servers(t *testing.T) {
 			},
 			serverState: map[string]db.Value{
 				syslogTestHost1: {Field: map[string]string{
-					nullKey:                     nullKey,
-					SYSLOG_FIELD_PORT:           "6514",
-					SYSLOG_FIELD_PROTOCOL:       "tls",
-					SYSLOG_FIELD_TRANSPORT_SEC:  "true",
-					SYSLOG_FIELD_TLS_PROFILE_ID: syslogTestProfile,
-					SYSLOG_FIELD_SOURCE:         "1.1.1.1",
-					SYSLOG_FIELD_VRF:            "mgmt",
-					SYSLOG_FIELD_SEVERITY:       "notice",
-					SYSLOG_FIELD_FACILITY:       "*",
+					nullKey:                          nullKey,
+					SYSLOG_FIELD_PORT:                "6514",
+					SYSLOG_FIELD_PROTOCOL:            "tls",
+					SYSLOG_FIELD_TRANSPORT_SEC:       "true",
+					SYSLOG_FIELD_TLS_PROFILE_ID:      syslogTestProfile,
+					SYSLOG_FIELD_TLS_PERMITTED_PEERS: syslogTestPermittedPeers,
+					SYSLOG_FIELD_SOURCE:              "1.1.1.1",
+					SYSLOG_FIELD_VRF:                 "mgmt",
+					SYSLOG_FIELD_SEVERITY:            "notice",
+					SYSLOG_FIELD_FACILITY:            "*",
 				}},
 			},
 			wantMap: map[string]map[string]db.Value{
 				SYSLOG_SERVER_TABLE_NAME: {
 					syslogTestHost1: {Field: map[string]string{
-						nullKey:                     nullKey,
-						SYSLOG_FIELD_PORT:           "6514",
-						SYSLOG_FIELD_PROTOCOL:       "tls",
-						SYSLOG_FIELD_TRANSPORT_SEC:  "true",
-						SYSLOG_FIELD_TLS_PROFILE_ID: syslogTestProfile,
-						SYSLOG_FIELD_SOURCE:         "1.1.1.1",
-						SYSLOG_FIELD_VRF:            "mgmt",
-						SYSLOG_FIELD_SEVERITY:       "warn",
-						SYSLOG_FIELD_FACILITY:       "*",
+						nullKey:                          nullKey,
+						SYSLOG_FIELD_PORT:                "6514",
+						SYSLOG_FIELD_PROTOCOL:            "tls",
+						SYSLOG_FIELD_TRANSPORT_SEC:       "true",
+						SYSLOG_FIELD_TLS_PROFILE_ID:      syslogTestProfile,
+						SYSLOG_FIELD_TLS_PERMITTED_PEERS: syslogTestPermittedPeers,
+						SYSLOG_FIELD_SOURCE:              "1.1.1.1",
+						SYSLOG_FIELD_VRF:                 "mgmt",
+						SYSLOG_FIELD_SEVERITY:            "warn",
+						SYSLOG_FIELD_FACILITY:            "*",
 					}},
 				},
 			},
@@ -1611,10 +1739,11 @@ func TestYangToDb_Syslog_Servers(t *testing.T) {
 			wantSubReplace: map[string]map[string]db.Value{
 				SYSLOG_SERVER_TABLE_NAME: {
 					syslogTestHost3: {Field: map[string]string{
-						nullKey:                     nullKey,
-						SYSLOG_FIELD_PORT:           "6514",
-						SYSLOG_FIELD_PROTOCOL:       "udp",
-						SYSLOG_FIELD_TLS_PROFILE_ID: syslogTestProfile,
+						nullKey:                          nullKey,
+						SYSLOG_FIELD_PORT:                "6514",
+						SYSLOG_FIELD_PROTOCOL:            "udp",
+						SYSLOG_FIELD_TLS_PROFILE_ID:      syslogTestProfile,
+						SYSLOG_FIELD_TLS_PERMITTED_PEERS: syslogTestPermittedPeers,
 					}},
 				},
 			},
@@ -1645,10 +1774,11 @@ func TestYangToDb_Syslog_Servers(t *testing.T) {
 			wantSubReplace: map[string]map[string]db.Value{
 				SYSLOG_SERVER_TABLE_NAME: {
 					syslogTestHost3: {Field: map[string]string{
-						nullKey:                     nullKey,
-						SYSLOG_FIELD_PORT:           "6514",
-						SYSLOG_FIELD_PROTOCOL:       "udp",
-						SYSLOG_FIELD_TLS_PROFILE_ID: syslogTestProfile,
+						nullKey:                          nullKey,
+						SYSLOG_FIELD_PORT:                "6514",
+						SYSLOG_FIELD_PROTOCOL:            "udp",
+						SYSLOG_FIELD_TLS_PROFILE_ID:      syslogTestProfile,
+						SYSLOG_FIELD_TLS_PERMITTED_PEERS: syslogTestPermittedPeers,
 					}},
 				},
 			},
@@ -1734,6 +1864,69 @@ func TestYangToDb_Syslog_Servers(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name: "DELETE tls-permitted-peers allowed when transport-security is false",
+			op:   DELETE,
+			uri:  SYSLOG_SERVER_PATH + "/config/tls-permitted-peers",
+			key:  syslogTestHost1,
+			ygRoot: func() *ocbinds.Device {
+				return newSyslogDevice(nil)
+			},
+			serverState: map[string]db.Value{
+				syslogTestHost1: {Field: map[string]string{
+					nullKey:                          nullKey,
+					SYSLOG_FIELD_PORT:                "514",
+					SYSLOG_FIELD_PROTOCOL:            "udp",
+					SYSLOG_FIELD_TRANSPORT_SEC:       "false",
+					SYSLOG_FIELD_TLS_PERMITTED_PEERS: syslogTestPermittedPeers,
+				}},
+			},
+			wantMap: map[string]map[string]db.Value{
+				SYSLOG_SERVER_TABLE_NAME: {
+					syslogTestHost1: {Field: map[string]string{
+						SYSLOG_FIELD_TLS_PERMITTED_PEERS: syslogTestPermittedPeers,
+					}},
+				},
+			},
+		},
+		{
+			name: "DELETE module-prefixed tls-permitted-peers allowed when transport-security is false",
+			op:   DELETE,
+			uri:  SYSLOG_SERVER_PATH + "/config/openconfig-system-logging-ext:tls-permitted-peers",
+			key:  syslogTestHost1,
+			ygRoot: func() *ocbinds.Device {
+				return newSyslogDevice(nil)
+			},
+			serverState: map[string]db.Value{
+				syslogTestHost1: {Field: map[string]string{
+					nullKey:                          nullKey,
+					SYSLOG_FIELD_PORT:                "514",
+					SYSLOG_FIELD_PROTOCOL:            "udp",
+					SYSLOG_FIELD_TRANSPORT_SEC:       "false",
+					SYSLOG_FIELD_TLS_PERMITTED_PEERS: syslogTestPermittedPeers,
+				}},
+			},
+			wantMap: map[string]map[string]db.Value{
+				SYSLOG_SERVER_TABLE_NAME: {
+					syslogTestHost1: {Field: map[string]string{
+						SYSLOG_FIELD_TLS_PERMITTED_PEERS: syslogTestPermittedPeers,
+					}},
+				},
+			},
+		},
+		{
+			name: "DELETE tls-permitted-peers rejected when transport-security is true",
+			op:   DELETE,
+			uri:  SYSLOG_SERVER_PATH + "/config/tls-permitted-peers",
+			key:  syslogTestHost3,
+			ygRoot: func() *ocbinds.Device {
+				return newSyslogDevice(nil)
+			},
+			serverState: map[string]db.Value{
+				syslogTestHost3: {Field: syslogTlsServerFields("6514", "tls", "true", syslogTestProfile)},
+			},
+			wantErr: true,
+		},
+		{
 			name: "UPDATE list profile-only on existing TLS server",
 			op:   UPDATE,
 			uri:  SYSLOG_SERVERS_PATH,
@@ -1767,6 +1960,85 @@ func TestYangToDb_Syslog_Servers(t *testing.T) {
 					syslogTestHost3: {Field: syslogTlsServerFields("6514", "tls", "true", "siem-west")},
 				},
 			},
+		},
+		{
+			name: "UPDATE tls-permitted-peers leaf on existing TLS server",
+			op:   UPDATE,
+			uri:  SYSLOG_SERVER_PATH + "/config/tls-permitted-peers",
+			key:  syslogTestHost3,
+			ygRoot: func() *ocbinds.Device {
+				return newSyslogDevice(nil)
+			},
+			serverState: map[string]db.Value{
+				syslogTestHost3: {Field: syslogTlsServerFields("6514", "tls", "true", syslogTestProfile)},
+			},
+			wantMap: map[string]map[string]db.Value{
+				SYSLOG_SERVER_TABLE_NAME: {
+					syslogTestHost3: {Field: func() map[string]string {
+						fields := syslogTlsServerFields("6514", "tls", "true", syslogTestProfile)
+						fields[SYSLOG_FIELD_TLS_PERMITTED_PEERS] = "syslog2.example.com,syslog3.example.com"
+						return fields
+					}()},
+				},
+			},
+		},
+		{
+			name: "UPDATE module-prefixed tls-permitted-peers leaf on existing TLS server",
+			op:   UPDATE,
+			uri:  SYSLOG_SERVER_PATH + "/config/openconfig-system-logging-ext:tls-permitted-peers",
+			key:  syslogTestHost3,
+			ygRoot: func() *ocbinds.Device {
+				return newSyslogDevice(nil)
+			},
+			serverState: map[string]db.Value{
+				syslogTestHost3: {Field: syslogTlsServerFields("6514", "tls", "true", syslogTestProfile)},
+			},
+			wantMap: map[string]map[string]db.Value{
+				SYSLOG_SERVER_TABLE_NAME: {
+					syslogTestHost3: {Field: func() map[string]string {
+						fields := syslogTlsServerFields("6514", "tls", "true", syslogTestProfile)
+						fields[SYSLOG_FIELD_TLS_PERMITTED_PEERS] = "syslog2.example.com,syslog3.example.com"
+						return fields
+					}()},
+				},
+			},
+		},
+		{
+			name: "CREATE rejects tls-permitted-peers without transport-security",
+			op:   UPDATE,
+			uri:  SYSLOG_SERVER_PATH + "/config",
+			key:  syslogTestHost1,
+			ygRoot: func() *ocbinds.Device {
+				server := newSyslogRemoteServer(syslogTestHost1, nil, nil, nil, nil, nil)
+				server.Config.TlsPermittedPeers = ygot.String(syslogTestPermittedPeers)
+				return newSyslogDevice(map[string]*ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer{
+					syslogTestHost1: server,
+				})
+			},
+			serverState: map[string]db.Value{},
+			wantErr:     true,
+		},
+		{
+			name: "REPLACE config container enabling TLS without permitted peers is rejected",
+			op:   REPLACE,
+			uri:  SYSLOG_SERVER_PATH + "/config",
+			key:  syslogTestHost3,
+			ygRoot: func() *ocbinds.Device {
+				tsTrue := true
+				server := newSyslogRemoteServer(syslogTestHost3, &tsTrue, ygot.String(syslogTestProfile), nil, nil, nil)
+				server.Config.TlsPermittedPeers = nil
+				return newSyslogDevice(map[string]*ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer{
+					syslogTestHost3: server,
+				})
+			},
+			serverState: map[string]db.Value{
+				syslogTestHost3: {Field: map[string]string{
+					nullKey:               nullKey,
+					SYSLOG_FIELD_PORT:     "514",
+					SYSLOG_FIELD_PROTOCOL: "udp",
+				}},
+			},
+			wantErr: true,
 		},
 		{
 			name: "CREATE rejects tls-profile-id without transport-security",
@@ -1825,8 +2097,12 @@ func TestYangToDb_Syslog_Servers(t *testing.T) {
 				subOpDataMap:  make(map[Operation]*map[db.DBNum]map[string]map[string]db.Value),
 				yangAuxValMap: make(map[string]map[string]db.Value),
 			}
-			if tt.name == "UPDATE tls-profile-id leaf on existing TLS server" {
+			switch tt.name {
+			case "UPDATE tls-profile-id leaf on existing TLS server":
 				inParams.param = "siem-west"
+			case "UPDATE tls-permitted-peers leaf on existing TLS server",
+				"UPDATE module-prefixed tls-permitted-peers leaf on existing TLS server":
+				inParams.param = "syslog2.example.com,syslog3.example.com"
 			}
 
 			gotMap, err := YangToDb_remote_servers_list_xfmr(inParams)
@@ -1913,6 +2189,9 @@ func TestSubscribe_Syslog_RemoteServers(t *testing.T) {
 			if fields[dbFld] != yangLeaf {
 				t.Fatalf("field map[%s]=%q, want %q; got %v", dbFld, fields[dbFld], yangLeaf, fields)
 			}
+		}
+		if fields[SYSLOG_FIELD_TLS_PERMITTED_PEERS] != "tls-permitted-peers" {
+			t.Fatalf("missing tls-permitted-peers watch: %v", fields)
 		}
 		if _, ok := fields[SYSLOG_FIELD_SEVERITY]; !ok {
 			t.Fatalf("missing severity watch: %v", fields)

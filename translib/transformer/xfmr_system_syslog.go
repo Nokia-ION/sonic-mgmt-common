@@ -25,15 +25,18 @@ const (
 	SYSLOG_FIELD_PROTOCOL                        = "protocol"
 	SYSLOG_FIELD_TRANSPORT_SEC                   = "transport_security"
 	SYSLOG_FIELD_TLS_PROFILE_ID                  = "tls_profile_id"
+	SYSLOG_FIELD_TLS_PERMITTED_PEERS             = "tls_permitted_peers"
 	SYSLOG_FIELD_SOURCE                          = "source"
 	SYSLOG_FIELD_VRF                             = "vrf"
 	SYSLOG_FIELD_SEVERITY                        = "severity"
 	SYSLOG_FIELD_FACILITY                        = "facility"
 	SYSLOG_DEFAULT_PROFILE                       = "gnxi"
 	syslogErrTransportSecurityRequiredForProfile = "transport-security true is required when tls-profile-id is set"
+	syslogErrTlsPermittedPeersRequired           = "tls-permitted-peers is required when transport-security is true"
 )
 
 var syslogTlsProfileIDRe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+var syslogTlsPermittedPeerRe = regexp.MustCompile(`^(\*\.)?[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$`)
 
 var ocSyslogSeverityToDb = map[ocbinds.E_OpenconfigSystemLogging_SyslogSeverity]string{
 	ocbinds.OpenconfigSystemLogging_SyslogSeverity_EMERGENCY:     "crit",
@@ -145,6 +148,43 @@ func validateSyslogTlsProfileID(profile string) error {
 	return nil
 }
 
+func normalizeSyslogTlsPermittedPeers(peers string) (string, error) {
+	peers = strings.TrimSpace(peers)
+	if peers == "" {
+		return "", nil
+	}
+	parts := strings.Split(peers, ",")
+	out := make([]string, 0, len(parts))
+	for _, peer := range parts {
+		peer = strings.TrimSpace(peer)
+		if peer == "" {
+			return "", tlerr.InvalidArgsError{Format: "tls-permitted-peers contains an empty entry"}
+		}
+		if !syslogTlsPermittedPeerRe.MatchString(peer) {
+			return "", tlerr.InvalidArgsError{
+				Format: fmt.Sprintf("tls-permitted-peers entry %q is not a valid DNS name", peer),
+			}
+		}
+		out = append(out, peer)
+	}
+	return strings.Join(out, ","), nil
+}
+
+func validateSyslogTlsPermittedPeers(transportSecurity bool, peers *string) error {
+	if transportSecurity {
+		if peers == nil || strings.TrimSpace(*peers) == "" {
+			return tlerr.InvalidArgsError{Format: syslogErrTlsPermittedPeersRequired}
+		}
+		if _, err := normalizeSyslogTlsPermittedPeers(*peers); err != nil {
+			return err
+		}
+	}
+	if peers != nil && strings.TrimSpace(*peers) != "" && !transportSecurity {
+		return tlerr.InvalidArgsError{Format: "transport-security true is required when tls-permitted-peers is set"}
+	}
+	return nil
+}
+
 func validateSyslogTlsProfile(transportSecurity bool, profileId *string) error {
 	if transportSecurity {
 		if profileId == nil || *profileId == "" {
@@ -173,8 +213,40 @@ func syslogTlsProfileIDPtr(profile string) *string {
 	return &profile
 }
 
+// tls-permitted-peers is augmented into remote-server config/state by
+// openconfig-system-logging-ext, so a request URI carries the module prefix
+// on that element (.../config/openconfig-system-logging-ext:tls-permitted-peers).
+// Accept both the prefixed and the unprefixed form.
+func isSyslogTlsPermittedPeersLeafPath(path string) bool {
+	path = strings.TrimSuffix(path, "/")
+	return strings.HasSuffix(path, "/tls-permitted-peers") || strings.HasSuffix(path, ":tls-permitted-peers")
+}
+
+func syslogTlsPermittedPeersPtr(peers string) *string {
+	if peers == "" {
+		return nil
+	}
+	return &peers
+}
+
+func syslogTlsPermittedPeersFromParam(param interface{}) (string, bool) {
+	switch v := param.(type) {
+	case string:
+		return v, true
+	case *string:
+		if v != nil {
+			return *v, true
+		}
+	}
+	return "", false
+}
+
 func validateSyslogServerDbFields(fields map[string]string) error {
-	return validateSyslogTlsProfile(isSyslogTlsEnabled(fields), syslogTlsProfileIDPtr(fields[SYSLOG_FIELD_TLS_PROFILE_ID]))
+	tlsEnabled := isSyslogTlsEnabled(fields)
+	if err := validateSyslogTlsProfile(tlsEnabled, syslogTlsProfileIDPtr(fields[SYSLOG_FIELD_TLS_PROFILE_ID])); err != nil {
+		return err
+	}
+	return validateSyslogTlsPermittedPeers(tlsEnabled, syslogTlsPermittedPeersPtr(fields[SYSLOG_FIELD_TLS_PERMITTED_PEERS]))
 }
 
 func isSyslogTlsEnabled(fields map[string]string) bool {
@@ -330,6 +402,10 @@ func syslogServerFromLeafUpdate(inParams XfmrParams, targetUriPath, host string,
 	case strings.HasSuffix(targetUriPath, "/config/tls-profile-id"):
 		if profile, ok := syslogTlsProfileIDFromParam(inParams.param); ok {
 			server.Config.TlsProfileId = ygot.String(profile)
+		}
+	case isSyslogTlsPermittedPeersLeafPath(targetUriPath) && strings.Contains(targetUriPath, "/config/"):
+		if peers, ok := syslogTlsPermittedPeersFromParam(inParams.param); ok {
+			server.Config.TlsPermittedPeers = ygot.String(peers)
 		}
 	case strings.HasSuffix(targetUriPath, "/config/transport-security"):
 		if ts, ok := syslogTransportSecurityFromParam(inParams.param); ok {
@@ -590,6 +666,9 @@ func syslogServerConfigToDbFields(cfg *ocbinds.OpenconfigSystem_System_Logging_R
 	if cfg.TlsProfileId != nil {
 		fields[SYSLOG_FIELD_TLS_PROFILE_ID] = *cfg.TlsProfileId
 	}
+	if cfg.TlsPermittedPeers != nil {
+		fields[SYSLOG_FIELD_TLS_PERMITTED_PEERS] = *cfg.TlsPermittedPeers
+	}
 	if cfg.SourceAddress != nil {
 		fields[SYSLOG_FIELD_SOURCE] = *cfg.SourceAddress
 	}
@@ -604,11 +683,14 @@ func syslogServerConfigToDbFields(cfg *ocbinds.OpenconfigSystem_System_Logging_R
 func applySyslogTlsSemantics(fields map[string]string, cfg *ocbinds.OpenconfigSystem_System_Logging_RemoteServers_RemoteServer_Config, existing map[string]string) (map[string]string, error) {
 	delFields := make(map[string]string)
 	var existingProfile string
+	var existingPeers string
 	if existing != nil {
 		existingProfile = existing[SYSLOG_FIELD_TLS_PROFILE_ID]
+		existingPeers = existing[SYSLOG_FIELD_TLS_PERMITTED_PEERS]
 	}
 
 	yangProfile := cfg != nil && cfg.TlsProfileId != nil && *cfg.TlsProfileId != ""
+	yangPeers := cfg != nil && cfg.TlsPermittedPeers != nil && *cfg.TlsPermittedPeers != ""
 	tsTrue := cfg != nil && cfg.TransportSecurity != nil && *cfg.TransportSecurity
 	tsFalse := cfg != nil && cfg.TransportSecurity != nil && !*cfg.TransportSecurity
 
@@ -618,11 +700,18 @@ func applySyslogTlsSemantics(fields map[string]string, cfg *ocbinds.OpenconfigSy
 	if yangProfile && !tsTrue && !isSyslogTlsEnabled(fields) && !isSyslogTlsEnabled(existing) {
 		return nil, tlerr.InvalidArgsError{Format: syslogErrTransportSecurityRequiredForProfile}
 	}
+	if yangPeers && !tsTrue && !isSyslogTlsEnabled(fields) && !isSyslogTlsEnabled(existing) {
+		return nil, tlerr.InvalidArgsError{Format: "transport-security true is required when tls-permitted-peers is set"}
+	}
 
 	if tsFalse {
 		delete(fields, SYSLOG_FIELD_TLS_PROFILE_ID)
+		delete(fields, SYSLOG_FIELD_TLS_PERMITTED_PEERS)
 		if existingProfile != "" {
 			delFields[SYSLOG_FIELD_TLS_PROFILE_ID] = existingProfile
+		}
+		if existingPeers != "" {
+			delFields[SYSLOG_FIELD_TLS_PERMITTED_PEERS] = existingPeers
 		}
 		fields[SYSLOG_FIELD_TRANSPORT_SEC] = "false"
 		fields[SYSLOG_FIELD_PROTOCOL] = "udp"
@@ -635,6 +724,9 @@ func applySyslogTlsSemantics(fields map[string]string, cfg *ocbinds.OpenconfigSy
 	}
 	if tlsEnabled {
 		if err := validateSyslogTlsProfile(true, syslogTlsProfileIDPtr(fields[SYSLOG_FIELD_TLS_PROFILE_ID])); err != nil {
+			return nil, err
+		}
+		if err := validateSyslogTlsPermittedPeers(true, syslogTlsPermittedPeersPtr(fields[SYSLOG_FIELD_TLS_PERMITTED_PEERS])); err != nil {
 			return nil, err
 		}
 		fields[SYSLOG_FIELD_TRANSPORT_SEC] = "true"
@@ -667,6 +759,7 @@ var syslogConfigDbFields = []string{
 	SYSLOG_FIELD_VRF,
 	SYSLOG_FIELD_TRANSPORT_SEC,
 	SYSLOG_FIELD_TLS_PROFILE_ID,
+	SYSLOG_FIELD_TLS_PERMITTED_PEERS,
 	SYSLOG_FIELD_PROTOCOL,
 }
 
@@ -679,11 +772,12 @@ var syslogSelectorDbFields = []string{
 // Matches openconfig-system-annot.yang field-name deviations on remote-server
 // config/state leaves.
 var syslogServerConfigSubscribeFields = map[string]string{
-	SYSLOG_FIELD_PORT:           "remote-port",
-	SYSLOG_FIELD_SOURCE:         "source-address",
-	SYSLOG_FIELD_VRF:            "network-instance",
-	SYSLOG_FIELD_TRANSPORT_SEC:  "transport-security",
-	SYSLOG_FIELD_TLS_PROFILE_ID: "tls-profile-id",
+	SYSLOG_FIELD_PORT:                "remote-port",
+	SYSLOG_FIELD_SOURCE:              "source-address",
+	SYSLOG_FIELD_VRF:                 "network-instance",
+	SYSLOG_FIELD_TRANSPORT_SEC:       "transport-security",
+	SYSLOG_FIELD_TLS_PROFILE_ID:      "tls-profile-id",
+	SYSLOG_FIELD_TLS_PERMITTED_PEERS: "tls-permitted-peers",
 }
 
 func syslogServerSubscribeWatchFields(requestURI string) map[string]string {
@@ -877,6 +971,17 @@ func syslogServerDbMutationFromYang(cfgDb *db.DB, host string, server *ocbinds.O
 	if mergeMode == syslogMergeConfigFieldsOnly && isSyslogSelectorContainerReplacePath(uri) {
 		delFields = mergeSyslogDelFields(delFields, syslogSelectorReplaceDelFields(existing, fields))
 	}
+	if peers, ok := fields[SYSLOG_FIELD_TLS_PERMITTED_PEERS]; ok {
+		normalized, err := normalizeSyslogTlsPermittedPeers(peers)
+		if err != nil {
+			return db.Value{}, nil, err
+		}
+		if normalized != "" {
+			fields[SYSLOG_FIELD_TLS_PERMITTED_PEERS] = normalized
+		} else {
+			delete(fields, SYSLOG_FIELD_TLS_PERMITTED_PEERS)
+		}
+	}
 	if err := validateSyslogServerDbFields(fields); err != nil {
 		return db.Value{}, nil, err
 	}
@@ -1011,6 +1116,10 @@ func populateSyslogServerFromDbEntry(host string, entry db.Value) *ocbinds.Openc
 	if profile, ok := entry.Field[SYSLOG_FIELD_TLS_PROFILE_ID]; ok {
 		serverObj.Config.TlsProfileId = ygot.String(profile)
 		serverObj.State.TlsProfileId = ygot.String(profile)
+	}
+	if peers, ok := entry.Field[SYSLOG_FIELD_TLS_PERMITTED_PEERS]; ok {
+		serverObj.Config.TlsPermittedPeers = ygot.String(peers)
+		serverObj.State.TlsPermittedPeers = ygot.String(peers)
 	}
 	if source, ok := entry.Field[SYSLOG_FIELD_SOURCE]; ok {
 		serverObj.Config.SourceAddress = ygot.String(source)
@@ -1229,6 +1338,17 @@ var YangToDb_remote_servers_list_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPa
 					}
 				}
 				fields[SYSLOG_FIELD_TLS_PROFILE_ID] = profile
+			case isSyslogTlsPermittedPeersLeafPath(targetUriPath):
+				peers, ok := entry.Field[SYSLOG_FIELD_TLS_PERMITTED_PEERS]
+				if !ok || peers == "" {
+					return nil, tlerr.NotFoundError{Format: "Resource not found"}
+				}
+				if isSyslogTlsEnabled(entry.Field) {
+					return nil, tlerr.InvalidArgsError{
+						Format: "tls-permitted-peers can be deleted only when transport-security is false or not set",
+					}
+				}
+				fields[SYSLOG_FIELD_TLS_PERMITTED_PEERS] = peers
 			default:
 				return nil, tlerr.InvalidArgsError{
 					Format: fmt.Sprintf("Unsupported config DELETE on %s", inParams.uri),
