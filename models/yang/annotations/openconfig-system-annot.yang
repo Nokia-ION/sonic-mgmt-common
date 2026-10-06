@@ -7,6 +7,7 @@ module openconfig-system-annot {
 
     import openconfig-system { prefix oc-sys; }
     import openconfig-system-logging { prefix oc-log; }
+    import openconfig-system-logging-ext { prefix oc-log-ext; }
     import openconfig-system-ext { prefix oc-sys-ext; }
     import sonic-extensions {prefix sonic-ext; }
     import openconfig-system-grpc { prefix oc-sys-grpc; }
@@ -278,6 +279,18 @@ module openconfig-system-annot {
     deviation /oc-sys:system/oc-log:logging/oc-log:remote-servers/oc-log:remote-server/oc-log:state/oc-log:tls-profile-id {
       deviate add {
         sonic-ext:field-name "tls_profile_id";
+      }
+    }
+
+    deviation /oc-sys:system/oc-log:logging/oc-log:remote-servers/oc-log:remote-server/oc-log:config/oc-log-ext:tls-permitted-peers {
+      deviate add {
+        sonic-ext:field-name "tls_permitted_peers";
+      }
+    }
+
+    deviation /oc-sys:system/oc-log:logging/oc-log:remote-servers/oc-log:remote-server/oc-log:state/oc-log-ext:tls-permitted-peers {
+      deviate add {
+        sonic-ext:field-name "tls_permitted_peers";
       }
     }
 
