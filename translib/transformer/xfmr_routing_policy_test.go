@@ -372,6 +372,298 @@ func Test_openconfig_routing_policy_policy_definition_statement_conditions_match
 	unloadDB(db.ConfigDB, cleanupTbl)
 }
 
+func Test_openconfig_routing_policy_policy_definition_statement_conditions_match_prefix_set_family_switch(t *testing.T) {
+	var url, urlInputBodyJSON string
+
+	preReqMap := map[string]interface{}{
+		"ROUTE_MAP_SET": map[string]interface{}{
+			"POL1": map[string]interface{}{},
+		},
+		"PREFIX_SET": map[string]interface{}{
+			"PS4": map[string]interface{}{
+				"mode": "IPv4",
+			},
+			"PS6": map[string]interface{}{
+				"mode": "IPv6",
+			},
+		},
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": map[string]interface{}{
+				"route_operation":  "permit",
+				"match_prefix_set": "PS4",
+				"match_med":        "20",
+				"set_local_pref":   "150",
+			},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": "",
+		},
+		"ROUTE_MAP_SET": map[string]interface{}{
+			"POL1": "",
+		},
+		"PREFIX_SET": map[string]interface{}{
+			"PS4": "",
+			"PS6": "",
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	v4Row := map[string]interface{}{
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": map[string]interface{}{
+				"route_operation":  "permit",
+				"match_prefix_set": "PS4",
+				"match_med":        "20",
+				"set_local_pref":   "150",
+			},
+		},
+	}
+	v6Row := map[string]interface{}{
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": map[string]interface{}{
+				"route_operation":       "permit",
+				"match_ipv6_prefix_set": "PS6",
+				"match_med":             "20",
+				"set_local_pref":        "150",
+			},
+		},
+	}
+
+	stmtUrl := "/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition[name=POL1]/statements/statement[name=10]"
+	mpsUrl := stmtUrl + "/conditions/match-prefix-set"
+
+	// The container levels above config read the same row as the leaves do.
+	expectedGetJSON := "{\"openconfig-routing-policy:match-prefix-set\":{\"config\":{\"match-set-options\":\"ANY\",\"prefix-set\":\"PS4\"}}}"
+	t.Run("GET match-prefix-set container", processGetRequest(mpsUrl, nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	expectedGetJSON = "{\"openconfig-routing-policy:conditions\":{\"openconfig-bgp-policy:bgp-conditions\":{\"config\":{\"med-eq\":20}},\"match-prefix-set\":{\"config\":{\"match-set-options\":\"ANY\",\"prefix-set\":\"PS4\"}}}}"
+	t.Run("GET statement conditions container", processGetRequest(stmtUrl+"/conditions", nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	expectedGetJSON = "{\"openconfig-routing-policy:actions\":{\"openconfig-bgp-policy:bgp-actions\":{\"config\":{\"set-local-pref\":150}},\"config\":{\"policy-result\":\"ACCEPT_ROUTE\"}}}"
+	t.Run("GET statement actions container", processGetRequest(stmtUrl+"/actions", nil, expectedGetJSON, false))
+	time.Sleep(1 * time.Second)
+
+	// A statement matches a single prefix-set, so naming one of the other
+	// family drops the field of the old one.
+	url = mpsUrl + "/config/prefix-set"
+	urlInputBodyJSON = "{\"openconfig-routing-policy:prefix-set\":\"PS6\"}"
+	t.Run("PATCH prefix-set leaf switches IPv4 to IPv6", processSetRequest(url, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify PATCH leaf left only match_ipv6_prefix_set", verifyDbResult(rclient, "ROUTE_MAP|POL1|10", v6Row, false))
+	time.Sleep(1 * time.Second)
+
+	urlInputBodyJSON = "{\"openconfig-routing-policy:prefix-set\":\"PS4\"}"
+	t.Run("PUT prefix-set leaf switches IPv6 to IPv4", processSetRequest(url, urlInputBodyJSON, "PUT", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify PUT leaf left only match_prefix_set", verifyDbResult(rclient, "ROUTE_MAP|POL1|10", v4Row, false))
+	time.Sleep(1 * time.Second)
+
+	url = mpsUrl + "/config"
+	urlInputBodyJSON = "{\"prefix-set\":\"PS6\"}"
+	t.Run("PUT match-prefix-set config switches IPv4 to IPv6", processSetRequest(url, urlInputBodyJSON, "PUT", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify PUT config left only match_ipv6_prefix_set", verifyDbResult(rclient, "ROUTE_MAP|POL1|10", v6Row, false))
+	time.Sleep(1 * time.Second)
+
+	urlInputBodyJSON = "{\"prefix-set\":\"PS4\"}"
+	t.Run("PATCH match-prefix-set config switches IPv6 to IPv4", processSetRequest(url, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify PATCH config left only match_prefix_set", verifyDbResult(rclient, "ROUTE_MAP|POL1|10", v4Row, false))
+	time.Sleep(1 * time.Second)
+
+	urlInputBodyJSON = "{\"config\":{\"prefix-set\":\"PS6\"}}"
+	t.Run("PUT match-prefix-set container switches IPv4 to IPv6", processSetRequest(mpsUrl, urlInputBodyJSON, "PUT", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify PUT match-prefix-set kept the rest of the statement", verifyDbResult(rclient, "ROUTE_MAP|POL1|10", v6Row, false))
+	time.Sleep(1 * time.Second)
+
+	urlInputBodyJSON = "{\"conditions\":{\"match-prefix-set\":{\"config\":{\"prefix-set\":\"PS4\"}}}}"
+	t.Run("PATCH statement switches IPv6 to IPv4", processSetRequest(stmtUrl, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify PATCH statement left only match_prefix_set", verifyDbResult(rclient, "ROUTE_MAP|POL1|10", v4Row, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_routing_policy_policy_definition_statement_conditions_match_prefix_set_family_switch_sole_field(t *testing.T) {
+	var url, urlInputBodyJSON string
+
+	preReqMap := map[string]interface{}{
+		"ROUTE_MAP_SET": map[string]interface{}{
+			"POL1": map[string]interface{}{},
+		},
+		"PREFIX_SET": map[string]interface{}{
+			"PS4": map[string]interface{}{
+				"mode": "IPv4",
+			},
+			"PS6": map[string]interface{}{
+				"mode": "IPv6",
+			},
+		},
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": map[string]interface{}{
+				"match_ipv6_prefix_set": "PS6",
+			},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": "",
+		},
+		"ROUTE_MAP_SET": map[string]interface{}{
+			"POL1": "",
+		},
+		"PREFIX_SET": map[string]interface{}{
+			"PS4": "",
+			"PS6": "",
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	// With the old family as the only field, dropping it must not leave a
+	// NULL placeholder beside the new one.
+	url = "/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition[name=POL1]/statements/statement[name=10]/conditions/match-prefix-set/config"
+	urlInputBodyJSON = "{\"prefix-set\":\"PS4\"}"
+	t.Run("PATCH match-prefix-set config over a lone IPv6 prefix-set", processSetRequest(url, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": map[string]interface{}{
+				"match_prefix_set": "PS4",
+			},
+		},
+	}
+	t.Run("Verify PATCH replaced the lone field", verifyDbResult(rclient, "ROUTE_MAP|POL1|10", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	url += "/prefix-set"
+	urlInputBodyJSON = "{\"openconfig-routing-policy:prefix-set\":\"PS6\"}"
+	t.Run("PUT prefix-set leaf over a lone IPv4 prefix-set", processSetRequest(url, urlInputBodyJSON, "PUT", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": map[string]interface{}{
+				"match_ipv6_prefix_set": "PS6",
+			},
+		},
+	}
+	t.Run("Verify PUT replaced the lone field", verifyDbResult(rclient, "ROUTE_MAP|POL1|10", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_routing_policy_policy_definition_statement_conditions_replace(t *testing.T) {
+	var url, urlInputBodyJSON string
+
+	preReqMap := map[string]interface{}{
+		"ROUTE_MAP_SET": map[string]interface{}{
+			"POL1": map[string]interface{}{},
+		},
+		"PREFIX_SET": map[string]interface{}{
+			"PS4": map[string]interface{}{
+				"mode": "IPv4",
+			},
+			"PS6": map[string]interface{}{
+				"mode": "IPv6",
+			},
+		},
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": map[string]interface{}{
+				"route_operation":  "permit",
+				"match_prefix_set": "PS4",
+				"match_med":        "20",
+				"set_local_pref":   "150",
+			},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": "",
+		},
+		"ROUTE_MAP_SET": map[string]interface{}{
+			"POL1": "",
+		},
+		"PREFIX_SET": map[string]interface{}{
+			"PS4": "",
+			"PS6": "",
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	condUrl := "/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition[name=POL1]/statements/statement[name=10]/conditions"
+
+	// A conditions REPLACE owns only the match fields; the actions sharing
+	// the statement row stay.
+	urlInputBodyJSON = "{\"match-prefix-set\":{\"config\":{\"prefix-set\":\"PS6\"}}}"
+	t.Run("PUT statement conditions with match-prefix-set only", processSetRequest(condUrl, urlInputBodyJSON, "PUT", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": map[string]interface{}{
+				"route_operation":       "permit",
+				"match_ipv6_prefix_set": "PS6",
+				"set_local_pref":        "150",
+			},
+		},
+	}
+	t.Run("Verify conditions REPLACE dropped match_med and kept actions", verifyDbResult(rclient, "ROUTE_MAP|POL1|10", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	urlInputBodyJSON = "{\"openconfig-bgp-policy:bgp-conditions\":{\"config\":{\"med-eq\":30}}}"
+	t.Run("PUT statement conditions with bgp-conditions only", processSetRequest(condUrl, urlInputBodyJSON, "PUT", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": map[string]interface{}{
+				"route_operation": "permit",
+				"match_med":       "30",
+				"set_local_pref":  "150",
+			},
+		},
+	}
+	t.Run("Verify conditions REPLACE dropped the prefix-set", verifyDbResult(rclient, "ROUTE_MAP|POL1|10", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	url = condUrl + "/match-prefix-set/config/prefix-set"
+	urlInputBodyJSON = "{\"openconfig-routing-policy:prefix-set\":\"PS4\"}"
+	t.Run("PATCH prefix-set leaf next to bgp-conditions", processSetRequest(url, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	// bgp-conditions owns its own fields only, so the prefix-set survives.
+	url = condUrl + "/bgp-conditions"
+	urlInputBodyJSON = "{\"config\":{\"med-eq\":40}}"
+	t.Run("PUT bgp-conditions container", processSetRequest(url, urlInputBodyJSON, "PUT", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": map[string]interface{}{
+				"route_operation":  "permit",
+				"match_prefix_set": "PS4",
+				"match_med":        "40",
+				"set_local_pref":   "150",
+			},
+		},
+	}
+	t.Run("Verify bgp-conditions REPLACE kept the prefix-set", verifyDbResult(rclient, "ROUTE_MAP|POL1|10", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
 func Test_openconfig_routing_policy_policy_definition_statement_conditions_match_prefix_set_match_set_options(t *testing.T) {
 	var url, urlInputBodyJSON string
 

@@ -585,6 +585,11 @@ func buildRpolContainerResMap(inParams XfmrParams, ygRoot *ygot.GoStruct) (map[s
 		if err != nil {
 			return res, err
 		}
+		// The caller writes what the nodes return as one row per statement, so
+		// each node is mapped as the update it contributes to that row.
+		if subParams.oper == REPLACE {
+			subParams.oper = UPDATE
+		}
 		part, err := rpolYangToDbXfmr(subParams)
 		if err != nil {
 			return res, err
