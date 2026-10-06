@@ -172,6 +172,49 @@ func TestSubscribeRstpIntfStateLeafUsesNamedPortOnly(t *testing.T) {
 	}
 }
 
+func TestSubscribeStpCommonStateLeafUsesNamedPortOnly(t *testing.T) {
+	leaves := []struct {
+		leaf  string
+		field string
+	}{
+		{leaf: "link-type", field: "link_type"},
+		{leaf: "edge-port", field: "edge_port"},
+	}
+	for _, tc := range leaves {
+		uri := "/openconfig-spanning-tree:stp/interfaces/interface[name=Ethernet2]/state/" + tc.leaf
+		out, err := Subscribe_stp_intf_common_xfmr(XfmrSubscInParams{uri: uri, requestURI: uri})
+		if err != nil {
+			t.Fatalf("%s: %v", tc.leaf, err)
+		}
+		keys := out.dbDataMap[db.ConfigDB][STP_PORT_TBL]
+		if len(keys) != 1 {
+			t.Fatalf("%s: keys=%v, want one STP_PORT key", tc.leaf, keys)
+		}
+		fields, ok := keys["Ethernet2"]
+		if !ok {
+			t.Fatalf("%s: key=%v, want Ethernet2", tc.leaf, keys)
+		}
+		if fields[tc.field] != tc.leaf {
+			t.Fatalf("%s: fields=%v, want %s -> %s", tc.leaf, fields, tc.field, tc.leaf)
+		}
+		if _, wild := keys["*"]; wild {
+			t.Fatalf("%s: wildcard STP_PORT key would duplicate the leaf once per port", tc.leaf)
+		}
+	}
+}
+
+func TestSubscribeStpCommonStateListKeepsWildcard(t *testing.T) {
+	uri := "/openconfig-spanning-tree:stp/interfaces/interface/state/link-type"
+	out, err := Subscribe_stp_intf_common_xfmr(XfmrSubscInParams{uri: uri, requestURI: uri})
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys := out.dbDataMap[db.ConfigDB][STP_PORT_TBL]
+	if _, ok := keys["*"]; !ok {
+		t.Fatalf("list subscribe keys=%v, want *", keys)
+	}
+}
+
 func TestSubscribeRstpIntfStateListKeepsWildcard(t *testing.T) {
 	uri := "/openconfig-spanning-tree:stp/rstp/interfaces/interface/state/port-state"
 	out, err := Subscribe_stp_rstp_intf_xfmr(XfmrSubscInParams{uri: uri, requestURI: uri})

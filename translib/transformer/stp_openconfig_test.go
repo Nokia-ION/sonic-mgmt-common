@@ -224,6 +224,23 @@ func Test_set_rstp_enabled_protocol_leaf_patch(t *testing.T) {
 	unloadDB(db.ConfigDB, cleanup)
 }
 
+func Test_set_rstp_enabled_protocol_leaf_patch_bare_array(t *testing.T) {
+	url := "/openconfig-spanning-tree:stp/global/config/enabled-protocol"
+	body := `["openconfig-spanning-tree-types:RSTP"]`
+	cleanup := stpEnableRstpCleanup()
+
+	loadDB(db.ConfigDB, stpEnableRstpPrereq())
+	time.Sleep(1 * time.Second)
+	t.Run("enable RSTP via PATCH on enabled-protocol leaf with bare JSON array", processSetRequest(url, body, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("verify STP global mode after leaf PATCH array", verifyDbResult(rclient, "STP|GLOBAL", map[string]interface{}{
+		"STP": map[string]interface{}{
+			"GLOBAL": map[string]interface{}{"mode": "mst"},
+		},
+	}, false))
+	unloadDB(db.ConfigDB, cleanup)
+}
+
 func Test_set_rstp_bridge_priority(t *testing.T) {
 	url := "/openconfig-spanning-tree:stp/rstp/config/bridge-priority"
 	body := `{"openconfig-spanning-tree:bridge-priority":40960}`
