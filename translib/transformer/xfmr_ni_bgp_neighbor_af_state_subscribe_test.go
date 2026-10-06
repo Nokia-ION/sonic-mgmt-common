@@ -16,14 +16,15 @@
 //                                                                            //
 ////////////////////////////////////////////////////////////////////////////////
 
-// Subscribe callback tests for the BGP neighbor AFI-SAFI state subtree. These
-// live in the internal package, unlike the GET tests in
+// Subscribe callback tests for the BGP neighbor AFI-SAFI state and apply-policy
+// subtrees. These live in the internal package, unlike the GET tests in
 // xfmr_ni_bgp_neighbor_af_state_test.go, because XfmrSubscInParams cannot be
 // built from outside it.
 
 package transformer
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/Azure/sonic-mgmt-common/translib/db"
@@ -199,5 +200,237 @@ func TestSubscribe_ni_bgp_nbr_af_state_protocol_instance_name(t *testing.T) {
 		subscProc:  TRANSLATE_SUBSCRIBE,
 	}); err == nil {
 		t.Fatal("expected an unserved protocol instance name to be refused, got no error")
+	}
+}
+
+// apply-policy/state watches the policy fields of the row the counters share,
+// and nothing else, so a counter moving on that row does not wake a policy
+// subscriber. The subscribe path trims a leaf off uri before the callback, so
+// the leaf a request names is carried by requestURI alone.
+func TestSubscribe_ni_bgp_nbr_af_apply_policy_state_paths(t *testing.T) {
+	v4State := niBgpNbrAfSubscUrl("IPV4_UNICAST") + "/apply-policy/state"
+	both := map[string]string{
+		niBgpNbrAfStatsImportPolicyFld: niBgpNbrImportPolicyLeaf,
+		niBgpNbrAfStatsExportPolicyFld: niBgpNbrExportPolicyLeaf,
+	}
+	tests := []struct {
+		name       string
+		uri        string
+		requestURI string
+		wantKey    string
+		wantFlds   map[string]string
+	}{
+		{
+			name:       "state container",
+			uri:        v4State,
+			requestURI: v4State,
+			wantKey:    "default|11.0.0.155|ipv4_unicast",
+			wantFlds:   both,
+		},
+		{
+			name:       "import-policy leaf",
+			uri:        v4State,
+			requestURI: v4State + "/import-policy",
+			wantKey:    "default|11.0.0.155|ipv4_unicast",
+			wantFlds:   map[string]string{niBgpNbrAfStatsImportPolicyFld: niBgpNbrImportPolicyLeaf},
+		},
+		{
+			name:       "export-policy leaf",
+			uri:        v4State,
+			requestURI: v4State + "/export-policy",
+			wantKey:    "default|11.0.0.155|ipv4_unicast",
+			wantFlds:   map[string]string{niBgpNbrAfStatsExportPolicyFld: niBgpNbrExportPolicyLeaf},
+		},
+		// A request anchored on the apply-policy container reaches this
+		// callback for its state child, with requestURI naming the container.
+		{
+			name:       "apply-policy container anchor",
+			uri:        v4State,
+			requestURI: niBgpNbrAfSubscUrl("IPV4_UNICAST") + "/apply-policy",
+			wantKey:    "default|11.0.0.155|ipv4_unicast",
+			wantFlds:   both,
+		},
+		{
+			name:       "IPv6 unicast keys its own family",
+			uri:        niBgpNbrAfSubscUrl("IPV6_UNICAST") + "/apply-policy/state",
+			requestURI: niBgpNbrAfSubscUrl("IPV6_UNICAST") + "/apply-policy/state",
+			wantKey:    "default|11.0.0.155|ipv6_unicast",
+			wantFlds:   both,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := Subscribe_ni_bgp_nbr_af_state_xfmr(XfmrSubscInParams{
+				uri:        tc.uri,
+				requestURI: tc.requestURI,
+				subscProc:  TRANSLATE_SUBSCRIBE,
+			})
+			if err != nil {
+				t.Fatalf("Subscribe_ni_bgp_nbr_af_state_xfmr failed: %v", err)
+			}
+			if out.isVirtualTbl {
+				t.Fatalf("expected a non-virtual subscribe mapping, got map %v", out.dbDataMap)
+			}
+			// bgpmon updates the row in place, so the policies are offered
+			// on-change, unlike the counters beside them.
+			if out.onChange != OnchangeEnable {
+				t.Fatalf("onChange=%v, want %v", out.onChange, OnchangeEnable)
+			}
+			if out.nOpts == nil || out.nOpts.pType != OnChange {
+				t.Fatalf("nOpts=%v, want pType %v", out.nOpts, OnChange)
+			}
+			flds, ok := out.dbDataMap[db.StateDB][niBgpNbrAfStatsTbl][tc.wantKey]
+			if !ok {
+				t.Fatalf("missing %s[%s]: %v", niBgpNbrAfStatsTbl, tc.wantKey, out.dbDataMap)
+			}
+			if !reflect.DeepEqual(flds, tc.wantFlds) {
+				t.Fatalf("fields=%v, want %v", flds, tc.wantFlds)
+			}
+			// The freshness marker is rewritten every scrape, and watching it
+			// would wake every subscriber on the poll interval.
+			if len(out.dbDataMap[db.StateDB]) != 1 {
+				t.Fatalf("expected %s alone, got %v", niBgpNbrAfStatsTbl, out.dbDataMap)
+			}
+		})
+	}
+}
+
+// Without every key bound, the notification key would have to be resolved back
+// from the Redis key, which needs a path transformer this table has none of,
+// so such a request is sampled.
+func TestSubscribe_ni_bgp_nbr_af_apply_policy_state_unkeyed_is_sampled(t *testing.T) {
+	for _, uri := range []string{
+		niBgpNbrSubscNbrUrl + "/afi-safis/afi-safi/apply-policy/state",
+		"/openconfig-network-instance:network-instances/network-instance[name=default]" +
+			"/protocols/protocol[identifier=BGP][name=bgp]/bgp/neighbors/neighbor" +
+			"/afi-safis/afi-safi[afi-safi-name=IPV4_UNICAST]/apply-policy/state",
+	} {
+		out, err := Subscribe_ni_bgp_nbr_af_state_xfmr(XfmrSubscInParams{
+			uri:        uri,
+			requestURI: uri,
+			subscProc:  TRANSLATE_SUBSCRIBE,
+		})
+		if err != nil {
+			t.Fatalf("Subscribe_ni_bgp_nbr_af_state_xfmr(%s) failed: %v", uri, err)
+		}
+		if out.onChange != OnchangeDisable || out.nOpts == nil || out.nOpts.pType != Sample {
+			t.Fatalf("%s: onChange=%v nOpts=%v, want sampling", uri, out.onChange, out.nOpts)
+		}
+		if len(out.dbDataMap[db.StateDB][niBgpNbrAfStatsTbl]) != 1 {
+			t.Fatalf("%s: expected one wildcard key, got %v", uri, out.dbDataMap)
+		}
+	}
+}
+
+// The default policy leaves have no producer field, so there is nothing to
+// watch; the subscription is accepted and reports nothing, as a GET does.
+func TestSubscribe_ni_bgp_nbr_af_apply_policy_state_default_policy_is_virtual(t *testing.T) {
+	v4State := niBgpNbrAfSubscUrl("IPV4_UNICAST") + "/apply-policy/state"
+	for _, leaf := range []string{"default-import-policy", "default-export-policy"} {
+		out, err := Subscribe_ni_bgp_nbr_af_state_xfmr(XfmrSubscInParams{
+			uri:        v4State,
+			requestURI: v4State + "/" + leaf,
+			subscProc:  TRANSLATE_SUBSCRIBE,
+		})
+		if err != nil {
+			t.Fatalf("Subscribe_ni_bgp_nbr_af_state_xfmr(%s) failed: %v", leaf, err)
+		}
+		if !out.isVirtualTbl || len(out.dbDataMap) != 0 {
+			t.Fatalf("%s: expected a virtual table with no DB map, got %v", leaf, out.dbDataMap)
+		}
+	}
+}
+
+// The neighbor config transformer binds a subscribe callback for the
+// apply-policy subtree. The container is the target of a container
+// subscription and holds no field of its own; its config child watches the
+// two route-map fields of the BGP_NEIGHBOR_AF row.
+func TestSubscribe_ni_bgp_nbr_cfg_apply_policy_paths(t *testing.T) {
+	apply := niBgpNbrAfSubscUrl("IPV4_UNICAST") + "/apply-policy"
+	cfg := apply + "/config"
+
+	out, err := Subscribe_ni_bgp_nbr_cfg_xfmr(XfmrSubscInParams{uri: apply, requestURI: apply, subscProc: TRANSLATE_SUBSCRIBE})
+	if err != nil {
+		t.Fatalf("Subscribe_ni_bgp_nbr_cfg_xfmr(apply-policy) failed: %v", err)
+	}
+	if !out.isVirtualTbl || out.onChange != OnchangeEnable {
+		t.Fatalf("apply-policy: isVirtualTbl=%v onChange=%v, want a virtual on-change node", out.isVirtualTbl, out.onChange)
+	}
+
+	tests := []struct {
+		name       string
+		requestURI string
+		wantFlds   map[string]string
+	}{
+		{"config container", cfg, map[string]string{"route_map_in": "import-policy", "route_map_out": "export-policy"}},
+		{"import-policy leaf", cfg + "/import-policy", map[string]string{"route_map_in": "import-policy"}},
+		{"export-policy leaf", cfg + "/export-policy", map[string]string{"route_map_out": "export-policy"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := Subscribe_ni_bgp_nbr_cfg_xfmr(XfmrSubscInParams{uri: cfg, requestURI: tc.requestURI, subscProc: TRANSLATE_SUBSCRIBE})
+			if err != nil {
+				t.Fatalf("Subscribe_ni_bgp_nbr_cfg_xfmr failed: %v", err)
+			}
+			if out.onChange != OnchangeEnable || out.nOpts == nil || out.nOpts.pType != OnChange {
+				t.Fatalf("onChange=%v nOpts=%v, want on-change", out.onChange, out.nOpts)
+			}
+			flds, ok := out.dbDataMap[db.ConfigDB]["BGP_NEIGHBOR_AF"]["default|11.0.0.155|ipv4_unicast"]
+			if !ok {
+				t.Fatalf("missing BGP_NEIGHBOR_AF[default|11.0.0.155|ipv4_unicast]: %v", out.dbDataMap)
+			}
+			if !reflect.DeepEqual(flds, tc.wantFlds) {
+				t.Fatalf("fields=%v, want %v", flds, tc.wantFlds)
+			}
+		})
+	}
+
+	// The config side refuses the default policies, so there is no field.
+	out, err = Subscribe_ni_bgp_nbr_cfg_xfmr(XfmrSubscInParams{uri: cfg, requestURI: cfg + "/default-import-policy", subscProc: TRANSLATE_SUBSCRIBE})
+	if err != nil || !out.isVirtualTbl || len(out.dbDataMap) != 0 {
+		t.Fatalf("default-import-policy: err=%v isVirtualTbl=%v map=%v, want a virtual table", err, out.isVirtualTbl, out.dbDataMap)
+	}
+
+	unkeyed := niBgpNbrSubscNbrUrl + "/afi-safis/afi-safi/apply-policy/config"
+	out, err = Subscribe_ni_bgp_nbr_cfg_xfmr(XfmrSubscInParams{uri: unkeyed, requestURI: unkeyed, subscProc: TRANSLATE_SUBSCRIBE})
+	if err != nil {
+		t.Fatalf("Subscribe_ni_bgp_nbr_cfg_xfmr(unkeyed) failed: %v", err)
+	}
+	if out.onChange != OnchangeDisable || out.nOpts == nil || out.nOpts.pType != Sample {
+		t.Fatalf("unkeyed: onChange=%v nOpts=%v, want sampling", out.onChange, out.nOpts)
+	}
+	if _, ok := out.dbDataMap[db.ConfigDB]["BGP_NEIGHBOR_AF"]["default|11.0.0.155|*"]; !ok {
+		t.Fatalf("unkeyed: missing BGP_NEIGHBOR_AF[default|11.0.0.155|*]: %v", out.dbDataMap)
+	}
+}
+
+// Every other path the neighbor config transformer owns, and every call that
+// is not a subscription, gets what translib assumed before the callback was
+// bound. The CRUD parent-table check calls it with requestURI unset, and a
+// mapping returned there would make a write depend on a row existing.
+func TestSubscribe_ni_bgp_nbr_cfg_other_paths_keep_default(t *testing.T) {
+	cfg := niBgpNbrAfSubscUrl("IPV4_UNICAST") + "/apply-policy/config"
+	cases := []struct {
+		name string
+		in   XfmrSubscInParams
+	}{
+		{"CRUD parent-table check", XfmrSubscInParams{uri: cfg, subscProc: TRANSLATE_SUBSCRIBE}},
+		{"exists check", XfmrSubscInParams{uri: cfg, requestURI: cfg, subscProc: TRANSLATE_EXISTS}},
+		{"process subscribe", XfmrSubscInParams{uri: cfg, requestURI: cfg, subscProc: PROCESS_SUBSCRIBE}},
+		{"neighbor config", XfmrSubscInParams{uri: niBgpNbrSubscNbrUrl + "/config", requestURI: niBgpNbrSubscNbrUrl + "/config", subscProc: TRANSLATE_SUBSCRIBE}},
+		{"afi-safi config", XfmrSubscInParams{uri: niBgpNbrAfSubscUrl("IPV4_UNICAST") + "/config", requestURI: niBgpNbrAfSubscUrl("IPV4_UNICAST") + "/config", subscProc: TRANSLATE_SUBSCRIBE}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := Subscribe_ni_bgp_nbr_cfg_xfmr(tc.in)
+			if err != nil {
+				t.Fatalf("Subscribe_ni_bgp_nbr_cfg_xfmr failed: %v", err)
+			}
+			if out.isVirtualTbl || out.dbDataMap != nil || out.nOpts != nil || out.onChange != OnchangeDisable {
+				t.Fatalf("got isVirtualTbl=%v map=%v nOpts=%v onChange=%v, want the unbound default",
+					out.isVirtualTbl, out.dbDataMap, out.nOpts, out.onChange)
+			}
+		})
 	}
 }

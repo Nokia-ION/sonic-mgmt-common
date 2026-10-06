@@ -43,9 +43,22 @@ const (
 	niBgpNbrAfStatsPfxRcvdFld = "prefixes_received"
 	niBgpNbrAfStatsPfxSentFld = "prefixes_sent"
 
+	// The route-maps FRR applies to the family, from the same scrape. They are
+	// the effective policies, so a neighbor inheriting one from its peer-group
+	// reports it here while its own BGP_NEIGHBOR_AF row is empty.
+	niBgpNbrAfStatsImportPolicyFld = "import_policy"
+	niBgpNbrAfStatsExportPolicyFld = "export_policy"
+
 	niBgpNbrPfxRcvdLeaf          = "received"
 	niBgpNbrPfxRcvdPrePolicyLeaf = "received-pre-policy"
 	niBgpNbrPfxSentLeaf          = "sent"
+
+	niBgpNbrImportPolicyLeaf = "import-policy"
+	niBgpNbrExportPolicyLeaf = "export-policy"
+
+	// The two subtrees this transformer serves below an afi-safi instance.
+	niBgpNbrAfStateSubtree       = "state"
+	niBgpNbrAfApplyPolicySubtree = "apply-policy"
 )
 
 // The afi-safi state container sits below the neighbor list, so it reuses the
@@ -55,6 +68,22 @@ const (
 // dispatch, which maps CONFIG_DB only.
 var niBgpNbrAfStateReqUriRe = regexp.MustCompile(niBgpNbrStateUriPfx +
 	`/afi-safis/afi-safi\[afi-safi-name=([^\]]+)\]/state(?:/prefixes(?:/(received|received-pre-policy|sent))?)?$`)
+
+// apply-policy/state is matched apart from the state container above, since
+// the same leaf names hang off apply-policy/config, which this transformer
+// does not own.
+var niBgpNbrAfApplyPolicyStateReqUriRe = regexp.MustCompile(niBgpNbrStateUriPfx +
+	`/afi-safis/afi-safi\[afi-safi-name=([^\]]+)\]/apply-policy/state(?:/(import-policy|export-policy|default-import-policy|default-export-policy))?$`)
+
+// niBgpNbrAfApplyPolicyFldForLeaf maps the apply-policy state leaves onto their
+// producer field. The default policies are deliberately absent: FRR has no
+// such setting to report, and the config side refuses them for the same
+// reason, so the leaves are annotated to keep the paths valid but never
+// populated.
+var niBgpNbrAfApplyPolicyFldForLeaf = map[string]string{
+	niBgpNbrImportPolicyLeaf: niBgpNbrAfStatsImportPolicyFld,
+	niBgpNbrExportPolicyLeaf: niBgpNbrAfStatsExportPolicyFld,
+}
 
 // niBgpNbrAfStatsFldForLeaf maps the prefix counter leaves onto their producer
 // field. received-pre-policy is deliberately absent: FRR reports no pre-policy
@@ -71,6 +100,7 @@ type niBgpNbrAfStateReqInfo struct {
 	afiSafi      string                                     // CONFIG_DB spelling, as the row is keyed
 	afiSafiEnum  ocbinds.E_OpenconfigBgpTypes_AFI_SAFI_TYPE // as the YANG list is keyed
 	targetLeaf   string                                     // "" for the whole container, else the leaf name
+	subtree      string                                     // niBgpNbrAfStateSubtree or niBgpNbrAfApplyPolicySubtree
 }
 
 func init() {
@@ -79,7 +109,12 @@ func init() {
 }
 
 func parseNiBgpNbrAfStateRequestUri(uri string) (*niBgpNbrAfStateReqInfo, error) {
+	subtree := niBgpNbrAfStateSubtree
 	m := niBgpNbrAfStateReqUriRe.FindStringSubmatch(uri)
+	if m == nil {
+		subtree = niBgpNbrAfApplyPolicySubtree
+		m = niBgpNbrAfApplyPolicyStateReqUriRe.FindStringSubmatch(uri)
+	}
 	if m == nil {
 		return nil, tlerr.NotSupportedError{
 			Format: "unsupported network-instance BGP neighbor AFI-SAFI state path: " + uri,
@@ -107,6 +142,7 @@ func parseNiBgpNbrAfStateRequestUri(uri string) (*niBgpNbrAfStateReqInfo, error)
 		afiSafi:      afiSafi,
 		afiSafiEnum:  afiSafiEnum,
 		targetLeaf:   m[5],
+		subtree:      subtree,
 	}, nil
 }
 
@@ -152,10 +188,22 @@ func niBgpNbrAfStatsUint32(entry db.Value, field string, reqInfo *niBgpNbrAfStat
 	return uint32(val), true, nil
 }
 
-// getNiBgpNbrAfPrefixesObj locates the prefixes container of one neighbor
-// address family in the YANG tree, creating the ancestors when asked to.
-func getNiBgpNbrAfPrefixesObj(s *ygot.GoStruct, reqInfo *niBgpNbrAfStateReqInfo, createIfMissing bool) *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Neighbors_Neighbor_AfiSafis_AfiSafi_State_Prefixes {
-	nbrObj := getNiBgpNbrObj(s, reqInfo.niName, reqInfo.protoName, reqInfo.neighborAddr, createIfMissing)
+// getNiBgpNbrAfStateAfObj locates one neighbor address family in the YANG
+// tree, creating the ancestors when asked to. A request anchored on the
+// afi-safis container or on an afi-safi instance hands every transformer below
+// it that node as the root rather than a device tree, so the root is
+// normalised the way the config transformer does for those anchors.
+func getNiBgpNbrAfStateAfObj(s *ygot.GoStruct, reqInfo *niBgpNbrAfStateReqInfo, createIfMissing bool) *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Neighbors_Neighbor_AfiSafis_AfiSafi {
+	root, err := wrapNiBgpNbrRootAsDevice(s, &niBgpNbrReqInfo{
+		niName:       reqInfo.niName,
+		protoName:    reqInfo.protoName,
+		neighborAddr: reqInfo.neighborAddr,
+		afiSafi:      reqInfo.afiSafi,
+	})
+	if err != nil {
+		return nil
+	}
+	nbrObj := getNiBgpNbrObj(root, reqInfo.niName, reqInfo.protoName, reqInfo.neighborAddr, createIfMissing)
 	if nbrObj == nil {
 		return nil
 	}
@@ -176,6 +224,16 @@ func getNiBgpNbrAfPrefixesObj(s *ygot.GoStruct, reqInfo *niBgpNbrAfStateReqInfo,
 			return nil
 		}
 	}
+	return afObj
+}
+
+// getNiBgpNbrAfPrefixesObj locates the prefixes container of one neighbor
+// address family in the YANG tree, creating the ancestors when asked to.
+func getNiBgpNbrAfPrefixesObj(s *ygot.GoStruct, reqInfo *niBgpNbrAfStateReqInfo, createIfMissing bool) *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Neighbors_Neighbor_AfiSafis_AfiSafi_State_Prefixes {
+	afObj := getNiBgpNbrAfStateAfObj(s, reqInfo, createIfMissing)
+	if afObj == nil {
+		return nil
+	}
 	if afObj.State == nil {
 		if !createIfMissing {
 			return nil
@@ -191,8 +249,39 @@ func getNiBgpNbrAfPrefixesObj(s *ygot.GoStruct, reqInfo *niBgpNbrAfStateReqInfo,
 	return afObj.State.Prefixes
 }
 
+// getNiBgpNbrAfApplyPolicyStateObj locates the apply-policy state container of
+// one neighbor address family, creating the ancestors when asked to.
+func getNiBgpNbrAfApplyPolicyStateObj(s *ygot.GoStruct, reqInfo *niBgpNbrAfStateReqInfo, createIfMissing bool) *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Neighbors_Neighbor_AfiSafis_AfiSafi_ApplyPolicy_State {
+	afObj := getNiBgpNbrAfStateAfObj(s, reqInfo, createIfMissing)
+	if afObj == nil {
+		return nil
+	}
+	if afObj.ApplyPolicy == nil {
+		if !createIfMissing {
+			return nil
+		}
+		afObj.ApplyPolicy = &ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Neighbors_Neighbor_AfiSafis_AfiSafi_ApplyPolicy{}
+	}
+	if afObj.ApplyPolicy.State == nil {
+		if !createIfMissing {
+			return nil
+		}
+		afObj.ApplyPolicy.State = &ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Neighbors_Neighbor_AfiSafis_AfiSafi_ApplyPolicy_State{}
+	}
+	return afObj.ApplyPolicy.State
+}
+
 var DbToYang_ni_bgp_nbr_af_state_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) error {
 	reqInfo, err := parseNiBgpNbrAfStateRequestUri(inParams.requestUri)
+	if err != nil {
+		// A request anchored above apply-policy/state, from the apply-policy
+		// container up to the neighbor, reaches this callback with uri naming
+		// the state container while requestUri still names the anchor.
+		if nodeInfo, nodeErr := parseNiBgpNbrAfStateRequestUri(inParams.uri); nodeErr == nil &&
+			nodeInfo.subtree == niBgpNbrAfApplyPolicySubtree && nodeInfo.targetLeaf == "" {
+			reqInfo, err = nodeInfo, nil
+		}
+	}
 	if err != nil {
 		fallback, nameErr := niBgpContainerLevelFallback(inParams.requestUri)
 		if nameErr != nil {
@@ -211,7 +300,50 @@ var DbToYang_ni_bgp_nbr_af_state_xfmr SubTreeXfmrDbToYang = func(inParams XfmrPa
 	if stateDb == nil {
 		return tlerr.InvalidArgsError{Format: "StateDB nil for network-instance BGP neighbor AFI-SAFI state"}
 	}
+	if reqInfo.subtree == niBgpNbrAfApplyPolicySubtree {
+		return populateNiBgpNbrAfApplyPolicyStateFromDb(inParams, stateDb, reqInfo)
+	}
 	return populateNiBgpNbrAfPrefixesFromDb(inParams, stateDb, reqInfo)
+}
+
+// populateNiBgpNbrAfApplyPolicyStateFromDb fills the policies FRR applies to
+// one neighbor address family. FRR applies at most one route-map per
+// direction, so each is reported as a single element list, and a direction
+// with none is left absent rather than reported as an empty list.
+func populateNiBgpNbrAfApplyPolicyStateFromDb(inParams XfmrParams, stateDb *db.DB, reqInfo *niBgpNbrAfStateReqInfo) error {
+	if reqInfo.targetLeaf != "" {
+		if _, mapped := niBgpNbrAfApplyPolicyFldForLeaf[reqInfo.targetLeaf]; !mapped {
+			return nil
+		}
+	}
+
+	entry, found, err := niBgpNbrAfStatsFresh(stateDb, reqInfo.niName, reqInfo.neighborAddr, reqInfo.afiSafi)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return nil
+	}
+
+	importPolicy, hasImport := niBgpNbrAppliedStr(entry, niBgpNbrAfStatsImportPolicyFld)
+	exportPolicy, hasExport := niBgpNbrAppliedStr(entry, niBgpNbrAfStatsExportPolicyFld)
+	wantImport := (reqInfo.targetLeaf == "" || reqInfo.targetLeaf == niBgpNbrImportPolicyLeaf) && hasImport
+	wantExport := (reqInfo.targetLeaf == "" || reqInfo.targetLeaf == niBgpNbrExportPolicyLeaf) && hasExport
+	if !wantImport && !wantExport {
+		return nil
+	}
+
+	stateObj := getNiBgpNbrAfApplyPolicyStateObj(inParams.ygRoot, reqInfo, true)
+	if stateObj == nil {
+		return tlerr.InvalidArgsError{Format: "Unable to locate BGP neighbor AFI-SAFI apply-policy state object in YANG tree"}
+	}
+	if wantImport {
+		stateObj.ImportPolicy = []string{importPolicy}
+	}
+	if wantExport {
+		stateObj.ExportPolicy = []string{exportPolicy}
+	}
+	return nil
 }
 
 // populateNiBgpNbrAfPrefixesFromDb fills the prefix counters of one neighbor
@@ -301,6 +433,11 @@ var Subscribe_ni_bgp_nbr_af_state_xfmr SubTreeXfmrSubscribe = func(inParams Xfmr
 		}
 	}
 
+	if strings.HasSuffix(strings.TrimSuffix(inParams.uri, "/"), "/"+niBgpNbrAfApplyPolicySubtree+"/"+niBgpNbrAfStateSubtree) {
+		return subscribeNiBgpNbrAfApplyPolicyState(inParams, niName+"|"+neighborAddr+"|"+afiSafi,
+			niName != "*" && neighborAddr != "*" && afiSafi != "*")
+	}
+
 	result.isVirtualTbl = false
 	result.dbDataMap = RedisDbSubscribeMap{db.StateDB: {niBgpNbrAfStatsTbl: {
 		niName + "|" + neighborAddr + "|" + afiSafi: {}}}}
@@ -313,5 +450,58 @@ var Subscribe_ni_bgp_nbr_af_state_xfmr SubTreeXfmrSubscribe = func(inParams Xfmr
 	result.onChange = OnchangeDisable
 	result.nOpts = &notificationOpts{pType: Sample}
 
+	return result, nil
+}
+
+// subscribeNiBgpNbrAfApplyPolicyState maps a subscription to apply-policy/state.
+// The policies share their row with the prefix counters, so only the policy
+// fields are registered: translib notifies on-change per mapped field, and a
+// counter moving on the same row must not wake a policy subscriber.
+//
+// bgpmon updates a changed row in place and names the fields that went away,
+// so a policy swapped or removed reaches a subscriber as an update or a leaf
+// delete rather than as the row being rebuilt. That is what makes these
+// leaves on-change capable where the counters beside them are not.
+func subscribeNiBgpNbrAfApplyPolicyState(inParams XfmrSubscInParams, afKey string, keyed bool) (XfmrSubscOutParams, error) {
+	var result XfmrSubscOutParams
+
+	// The subscribe path trims a trailing leaf off uri before calling this
+	// callback, so which leaf was asked for survives only in requestURI.
+	stateUri := strings.TrimSuffix(inParams.uri, "/") + "/"
+	targetLeaf := ""
+	if reqUri := strings.TrimSuffix(inParams.requestURI, "/"); strings.HasPrefix(reqUri, stateUri) {
+		targetLeaf = reqUri[len(stateUri):]
+	}
+
+	fields := map[string]string{}
+	for leaf, fld := range niBgpNbrAfApplyPolicyFldForLeaf {
+		if targetLeaf == "" || targetLeaf == leaf {
+			fields[fld] = leaf
+		}
+	}
+
+	// A default policy leaf has no producer field, so there is nothing to
+	// watch. It is answered as a virtual table, which accepts the subscription
+	// and reports nothing, the way a GET of the leaf does.
+	if len(fields) == 0 {
+		result.isVirtualTbl = true
+		result.onChange = OnchangeEnable
+		return result, nil
+	}
+
+	result.dbDataMap = RedisDbSubscribeMap{db.StateDB: {niBgpNbrAfStatsTbl: {afKey: fields}}}
+
+	// BGP_NEIGH_APPLIED_META is not registered, for the reason the transport
+	// leaves give: its marker is rewritten every scrape. An unkeyed request is
+	// sampled, because its notification key would have to be resolved back
+	// from the Redis key, which needs a path transformer this table has no
+	// SONiC YANG model to support.
+	if keyed {
+		result.onChange = OnchangeEnable
+		result.nOpts = &notificationOpts{pType: OnChange}
+		return result, nil
+	}
+	result.onChange = OnchangeDisable
+	result.nOpts = &notificationOpts{pType: Sample}
 	return result, nil
 }
