@@ -2460,11 +2460,32 @@ var YangToDb_stp_intf_common_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams
 	return res, nil
 }
 
+func stpCommonSubscribeFields(uriPath string) map[string]string {
+	switch rstpSubscribeTargetLeaf(uriPath) {
+	case "edge-port":
+		return map[string]string{"edge_port": "edge-port"}
+	case "link-type":
+		return map[string]string{"link_type": "link-type"}
+	default:
+		return map[string]string{"edge_port": "edge-port", "link_type": "link-type"}
+	}
+}
+
 var Subscribe_stp_intf_common_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSubscInParams) (XfmrSubscOutParams, error) {
 	var result XfmrSubscOutParams
 	result.dbDataMap = make(RedisDbSubscribeMap)
+
+	ifName := rstpSubscribeIntfName(inParams.requestURI)
+	if ifName == "*" {
+		ifName = rstpSubscribeIntfName(inParams.uri)
+	}
+	reqPath, _, _ := XfmrRemoveXPATHPredicates(inParams.requestURI)
+	if reqPath == "" {
+		reqPath, _, _ = XfmrRemoveXPATHPredicates(inParams.uri)
+	}
+
 	result.dbDataMap[db.ConfigDB] = map[string]map[string]map[string]string{
-		STP_PORT_TBL: {"*": {"edge_port": "", "link_type": ""}},
+		STP_PORT_TBL: {ifName: stpCommonSubscribeFields(reqPath)},
 	}
 	return result, nil
 }
