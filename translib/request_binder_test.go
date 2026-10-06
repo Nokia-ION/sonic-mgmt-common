@@ -563,6 +563,105 @@ func TestUnMarshall(t *testing.T) {
 	}
 }
 
+func TestWrapLeafPayload(t *testing.T) {
+	appRootType := reflect.TypeOf(ocbinds.OpenconfigSpanningTree_Stp{})
+
+	tests := []struct {
+		name    string
+		uri     string
+		payload string
+		want    string
+	}{{
+		name:    "bare leaf-list array",
+		uri:     "/openconfig-spanning-tree:stp/global/config/enabled-protocol",
+		payload: `["openconfig-spanning-tree-types:RSTP"]`,
+		want:    `{"enabled-protocol":["openconfig-spanning-tree-types:RSTP"]}`,
+	}, {
+		name:    "object-wrapped leaf-list unchanged",
+		uri:     "/openconfig-spanning-tree:stp/global/config/enabled-protocol",
+		payload: `{"enabled-protocol":["openconfig-spanning-tree-types:RSTP"]}`,
+		want:    `{"enabled-protocol":["openconfig-spanning-tree-types:RSTP"]}`,
+	}, {
+		name:    "module-prefixed leaf-list object unchanged",
+		uri:     "/openconfig-spanning-tree:stp/global/config/enabled-protocol",
+		payload: `{"openconfig-spanning-tree:enabled-protocol":["openconfig-spanning-tree-types:RSTP"]}`,
+		want:    `{"openconfig-spanning-tree:enabled-protocol":["openconfig-spanning-tree-types:RSTP"]}`,
+	}, {
+		name:    "container payload unchanged",
+		uri:     "/openconfig-spanning-tree:stp/global/config",
+		payload: `{"enabled-protocol":["openconfig-spanning-tree-types:RSTP"]}`,
+		want:    `{"enabled-protocol":["openconfig-spanning-tree-types:RSTP"]}`,
+	}, {
+		name:    "bare scalar leaf",
+		uri:     "/openconfig-spanning-tree:stp/rstp/config/bridge-priority",
+		payload: `40960`,
+		want:    `{"bridge-priority":40960}`,
+	}, {
+		name:    "object-wrapped scalar leaf unchanged",
+		uri:     "/openconfig-spanning-tree:stp/rstp/config/bridge-priority",
+		payload: `{"bridge-priority":40960}`,
+		want:    `{"bridge-priority":40960}`,
+	}}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			payload := []byte(tt.payload)
+			uri := tt.uri
+			binder := getRequestBinder(&uri, &payload, UPDATE, &appRootType)
+			deviceObj := ocbinds.Device{}
+			if _, err := binder.unMarshallUri(&deviceObj); err != nil {
+				t.Fatalf("unMarshallUri: %v", err)
+			}
+			if err := binder.wrapLeafPayload(); err != nil {
+				t.Fatalf("wrapLeafPayload: %v", err)
+			}
+			if got := string(*binder.payload); got != tt.want {
+				t.Errorf("payload = %s, want %s", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestUnMarshallStpEnabledProtocolLeafList(t *testing.T) {
+	uri := "/openconfig-spanning-tree:stp/global/config/enabled-protocol"
+	appRootType := reflect.TypeOf(ocbinds.OpenconfigSpanningTree_Stp{})
+
+	tests := []struct {
+		name    string
+		payload string
+	}{{
+		name:    "bare array with identity prefix",
+		payload: `["openconfig-spanning-tree-types:RSTP"]`,
+	}, {
+		name:    "bare array short identity",
+		payload: `["RSTP"]`,
+	}, {
+		name:    "object wrapped",
+		payload: `{"enabled-protocol":["openconfig-spanning-tree-types:RSTP"]}`,
+	}, {
+		name:    "module-prefixed object wrapped",
+		payload: `{"openconfig-spanning-tree:enabled-protocol":["openconfig-spanning-tree-types:RSTP"]}`,
+	}}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			payload := []byte(tt.payload)
+			root, _, err := getRequestBinder(&uri, &payload, UPDATE, &appRootType).unMarshall()
+			if err != nil {
+				t.Fatalf("unMarshall: %v", err)
+			}
+			dev, ok := (*root).(*ocbinds.Device)
+			if !ok || dev.Stp == nil || dev.Stp.Global == nil || dev.Stp.Global.Config == nil {
+				t.Fatalf("missing stp global config in unmarshalled tree")
+			}
+			got := dev.Stp.Global.Config.EnabledProtocol
+			if len(got) != 1 || got[0] != ocbinds.OpenconfigSpanningTreeTypes_STP_PROTOCOL_RSTP {
+				t.Errorf("EnabledProtocol = %v, want [RSTP]", got)
+			}
+		})
+	}
+}
+
 // Origin-only gNMI SET is converted to URI "/". UPDATE/REPLACE used to panic
 // with "index out of range [-1]" in unMarshallUri; they must return an error.
 func TestUnMarshallRootPathNoPanic(t *testing.T) {

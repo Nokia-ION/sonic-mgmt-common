@@ -74,14 +74,17 @@ func getRequestBinder(uri *string, payload *[]byte, opcode int, appRootNodeType 
 	return &requestBinder{uri, payload, opcode, appRootNodeType, nil, nil, nil, false, false}
 }
 
-// wrapScalarLeafPayload converts Feature Profile style leaf UPDATE payloads
-// (bare scalar JSON) into the key:value form SONiC/ygot expects when unmarshaling
-// into the parent container.
-func (binder *requestBinder) wrapScalarLeafPayload() error {
+// wrapLeafPayload converts gNMI/REST leaf and leaf-list UPDATE payloads into the
+// key:value object form ygot expects when unmarshaling into the parent container.
+// Object payloads (e.g. {"mtu":9000} or {"enabled-protocol":["RSTP"]}) are left
+// unchanged so existing clients keep working.
+func (binder *requestBinder) wrapLeafPayload() error {
 	if binder.payload == nil || binder.targetNodeSchema == nil {
 		return nil
 	}
-	if !binder.targetNodeSchema.IsLeaf() {
+	isLeaf := binder.targetNodeSchema.IsLeaf()
+	isLeafList := binder.targetNodeSchema.IsLeafList()
+	if !isLeaf && !isLeafList {
 		return nil
 	}
 	if binder.targetNodePath == nil || len(binder.targetNodePath.Elem) == 0 {
@@ -99,6 +102,14 @@ func (binder *requestBinder) wrapScalarLeafPayload() error {
 	// Already key:value object (e.g. {"mtu":9000}) — leave as-is.
 	if _, ok := v.(map[string]interface{}); ok {
 		return nil
+	}
+
+	// Leaf-list JSON_IETF is an array. A single scalar is treated as a
+	// one-element list so ygot unmarshals into the parent container field.
+	if isLeafList {
+		if _, ok := v.([]interface{}); !ok {
+			v = []interface{}{v}
+		}
 	}
 
 	leafName := binder.targetNodePath.Elem[0].Name
@@ -127,7 +138,7 @@ func (binder *requestBinder) unMarshallPayload(workObj *interface{}) error {
 		log.Error(err)
 		return tlerr.TranslibSyntaxValidationError{StatusCode: 400, ErrorStr: err}
 	}
-	if err := binder.wrapScalarLeafPayload(); err != nil {
+	if err := binder.wrapLeafPayload(); err != nil {
 		log.Error(err)
 		return tlerr.TranslibSyntaxValidationError{StatusCode: 400, ErrorStr: err}
 	}
