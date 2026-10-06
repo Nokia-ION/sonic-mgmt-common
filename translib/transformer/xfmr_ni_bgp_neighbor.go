@@ -117,6 +117,7 @@ type niBgpNbrReqInfo struct {
 func init() {
 	XlateFuncBind("YangToDb_ni_bgp_nbr_cfg_xfmr", YangToDb_ni_bgp_nbr_cfg_xfmr)
 	XlateFuncBind("DbToYang_ni_bgp_nbr_cfg_xfmr", DbToYang_ni_bgp_nbr_cfg_xfmr)
+	XlateFuncBind("Subscribe_ni_bgp_nbr_cfg_xfmr", Subscribe_ni_bgp_nbr_cfg_xfmr)
 }
 
 func parseNiBgpNbrRequestUri(uri string) (*niBgpNbrReqInfo, error) {
@@ -2300,6 +2301,15 @@ var DbToYang_ni_bgp_nbr_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams)
 	if reqInfo.targetPath == "neighbor-af-apply-policy-config" {
 		afEntry, afErr := cfgDb.GetEntry(&db.TableSpec{Name: niBgpNbrAfTbl}, db.Key{Comp: []string{reqInfo.niName, reqInfo.neighborAddr, reqInfo.afiSafi}})
 		if afErr != nil {
+			// A neighbor can run a family it inherits from its peer-group with
+			// no row of its own, and apply-policy/state still reports what FRR
+			// applies there. A read of the apply-policy container is therefore
+			// answered with no config rather than failed, so the state child is
+			// still served.
+			if _, notPresent := afErr.(tlerr.TranslibRedisClientEntryNotExist); notPresent &&
+				strings.HasSuffix(strings.TrimSuffix(inParams.requestUri, "/"), "/apply-policy") {
+				return nil
+			}
 			return afErr
 		}
 		applyCfgObj := getNiBgpNbrAfApplyPolicyCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.protoName, reqInfo.neighborAddr, reqInfo.afiSafi, true)
@@ -2371,4 +2381,103 @@ var DbToYang_ni_bgp_nbr_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams)
 		return nil
 	}
 	return nil
+}
+
+// niBgpNbrUriKeysRe strips the list keys from a uri, so that a subscription
+// leaving any of them unbound is recognised by its shape alone.
+var niBgpNbrUriKeysRe = regexp.MustCompile(`\[[^\]]*\]`)
+
+const niBgpNbrAfApplySubscPath = "/bgp/neighbors/neighbor/afi-safis/afi-safi/apply-policy"
+
+// niBgpNbrAfApplyCfgFldForLeaf maps the apply-policy config leaves onto their
+// BGP_NEIGHBOR_AF field. The default policies have none, as the write side
+// refuses them.
+var niBgpNbrAfApplyCfgFldForLeaf = map[string]string{
+	"import-policy": niBgpNbrRouteMapInFld,
+	"export-policy": niBgpNbrRouteMapOutFld,
+}
+
+// Subscribe_ni_bgp_nbr_cfg_xfmr maps a subscription to the neighbor afi-safi
+// apply-policy subtree. Every other path this transformer owns is answered
+// with what translib assumes for a transformer that binds no subscribe
+// callback, which is how those paths were served before one was bound. That
+// includes the CRUD parent-table check, which calls this with requestURI
+// unset and must still find no table of this transformer's to verify.
+//
+// The apply-policy container needs a callback of its own because it is the
+// target of a container subscription: left to the default, it reports
+// on-change as unsupported and fails the subscription before its state child
+// is reached.
+var Subscribe_ni_bgp_nbr_cfg_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSubscInParams) (XfmrSubscOutParams, error) {
+	result := XfmrSubscOutParams{onChange: OnchangeDisable}
+	if inParams.subscProc != TRANSLATE_SUBSCRIBE || inParams.requestURI == "" {
+		return result, nil
+	}
+
+	cfgUri := strings.TrimSuffix(inParams.uri, "/")
+	bareUri := niBgpNbrUriKeysRe.ReplaceAllString(cfgUri, "")
+	if strings.HasSuffix(bareUri, niBgpNbrAfApplySubscPath) {
+		// The container holds no field of its own. Its config and state
+		// children are subscribed through their own callbacks.
+		result.isVirtualTbl = true
+		result.onChange = OnchangeEnable
+		return result, nil
+	}
+	if !strings.HasSuffix(bareUri, niBgpNbrAfApplySubscPath+"/config") {
+		return result, nil
+	}
+
+	if err := validateNiBgpProtoNameInUri(inParams.uri); err != nil {
+		return result, err
+	}
+	pathInfo := NewPathInfo(inParams.uri)
+	niName := strings.TrimSpace(pathInfo.Var("name"))
+	neighborAddr := pathInfo.Var("neighbor-address")
+	afiSafi := ""
+	if raw := pathInfo.Var("afi-safi-name"); raw != "" {
+		if normalized, ok := normalizeNiBgpNbrAfiSafiName(raw); ok {
+			afiSafi = normalized
+		}
+	}
+	if niName == "" {
+		niName = "*"
+	}
+	if neighborAddr == "" {
+		neighborAddr = "*"
+	}
+	if afiSafi == "" {
+		afiSafi = "*"
+	}
+	keyed := niName != "*" && neighborAddr != "*" && afiSafi != "*"
+
+	// The subscribe path trims a trailing leaf off uri before calling this
+	// callback, so which leaf was asked for survives only in requestURI.
+	targetLeaf := ""
+	if reqUri := strings.TrimSuffix(inParams.requestURI, "/"); strings.HasPrefix(reqUri, cfgUri+"/") {
+		targetLeaf = reqUri[len(cfgUri)+1:]
+	}
+	fields := map[string]string{}
+	for leaf, fld := range niBgpNbrAfApplyCfgFldForLeaf {
+		if targetLeaf == "" || targetLeaf == leaf {
+			fields[fld] = leaf
+		}
+	}
+	if len(fields) == 0 {
+		result.isVirtualTbl = true
+		result.onChange = OnchangeEnable
+		return result, nil
+	}
+
+	result.dbDataMap = RedisDbSubscribeMap{db.ConfigDB: {niBgpNbrAfTbl: {
+		niName + "|" + neighborAddr + "|" + afiSafi: fields}}}
+	// An unkeyed request is sampled: the row key spells the address family
+	// the CONFIG_DB way, so translib cannot turn it back into the afi-safi
+	// list key without a path transformer.
+	if keyed {
+		result.onChange = OnchangeEnable
+		result.nOpts = &notificationOpts{pType: OnChange}
+		return result, nil
+	}
+	result.nOpts = &notificationOpts{pType: Sample}
+	return result, nil
 }
