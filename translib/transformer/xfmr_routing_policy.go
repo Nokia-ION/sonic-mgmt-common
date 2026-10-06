@@ -167,6 +167,12 @@ var rpolPolicyDefInstanceReqUriRe = regexp.MustCompile(`^/openconfig-routing-pol
 
 // A statement's conditions container, or one of the containers under it.
 var rpolStmtCondReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/conditions(?:/((?:[A-Za-z0-9_.-]+:)?(?:match-prefix-set|bgp-conditions)))?$`)
+
+// The policy-definitions container or any node below it.
+var rpolPolicyDefsReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions(?:[/\[]|$)`)
+
+// A statement's actions container, with the path below it in the third group.
+var rpolStmtActionsReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]/actions((?:/[A-Za-z0-9_.:-]+)*)$`)
 var rpolStmtInstanceReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition\[name=([^\]]+)\]/statements/statement\[name=([^\]]+)\]$`)
 var rpolCommunitySetInstanceReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/defined-sets/(?:[A-Za-z0-9_.-]+:)?bgp-defined-sets/(?:[A-Za-z0-9_.-]+:)?community-sets/(?:[A-Za-z0-9_.-]+:)?community-set\[(?:[A-Za-z0-9_.-]+:)?community-set-name=([^\]]+)\]$`)
 var rpolExtCommunitySetInstanceReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/defined-sets/(?:[A-Za-z0-9_.-]+:)?bgp-defined-sets/(?:[A-Za-z0-9_.-]+:)?ext-community-sets/(?:[A-Za-z0-9_.-]+:)?ext-community-set\[(?:[A-Za-z0-9_.-]+:)?ext-community-set-name=([^\]]+)\]$`)
@@ -2743,6 +2749,10 @@ func validateRpolMatchPfxSetOptions(inParams XfmrParams, reqInfo *rpolReqInfo) e
 
 var rpolMatchPrefixSetFlds = []string{rpolMatchPrefixSetFld, rpolMatchIpv6PrefixSetFld}
 var rpolBgpConditionsFlds = []string{rpolMatchMedFld, rpolMatchOriginFld, rpolMatchLocalPrefFld, rpolMatchCommunityFld, rpolMatchExtCommunityFld}
+var rpolSetCommunityFlds = []string{rpolSetCommunityInlineFld, rpolSetCommunityRefFld}
+var rpolSetAsPathPrependFlds = []string{rpolSetAsnFld, rpolSetRepeatAsnFld}
+var rpolBgpActionsFlds = append(append([]string{rpolSetNextHopFld, rpolSetOriginFld, rpolSetLocalPrefFld, rpolSetMedFld, rpolSetMetricActionFld, rpolSetMetricFld},
+	rpolSetCommunityFlds...), rpolSetAsPathPrependFlds...)
 
 // rpolStageSubOp merges rows into the sub-operation of oper, so that several
 // nodes replayed by one container request can each stage their own.
@@ -2829,11 +2839,46 @@ func rpolStmtCondOwnedFlds(uri string) (string, string, map[string]bool) {
 	default:
 		flds = append(append([]string{}, rpolMatchPrefixSetFlds...), rpolBgpConditionsFlds...)
 	}
+	return m[1], m[2], rpolOwnedFldSet(flds)
+}
+
+// rpolStmtActionsOwnedFlds names the ROUTE_MAP fields that a REPLACE anchored
+// at a statement's actions, or at a container under it, takes over. A
+// statement sets communities by one method only, so inline and reference each
+// own both spellings.
+func rpolStmtActionsOwnedFlds(uri string) (string, string, map[string]bool) {
+	m := rpolStmtActionsReqUriRe.FindStringSubmatch(uri)
+	if m == nil {
+		return "", "", nil
+	}
+	var segs []string
+	for _, seg := range strings.Split(strings.TrimPrefix(m[3], "/"), "/") {
+		if seg != "" {
+			segs = append(segs, rpolStripModulePrefix(seg))
+		}
+	}
+	var flds []string
+	switch strings.Join(segs, "/") {
+	case "":
+		flds = append([]string{rpolRouteOperationFld}, rpolBgpActionsFlds...)
+	case "bgp-actions":
+		flds = rpolBgpActionsFlds
+	case "bgp-actions/set-community", "bgp-actions/set-community/inline", "bgp-actions/set-community/reference":
+		flds = rpolSetCommunityFlds
+	case "bgp-actions/set-as-path-prepend":
+		flds = rpolSetAsPathPrependFlds
+	default:
+		return "", "", nil
+	}
+	return m[1], m[2], rpolOwnedFldSet(flds)
+}
+
+func rpolOwnedFldSet(flds []string) map[string]bool {
 	owned := make(map[string]bool, len(flds))
 	for _, f := range flds {
 		owned[f] = true
 	}
-	return m[1], m[2], owned
+	return owned
 }
 
 // rpolReplaceStmtRow keeps a REPLACE of part of a statement to that part. A
@@ -2851,6 +2896,13 @@ func rpolReplaceStmtRow(inParams XfmrParams, res map[string]map[string]db.Value,
 		fields = row.Field
 	}
 	row := niBgpReplaceRowFields(existing, fields, owned)
+	// Some nodes clear a sibling field by naming it empty; the REPLACE has
+	// already dropped every field it owns.
+	for f, v := range row {
+		if owned[f] && v == "" {
+			delete(row, f)
+		}
+	}
 	if len(row) == 0 {
 		row["NULL"] = "NULL"
 	}
@@ -2892,7 +2944,58 @@ func rpolDecodeCommunityMembers(in string) []string {
 // The transformer callbacks are plain functions so that the container dispatch
 // can replay them per node; a func-typed package variable that referred to
 // itself through a helper would be an initialization cycle.
-var YangToDb_routing_policy_xfmr SubTreeXfmrYangToDb = rpolYangToDbXfmr
+var YangToDb_routing_policy_xfmr SubTreeXfmrYangToDb = rpolYangToDbScopedXfmr
+
+// rpolYangToDbScopedXfmr keeps a REPLACE to the subtree it is anchored at.
+// translib writes a REPLACE above the leaf level as whole rows, which is right
+// for a statement but not for a container inside one, nor for the
+// community-sets a statement only references.
+func rpolYangToDbScopedXfmr(inParams XfmrParams) (map[string]map[string]db.Value, error) {
+	res, err := rpolYangToDbXfmr(inParams)
+	if err != nil || inParams.oper != REPLACE {
+		return res, err
+	}
+	policyName, stmtName, owned := rpolStmtCondOwnedFlds(inParams.requestUri)
+	if owned == nil {
+		policyName, stmtName, owned = rpolStmtActionsOwnedFlds(inParams.requestUri)
+	}
+	if owned != nil {
+		res = rpolReplaceStmtRow(inParams, res, policyName, stmtName, owned)
+	}
+	if rpolPolicyDefsReqUriRe.MatchString(inParams.requestUri) {
+		if err := rpolStageReferencedSets(inParams, res); err != nil {
+			return res, err
+		}
+	}
+	return res, nil
+}
+
+// rpolStageReferencedSets moves the community-set rows a statement seeds for
+// the sets it references out of a REPLACE, so that they are merged into the
+// sets rather than written over them. A set that already holds every seeded
+// field gets no write, since an empty update would add a NULL placeholder.
+func rpolStageReferencedSets(inParams XfmrParams, res map[string]map[string]db.Value) error {
+	for _, tbl := range []string{rpolCommunitySetTbl, rpolExtCommunitySetTbl} {
+		rows, ok := res[tbl]
+		if !ok {
+			continue
+		}
+		delete(res, tbl)
+		seeds := make(map[string]db.Value, len(rows))
+		for key, row := range rows {
+			if len(row.Field) > 0 {
+				seeds[key] = row
+			}
+		}
+		if len(seeds) == 0 {
+			continue
+		}
+		if err := rpolStageSubOp(inParams, UPDATE, map[string]map[string]db.Value{tbl: seeds}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 func rpolYangToDbXfmr(inParams XfmrParams) (res map[string]map[string]db.Value, err error) {
 	defer func() {
@@ -3092,11 +3195,6 @@ func rpolYangToDbXfmr(inParams XfmrParams) (res map[string]map[string]db.Value, 
 		res, err = buildRpolContainerResMap(inParams, wrappedRoot)
 		if err != nil {
 			return res, err
-		}
-		if inParams.oper == REPLACE {
-			if policyName, stmtName, owned := rpolStmtCondOwnedFlds(inParams.requestUri); owned != nil {
-				res = rpolReplaceStmtRow(inParams, res, policyName, stmtName, owned)
-			}
 		}
 		if len(res) == 0 {
 			return res, tlerr.InvalidArgsError{Format: "routing-policy container payload does not include currently supported mapped fields"}

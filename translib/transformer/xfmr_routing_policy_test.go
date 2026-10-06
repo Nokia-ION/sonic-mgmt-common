@@ -664,6 +664,178 @@ func Test_openconfig_routing_policy_policy_definition_statement_conditions_repla
 	unloadDB(db.ConfigDB, cleanupTbl)
 }
 
+func Test_openconfig_routing_policy_policy_definition_statement_actions_replace(t *testing.T) {
+	var url, urlInputBodyJSON string
+
+	stmtRow := map[string]interface{}{
+		"route_operation":   "permit",
+		"match_prefix_set":  "PS4",
+		"match_med":         "20",
+		"set_local_pref":    "150",
+		"set_med":           "5",
+		"set_community_ref": "CS1",
+		"set_asn":           "65001",
+		"set_repeat_asn":    "2",
+	}
+	preReqMap := map[string]interface{}{
+		"ROUTE_MAP_SET": map[string]interface{}{
+			"POL1": map[string]interface{}{},
+		},
+		"PREFIX_SET": map[string]interface{}{
+			"PS4": map[string]interface{}{
+				"mode": "IPv4",
+			},
+		},
+		"COMMUNITY_SET": map[string]interface{}{
+			"CS1": map[string]interface{}{
+				"set_type":          "STANDARD",
+				"match_action":      "ANY",
+				"community_member@": "65000:9",
+			},
+		},
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": stmtRow,
+		},
+	}
+	stmtRowReset := map[string]interface{}{
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": "",
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": "",
+		},
+		"ROUTE_MAP_SET": map[string]interface{}{
+			"POL1": "",
+		},
+		"PREFIX_SET": map[string]interface{}{
+			"PS4": "",
+		},
+		"COMMUNITY_SET": map[string]interface{}{
+			"CS1": "",
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	reloadStmtRow := func() {
+		unloadDB(db.ConfigDB, stmtRowReset)
+		loadDB(db.ConfigDB, map[string]interface{}{"ROUTE_MAP": map[string]interface{}{"POL1|10": stmtRow}})
+		time.Sleep(1 * time.Second)
+	}
+	actionsUrl := "/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition[name=POL1]/statements/statement[name=10]/actions"
+	bgpActionsUrl := actionsUrl + "/bgp-actions"
+
+	// An actions REPLACE owns the policy result and every set action; the
+	// conditions sharing the statement row stay.
+	urlInputBodyJSON = "{\"config\":{\"policy-result\":\"REJECT_ROUTE\"}}"
+	t.Run("PUT statement actions container", processSetRequest(actionsUrl, urlInputBodyJSON, "PUT", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": map[string]interface{}{
+				"route_operation":  "deny",
+				"match_prefix_set": "PS4",
+				"match_med":        "20",
+			},
+		},
+	}
+	t.Run("Verify actions REPLACE kept the conditions", verifyDbResult(rclient, "ROUTE_MAP|POL1|10", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	reloadStmtRow()
+	urlInputBodyJSON = "{\"config\":{\"set-local-pref\":200}}"
+	t.Run("PUT bgp-actions container", processSetRequest(bgpActionsUrl, urlInputBodyJSON, "PUT", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": map[string]interface{}{
+				"route_operation":  "permit",
+				"match_prefix_set": "PS4",
+				"match_med":        "20",
+				"set_local_pref":   "200",
+			},
+		},
+	}
+	t.Run("Verify bgp-actions REPLACE kept the policy result and conditions", verifyDbResult(rclient, "ROUTE_MAP|POL1|10", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	reloadStmtRow()
+	url = bgpActionsUrl + "/set-community"
+	urlInputBodyJSON = "{\"config\":{\"method\":\"INLINE\"},\"inline\":{\"config\":{\"communities\":[\"65000:1\"]}}}"
+	t.Run("PUT set-community container switching to inline", processSetRequest(url, urlInputBodyJSON, "PUT", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": map[string]interface{}{
+				"route_operation":      "permit",
+				"match_prefix_set":     "PS4",
+				"match_med":            "20",
+				"set_local_pref":       "150",
+				"set_med":              "5",
+				"set_community_inline": "65000:1",
+				"set_asn":              "65001",
+				"set_repeat_asn":       "2",
+			},
+		},
+	}
+	t.Run("Verify set-community REPLACE swapped only the community action", verifyDbResult(rclient, "ROUTE_MAP|POL1|10", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	url = bgpActionsUrl + "/set-community/reference"
+	urlInputBodyJSON = "{\"config\":{\"community-set-refs\":[\"CS1\"]}}"
+	t.Run("PUT set-community reference container", processSetRequest(url, urlInputBodyJSON, "PUT", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": stmtRow,
+		},
+	}
+	t.Run("Verify reference REPLACE dropped the inline communities", verifyDbResult(rclient, "ROUTE_MAP|POL1|10", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	// The statement only references the set, so the set keeps its members.
+	expectedMap = map[string]interface{}{
+		"COMMUNITY_SET": map[string]interface{}{
+			"CS1": map[string]interface{}{
+				"set_type":          "STANDARD",
+				"match_action":      "ANY",
+				"community_member@": "65000:9",
+			},
+		},
+	}
+	t.Run("Verify reference REPLACE left the referenced community-set alone", verifyDbResult(rclient, "COMMUNITY_SET|CS1", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	url = bgpActionsUrl + "/set-as-path-prepend"
+	urlInputBodyJSON = "{\"config\":{\"asn\":65002}}"
+	t.Run("PUT set-as-path-prepend container", processSetRequest(url, urlInputBodyJSON, "PUT", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap = map[string]interface{}{
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": map[string]interface{}{
+				"route_operation":   "permit",
+				"match_prefix_set":  "PS4",
+				"match_med":         "20",
+				"set_local_pref":    "150",
+				"set_med":           "5",
+				"set_community_ref": "CS1",
+				"set_asn":           "65002",
+			},
+		},
+	}
+	t.Run("Verify set-as-path-prepend REPLACE dropped only repeat-n", verifyDbResult(rclient, "ROUTE_MAP|POL1|10", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
 func Test_openconfig_routing_policy_policy_definition_statement_conditions_match_prefix_set_match_set_options(t *testing.T) {
 	var url, urlInputBodyJSON string
 
