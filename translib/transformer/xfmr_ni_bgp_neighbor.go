@@ -2149,8 +2149,27 @@ var DbToYang_ni_bgp_nbr_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams)
 		if wrapErr != nil {
 			return wrapErr
 		}
+		stateFamilies := niBgpNbrAfStatsFamilies(inParams.dbs[db.StateDB], reqInfo.niName)[reqInfo.neighborAddr]
 		if reqInfo.targetPath == niBgpNbrTargetAfInst {
-			return populateNiBgpNbrAfFromDb(cfgDb, wrappedRoot, reqInfo.niName, reqInfo.protoName, reqInfo.neighborAddr, reqInfo.afiSafi)
+			err := populateNiBgpNbrAfFromDb(cfgDb, wrappedRoot, reqInfo.niName, reqInfo.protoName, reqInfo.neighborAddr, reqInfo.afiSafi)
+			if _, noRow := err.(tlerr.TranslibRedisClientEntryNotExist); !noRow {
+				return err
+			}
+			// A family the neighbor inherits from its peer-group has no row of
+			// its own, yet FRR runs it and reports its state, so the instance
+			// exists and is answered with that state alone.
+			for _, afiSafi := range stateFamilies {
+				if afiSafi != reqInfo.afiSafi {
+					continue
+				}
+				for _, uri := range niBgpNbrAfStateUris(reqInfo.niName, reqInfo.protoName, reqInfo.neighborAddr, afiSafi) {
+					if replayErr := niContainerReplay(inParams, wrappedRoot, uri, DbToYang_ni_bgp_nbr_af_state_xfmr); replayErr != nil {
+						return replayErr
+					}
+				}
+				return nil
+			}
+			return err
 		}
 		afiSafis, err := niBgpNbrDbAfiSafis(cfgDb, reqInfo.niName, reqInfo.neighborAddr)
 		if err != nil {
@@ -2161,7 +2180,7 @@ var DbToYang_ni_bgp_nbr_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams)
 				return err
 			}
 		}
-		return nil
+		return populateNiBgpNbrAfStateReplay(inParams, wrappedRoot, reqInfo.niName, reqInfo.protoName, reqInfo.neighborAddr, stateFamilies)
 	}
 
 	if reqInfo.targetPath == "neighbor-af-config" {

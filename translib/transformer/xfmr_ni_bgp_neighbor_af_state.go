@@ -21,6 +21,7 @@ package transformer
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -88,6 +89,10 @@ var niBgpNbrAfApplyPolicyFldForLeaf = map[string]string{
 // niBgpNbrAfStatsFldForLeaf maps the prefix counter leaves onto their producer
 // field. received-pre-policy is deliberately absent: FRR reports no pre-policy
 // count, so the leaf is annotated to keep the path valid but is never populated.
+//
+// installed is neither mapped nor annotated. FRR's only source for it is the
+// per-neighbor "show bgp ... neighbors <addr> prefix-counts json", which walks
+// the RIB once per neighbor and family, a cost bgpmon would pay on every poll.
 var niBgpNbrAfStatsFldForLeaf = map[string]string{
 	niBgpNbrPfxRcvdLeaf: niBgpNbrAfStatsPfxRcvdFld,
 	niBgpNbrPfxSentLeaf: niBgpNbrAfStatsPfxSentFld,
@@ -271,14 +276,73 @@ func getNiBgpNbrAfApplyPolicyStateObj(s *ygot.GoStruct, reqInfo *niBgpNbrAfState
 	return afObj.ApplyPolicy.State
 }
 
+// niBgpNbrAfStatsFamilies lists, per neighbor of one network instance, the
+// address families bgpmon reports. FRR reports a family a neighbor inherits
+// from its peer-group as well as one it activates itself, so these rows rather
+// than BGP_NEIGHBOR_AF say which afi-safi instances have state to report. Rows
+// left behind a stale marker report nothing, so they list no family either.
+func niBgpNbrAfStatsFamilies(stateDb *db.DB, niName string) map[string][]string {
+	families := map[string][]string{}
+	if stateDb == nil || !niBgpNbrAppliedIsFresh(stateDb) {
+		return families
+	}
+	keys, err := stateDb.GetKeys(&db.TableSpec{Name: niBgpNbrAfStatsTbl})
+	if err != nil {
+		return families
+	}
+	for _, k := range keys {
+		if len(k.Comp) != 3 || k.Comp[0] != niName || k.Comp[1] == "" {
+			continue
+		}
+		if _, ok := niBgpNbrAfiSafiEnumFromName(k.Comp[2]); !ok {
+			continue
+		}
+		families[k.Comp[1]] = append(families[k.Comp[1]], k.Comp[2])
+	}
+	for _, afiSafis := range families {
+		sort.Strings(afiSafis)
+	}
+	return families
+}
+
+// niBgpNbrAfStateUris names the two subtrees this transformer serves below one
+// afi-safi instance.
+func niBgpNbrAfStateUris(niName, protoName, neighborAddr, afiSafi string) []string {
+	afUri := niContainerProtoUri(niName, "BGP", protoName) +
+		"/bgp/neighbors/neighbor[neighbor-address=" + neighborAddr + "]" +
+		"/afi-safis/afi-safi[afi-safi-name=" + strings.ToUpper(afiSafi) + "]"
+	return []string{
+		afUri + "/" + niBgpNbrAfStateSubtree,
+		afUri + "/" + niBgpNbrAfApplyPolicySubtree + "/" + niBgpNbrAfStateSubtree,
+	}
+}
+
+// populateNiBgpNbrAfStateReplay merges the state subtrees of the given address
+// families of one neighbor into a read anchored above the afi-safi list.
+// translib does not descend into that list itself: it maps no table, so a read
+// naming the list rather than one instance stops at what the config
+// transformer fills, and the state below each instance is never asked for.
+func populateNiBgpNbrAfStateReplay(inParams XfmrParams, ygRoot *ygot.GoStruct, niName, protoName, neighborAddr string, afiSafis []string) error {
+	for _, afiSafi := range afiSafis {
+		for _, uri := range niBgpNbrAfStateUris(niName, protoName, neighborAddr, afiSafi) {
+			if !rpolNodeServesRequest(inParams.requestUri, uri) {
+				continue
+			}
+			if err := niContainerReplay(inParams, ygRoot, uri, DbToYang_ni_bgp_nbr_af_state_xfmr); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 var DbToYang_ni_bgp_nbr_af_state_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) error {
 	reqInfo, err := parseNiBgpNbrAfStateRequestUri(inParams.requestUri)
 	if err != nil {
-		// A request anchored above apply-policy/state, from the apply-policy
-		// container up to the neighbor, reaches this callback with uri naming
-		// the state container while requestUri still names the anchor.
-		if nodeInfo, nodeErr := parseNiBgpNbrAfStateRequestUri(inParams.uri); nodeErr == nil &&
-			nodeInfo.subtree == niBgpNbrAfApplyPolicySubtree && nodeInfo.targetLeaf == "" {
+		// A read at the afi-safi instance or the apply-policy container reaches
+		// this callback once per subtree, with uri naming the state container
+		// while requestUri still names the anchor.
+		if nodeInfo, nodeErr := parseNiBgpNbrAfStateRequestUri(inParams.uri); nodeErr == nil && nodeInfo.targetLeaf == "" {
 			reqInfo, err = nodeInfo, nil
 		}
 	}
@@ -354,9 +418,11 @@ func populateNiBgpNbrAfPrefixesFromDb(inParams XfmrParams, stateDb *db.DB, reqIn
 	// received-pre-policy counts the prefixes received before inbound policy is
 	// applied. FRR reports no such counter in the neighbor scrape, and the
 	// accepted count it does report is the post-policy one, so reporting that
-	// here would be wrong under any inbound filtering. The leaf is annotated so
-	// the path is valid and answers as absent, which is what "no value
-	// available" looks like for every other leaf in this subtree.
+	// here would be wrong under any inbound filtering. FRR keeps the pre-policy
+	// routes only under soft-reconfiguration inbound, which OpenConfig does not
+	// model. The leaf is annotated so the path is valid and answers as absent,
+	// which is what "no value available" looks like for every other leaf in
+	// this subtree.
 	if reqInfo.targetLeaf == niBgpNbrPfxRcvdPrePolicyLeaf {
 		return nil
 	}
@@ -442,11 +508,11 @@ var Subscribe_ni_bgp_nbr_af_state_xfmr SubTreeXfmrSubscribe = func(inParams Xfmr
 	result.dbDataMap = RedisDbSubscribeMap{db.StateDB: {niBgpNbrAfStatsTbl: {
 		niName + "|" + neighborAddr + "|" + afiSafi: {}}}}
 
-	// Offered sampling only, for the same reason as the applied leaves and the
-	// session counters: the producer rewrites a changed row as a delete followed
-	// by a set, so a field FRR stopped reporting disappears instead of going
-	// stale, and on-change would turn each of those rewrites into a spurious
-	// delete notification.
+	// The counters are offered sampling only. They move with every update the
+	// session carries and bgpmon republishes them on each poll, so on-change
+	// would report the poll rather than the change. An on-change request for
+	// them is refused; one for a container above them streams the on-change
+	// subtrees and leaves the counters to a sampled subscription.
 	result.onChange = OnchangeDisable
 	result.nOpts = &notificationOpts{pType: Sample}
 
