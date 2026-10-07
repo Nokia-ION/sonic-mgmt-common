@@ -359,6 +359,14 @@ module openconfig-system-annot {
       }
     }
 
+    /* Tech-support dump cleanup (openconfig-system-ext) maps to the same
+       AUTO_TECHSUPPORT|GLOBAL row, handled the same way as core-file-cleanup. */
+    deviation /oc-sys:system/oc-sys-ext:tech-support-cleanup {
+      deviate add {
+        sonic-ext:subtree-transformer "tech_support_cleanup_xfmr";
+      }
+    }
+
     /*
      * Control-plane traffic filtering in hardware.
      *
