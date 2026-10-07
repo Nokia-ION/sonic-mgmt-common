@@ -28,10 +28,10 @@ func newCoreFileCleanupDevice(setLimit bool, limit float64) *ocbinds.Device {
 	return d
 }
 
-func TestFormatMaxCoreLimit(t *testing.T) {
+func TestFormatAutoTsLimit(t *testing.T) {
 	for in, want := range map[float64]string{0: "0.0", 5: "5.0", 8.25: "8.25", 99.99: "99.99"} {
-		if got := formatMaxCoreLimit(in); got != want {
-			t.Errorf("formatMaxCoreLimit(%v) = %q, want %q", in, got, want)
+		if got := formatAutoTsLimit(in); got != want {
+			t.Errorf("formatAutoTsLimit(%v) = %q, want %q", in, got, want)
 		}
 	}
 }

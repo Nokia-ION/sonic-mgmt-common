@@ -17,9 +17,10 @@ const (
 	autoTsMaxCoreLimitField     = "max_core_limit"
 	autoTsStateField            = "state"
 	autoTsStateEnabled          = "enabled"
-	// coredump_gen_handler.py treats 0.0 as "no cleanup" but raises on a
-	// missing field, so DELETE writes this instead of removing the field.
-	autoTsMaxCoreLimitDisabled = "0.0"
+	// coredump_gen_handler.py and techsupport_cleanup.py treat 0.0 as "no
+	// cleanup" but raise on a missing field, so DELETE writes this instead of
+	// removing the field.
+	autoTsLimitDisabled = "0.0"
 )
 
 func init() {
@@ -28,9 +29,9 @@ func init() {
 	XlateFuncBind("Subscribe_core_file_cleanup_xfmr", Subscribe_core_file_cleanup_xfmr)
 }
 
-// formatMaxCoreLimit renders a percent value the way the SONiC defaults and
+// formatAutoTsLimit renders a percent value the way the SONiC defaults and
 // CLI store it (e.g. "5.0", "8.25").
-func formatMaxCoreLimit(v float64) string {
+func formatAutoTsLimit(v float64) string {
 	s := strconv.FormatFloat(v, 'f', -1, 64)
 	if !strings.Contains(s, ".") {
 		s += ".0"
@@ -52,7 +53,7 @@ var YangToDb_core_file_cleanup_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPara
 		subOpMap := map[db.DBNum]map[string]map[string]db.Value{
 			db.ConfigDB: {
 				AUTO_TECHSUPPORT_TABLE_NAME: {
-					AUTO_TECHSUPPORT_GLOBAL_KEY: {Field: map[string]string{autoTsMaxCoreLimitField: autoTsMaxCoreLimitDisabled}},
+					AUTO_TECHSUPPORT_GLOBAL_KEY: {Field: map[string]string{autoTsMaxCoreLimitField: autoTsLimitDisabled}},
 				},
 			},
 		}
@@ -69,7 +70,7 @@ var YangToDb_core_file_cleanup_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPara
 	if cfg.MaxCoreLimit == nil {
 		return res, nil
 	}
-	val := db.Value{Field: map[string]string{autoTsMaxCoreLimitField: formatMaxCoreLimit(*cfg.MaxCoreLimit)}}
+	val := db.Value{Field: map[string]string{autoTsMaxCoreLimitField: formatAutoTsLimit(*cfg.MaxCoreLimit)}}
 	res[AUTO_TECHSUPPORT_TABLE_NAME] = map[string]db.Value{AUTO_TECHSUPPORT_GLOBAL_KEY: val}
 	return res, nil
 }
