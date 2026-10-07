@@ -93,9 +93,8 @@ func TestSubscribe_ni_bgp_nbr_af_state_paths(t *testing.T) {
 			if out.isVirtualTbl {
 				t.Fatalf("expected a non-virtual subscribe mapping, got map %v", out.dbDataMap)
 			}
-			// Sampling only, because the producer rewrites a changed row as a
-			// delete followed by a set and on-change would turn each rewrite
-			// into a spurious delete.
+			// Sampling only: the counters move on every poll, so an
+			// on-change request for them is refused rather than streamed.
 			if out.onChange != OnchangeDisable {
 				t.Fatalf("onChange=%v, want %v", out.onChange, OnchangeDisable)
 			}

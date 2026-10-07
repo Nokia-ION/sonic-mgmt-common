@@ -34,21 +34,28 @@ func populateNiBgpAggregateStateReplay(inParams XfmrParams, ygRoot *ygot.GoStruc
 	return populateNiBgpAggregateNeighborStateReplay(inParams, ygRoot, niName, protoName)
 }
 
-// populateNiBgpAggregateNeighborStateReplay merges neighbor state only.
-// Transport, messages and AFI-SAFI state stay on their explicit paths until a
-// later increment extends this replay.
+// populateNiBgpAggregateNeighborStateReplay merges the operational subtrees of
+// every neighbor: its state, which carries the messages, its transport state,
+// and the state and apply-policy state of each address family FRR reports.
 func populateNiBgpAggregateNeighborStateReplay(inParams XfmrParams, ygRoot *ygot.GoStruct, niName, protoName string) error {
-	if inParams.dbs[db.StateDB] == nil {
+	stateDb := inParams.dbs[db.StateDB]
+	if stateDb == nil {
 		return nil
 	}
 	protoUri := niContainerProtoUri(niName, "BGP", protoName)
+	afFamilies := niBgpNbrAfStatsFamilies(stateDb, niName)
 
-	for _, nbrAddr := range niBgpNeighborAddrsForAggregate(inParams.dbs[db.ConfigDB], inParams.dbs[db.StateDB], niName) {
-		stateUri := protoUri + "/bgp/neighbors/neighbor[neighbor-address=" + nbrAddr + "]/state"
-		if !rpolNodeServesRequest(inParams.requestUri, stateUri) {
-			continue
+	for _, nbrAddr := range niBgpNeighborAddrsForAggregate(inParams.dbs[db.ConfigDB], stateDb, niName) {
+		nbrUri := protoUri + "/bgp/neighbors/neighbor[neighbor-address=" + nbrAddr + "]"
+		for _, uri := range []string{nbrUri + "/state", nbrUri + "/transport/state"} {
+			if !rpolNodeServesRequest(inParams.requestUri, uri) {
+				continue
+			}
+			if err := niContainerReplay(inParams, ygRoot, uri, DbToYang_ni_bgp_nbr_state_xfmr); err != nil {
+				return err
+			}
 		}
-		if err := niContainerReplay(inParams, ygRoot, stateUri, DbToYang_ni_bgp_nbr_state_xfmr); err != nil {
+		if err := populateNiBgpNbrAfStateReplay(inParams, ygRoot, niName, protoName, nbrAddr, afFamilies[nbrAddr]); err != nil {
 			return err
 		}
 	}
