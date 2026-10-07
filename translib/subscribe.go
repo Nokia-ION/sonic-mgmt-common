@@ -148,6 +148,10 @@ type subscribeInfo struct {
 	stop     chan struct{}
 	sDBs     []*db.DB         //Subscription DB should be used only for keyspace notification unsubscription
 	dbs      [db.MaxDB]*db.DB //used to perform get operations
+
+	// initSynced records the yang paths for which an initial update has
+	// already been sent. See sendInitialUpdate.
+	initSynced map[string]bool
 }
 
 // notificationGroup is the grouping of notificationInfo by the key pattern.
