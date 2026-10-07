@@ -76,11 +76,13 @@ func TestSubscribe_ni_bgp_nbr_state_paths(t *testing.T) {
 			wantStateKey: "11.0.0.155",
 		},
 		{
-			name:         "session-state leaf unkeyed falls back to sampling",
+			// The list path transformer resolves the open key from the Redis
+			// key, so a request leaving it open stays on-change.
+			name:         "session-state leaf unkeyed stays on-change",
 			uri:          niBgpNbrSubscWildcardUrl + "/state",
 			requestURI:   niBgpNbrSubscWildcardUrl + "/state/session-state",
-			wantOnChange: OnchangeDisable,
-			wantPType:    Sample,
+			wantOnChange: OnchangeEnable,
+			wantPType:    OnChange,
 			wantStateKey: "*",
 		},
 		// The ratified narrowing: the state container now reads the applied
@@ -136,11 +138,11 @@ func TestSubscribe_ni_bgp_nbr_state_paths(t *testing.T) {
 			wantApplFlds: map[string]string{"neighbor_address": "neighbor-address"},
 		},
 		{
-			name:         "applied state leaf unkeyed falls back to sampling",
+			name:         "applied state leaf unkeyed stays on-change",
 			uri:          niBgpNbrSubscWildcardUrl + "/state",
 			requestURI:   niBgpNbrSubscWildcardUrl + "/state/peer-as",
-			wantOnChange: OnchangeDisable,
-			wantPType:    Sample,
+			wantOnChange: OnchangeEnable,
+			wantPType:    OnChange,
 			wantApplKey:  "default|*",
 			wantApplFlds: map[string]string{"peer_as": "peer-as"},
 		},
@@ -273,13 +275,25 @@ func TestSubscribe_ni_bgp_nbr_state_paths(t *testing.T) {
 			},
 		},
 		{
-			name:         "transport unkeyed falls back to sampling",
+			name:         "transport unkeyed stays on-change",
 			uri:          niBgpNbrSubscWildcardUrl + "/transport/state",
 			requestURI:   niBgpNbrSubscWildcardUrl + "/transport/state/local-address",
-			wantOnChange: OnchangeDisable,
-			wantPType:    Sample,
+			wantOnChange: OnchangeEnable,
+			wantPType:    OnChange,
 			wantApplKey:  "default|*",
 			wantApplFlds: map[string]string{"local_address": "local-address"},
+		},
+		// A request anchored on the neighbor reaches the transport callback
+		// with requestURI naming the neighbor. The node is read from uri, so
+		// transport keeps its own mapping and its on-change support instead
+		// of being mistaken for the state container.
+		{
+			name:         "neighbor container descends into transport and stays on-change",
+			uri:          niBgpNbrSubscNbrUrl + "/transport",
+			requestURI:   niBgpNbrSubscNbrUrl,
+			wantOnChange: OnchangeEnable,
+			wantPType:    OnChange,
+			wantApplKey:  "default|11.0.0.155",
 		},
 		// A request anchored above the state container descends into it, and
 		// must not be mistaken for a session-state request.
