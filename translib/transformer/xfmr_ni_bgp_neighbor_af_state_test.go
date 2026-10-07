@@ -514,3 +514,108 @@ func Test_openconfig_network_instance_bgp_neighbor_af_apply_policy_state_hierarc
 	unloadNiBgpNbrAfStats("20.0.0.1", niBgpNbrAfIPv4)
 	unloadDB(db.ConfigDB, cleanupTbl)
 }
+
+// A read at every level from the afi-safi instance up to the bgp container
+// reports the state of each address family, and the neighbor's transport
+// state, beside the config. Above the instance translib does not descend into
+// the afi-safi list, so this is what the replay of those subtrees provides.
+// IPv6 is a family the neighbor inherits from its peer-group: it has no
+// BGP_NEIGHBOR_AF row, and is reported from its state alone.
+func Test_openconfig_network_instance_bgp_neighbor_af_state_hierarchy(t *testing.T) {
+	preReqMap := map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": map[string]interface{}{"local_asn": "65100"},
+		},
+		"BGP_NEIGHBOR": map[string]interface{}{
+			"default|20.0.0.1": map[string]interface{}{"asn": "65200"},
+		},
+		"BGP_NEIGHBOR_AF": map[string]interface{}{
+			"default|20.0.0.1|ipv4_unicast": map[string]interface{}{
+				"admin_status": "up",
+				"route_map_in": "RM-CFG-IN",
+			},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"BGP_NEIGHBOR_AF": map[string]interface{}{"default|20.0.0.1|ipv4_unicast": ""},
+		"BGP_NEIGHBOR":    map[string]interface{}{"default|20.0.0.1": ""},
+		"BGP_GLOBALS":     map[string]interface{}{"default": ""},
+	}
+	unloadDB(db.ConfigDB, cleanupTbl)
+	loadDB(db.ConfigDB, preReqMap)
+	loadNiBgpNbrAfStats("20.0.0.1", niBgpNbrAfIPv4, map[string]interface{}{
+		"prefixes_received": "7",
+		"prefixes_sent":     "4",
+		"import_policy":     "RM-FRR-IN",
+		"export_policy":     "RM-FRR-OUT",
+	})
+	loadNiBgpNbrAfStats("20.0.0.1", niBgpNbrAfIPv6, map[string]interface{}{
+		"prefixes_received": "2",
+		"import_policy":     "RM-PG-IN",
+	})
+	loadNiBgpNbrApplied("20.0.0.1", map[string]interface{}{
+		"neighbor_address": "20.0.0.1",
+		"peer_as":          "65200",
+		"local_address":    "20.0.0.2",
+		"remote_address":   "20.0.0.1",
+		"local_port":       "40001",
+		"remote_port":      "179",
+	})
+
+	nbrUrl := niBgpProtoUrl + "/bgp/neighbors/neighbor[neighbor-address=20.0.0.1]"
+	afisUrl := nbrUrl + "/afi-safis"
+	v4JSON := `{"afi-safi-name":"openconfig-bgp-types:IPV4_UNICAST",` +
+		`"apply-policy":{"config":{"import-policy":["RM-CFG-IN"]},` +
+		`"state":{"export-policy":["RM-FRR-OUT"],"import-policy":["RM-FRR-IN"]}},` +
+		`"config":{"afi-safi-name":"openconfig-bgp-types:IPV4_UNICAST","enabled":true},` +
+		`"state":{"prefixes":{"received":7,"sent":4}}}`
+	v6JSON := `{"afi-safi-name":"openconfig-bgp-types:IPV6_UNICAST",` +
+		`"apply-policy":{"state":{"import-policy":["RM-PG-IN"]}},` +
+		`"state":{"prefixes":{"received":2}}}`
+	afisJSON := `{"afi-safi":[` + v4JSON + `,` + v6JSON + `]}`
+	nbrJSON := `{"afi-safis":` + afisJSON + `,"config":{"peer-as":65200},"neighbor-address":"20.0.0.1",` +
+		`"state":{"neighbor-address":"20.0.0.1","peer-as":65200},` +
+		`"transport":{"state":{"local-address":"20.0.0.2","local-port":40001,"remote-address":"20.0.0.1","remote-port":179}}}`
+
+	cases := []struct {
+		name     string
+		url      string
+		expected string
+	}{
+		{"afi-safi instance", afisUrl + "/afi-safi[afi-safi-name=IPV4_UNICAST]",
+			`{"openconfig-network-instance:afi-safi":[` + v4JSON + `]}`},
+		{"inherited afi-safi instance", afisUrl + "/afi-safi[afi-safi-name=IPV6_UNICAST]",
+			`{"openconfig-network-instance:afi-safi":[` + v6JSON + `]}`},
+		{"afi-safis container", afisUrl, `{"openconfig-network-instance:afi-safis":` + afisJSON + `}`},
+		{"neighbor instance", nbrUrl, `{"openconfig-network-instance:neighbor":[` + nbrJSON + `]}`},
+		{"neighbors container", niBgpProtoUrl + "/bgp/neighbors",
+			`{"openconfig-network-instance:neighbors":{"neighbor":[` + nbrJSON + `]}}`},
+		{"bgp container", niBgpProtoUrl + "/bgp",
+			`{"openconfig-network-instance:bgp":{"global":{"config":{"as":65100}},"neighbors":{"neighbor":[` + nbrJSON + `]}}}`},
+	}
+	for _, tc := range cases {
+		t.Run("GET BGP neighbor "+tc.name+" with address family state",
+			processGetRequest(tc.url, nil, tc.expected, false))
+		time.Sleep(1 * time.Second)
+	}
+
+	// Behind a stale marker the state is withheld at every level, and the
+	// inherited family, which only its state made visible, is absent again.
+	loadNiBgpNbrAppliedMarker(time.Now().Unix() - 3600)
+	time.Sleep(1 * time.Second)
+	t.Run("GET BGP neighbor afi-safis container with a stale marker",
+		processGetRequest(afisUrl, nil,
+			`{"openconfig-network-instance:afi-safis":{"afi-safi":[{"afi-safi-name":"openconfig-bgp-types:IPV4_UNICAST",`+
+				`"apply-policy":{"config":{"import-policy":["RM-CFG-IN"]}},`+
+				`"config":{"afi-safi-name":"openconfig-bgp-types:IPV4_UNICAST","enabled":true}}]}}`, false))
+	time.Sleep(1 * time.Second)
+	noRow := tlerr.TranslibRedisClientEntryNotExist{Entry: "BGP_NEIGHBOR_AF|default|20.0.0.1|ipv6_unicast"}
+	t.Run("GET BGP neighbor inherited afi-safi instance with a stale marker",
+		processGetRequest(afisUrl+"/afi-safi[afi-safi-name=IPV6_UNICAST]", nil, "", true, noRow))
+	time.Sleep(1 * time.Second)
+
+	unloadNiBgpNbrApplied("20.0.0.1")
+	unloadNiBgpNbrAfStats("20.0.0.1", niBgpNbrAfIPv4)
+	unloadNiBgpNbrAfStats("20.0.0.1", niBgpNbrAfIPv6)
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
