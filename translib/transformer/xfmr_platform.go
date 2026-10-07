@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"path"
 	"regexp"
 	"strconv"
 	"strings"
@@ -450,6 +451,7 @@ type FirmwareInfo struct {
 	FirmwareVersion string
 	HardwareVersion string
 	MfgDate         string
+	MfgName         string
 	OperStatus      string
 	PartNo          string
 	SerialNo        string
@@ -2291,7 +2293,7 @@ func fillPsuInfo(psuCom *ocbinds.OpenconfigPlatform_Components_Component,
 			psuEepromState.Description = &psuInfo.Model_Name
 			psuEepromState.PartNo = &psuInfo.Model_Name
 		}
-		if test_if_available(psuInfo.Hardware_Version) {
+		if psuInfo.Hardware_Version != "" {
 			psuEepromState.HardwareVersion = &psuInfo.Hardware_Version
 		}
 		if psuInfo.Manufacturer != "" {
@@ -2325,28 +2327,36 @@ func fillPsuInfo(psuCom *ocbinds.OpenconfigPlatform_Components_Component,
 			psuEepromState.OperStatus = ocbinds.OpenconfigPlatformTypes_COMPONENT_OPER_STATUS_ACTIVE
 		}
 	case COMP_STATE_SERIAL_NO:
-		if psuInfo.Serial_Number != "" {
-			psuEepromState.SerialNo = &psuInfo.Serial_Number
+		if psuInfo.Serial_Number == "" {
+			return tlerr.NotFound("%s has no serial-no", name)
 		}
+		psuEepromState.SerialNo = &psuInfo.Serial_Number
 	case COMP_STATE_DESCR:
-		if psuInfo.Model_Name != "" {
-			psuEepromState.Description = &psuInfo.Model_Name
+		if psuInfo.Model_Name == "" {
+			return tlerr.NotFound("%s has no description", name)
 		}
+		psuEepromState.Description = &psuInfo.Model_Name
 	case COMP_STATE_MODEL_NAME:
-		if psuInfo.Model_Name != "" {
-			psuEepromState.ModelName = &psuInfo.Model_Name
+		if psuInfo.Model_Name == "" {
+			return tlerr.NotFound("%s has no model-name", name)
 		}
+		psuEepromState.ModelName = &psuInfo.Model_Name
 	case COMP_STATE_HW_VER:
-		if test_if_available(psuInfo.Hardware_Version) {
-			psuEepromState.HardwareVersion = &psuInfo.Hardware_Version
+		if psuInfo.Hardware_Version == "" {
+			return tlerr.NotFound("%s has no hardware-version", name)
 		}
+		psuEepromState.HardwareVersion = &psuInfo.Hardware_Version
 	case COMP_STATE_MFG_NAME:
-		if psuInfo.Manufacturer != "" {
-			psuEepromState.MfgName = &psuInfo.Manufacturer
+		if psuInfo.Manufacturer == "" {
+			return tlerr.NotFound("%s has no mfg-name", name)
 		}
+		psuEepromState.MfgName = &psuInfo.Manufacturer
 	case COMP_STATE_MFG_DATE:
 		return tlerr.NotFound("%s has no mfg-date", name)
 	case COMP_STATE_PART_NO:
+		if psuInfo.Model_Name == "" && psuInfo.Part_Number == "" {
+			return tlerr.NotFound("%s has no part-no", name)
+		}
 		if psuInfo.Model_Name != "" {
 			psuEepromState.PartNo = &psuInfo.Model_Name
 		}
@@ -2361,18 +2371,23 @@ func fillPsuInfo(psuCom *ocbinds.OpenconfigPlatform_Components_Component,
 			psuEepromState.Parent = &psuInfo.Parent
 		}
 	case COMP_STATE_LOCATION:
-		psuEepromState.Location = StringWithDefault(&psuInfo.Location, "")
+		if psuInfo.Location == "" {
+			return tlerr.NotFound("%s has no location", name)
+		}
+		psuEepromState.Location = &psuInfo.Location
 	case COMP_STATE_TYPE:
 		psuEepromState.Type, _ = psuEepromState.To_OpenconfigPlatform_Components_Component_State_Type_Union(
 			ocbinds.OpenconfigPlatformTypes_OPENCONFIG_HARDWARE_COMPONENT_POWER_SUPPLY)
 	case COMP_STATE_INSTALL_POSITION:
-		if psuInfo.Install_Position != "" {
-			psuEepromState.InstallPosition = &psuInfo.Install_Position
+		if psuInfo.Install_Position == "" {
+			return tlerr.NotFound("%s has no install-position", name)
 		}
+		psuEepromState.InstallPosition = &psuInfo.Install_Position
 	case COMP_STATE_INSTALL_COMPONENT:
-		if psuInfo.Install_Component != "" {
-			psuEepromState.InstallComponent = &psuInfo.Install_Component
+		if psuInfo.Install_Component == "" {
+			return tlerr.NotFound("%s has no install-component", name)
 		}
+		psuEepromState.InstallComponent = &psuInfo.Install_Component
 	case COMP_STATE_REMOVABLE:
 		psuEepromState.Removable = &psuInfo.Removable
 	case COMP_PS_STATE_CAPACITY:
@@ -2516,15 +2531,21 @@ func fillFanInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 	}
 
 	comp.Name = &name
+	switch targetUriPath {
+	case COMP_STATE_DESCR, COMP_STATE_MFG_NAME, COMP_STATE_FIRM_VER, COMP_STATE_SW_VER,
+		COMP_STATE_ID, COMP_STATE_TEMP:
+		return tlerr.NotFound("%s has no %s", name, path.Base(targetUriPath))
+	}
 	if allState || targetUriPath == COMP_STATE_EMPTY {
 		empty := !fanInfo.presence
 		comp.State.Empty = &empty
 	}
 	if allState || targetUriPath == COMP_STATE_HW_VER {
-		if fanInfo.hardwareRev == "" {
-			fanInfo.hardwareRev = "N/A"
+		if fanInfo.hardwareRev != "" {
+			comp.State.HardwareVersion = &fanInfo.hardwareRev
+		} else if !allState {
+			return tlerr.NotFound("%s has no hardware-version", name)
 		}
-		comp.State.HardwareVersion = &fanInfo.hardwareRev
 	}
 	if allState || targetUriPath == COMP_STATE_LOCATION {
 		comp.State.Location = &fanInfo.location
@@ -2573,6 +2594,9 @@ func fillFanInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 		if fanInfo.partNo != "" {
 			comp.State.PartNo = &fanInfo.partNo
 		}
+		if fanInfo.model == "" && fanInfo.partNo == "" && !allState {
+			return tlerr.NotFound("%s has no part-no", name)
+		}
 	}
 	if allState || targetUriPath == COMP_STATE_REMOVABLE {
 		comp.State.Removable = &fanInfo.isReplaceable
@@ -2580,6 +2604,8 @@ func fillFanInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 	if allState || targetUriPath == COMP_STATE_SERIAL_NO {
 		if fanInfo.serial != "" {
 			comp.State.SerialNo = &fanInfo.serial
+		} else if !allState {
+			return tlerr.NotFound("%s has no serial-no", name)
 		}
 	}
 	if allState || targetUriPath == COMP_STATE_TYPE {
@@ -2594,16 +2620,22 @@ func fillFanInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 	if allState || targetUriPath == COMP_STATE_INSTALL_COMPONENT {
 		if fanInfo.installComponent != "" {
 			comp.State.InstallComponent = &fanInfo.installComponent
+		} else if !allState {
+			return tlerr.NotFound("%s has no install-component", name)
 		}
 	}
 	if allState || targetUriPath == COMP_STATE_INSTALL_POSITION {
 		if fanInfo.installPosition != "" {
 			comp.State.InstallPosition = &fanInfo.installPosition
+		} else if !allState {
+			return tlerr.NotFound("%s has no install-position", name)
 		}
 	}
 	if allState || targetUriPath == COMP_STATE_MODEL_NAME {
 		if fanInfo.model != "" {
 			comp.State.ModelName = &fanInfo.model
+		} else if !allState {
+			return tlerr.NotFound("%s has no model-name", name)
 		}
 	}
 	if allFan || targetUriPath == COMP_FAN_SPEED {
@@ -3219,20 +3251,20 @@ func fillXcvrInfo(xcvrCom *ocbinds.OpenconfigPlatform_Components_Component,
 		if xcvrInfo.MfgName != "" {
 			xcvrEEPROMState.MfgName = &xcvrInfo.MfgName
 		}
-		if test_if_available(xcvrInfo.HardwareRev) {
+		if xcvrInfo.HardwareRev != "" {
 			xcvrEEPROMState.HardwareVersion = &xcvrInfo.HardwareRev
 		}
-		if test_if_available(xcvrInfo.ActiveFirmwareVer) {
+		if xcvrInfo.ActiveFirmwareVer != "" {
 			xcvrEEPROMState.FirmwareVersion = &xcvrInfo.ActiveFirmwareVer
 		}
 		if xcvrInfo.MfgDate != "" {
 			xcvrEEPROMState.MfgDate = &xcvrInfo.MfgDate
 		}
-		if test_if_available(xcvrInfo.VendorRev) {
+		if xcvrInfo.VendorRev != "" {
 			xcvrState.VendorRev = &xcvrInfo.VendorRev
 		}
 		/* The module identifier string doubles as the component description. */
-		if test_if_available(xcvrInfo.Type) {
+		if xcvrInfo.Type != "" {
 			xcvrEEPROMState.Description = &xcvrInfo.Type
 		}
 		/* Not present */
@@ -3333,17 +3365,17 @@ func fillXcvrInfo(xcvrCom *ocbinds.OpenconfigPlatform_Components_Component,
 		}
 		xcvrEEPROMState.MfgName = &xcvrInfo.MfgName
 	case COMP_STATE_HW_VER:
-		if !test_if_available(xcvrInfo.HardwareRev) {
+		if xcvrInfo.HardwareRev == "" {
 			return tlerr.NotFound("%s has no hardware-version", name)
 		}
 		xcvrEEPROMState.HardwareVersion = &xcvrInfo.HardwareRev
 	case COMP_STATE_FIRM_VER:
-		if !test_if_available(xcvrInfo.ActiveFirmwareVer) {
+		if xcvrInfo.ActiveFirmwareVer == "" {
 			return tlerr.NotFound("%s has no firmware-version", name)
 		}
 		xcvrEEPROMState.FirmwareVersion = &xcvrInfo.ActiveFirmwareVer
 	case COMP_STATE_DESCR:
-		if !test_if_available(xcvrInfo.Type) {
+		if xcvrInfo.Type == "" {
 			return tlerr.NotFound("%s has no description", name)
 		}
 		xcvrEEPROMState.Description = &xcvrInfo.Type
@@ -3352,6 +3384,8 @@ func fillXcvrInfo(xcvrCom *ocbinds.OpenconfigPlatform_Components_Component,
 			return tlerr.NotFound("%s has no mfg-date", name)
 		}
 		xcvrEEPROMState.MfgDate = &xcvrInfo.MfgDate
+	case COMP_STATE_MODEL_NAME, COMP_STATE_SW_VER, COMP_STATE_LOCATION:
+		return tlerr.NotFound("%s has no %s", name, path.Base(targetUriPath))
 	case COMP_STATE_OPER_STATUS:
 		xcvrEEPROMState.OperStatus = ocbinds.OpenconfigPlatformTypes_COMPONENT_OPER_STATUS_ACTIVE
 	case COMP_STATE_TEMP_CTR, COMP_STATE_TEMP:
@@ -3377,7 +3411,7 @@ func fillXcvrInfo(xcvrCom *ocbinds.OpenconfigPlatform_Components_Component,
 	case XCVR_ETH_PMD:
 		xcvrState.EthernetPmd = ethPmdTypeFromString(xcvrInfo.EthPmd)
 	case XCVR_VENDOR_REV:
-		if !test_if_available(xcvrInfo.VendorRev) {
+		if xcvrInfo.VendorRev == "" {
 			return tlerr.NotFound("%s has no vendor-rev", name)
 		}
 		xcvrState.VendorRev = &xcvrInfo.VendorRev
@@ -4018,10 +4052,12 @@ func fillFirmwareInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 		return fmt.Errorf("Config and State DB entries not found for all paths; Error: %w", err)
 	}
 	/* The chassis manufacture date is in the system EEPROM when CHASSIS_INFO
-	 * does not carry it. */
+	 * does not carry it. The manufacturer is only in the system EEPROM. */
+	eepromDb := getSysEepromDbObj(stdb)
 	if firmwareInfo.MfgDate == "" {
-		firmwareInfo.MfgDate = getSysEepromDbObj(stdb).Manufacture_Date
+		firmwareInfo.MfgDate = eepromDb.Manufacture_Date
 	}
+	firmwareInfo.MfgName = firstAvailable(eepromDb.Manufacturer, eepromDb.Vendor_Name)
 
 	compState := comp.State
 	compCfg := comp.Config
@@ -4052,6 +4088,10 @@ func fillFirmwareInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 		// State Mfg Date
 		if mfg_date := reformatMfgDate(firmwareInfo.MfgDate); mfg_date != "" {
 			compState.MfgDate = &mfg_date
+		}
+		// State Mfg Name
+		if firmwareInfo.MfgName != "" {
+			compState.MfgName = &firmwareInfo.MfgName
 		}
 		// State Oper Status
 		if firmwareInfo.OperStatus != "" {
@@ -4098,7 +4138,7 @@ func fillFirmwareInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 	switch targetUriPath {
 	case COMP_STATE_DESCR:
 		if firmwareInfo.Description == "" {
-			return errors.New("description field not present in State DB")
+			return tlerr.NotFound("%s has no description", name)
 		}
 		compState.Description = &firmwareInfo.Description
 	case COMP_STATE_NAME:
@@ -4110,16 +4150,13 @@ func fillFirmwareInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 		compState.Type, _ = compState.To_OpenconfigPlatform_Components_Component_State_Type_Union(
 			ocbinds.OpenconfigPlatformTypes_OPENCONFIG_HARDWARE_COMPONENT_CHASSIS)
 	case COMP_STATE_FIRM_VER:
-		// Direct leaf GET must not fail: translib treats an unfilled leaf as
-		// NotFound. Return "" when chassis has no firmware version.
-		empty := ""
-		compState.FirmwareVersion = &empty
-		if firmwareInfo.FirmwareVersion != "" {
-			compState.FirmwareVersion = &firmwareInfo.FirmwareVersion
+		if firmwareInfo.FirmwareVersion == "" {
+			return tlerr.NotFound("%s has no firmware-version", name)
 		}
+		compState.FirmwareVersion = &firmwareInfo.FirmwareVersion
 	case COMP_STATE_HW_VER:
 		if firmwareInfo.HardwareVersion == "" {
-			return errors.New("hardware_version field not present in State DB")
+			return tlerr.NotFound("%s has no hardware-version", name)
 		}
 		compState.HardwareVersion = &firmwareInfo.HardwareVersion
 	case COMP_STATE_MFG_DATE:
@@ -4128,6 +4165,13 @@ func fillFirmwareInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 			return tlerr.NotFound("%s has no mfg-date", name)
 		}
 		compState.MfgDate = &mfg_date
+	case COMP_STATE_MFG_NAME:
+		if firmwareInfo.MfgName == "" {
+			return tlerr.NotFound("%s has no mfg-name", name)
+		}
+		compState.MfgName = &firmwareInfo.MfgName
+	case COMP_STATE_LOCATION, COMP_STATE_TEMP:
+		return tlerr.NotFound("%s has no %s", name, path.Base(targetUriPath))
 	case COMP_STATE_OPER_STATUS:
 		if firmwareInfo.OperStatus == "" {
 			compState.OperStatus = ocbinds.OpenconfigPlatformTypes_COMPONENT_OPER_STATUS_ACTIVE
@@ -4138,23 +4182,23 @@ func fillFirmwareInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 		}
 	case COMP_STATE_PART_NO:
 		if firmwareInfo.PartNo == "" {
-			return errors.New("part_no field not present in State DB")
+			return tlerr.NotFound("%s has no part-no", name)
 		}
 		compState.PartNo = &firmwareInfo.PartNo
 	case COMP_STATE_SERIAL_NO:
 		if firmwareInfo.SerialNo == "" {
-			return errors.New("serial_no field not present in State DB")
+			return tlerr.NotFound("%s has no serial-no", name)
 		}
 		compState.SerialNo = &firmwareInfo.SerialNo
 	case COMP_STATE_SW_VER:
 		swVer := getFormattedSonicSoftwareVersion()
 		if swVer == "" {
-			return errors.New("software_version field not present")
+			return tlerr.NotFound("%s has no software-version", name)
 		}
 		compState.SoftwareVersion = &swVer
 	case COMP_STATE_MODEL_NAME:
 		if firmwareInfo.ModelName == "" {
-			return errors.New("component state model-name field not present in State DB")
+			return tlerr.NotFound("%s has no model-name", name)
 		}
 		compState.ModelName = &firmwareInfo.ModelName
 	case COMP_CONFIG_NAME:

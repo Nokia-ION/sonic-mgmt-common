@@ -116,6 +116,13 @@ func TestFillFirmwareInfo(t *testing.T) {
 		t.Fatal("NewDB failed")
 	}
 	defer cdb.DeleteDB()
+	seedChassisInfoEntry(t, sdb, name, map[string]string{
+		"firmware-version": "1.0",
+		"hardware-version": "0",
+		"manufacture_date": "03/04/2024 10:00:00",
+		"part-no":          "3HE18723AARA01",
+		"serial":           "LL2503K1024",
+	})
 	singlePathURIs := []string{
 		COMP_STATE_FIRM_VER, COMP_STATE_HW_VER, COMP_STATE_MFG_DATE,
 		COMP_CONFIG_NAME, COMP_STATE_PART_NO,
@@ -1092,6 +1099,229 @@ func TestFillFirmwareInfoMfgDate(t *testing.T) {
 	})
 }
 
+// Chassis mfg-name comes from the EEPROM_INFO Manufacturer, falls back to the
+// Vendor Name, and is NotFound when neither has it.
+func TestFillFirmwareInfoMfgName(t *testing.T) {
+	stdb, err := db.NewDB(getDBOptions(db.StateDB))
+	if err != nil {
+		t.Fatal("NewDB failed")
+	}
+	defer stdb.DeleteDB()
+	cfgdb, err := db.NewDB(getDBOptions(db.ConfigDB))
+	if err != nil {
+		t.Fatal("NewDB failed")
+	}
+	defer cfgdb.DeleteDB()
+
+	const name = "chassis 12"
+	seedChassisInfoEntry(t, stdb, name, map[string]string{"model": "3HE18723AARA01"})
+	eepromTs := &db.TableSpec{Name: EEPROM_TBL}
+	mfrKey := db.Key{Comp: []string{"0x2b"}}
+	vendorKey := db.Key{Comp: []string{"0x2d"}}
+	seedEeprom := func(key db.Key, attr, value string) {
+		t.Helper()
+		if err := stdb.SetEntry(eepromTs, key, db.Value{Field: map[string]string{
+			"Len": "5", "Name": attr, "Value": value,
+		}}); err != nil {
+			t.Fatalf("failed to seed EEPROM_INFO: %v", err)
+		}
+		t.Cleanup(func() { stdb.DeleteEntry(eepromTs, key) })
+	}
+	fill := func(pType PathType, uri string) (*ocbinds.OpenconfigPlatform_Components_Component, error) {
+		comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+		ygot.BuildEmptyTree(comp)
+		return comp, fillFirmwareInfo(comp, name, pType, uri, stdb, cfgdb)
+	}
+
+	seedEeprom(vendorKey, "Vendor Name", "Nokia")
+	t.Run("vendor name", func(t *testing.T) {
+		comp, err := fill(SingularPath, COMP_STATE_MFG_NAME)
+		if err != nil {
+			t.Fatalf("fillFirmwareInfo() unexpected error: %v", err)
+		}
+		assertStrLeaf(t, comp.State.MfgName, "Nokia", "state/mfg-name")
+	})
+
+	seedEeprom(mfrKey, "Manufacturer", "Nokia Solutions")
+	for _, c := range []struct {
+		name  string
+		pType PathType
+		uri   string
+	}{
+		{"manufacturer whole component", AllPaths, COMP},
+		{"manufacturer state", StatePaths, COMP_ST},
+		{"manufacturer targeted leaf", SingularPath, COMP_STATE_MFG_NAME},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			comp, err := fill(c.pType, c.uri)
+			if err != nil {
+				t.Fatalf("fillFirmwareInfo() unexpected error: %v", err)
+			}
+			assertStrLeaf(t, comp.State.MfgName, "Nokia Solutions", "state/mfg-name")
+		})
+	}
+
+	t.Run("no manufacturer anywhere", func(t *testing.T) {
+		stdb.DeleteEntry(eepromTs, mfrKey)
+		stdb.DeleteEntry(eepromTs, vendorKey)
+		if _, err := fill(SingularPath, COMP_STATE_MFG_NAME); !isNotFound(err) {
+			t.Fatalf("fillFirmwareInfo() returned %T (%v), want tlerr.NotFoundError", err, err)
+		}
+	})
+}
+
+// A targeted chassis leaf with no value is NotFound, even when translib has
+// pre-created it with its zero value, and the state container omits it.
+func TestFillFirmwareInfoMissingLeafNotFound(t *testing.T) {
+	stdb, err := db.NewDB(getDBOptions(db.StateDB))
+	if err != nil {
+		t.Fatal("NewDB failed")
+	}
+	defer stdb.DeleteDB()
+	cfgdb, err := db.NewDB(getDBOptions(db.ConfigDB))
+	if err != nil {
+		t.Fatal("NewDB failed")
+	}
+	defer cfgdb.DeleteDB()
+
+	const name = "chassis 13"
+	seedChassisInfoEntry(t, stdb, name, map[string]string{"name": name})
+
+	for _, uri := range []string{
+		COMP_STATE_DESCR, COMP_STATE_FIRM_VER, COMP_STATE_HW_VER, COMP_STATE_PART_NO,
+		COMP_STATE_SERIAL_NO, COMP_STATE_MODEL_NAME, COMP_STATE_MFG_NAME,
+		COMP_STATE_LOCATION, COMP_STATE_TEMP,
+	} {
+		t.Run(uri, func(t *testing.T) {
+			comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+			ygot.BuildEmptyTree(comp)
+			empty := ""
+			comp.State.FirmwareVersion = &empty
+			comp.State.Location = &empty
+			err := fillFirmwareInfo(comp, name, SingularPath, uri, stdb, cfgdb)
+			if !isNotFound(err) {
+				t.Fatalf("fillFirmwareInfo(%s) returned %T (%v), want tlerr.NotFoundError", uri, err, err)
+			}
+		})
+	}
+
+	t.Run("state container", func(t *testing.T) {
+		comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+		ygot.BuildEmptyTree(comp)
+		if err := fillFirmwareInfo(comp, name, StatePaths, COMP_ST, stdb, cfgdb); err != nil {
+			t.Fatalf("fillFirmwareInfo() unexpected error: %v", err)
+		}
+		assertStrLeafUnset(t, comp.State.FirmwareVersion, "state/firmware-version")
+		assertStrLeafUnset(t, comp.State.MfgName, "state/mfg-name")
+	})
+}
+
+// A targeted PSU leaf with no value is NotFound, even when translib has
+// pre-created it as "".
+func TestFillPsuMissingLeafNotFound(t *testing.T) {
+	d, err := db.NewDB(getDBOptions(db.StateDB))
+	if err != nil {
+		t.Fatal("NewDB failed")
+	}
+	defer d.DeleteDB()
+	seedPsuInfoEntry(t, d, "PSU10", map[string]string{"presence": "true", "status": "true"})
+
+	for _, uri := range []string{
+		COMP_STATE_SERIAL_NO, COMP_STATE_DESCR, COMP_STATE_MODEL_NAME, COMP_STATE_HW_VER,
+		COMP_STATE_MFG_NAME, COMP_STATE_PART_NO, COMP_STATE_LOCATION,
+		COMP_STATE_INSTALL_POSITION, COMP_STATE_INSTALL_COMPONENT,
+	} {
+		t.Run(uri, func(t *testing.T) {
+			comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+			ygot.BuildEmptyTree(comp)
+			empty := ""
+			comp.State.MfgName = &empty
+			err := fillPsuInfo(comp, "PSU10", false, false, uri, d)
+			if !isNotFound(err) {
+				t.Fatalf("fillPsuInfo(%s) returned %T (%v), want tlerr.NotFoundError", uri, err, err)
+			}
+		})
+	}
+}
+
+// A targeted fan or fan drawer leaf with no value is NotFound, even when
+// translib has pre-created it with its zero value, and the state container
+// omits it.
+func TestFillFanMissingLeafNotFound(t *testing.T) {
+	d, err := db.NewDB(getDBOptions(db.StateDB))
+	if err != nil {
+		t.Fatal("NewDB failed")
+	}
+	defer d.DeleteDB()
+	seedFanInfoEntry(t, d, "Fan11", map[string]string{"presence": "True", "status": "True"})
+	seedFanDrawerInfoEntry(t, d, "drawer11", map[string]string{"presence": "True"})
+
+	for _, c := range []struct {
+		name  string
+		cType componentType
+	}{{"Fan11", CompTypeFan}, {"drawer11", CompTypeFanTray}} {
+		for _, uri := range []string{
+			COMP_STATE_DESCR, COMP_STATE_MFG_NAME, COMP_STATE_FIRM_VER, COMP_STATE_SW_VER,
+			COMP_STATE_ID, COMP_STATE_TEMP, COMP_STATE_HW_VER, COMP_STATE_PART_NO,
+			COMP_STATE_SERIAL_NO, COMP_STATE_MODEL_NAME, COMP_STATE_INSTALL_COMPONENT,
+			COMP_STATE_INSTALL_POSITION,
+		} {
+			t.Run(c.name+uri, func(t *testing.T) {
+				comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+				ygot.BuildEmptyTree(comp)
+				empty := ""
+				comp.State.Description = &empty
+				err := fillFanInfo(comp, c.name, uri, d, c.cType)
+				if !isNotFound(err) {
+					t.Fatalf("fillFanInfo(%s) returned %T (%v), want tlerr.NotFoundError", uri, err, err)
+				}
+			})
+		}
+
+		t.Run(c.name+" state container", func(t *testing.T) {
+			comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+			ygot.BuildEmptyTree(comp)
+			if err := fillFanInfo(comp, c.name, COMP_ST, d, c.cType); err != nil {
+				t.Fatalf("fillFanInfo() unexpected error: %v", err)
+			}
+			assertStrLeafUnset(t, comp.State.HardwareVersion, "state/hardware-version")
+			assertStrLeafUnset(t, comp.State.Description, "state/description")
+		})
+	}
+}
+
+// An N/A hardware_revision on a fan or fan drawer is served as stored.
+func TestFillFanHardwareVersionNotAvailableServed(t *testing.T) {
+	d, err := db.NewDB(getDBOptions(db.StateDB))
+	if err != nil {
+		t.Fatal("NewDB failed")
+	}
+	defer d.DeleteDB()
+	seedFanInfoEntry(t, d, "Fan12", map[string]string{"presence": "True", "hardware_revision": "N/A"})
+	seedFanDrawerInfoEntry(t, d, "drawer12", map[string]string{"presence": "True", "hardware_revision": "N/A"})
+
+	for _, c := range []struct {
+		name  string
+		cType componentType
+	}{{"Fan12", CompTypeFan}, {"drawer12", CompTypeFanTray}} {
+		for _, uri := range []string{COMP_ST, COMP_STATE_HW_VER} {
+			t.Run(c.name+uri, func(t *testing.T) {
+				comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+				ygot.BuildEmptyTree(comp)
+				if err := fillFanInfo(comp, c.name, uri, d, c.cType); err != nil {
+					t.Fatalf("fillFanInfo(%s) unexpected error: %v", uri, err)
+				}
+				assertStrLeaf(t, comp.State.HardwareVersion, "N/A", "state/hardware-version")
+			})
+		}
+	}
+}
+
+func isNotFound(err error) bool {
+	_, ok := err.(tlerr.NotFoundError)
+	return ok
+}
+
 // Chassis oper-status is ACTIVE. CHASSIS_INFO does not carry it.
 func TestFillFirmwareInfoOperStatus(t *testing.T) {
 	stdb, err := db.NewDB(getDBOptions(db.StateDB))
@@ -1311,7 +1541,10 @@ func TestFillXcvrMissingLeafNotFound(t *testing.T) {
 		"rx1power": "-inf", "rx2power": "N/A", "rx3power": "N/A", "rx4power": "N/A",
 	})
 
-	for _, targetUriPath := range []string{COMP_STATE_FIRM_VER, COMP_STATE_HW_VER, XCVR_INPUT_POWER_INSTANT} {
+	for _, targetUriPath := range []string{
+		COMP_STATE_FIRM_VER, COMP_STATE_HW_VER, XCVR_INPUT_POWER_INSTANT,
+		COMP_STATE_MODEL_NAME, COMP_STATE_SW_VER, COMP_STATE_LOCATION,
+	} {
 		t.Run(targetUriPath, func(t *testing.T) {
 			comp := &ocbinds.OpenconfigPlatform_Components_Component{}
 			ygot.BuildEmptyTree(comp)
@@ -1320,6 +1553,9 @@ func TestFillXcvrMissingLeafNotFound(t *testing.T) {
 			empty, zero := "", 0.0
 			comp.State.FirmwareVersion = &empty
 			comp.State.HardwareVersion = &empty
+			comp.State.ModelName = &empty
+			comp.State.SoftwareVersion = &empty
+			comp.State.Location = &empty
 			comp.Transceiver.State.InputPower.Instant = &zero
 
 			err := fillXcvrInfo(comp, name, false, "", targetUriPath, dbs)
@@ -1392,9 +1628,68 @@ func TestFillXcvrVendorRev(t *testing.T) {
 	})
 }
 
+// An N/A stored for a transceiver string leaf is served as stored.
+func TestFillXcvrNotAvailableServed(t *testing.T) {
+	d, err := db.NewDB(getDBOptions(db.StateDB))
+	if err != nil {
+		t.Fatal("NewDB failed")
+	}
+	defer d.DeleteDB()
+	cfgdb, err := db.NewDB(getDBOptions(db.ConfigDB))
+	if err != nil {
+		t.Fatal("NewDB failed")
+	}
+	defer cfgdb.DeleteDB()
+	var dbs [db.MaxDB]*db.DB
+	dbs[db.StateDB] = d
+	dbs[db.ConfigDB] = cfgdb
+
+	const name = "Ethernet88"
+	seedXcvrInfoEntry(t, d, name, map[string]string{
+		"type":         "N/A",
+		"hardware_rev": "N/A",
+		"vendor_rev":   "N/A",
+	})
+	seedXcvrFirmwareEntry(t, d, name, map[string]string{"active_firmware": "N/A"})
+	seedXcvrDomEntry(t, d, name, map[string]string{"temperature": "30.0"})
+
+	check := func(t *testing.T, comp *ocbinds.OpenconfigPlatform_Components_Component, targetUriPath string) {
+		switch targetUriPath {
+		case COMP, COMP_STATE_HW_VER:
+			assertStrLeaf(t, comp.State.HardwareVersion, "N/A", "state/hardware-version")
+		}
+		switch targetUriPath {
+		case COMP, COMP_STATE_FIRM_VER:
+			assertStrLeaf(t, comp.State.FirmwareVersion, "N/A", "state/firmware-version")
+		}
+		switch targetUriPath {
+		case COMP, COMP_STATE_DESCR:
+			assertStrLeaf(t, comp.State.Description, "N/A", "state/description")
+		}
+		switch targetUriPath {
+		case COMP, XCVR_VENDOR_REV:
+			assertStrLeaf(t, comp.Transceiver.State.VendorRev, "N/A", "transceiver/state/vendor-rev")
+		}
+	}
+
+	for _, targetUriPath := range []string{
+		COMP, COMP_STATE_HW_VER, COMP_STATE_FIRM_VER, COMP_STATE_DESCR, XCVR_VENDOR_REV,
+	} {
+		t.Run(targetUriPath, func(t *testing.T) {
+			comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+			ygot.BuildEmptyTree(comp)
+			all := targetUriPath == COMP
+			if err := fillXcvrInfo(comp, name, all, "", targetUriPath, dbs); err != nil {
+				t.Fatalf("fillXcvrInfo(%s) unexpected error: %v", targetUriPath, err)
+			}
+			check(t, comp, targetUriPath)
+		})
+	}
+}
+
 // PSU_INFO.revision carries the PSU hardware revision on both the
-// whole-component and the targeted leaf path, and the not-available sentinel
-// leaves the leaf unset.
+// whole-component and the targeted leaf path, and an N/A revision is served
+// as stored.
 func TestFillPsuHardwareVersion(t *testing.T) {
 	d, err := db.NewDB(getDBOptions(db.StateDB))
 	if err != nil {
@@ -1436,13 +1731,13 @@ func TestFillPsuHardwareVersion(t *testing.T) {
 		})
 	}
 
-	t.Run("sentinel revision", func(t *testing.T) {
+	t.Run("N/A revision", func(t *testing.T) {
 		comp := &ocbinds.OpenconfigPlatform_Components_Component{}
 		ygot.BuildEmptyTree(comp)
 		if err := fillPsuInfo(comp, "PSU8", true, false, COMP, d); err != nil {
 			t.Fatalf("fillPsuInfo() unexpected error: %v", err)
 		}
-		assertStrLeafUnset(t, comp.State.HardwareVersion, "state/hardware-version")
+		assertStrLeaf(t, comp.State.HardwareVersion, "N/A", "state/hardware-version")
 	})
 }
 
@@ -1457,6 +1752,9 @@ func TestGetSysComponentsMfgDateNotFound(t *testing.T) {
 	seedPsuInfoEntry(t, d, "PSU9", map[string]string{"presence": "true", "status": "true"})
 	seedFanInfoEntry(t, d, "Fan9", map[string]string{"presence": "True", "status": "True"})
 	seedFanDrawerInfoEntry(t, d, "drawer9", map[string]string{"presence": "True", "mfg_date": "N/A"})
+	defer d.DeleteEntry(&db.TableSpec{Name: PSU_TBL}, db.Key{Comp: []string{"PSU9"}})
+	defer d.DeleteEntry(&db.TableSpec{Name: FAN_TBL}, db.Key{Comp: []string{"Fan9"}})
+	defer d.DeleteEntry(&db.TableSpec{Name: FAN_TRAY_TBL}, db.Key{Comp: []string{"drawer9"}})
 
 	for _, name := range []string{"PSU9", "Fan9", "drawer9"} {
 		t.Run(name, func(t *testing.T) {
