@@ -31,6 +31,9 @@ func populateNiBgpAggregateStateReplay(inParams XfmrParams, ygRoot *ygot.GoStruc
 	if err := populateNiBgpAggregateGlobalStateReplay(inParams, ygRoot, niName, protoName); err != nil {
 		return err
 	}
+	if err := populateNiBgpAggregatePgStateReplay(inParams, ygRoot, niName, protoName); err != nil {
+		return err
+	}
 	return populateNiBgpAggregateNeighborStateReplay(inParams, ygRoot, niName, protoName)
 }
 

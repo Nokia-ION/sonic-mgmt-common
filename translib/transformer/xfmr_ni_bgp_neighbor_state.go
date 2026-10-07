@@ -986,8 +986,7 @@ var Subscribe_ni_bgp_nbr_state_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSub
 
 	pathInfo := NewPathInfo(inParams.uri)
 	neighborAddr := pathInfo.Var("neighbor-address")
-	keyed := neighborAddr != ""
-	if !keyed {
+	if neighborAddr == "" {
 		neighborAddr = "*"
 	}
 	niName := strings.TrimSpace(pathInfo.Var("name"))
@@ -1007,10 +1006,13 @@ var Subscribe_ni_bgp_nbr_state_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSub
 	// inParams.uri instead silently downgrades session-state to sampling.
 	//
 	// The CRUD parent-table check reaches this callback with requestURI unset
-	// and an untrimmed uri, hence the fallback rather than a bare read.
-	leafUri := inParams.requestURI
-	if leafUri == "" {
-		leafUri = inParams.uri
+	// and an untrimmed uri, and a request anchored above this node, at the
+	// neighbor or higher, arrives with requestURI naming that ancestor; both
+	// are read from uri instead.
+	leafUri := inParams.uri
+	if reqUri := strings.TrimSuffix(inParams.requestURI, "/"); reqUri != "" &&
+		(reqUri == strings.TrimSuffix(inParams.uri, "/") || strings.HasPrefix(reqUri, strings.TrimSuffix(inParams.uri, "/")+"/")) {
+		leafUri = inParams.requestURI
 	}
 
 	// A subscription anchored on session-state alone reads NEIGH_STATE_TABLE
@@ -1019,19 +1021,8 @@ var Subscribe_ni_bgp_nbr_state_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSub
 	if strings.HasSuffix(strings.TrimSuffix(leafUri, "/"), "/"+niBgpNbrSessionStateLeaf) {
 		result.dbDataMap = RedisDbSubscribeMap{db.StateDB: {niBgpNbrStateTbl: {neighborAddr: {
 			niBgpNbrStateFld: niBgpNbrSessionStateLeaf}}}}
-		if keyed {
-			result.onChange = OnchangeEnable
-			result.nOpts = &notificationOpts{pType: OnChange}
-			return result, nil
-		}
-		// Without a bound neighbor-address the notification path carries a
-		// wildcard key that has to be resolved back from the Redis key. That
-		// needs a path transformer, because NEIGH_STATE_TABLE has no SONiC YANG
-		// model for translib to convert the key directly. Offer sampling rather
-		// than an on-change subscription that would only fail on the first
-		// notification.
-		result.onChange = OnchangeDisable
-		result.nOpts = &notificationOpts{pType: Sample}
+		result.onChange = OnchangeEnable
+		result.nOpts = &notificationOpts{pType: OnChange}
 		return result, nil
 	}
 
@@ -1102,17 +1093,15 @@ var Subscribe_ni_bgp_nbr_state_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSub
 	// subscriber on the poll interval and undo the point of on-change. The cost
 	// is that a producer that has stopped publishing is noticed on the next
 	// read of the path rather than announced.
-	if appliedOnly && keyed {
+	if appliedOnly {
 		result.onChange = OnchangeEnable
 		result.nOpts = &notificationOpts{pType: OnChange}
 		return result, nil
 	}
 
 	// Everything else is sampled: the state container because it reads the
-	// counter tables too, the messages subtree because it is counters, and any
-	// unkeyed request because its notification key would have to be resolved
-	// back from the Redis key, which needs a path transformer these tables have
-	// no SONiC YANG model to support.
+	// counter tables too, and the messages subtree because it is counters. A
+	// request leaving a key open is resolved by the list path transformer.
 	result.onChange = OnchangeDisable
 	result.nOpts = &notificationOpts{pType: Sample}
 

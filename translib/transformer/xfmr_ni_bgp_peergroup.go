@@ -1573,7 +1573,8 @@ var DbToYang_ni_bgp_pg_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) 
 				return err
 			}
 		}
-		return nil
+		stateFamilies := niBgpPgAppliedGroups(inParams.dbs[db.StateDB], reqInfo.niName)[reqInfo.peerGroupName]
+		return populateNiBgpPgStateReplay(inParams, wrappedRoot, reqInfo.niName, reqInfo.protoName, reqInfo.peerGroupName, stateFamilies, false)
 	}
 
 	if reqInfo.targetPath == niBgpPgTargetAfCfg {

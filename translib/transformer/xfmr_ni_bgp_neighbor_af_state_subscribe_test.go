@@ -295,10 +295,9 @@ func TestSubscribe_ni_bgp_nbr_af_apply_policy_state_paths(t *testing.T) {
 	}
 }
 
-// Without every key bound, the notification key would have to be resolved back
-// from the Redis key, which needs a path transformer this table has none of,
-// so such a request is sampled.
-func TestSubscribe_ni_bgp_nbr_af_apply_policy_state_unkeyed_is_sampled(t *testing.T) {
+// A request leaving a key open stays on-change: the list path transformer
+// resolves the notification key from the Redis key.
+func TestSubscribe_ni_bgp_nbr_af_apply_policy_state_unkeyed_stays_on_change(t *testing.T) {
 	for _, uri := range []string{
 		niBgpNbrSubscNbrUrl + "/afi-safis/afi-safi/apply-policy/state",
 		"/openconfig-network-instance:network-instances/network-instance[name=default]" +
@@ -313,8 +312,8 @@ func TestSubscribe_ni_bgp_nbr_af_apply_policy_state_unkeyed_is_sampled(t *testin
 		if err != nil {
 			t.Fatalf("Subscribe_ni_bgp_nbr_af_state_xfmr(%s) failed: %v", uri, err)
 		}
-		if out.onChange != OnchangeDisable || out.nOpts == nil || out.nOpts.pType != Sample {
-			t.Fatalf("%s: onChange=%v nOpts=%v, want sampling", uri, out.onChange, out.nOpts)
+		if out.onChange != OnchangeEnable || out.nOpts == nil || out.nOpts.pType != OnChange {
+			t.Fatalf("%s: onChange=%v nOpts=%v, want on-change", uri, out.onChange, out.nOpts)
 		}
 		if len(out.dbDataMap[db.StateDB][niBgpNbrAfStatsTbl]) != 1 {
 			t.Fatalf("%s: expected one wildcard key, got %v", uri, out.dbDataMap)
@@ -396,17 +395,17 @@ func TestSubscribe_ni_bgp_nbr_cfg_apply_policy_paths(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Subscribe_ni_bgp_nbr_cfg_xfmr(unkeyed) failed: %v", err)
 	}
-	if out.onChange != OnchangeDisable || out.nOpts == nil || out.nOpts.pType != Sample {
-		t.Fatalf("unkeyed: onChange=%v nOpts=%v, want sampling", out.onChange, out.nOpts)
+	if out.onChange != OnchangeEnable || out.nOpts == nil || out.nOpts.pType != OnChange {
+		t.Fatalf("unkeyed: onChange=%v nOpts=%v, want on-change", out.onChange, out.nOpts)
 	}
 	if _, ok := out.dbDataMap[db.ConfigDB]["BGP_NEIGHBOR_AF"]["default|11.0.0.155|*"]; !ok {
 		t.Fatalf("unkeyed: missing BGP_NEIGHBOR_AF[default|11.0.0.155|*]: %v", out.dbDataMap)
 	}
 }
 
-// Every other path the neighbor config transformer owns, and every call that
-// is not a subscription, gets what translib assumed before the callback was
-// bound. The CRUD parent-table check calls it with requestURI unset, and a
+// A node the neighbor config transformer owns but does not describe, and every
+// call that is not a subscription, gets what translib assumed before the
+// callback was bound. The CRUD parent-table check calls it with requestURI unset, and a
 // mapping returned there would make a write depend on a row existing.
 func TestSubscribe_ni_bgp_nbr_cfg_other_paths_keep_default(t *testing.T) {
 	cfg := niBgpNbrAfSubscUrl("IPV4_UNICAST") + "/apply-policy/config"
@@ -417,8 +416,8 @@ func TestSubscribe_ni_bgp_nbr_cfg_other_paths_keep_default(t *testing.T) {
 		{"CRUD parent-table check", XfmrSubscInParams{uri: cfg, subscProc: TRANSLATE_SUBSCRIBE}},
 		{"exists check", XfmrSubscInParams{uri: cfg, requestURI: cfg, subscProc: TRANSLATE_EXISTS}},
 		{"process subscribe", XfmrSubscInParams{uri: cfg, requestURI: cfg, subscProc: PROCESS_SUBSCRIBE}},
-		{"neighbor config", XfmrSubscInParams{uri: niBgpNbrSubscNbrUrl + "/config", requestURI: niBgpNbrSubscNbrUrl + "/config", subscProc: TRANSLATE_SUBSCRIBE}},
-		{"afi-safi config", XfmrSubscInParams{uri: niBgpNbrAfSubscUrl("IPV4_UNICAST") + "/config", requestURI: niBgpNbrAfSubscUrl("IPV4_UNICAST") + "/config", subscProc: TRANSLATE_SUBSCRIBE}},
+		{"afi-safi ipv4-unicast", XfmrSubscInParams{uri: niBgpNbrAfSubscUrl("IPV4_UNICAST") + "/ipv4-unicast",
+			requestURI: niBgpNbrAfSubscUrl("IPV4_UNICAST") + "/ipv4-unicast", subscProc: TRANSLATE_SUBSCRIBE}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
