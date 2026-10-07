@@ -2402,101 +2402,51 @@ var DbToYang_ni_bgp_nbr_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams)
 	return nil
 }
 
-// niBgpNbrUriKeysRe strips the list keys from a uri, so that a subscription
-// leaving any of them unbound is recognised by its shape alone.
-var niBgpNbrUriKeysRe = regexp.MustCompile(`\[[^\]]*\]`)
+const niBgpNbrSubscAnchor = "/bgp/neighbors/neighbor"
 
-const niBgpNbrAfApplySubscPath = "/bgp/neighbors/neighbor/afi-safis/afi-safi/apply-policy"
-
-// niBgpNbrAfApplyCfgFldForLeaf maps the apply-policy config leaves onto their
-// BGP_NEIGHBOR_AF field. The default policies have none, as the write side
-// refuses them.
-var niBgpNbrAfApplyCfgFldForLeaf = map[string]string{
-	"import-policy": niBgpNbrRouteMapInFld,
-	"export-policy": niBgpNbrRouteMapOutFld,
+// The neighbor config containers, each with the fields its GET reads. The
+// allow-own-as leaf is held on every address family row of the neighbor, so
+// it watches all of them.
+var niBgpNbrCfgSubscMaps = map[string]niBgpSubscMap{
+	"/config": {dbNum: db.ConfigDB, table: niBgpNbrTbl, key: niBgpSubscKeyNiNbr, fields: map[string][]string{
+		"peer-group":    {niBgpNbrPeerGroupFld},
+		"peer-as":       {niBgpNbrAsnFld},
+		"enabled":       {niBgpNbrAdminStatus},
+		"auth-password": {niBgpNbrAuthPwdFld},
+	}},
+	"/timers/config": {dbNum: db.ConfigDB, table: niBgpNbrTbl, key: niBgpSubscKeyNiNbr, fields: map[string][]string{
+		"connect-retry":      {niBgpNbrConnRetryFld},
+		"hold-time":          {niBgpNbrHoldTimeFld},
+		"keepalive-interval": {niBgpNbrKeepaliveFld},
+	}},
+	"/transport/config": {dbNum: db.ConfigDB, table: niBgpNbrTbl, key: niBgpSubscKeyNiNbr, fields: map[string][]string{
+		"local-address": {niBgpNbrLocalAddrFld},
+		"passive-mode":  {niBgpNbrPassiveModeFld},
+	}},
+	"/as-path-options/config": {dbNum: db.ConfigDB, table: niBgpNbrAfTbl, key: niBgpSubscKeyNiNbrAllAfs, fields: map[string][]string{
+		"allow-own-as": {niBgpNbrAllowAsInFld, niBgpNbrAllowAsCntFld},
+	}},
+	"/afi-safis/afi-safi/config": {dbNum: db.ConfigDB, table: niBgpNbrAfTbl, key: niBgpSubscKeyNiNbrAf, fields: map[string][]string{
+		"enabled":             {niBgpNbrAdminStatus},
+		"send-community-type": {niBgpNbrSendCommFld},
+	}},
+	"/afi-safis/afi-safi/apply-policy/config": {dbNum: db.ConfigDB, table: niBgpNbrAfTbl, key: niBgpSubscKeyNiNbrAf, fields: map[string][]string{
+		"import-policy": {niBgpNbrRouteMapInFld},
+		"export-policy": {niBgpNbrRouteMapOutFld},
+	}},
 }
 
-// Subscribe_ni_bgp_nbr_cfg_xfmr maps a subscription to the neighbor afi-safi
-// apply-policy subtree. Every other path this transformer owns is answered
-// with what translib assumes for a transformer that binds no subscribe
-// callback, which is how those paths were served before one was bound. That
-// includes the CRUD parent-table check, which calls this with requestURI
-// unset and must still find no table of this transformer's to verify.
-//
-// The apply-policy container needs a callback of its own because it is the
-// target of a container subscription: left to the default, it reports
-// on-change as unsupported and fails the subscription before its state child
-// is reached.
+// The nodes this transformer owns that hold no field of their own.
+var niBgpNbrCfgSubscVirtual = map[string]bool{
+	"/afi-safis":                       true,
+	"/afi-safis/afi-safi":              true,
+	"/afi-safis/afi-safi/apply-policy": true,
+}
+
+// Subscribe_ni_bgp_nbr_cfg_xfmr maps a subscription to the neighbor config
+// containers. Each watches the fields its GET reads, on-change: CONFIG_DB is
+// written only when the configuration changes, and the list path transformer
+// resolves the keys a request leaves open.
 var Subscribe_ni_bgp_nbr_cfg_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSubscInParams) (XfmrSubscOutParams, error) {
-	result := XfmrSubscOutParams{onChange: OnchangeDisable}
-	if inParams.subscProc != TRANSLATE_SUBSCRIBE || inParams.requestURI == "" {
-		return result, nil
-	}
-
-	cfgUri := strings.TrimSuffix(inParams.uri, "/")
-	bareUri := niBgpNbrUriKeysRe.ReplaceAllString(cfgUri, "")
-	if strings.HasSuffix(bareUri, niBgpNbrAfApplySubscPath) {
-		// The container holds no field of its own. Its config and state
-		// children are subscribed through their own callbacks.
-		result.isVirtualTbl = true
-		result.onChange = OnchangeEnable
-		return result, nil
-	}
-	if !strings.HasSuffix(bareUri, niBgpNbrAfApplySubscPath+"/config") {
-		return result, nil
-	}
-
-	if err := validateNiBgpProtoNameInUri(inParams.uri); err != nil {
-		return result, err
-	}
-	pathInfo := NewPathInfo(inParams.uri)
-	niName := strings.TrimSpace(pathInfo.Var("name"))
-	neighborAddr := pathInfo.Var("neighbor-address")
-	afiSafi := ""
-	if raw := pathInfo.Var("afi-safi-name"); raw != "" {
-		if normalized, ok := normalizeNiBgpNbrAfiSafiName(raw); ok {
-			afiSafi = normalized
-		}
-	}
-	if niName == "" {
-		niName = "*"
-	}
-	if neighborAddr == "" {
-		neighborAddr = "*"
-	}
-	if afiSafi == "" {
-		afiSafi = "*"
-	}
-	keyed := niName != "*" && neighborAddr != "*" && afiSafi != "*"
-
-	// The subscribe path trims a trailing leaf off uri before calling this
-	// callback, so which leaf was asked for survives only in requestURI.
-	targetLeaf := ""
-	if reqUri := strings.TrimSuffix(inParams.requestURI, "/"); strings.HasPrefix(reqUri, cfgUri+"/") {
-		targetLeaf = reqUri[len(cfgUri)+1:]
-	}
-	fields := map[string]string{}
-	for leaf, fld := range niBgpNbrAfApplyCfgFldForLeaf {
-		if targetLeaf == "" || targetLeaf == leaf {
-			fields[fld] = leaf
-		}
-	}
-	if len(fields) == 0 {
-		result.isVirtualTbl = true
-		result.onChange = OnchangeEnable
-		return result, nil
-	}
-
-	result.dbDataMap = RedisDbSubscribeMap{db.ConfigDB: {niBgpNbrAfTbl: {
-		niName + "|" + neighborAddr + "|" + afiSafi: fields}}}
-	// An unkeyed request is sampled: the row key spells the address family
-	// the CONFIG_DB way, so translib cannot turn it back into the afi-safi
-	// list key without a path transformer.
-	if keyed {
-		result.onChange = OnchangeEnable
-		result.nOpts = &notificationOpts{pType: OnChange}
-		return result, nil
-	}
-	result.nOpts = &notificationOpts{pType: Sample}
-	return result, nil
+	return niBgpSubscribe(inParams, niBgpNbrSubscAnchor, niBgpNbrCfgSubscVirtual, niBgpNbrCfgSubscMaps, nil)
 }

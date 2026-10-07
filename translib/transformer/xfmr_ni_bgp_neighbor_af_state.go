@@ -500,8 +500,7 @@ var Subscribe_ni_bgp_nbr_af_state_xfmr SubTreeXfmrSubscribe = func(inParams Xfmr
 	}
 
 	if strings.HasSuffix(strings.TrimSuffix(inParams.uri, "/"), "/"+niBgpNbrAfApplyPolicySubtree+"/"+niBgpNbrAfStateSubtree) {
-		return subscribeNiBgpNbrAfApplyPolicyState(inParams, niName+"|"+neighborAddr+"|"+afiSafi,
-			niName != "*" && neighborAddr != "*" && afiSafi != "*")
+		return subscribeNiBgpNbrAfApplyPolicyState(inParams, niName+"|"+neighborAddr+"|"+afiSafi)
 	}
 
 	result.isVirtualTbl = false
@@ -528,7 +527,7 @@ var Subscribe_ni_bgp_nbr_af_state_xfmr SubTreeXfmrSubscribe = func(inParams Xfmr
 // so a policy swapped or removed reaches a subscriber as an update or a leaf
 // delete rather than as the row being rebuilt. That is what makes these
 // leaves on-change capable where the counters beside them are not.
-func subscribeNiBgpNbrAfApplyPolicyState(inParams XfmrSubscInParams, afKey string, keyed bool) (XfmrSubscOutParams, error) {
+func subscribeNiBgpNbrAfApplyPolicyState(inParams XfmrSubscInParams, afKey string) (XfmrSubscOutParams, error) {
 	var result XfmrSubscOutParams
 
 	// The subscribe path trims a trailing leaf off uri before calling this
@@ -558,16 +557,9 @@ func subscribeNiBgpNbrAfApplyPolicyState(inParams XfmrSubscInParams, afKey strin
 	result.dbDataMap = RedisDbSubscribeMap{db.StateDB: {niBgpNbrAfStatsTbl: {afKey: fields}}}
 
 	// BGP_NEIGH_APPLIED_META is not registered, for the reason the transport
-	// leaves give: its marker is rewritten every scrape. An unkeyed request is
-	// sampled, because its notification key would have to be resolved back
-	// from the Redis key, which needs a path transformer this table has no
-	// SONiC YANG model to support.
-	if keyed {
-		result.onChange = OnchangeEnable
-		result.nOpts = &notificationOpts{pType: OnChange}
-		return result, nil
-	}
-	result.onChange = OnchangeDisable
-	result.nOpts = &notificationOpts{pType: Sample}
+	// leaves give: its marker is rewritten every scrape. A request leaving a
+	// key open is resolved by the list path transformer.
+	result.onChange = OnchangeEnable
+	result.nOpts = &notificationOpts{pType: OnChange}
 	return result, nil
 }
