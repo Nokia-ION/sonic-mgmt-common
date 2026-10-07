@@ -50,6 +50,9 @@ type notificationEvent struct {
 	// Meta info for processSubscribe calls
 	forceProcessSub bool
 	appCache        map[*appInfo]appInterface
+
+	// Number of SubscribeResponses queued through this event.
+	sentCount int
 }
 
 func notificationHandler(d *db.DB, sKey *db.SKey, key *db.Key, event db.SEvent) error {
@@ -95,6 +98,13 @@ func notificationHandler(d *db.DB, sKey *db.SKey, key *db.Key, event db.SEvent) 
 //  1. Scan all keys for the table
 //  2. Map each key to yang path
 //  3. Get value for each path and send the notification message
+//
+// A single yang path can be mapped to more than one db table (for example a
+// container whose leaves come from CONFIG_DB, APPL_DB and COUNTERS_DB). Every
+// such mapping arrives here as a separate notificationInfo, but for a fixed
+// (non wildcard) path each of them would produce the same GET of the whole
+// path. Such a path is therefore sent only once per subscribe request; see
+// initialUpdateDedupKey.
 func sendInitialUpdate(sInfo *subscribeInfo, nInfo *notificationInfo) error {
 	ne := notificationEvent{
 		id:    sInfo.id,
@@ -102,6 +112,22 @@ func sendInitialUpdate(sInfo *subscribeInfo, nInfo *notificationInfo) error {
 	}
 
 	pathStr := path.String(nInfo.path)
+
+	if dKey, ok := initialUpdateDedupKey(nInfo); ok {
+		if sInfo.initSynced[dKey] {
+			log.V(1).Infof("[%s] initial update for path %s already sent; skipping table %v",
+				ne.id, pathStr, tableInfo(nInfo.table))
+			return nil
+		}
+		// Record the path only after a notification went out. A mapping whose
+		// db key does not exist sends nothing, and must not stop another
+		// mapping of the same path from supplying the data.
+		defer func() {
+			if ne.sentCount > 0 {
+				sInfo.markInitialUpdateSent(dKey)
+			}
+		}()
+	}
 	topNode := []*yangNodeInfo{new(yangNodeInfo)}
 
 	log.V(1).Infof("[%s] initial update for path %s", ne.id, pathStr)
@@ -206,6 +232,46 @@ func sendInitialUpdate(sInfo *subscribeInfo, nInfo *notificationInfo) error {
 	}
 
 	return nil
+}
+
+// initialUpdateDedupKey returns the key under which the initial update of the
+// given notificationInfo is remembered by the subscribeInfo, and whether the
+// update may be deduplicated at all.
+//
+// The initial update of a notificationInfo depends only on its yang path when
+// all of the following hold; the key is then the path itself:
+//   - the path has no wildcard keys, so it names one fixed node;
+//   - the db key (if any) is not a glob pattern, so the walk visits at most one
+//     entry and does not resolve the path per matching key;
+//   - there is no app handler, which would generate the notification from the
+//     db entry instead of a GET of the path;
+//   - the path is not mapped to a dynamic table, nor to a field or key group
+//     scan, which have their own iteration semantics.
+//
+// Anything else is always sent as is.
+func initialUpdateDedupKey(nInfo *notificationInfo) (string, bool) {
+	switch {
+	case nInfo == nil || nInfo.path == nil:
+		return "", false
+	case nInfo.handler != nil:
+		return "", false
+	case nInfo.flags.Has(niWildcardPath) || nInfo.flags.Has(niDynamic):
+		return "", false
+	case len(nInfo.fldScanPatt) != 0 || len(nInfo.keyGroup) != 0:
+		return "", false
+	case nInfo.table != nil && (nInfo.key == nil || nInfo.key.IsPattern()):
+		return "", false
+	}
+	return path.String(nInfo.path), true
+}
+
+// markInitialUpdateSent records that the initial update for the given
+// dedup key (see initialUpdateDedupKey) has been sent.
+func (sInfo *subscribeInfo) markInitialUpdateSent(key string) {
+	if sInfo.initSynced == nil {
+		sInfo.initSynced = make(map[string]bool)
+	}
+	sInfo.initSynced[key] = true
 }
 
 func sendSyncNotification(sInfo *subscribeInfo, isTerminated bool) {
@@ -796,6 +862,7 @@ func (ne *notificationEvent) sendNotification(nInfo *notificationInfo, relativeP
 }
 
 func (ne *notificationEvent) send(resp *SubscribeResponse) {
+	ne.sentCount++
 	if log.V(5) {
 		log.Infof("[%s] SubscribeResponse %s", ne.id, objPrinter.Sprint(resp))
 	}
