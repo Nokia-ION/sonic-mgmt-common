@@ -7,6 +7,7 @@ import (
 	"github.com/Azure/sonic-mgmt-common/translib/db"
 	lvl "github.com/Azure/sonic-mgmt-common/translib/log"
 	"github.com/Azure/sonic-mgmt-common/translib/ocbinds"
+	"github.com/Azure/sonic-mgmt-common/translib/tlerr"
 	log "github.com/golang/glog"
 	"github.com/openconfig/ygot/ygot"
 )
@@ -46,6 +47,12 @@ func handleSingleQueuePopulate(qName string, queuesObj *ocbinds.OpenconfigQos_Qo
 	if queuesObj == nil {
 		return fmt.Errorf("handleSingleQueuePopulate; nil queuesObj passed")
 	}
+	qId, err := getNativeQueueNameNoLock("*", qName)
+	if err != nil {
+		log.V(lvl.DEBUG).Infof("handleSingleQueuePopulate; queue %v: %v", qName, err)
+		return tlerr.NotFound("Resource not found")
+	}
+
 	if queueObj, ok = queuesObj.Queue[qName]; !ok {
 		queueObj, _ = queuesObj.NewQueue(qName)
 	}
@@ -54,13 +61,9 @@ func handleSingleQueuePopulate(qName string, queuesObj *ocbinds.OpenconfigQos_Qo
 	queueObj.Config.Name = &qName
 	queueObj.State.Name = &qName
 
-	qId, err := getNativeQueueNameNoLock("*", qName)
-	if err != nil {
-		return fmt.Errorf("handleSingleQueuePopulate; getNativeQueueName returned: %w", err)
-	}
 	iqId, err := strconv.Atoi(qId)
 	if err != nil {
-		return fmt.Errorf("handleSingleQueuePopulate; failed to convert qId=%s to int: %w", err)
+		return fmt.Errorf("handleSingleQueuePopulate; failed to convert qId=%s to int: %w", qId, err)
 	}
 	u8qId := uint8(iqId)
 
@@ -102,6 +105,14 @@ var Subscribe_qos_queue_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSubscInPar
 			return XfmrSubscOutParams{isVirtualTbl: true}, nil
 		}
 		key = "*"
+	} else if key != "*" {
+		// A named queue has no CONFIG_DB row: UMF_QUEUE is only written by a
+		// /qos REPLACE and is absent from the CVL schema, so the queue lives
+		// only in the name to id map that DbToYang_qos_queue_xfmr reads. The
+		// framework also calls this for its keyed-path existence check, which
+		// would otherwise fail on the missing UMF_QUEUE row.
+		log.V(lvl.DEBUG).Infof("+++ Subscribe_qos_queue_xfmr end with virtual table for queue %v", key)
+		return XfmrSubscOutParams{isVirtualTbl: true}, nil
 	}
 	log.V(lvl.DEBUG).Infof("+++ Subscribe_qos_queue_xfmr end")
 	return XfmrSubscOutParams{dbDataMap: RedisDbSubscribeMap{db.ConfigDB: {"UMF_QUEUE": {key: {}}}}}, nil
