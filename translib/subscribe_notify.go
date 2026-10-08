@@ -113,7 +113,8 @@ func sendInitialUpdate(sInfo *subscribeInfo, nInfo *notificationInfo) error {
 
 	pathStr := path.String(nInfo.path)
 
-	if dKey, ok := initialUpdateDedupKey(nInfo); ok {
+	dKey, dedupe := initialUpdateDedupKey(nInfo)
+	if dedupe {
 		if sInfo.initSynced[dKey] {
 			log.V(1).Infof("[%s] initial update for path %s already sent; skipping table %v",
 				ne.id, pathStr, tableInfo(nInfo.table))
@@ -228,6 +229,14 @@ func sendInitialUpdate(sInfo *subscribeInfo, nInfo *notificationInfo) error {
 			}
 
 			ne.sendNotification(nInfo, "", topNode)
+
+			// A fixed path reads the same data whichever key matched it, so
+			// the first key that produced a notification covers all others.
+			if dedupe && ne.sentCount > 0 {
+				log.V(1).Infof("[%s] initial update for path %s sent; skipping remaining keys of %v",
+					ne.id, pathStr, tableInfo(nInfo.table))
+				return nil
+			}
 		}
 	}
 
@@ -240,9 +249,10 @@ func sendInitialUpdate(sInfo *subscribeInfo, nInfo *notificationInfo) error {
 //
 // The initial update of a notificationInfo depends only on its yang path when
 // all of the following hold; the key is then the path itself:
-//   - the path has no wildcard keys, so it names one fixed node;
-//   - the db key (if any) is not a glob pattern, so the walk visits at most one
-//     entry and does not resolve the path per matching key;
+//   - the path has no wildcard keys, so it names one fixed node. A glob db key
+//     may then match several entries, for example one per queue of an
+//     interface or one per input of a scheduler, but processSubscribe resolves
+//     every one of them to that same node and the GET returns the same data;
 //   - there is no app handler, which would generate the notification from the
 //     db entry instead of a GET of the path;
 //   - the path is not mapped to a dynamic table, nor to a field or key group
@@ -259,7 +269,7 @@ func initialUpdateDedupKey(nInfo *notificationInfo) (string, bool) {
 		return "", false
 	case len(nInfo.fldScanPatt) != 0 || len(nInfo.keyGroup) != 0:
 		return "", false
-	case nInfo.table != nil && (nInfo.key == nil || nInfo.key.IsPattern()):
+	case nInfo.table != nil && nInfo.key == nil:
 		return "", false
 	}
 	return path.String(nInfo.path), true
