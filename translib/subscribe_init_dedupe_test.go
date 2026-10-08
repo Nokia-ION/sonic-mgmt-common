@@ -78,13 +78,20 @@ func TestInitialUpdateDedupKey(t *testing.T) {
 		modify: func(n *notificationInfo) { n.flags.Set(niDynamic) },
 		want:   false,
 	}, {
-		name:   "glob pattern key",
+		name:   "fixed path, glob pattern key",
 		modify: func(n *notificationInfo) { n.key = &db.Key{Comp: []string{"*"}} },
-		want:   false,
+		want:   true,
 	}, {
-		name:   "glob pattern in one key component",
-		modify: func(n *notificationInfo) { n.key = &db.Key{Comp: []string{"Ethernet0", "?"}} },
-		want:   false,
+		name:   "fixed path, glob pattern in one key component",
+		modify: func(n *notificationInfo) { n.key = &db.Key{Comp: []string{"Ethernet0", "*"}} },
+		want:   true,
+	}, {
+		name: "wildcard path, glob pattern key",
+		modify: func(n *notificationInfo) {
+			n.key = &db.Key{Comp: []string{"*"}}
+			n.flags.Set(niWildcardPath)
+		},
+		want: false,
 	}, {
 		name:   "db table without a key",
 		modify: func(n *notificationInfo) { n.key = nil },
@@ -182,6 +189,43 @@ func TestSendInitialUpdate_skipsPathAlreadySent(t *testing.T) {
 	} {
 		key, _ := initialUpdateDedupKey(n)
 		sInfo.markInitialUpdateSent(key)
+
+		if err := sendInitialUpdate(sInfo, n); err != nil {
+			t.Fatalf("sendInitialUpdate(%s) failed: %v", n.table.Name, err)
+		}
+	}
+
+	if q.Len() != 0 {
+		t.Fatalf("expected no responses, queue has %d", q.Len())
+	}
+}
+
+// A fixed path mapped to glob db keys in more than one table, as the QoS
+// interface output is to QUEUE and UMF_TRUNK_QUEUE, shares one dedup key and
+// is skipped once sent.
+func TestSendInitialUpdate_skipsFixedPathWithGlobKey(t *testing.T) {
+	q := queue.NewPriorityQueue(1, false)
+	defer q.Dispose()
+
+	sInfo := &subscribeInfo{id: "dedupe-glob-test", q: q}
+	outPath := dedupeTestPath("openconfig-qos:qos", "interfaces", "interface", "output", "scheduler-policy", "config", "name")
+
+	var first string
+	for i, n := range []*notificationInfo{
+		dedupeTestNInfo(db.ConfigDB, "QUEUE", "Ethernet0", "*"),
+		dedupeTestNInfo(db.ConfigDB, "UMF_TRUNK_QUEUE", "Ethernet0", "*"),
+	} {
+		n.path = outPath
+		key, ok := initialUpdateDedupKey(n)
+		if !ok {
+			t.Fatalf("table %s: expected a fixed path with a glob key to be deduplicable", n.table.Name)
+		}
+		if i == 0 {
+			first = key
+			sInfo.markInitialUpdateSent(key)
+		} else if key != first {
+			t.Fatalf("table %s: key=%q, want %q", n.table.Name, key, first)
+		}
 
 		if err := sendInitialUpdate(sInfo, n); err != nil {
 			t.Fatalf("sendInitialUpdate(%s) failed: %v", n.table.Name, err)
