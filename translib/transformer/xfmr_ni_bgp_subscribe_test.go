@@ -94,6 +94,15 @@ func TestSubscribe_ni_bgp_nbr_cfg_containers(t *testing.T) {
 			map[string]string{"admin_status": "enabled", "send_community": "send-community-type"}, OnChange},
 		{"afi-safi config reached from the instance", af + "/config", af, db.ConfigDB, "BGP_NEIGHBOR_AF", "default|11.0.0.155|ipv6_unicast",
 			map[string]string{"admin_status": "enabled", "send_community": "send-community-type"}, OnChange},
+		// Both prefix-limit containers read one limit, and the field that moves
+		// it between them is watched with max-prefixes.
+		{"prefix-limit config", af + "/ipv6-unicast/prefix-limit/config", af + "/ipv6-unicast/prefix-limit/config",
+			db.ConfigDB, "BGP_NEIGHBOR_AF", "default|11.0.0.155|ipv6_unicast",
+			map[string]string{"max_prefix_limit": "max-prefixes", "max_prefix_force": "max-prefixes",
+				"max_prefix_warning_only": "prevent-teardown", "max_prefix_warning_threshold": "warning-threshold-pct"}, OnChange},
+		{"prefix-limit-received warning-threshold-pct leaf", af + "/ipv6-unicast/prefix-limit-received/config",
+			af + "/ipv6-unicast/prefix-limit-received/config/warning-threshold-pct", db.ConfigDB, "BGP_NEIGHBOR_AF", "default|11.0.0.155|ipv6_unicast",
+			map[string]string{"max_prefix_warning_threshold": "warning-threshold-pct"}, OnChange},
 	})
 }
 
@@ -160,6 +169,8 @@ func TestSubscribe_ni_bgp_cfg_virtual_nodes(t *testing.T) {
 		{Subscribe_ni_bgp_global_cfg_xfmr, niBgpSubscProtoUrl + "/bgp/neighbors/neighbor[neighbor-address=11.0.0.155]"},
 		{Subscribe_ni_bgp_global_cfg_xfmr, niBgpSubscProtoUrl + "/bgp/peer-groups/peer-group[peer-group-name=PG1]/timers"},
 		{Subscribe_ni_bgp_nbr_cfg_xfmr, niBgpSubscProtoUrl + "/bgp/neighbors/neighbor[neighbor-address=11.0.0.155]/afi-safis"},
+		{Subscribe_ni_bgp_nbr_cfg_xfmr, niBgpSubscProtoUrl + "/bgp/neighbors/neighbor[neighbor-address=11.0.0.155]/afi-safis/afi-safi[afi-safi-name=IPV4_UNICAST]/ipv4-unicast"},
+		{Subscribe_ni_bgp_nbr_cfg_xfmr, niBgpSubscProtoUrl + "/bgp/neighbors/neighbor[neighbor-address=11.0.0.155]/afi-safis/afi-safi[afi-safi-name=IPV4_UNICAST]/ipv4-unicast/prefix-limit-received"},
 		{Subscribe_ni_bgp_pg_cfg_xfmr, niBgpSubscProtoUrl + "/bgp/peer-groups/peer-group[peer-group-name=PG1]/afi-safis/afi-safi[afi-safi-name=IPV4_UNICAST]"},
 	} {
 		out, err := tc.cb(XfmrSubscInParams{uri: tc.uri, requestURI: tc.uri, subscProc: TRANSLATE_SUBSCRIBE})

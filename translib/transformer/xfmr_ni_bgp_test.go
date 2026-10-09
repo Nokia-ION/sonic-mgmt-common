@@ -5460,3 +5460,209 @@ func Test_openconfig_network_instance_bgp_apply_policy_multiple_policies_rejecte
 
 	unloadDB(db.ConfigDB, cleanupTbl)
 }
+
+// One neighbor with an IPv4 and an IPv6 family, each carrying a field the
+// prefix-limit containers do not own.
+func niBgpNbrPfxLimitPreReq() (map[string]interface{}, map[string]interface{}) {
+	preReqMap := map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": map[string]interface{}{"local_asn": "65100"},
+		},
+		"BGP_NEIGHBOR": map[string]interface{}{
+			"default|20.0.0.1": map[string]interface{}{"asn": "65200"},
+		},
+		"BGP_NEIGHBOR_AF": map[string]interface{}{
+			"default|20.0.0.1|ipv4_unicast": map[string]interface{}{"admin_status": "up"},
+			"default|20.0.0.1|ipv6_unicast": map[string]interface{}{"admin_status": "up"},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"BGP_NEIGHBOR_AF": map[string]interface{}{
+			"default|20.0.0.1|ipv4_unicast": "",
+			"default|20.0.0.1|ipv6_unicast": "",
+		},
+		"BGP_NEIGHBOR": map[string]interface{}{"default|20.0.0.1": ""},
+		"BGP_GLOBALS":  map[string]interface{}{"default": ""},
+	}
+	return preReqMap, cleanupTbl
+}
+
+func niBgpNbrAfRow(afiSafi string, fields map[string]interface{}) map[string]interface{} {
+	return map[string]interface{}{"BGP_NEIGHBOR_AF": map[string]interface{}{"default|20.0.0.1|" + afiSafi: fields}}
+}
+
+// prefix-limit and prefix-limit-received share the one maximum-prefix limit of
+// the family's row. A write to either puts its limit in effect, and each
+// container reports only the limit it holds.
+func Test_openconfig_network_instance_bgp_neighbor_afi_safi_prefix_limit(t *testing.T) {
+	preReqMap, cleanupTbl := niBgpNbrPfxLimitPreReq()
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	v4Url := niBgpNbrAfUrl + "/ipv4-unicast"
+	accUrl := v4Url + "/prefix-limit/config"
+	rcvUrl := v4Url + "/prefix-limit-received/config"
+	rowKey := "BGP_NEIGHBOR_AF|default|20.0.0.1|ipv4_unicast"
+
+	t.Run("PATCH neighbor prefix-limit config container",
+		processSetRequest(accUrl, `{"max-prefixes":100,"prevent-teardown":true,"warning-threshold-pct":80}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify accepted limit with every leaf",
+		verifyDbResult(rclient, rowKey, niBgpNbrAfRow("ipv4_unicast", map[string]interface{}{
+			"admin_status": "up", "max_prefix_limit": "100", "max_prefix_warning_only": "true",
+			"max_prefix_warning_threshold": "80", "max_prefix_force": "false"}), false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET neighbor prefix-limit config container",
+		processGetRequest(accUrl, nil, `{"openconfig-network-instance:config":{"max-prefixes":100,"prevent-teardown":true,"warning-threshold-pct":80}}`, false))
+	t.Run("GET neighbor prefix-limit prevent-teardown leaf",
+		processGetRequest(accUrl+"/prevent-teardown", nil, `{"openconfig-network-instance:prevent-teardown":true}`, false))
+	t.Run("GET neighbor prefix-limit-received config container holds nothing",
+		processGetRequest(rcvUrl, nil, "{}", false))
+	time.Sleep(1 * time.Second)
+
+	// The most recent write wins, and the leaves of the limit it replaces do
+	// not carry over to the new one.
+	t.Run("PATCH neighbor prefix-limit-received max-prefixes leaf",
+		processSetRequest(rcvUrl+"/max-prefixes", `{"openconfig-network-instance:max-prefixes":200}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify received limit replaces the accepted one",
+		verifyDbResult(rclient, rowKey, niBgpNbrAfRow("ipv4_unicast", map[string]interface{}{
+			"admin_status": "up", "max_prefix_limit": "200", "max_prefix_force": "true"}), false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("PATCH neighbor prefix-limit-received warning-threshold-pct leaf",
+		processSetRequest(rcvUrl+"/warning-threshold-pct", `{"openconfig-network-instance:warning-threshold-pct":90}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify received limit keeps max-prefixes beside the new leaf",
+		verifyDbResult(rclient, rowKey, niBgpNbrAfRow("ipv4_unicast", map[string]interface{}{
+			"admin_status": "up", "max_prefix_limit": "200", "max_prefix_warning_threshold": "90", "max_prefix_force": "true"}), false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET neighbor prefix-limit-received max-prefixes leaf",
+		processGetRequest(rcvUrl+"/max-prefixes", nil, `{"openconfig-network-instance:max-prefixes":200}`, false))
+	t.Run("GET neighbor prefix-limit config container holds nothing",
+		processGetRequest(accUrl, nil, "{}", false))
+	t.Run("GET neighbor ipv4-unicast container",
+		processGetRequest(v4Url, nil, `{"openconfig-network-instance:ipv4-unicast":{"prefix-limit-received":{"config":{"max-prefixes":200,"warning-threshold-pct":90}}}}`, false))
+	t.Run("GET neighbor prefix-limit-received container",
+		processGetRequest(v4Url+"/prefix-limit-received", nil, `{"openconfig-network-instance:prefix-limit-received":{"config":{"max-prefixes":200,"warning-threshold-pct":90}}}`, false))
+	t.Run("GET neighbor afi-safi instance with its prefix limit",
+		processGetRequest(niBgpNbrAfUrl, nil, `{"openconfig-network-instance:afi-safi":[{"afi-safi-name":"openconfig-bgp-types:IPV4_UNICAST",`+
+			`"config":{"afi-safi-name":"openconfig-bgp-types:IPV4_UNICAST","enabled":true},`+
+			`"ipv4-unicast":{"prefix-limit-received":{"config":{"max-prefixes":200,"warning-threshold-pct":90}}}}]}`, false))
+	time.Sleep(1 * time.Second)
+
+	// The container not in effect holds nothing, so deleting it leaves the
+	// limit of the other in place.
+	t.Run("DELETE neighbor prefix-limit config container not in effect",
+		processDeleteRequest(accUrl, false))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify received limit kept",
+		verifyDbResult(rclient, rowKey, niBgpNbrAfRow("ipv4_unicast", map[string]interface{}{
+			"admin_status": "up", "max_prefix_limit": "200", "max_prefix_warning_threshold": "90", "max_prefix_force": "true"}), false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("DELETE neighbor prefix-limit-received warning-threshold-pct leaf",
+		processDeleteRequest(rcvUrl+"/warning-threshold-pct", false))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify only the threshold cleared",
+		verifyDbResult(rclient, rowKey, niBgpNbrAfRow("ipv4_unicast", map[string]interface{}{
+			"admin_status": "up", "max_prefix_limit": "200", "max_prefix_force": "true"}), false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("PATCH neighbor prefix-limit prevent-teardown leaf",
+		processSetRequest(accUrl+"/prevent-teardown", `{"openconfig-network-instance:prevent-teardown":true}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify accepted leaf alone takes the limit back",
+		verifyDbResult(rclient, rowKey, niBgpNbrAfRow("ipv4_unicast", map[string]interface{}{
+			"admin_status": "up", "max_prefix_warning_only": "true", "max_prefix_force": "false"}), false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("PATCH neighbor prefix-limit max-prefixes leaf",
+		processSetRequest(accUrl+"/max-prefixes", `{"openconfig-network-instance:max-prefixes":300}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	// The limit is what the other leaves qualify, so they go with it.
+	t.Run("DELETE neighbor prefix-limit max-prefixes leaf",
+		processDeleteRequest(accUrl+"/max-prefixes", false))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify every prefix-limit field cleared",
+		verifyDbResult(rclient, rowKey, niBgpNbrAfRow("ipv4_unicast", map[string]interface{}{"admin_status": "up"}), false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("PATCH neighbor ipv6-unicast prefix-limit under the IPv4 family rejected",
+		processSetRequest(niBgpNbrAfUrl+"/ipv6-unicast/prefix-limit/config/max-prefixes", `{"openconfig-network-instance:max-prefixes":10}`, "PATCH", true,
+			tlerr.InvalidArgsError{Format: "BGP neighbor ipv6-unicast container does not belong to afi-safi IPV4_UNICAST"}))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+// The levels above prefix-limit config carry it too: the afi-safi instance,
+// the family container and the prefix-limit containers themselves.
+func Test_openconfig_network_instance_bgp_neighbor_afi_safi_prefix_limit_hierarchy(t *testing.T) {
+	preReqMap, cleanupTbl := niBgpNbrPfxLimitPreReq()
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	afUrl := niBgpNbrUrl + "/afi-safis/afi-safi[afi-safi-name=IPV6_UNICAST]"
+	v6Url := afUrl + "/ipv6-unicast"
+	rowKey := "BGP_NEIGHBOR_AF|default|20.0.0.1|ipv6_unicast"
+
+	t.Run("PATCH neighbor afi-safi instance with an IPv6 prefix-limit",
+		processSetRequest(afUrl, `{"afi-safi-name":"IPV6_UNICAST","config":{"afi-safi-name":"IPV6_UNICAST"},`+
+			`"ipv6-unicast":{"prefix-limit":{"config":{"max-prefixes":500,"warning-threshold-pct":70}}}}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify accepted limit from the afi-safi instance",
+		verifyDbResult(rclient, rowKey, niBgpNbrAfRow("ipv6_unicast", map[string]interface{}{
+			"admin_status": "up", "max_prefix_limit": "500", "max_prefix_warning_threshold": "70", "max_prefix_force": "false"}), false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("PATCH neighbor ipv6-unicast container with prefix-limit-received",
+		processSetRequest(v6Url, `{"prefix-limit-received":{"config":{"max-prefixes":600,"prevent-teardown":true}}}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify received limit from the family container",
+		verifyDbResult(rclient, rowKey, niBgpNbrAfRow("ipv6_unicast", map[string]interface{}{
+			"admin_status": "up", "max_prefix_limit": "600", "max_prefix_warning_only": "true", "max_prefix_force": "true"}), false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET neighbor ipv6-unicast container",
+		processGetRequest(v6Url, nil, `{"openconfig-network-instance:ipv6-unicast":{"prefix-limit-received":{"config":{"max-prefixes":600,"prevent-teardown":true}}}}`, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("PUT neighbor prefix-limit config container",
+		processSetRequest(v6Url+"/prefix-limit/config", `{"max-prefixes":700}`, "PUT", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify REPLACE leaves only the payload of the accepted limit",
+		verifyDbResult(rclient, rowKey, niBgpNbrAfRow("ipv6_unicast", map[string]interface{}{
+			"admin_status": "up", "max_prefix_limit": "700", "max_prefix_force": "false"}), false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("PATCH neighbor prefix-limit container",
+		processSetRequest(v6Url+"/prefix-limit", `{"config":{"prevent-teardown":false}}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("GET neighbor prefix-limit container",
+		processGetRequest(v6Url+"/prefix-limit", nil, `{"openconfig-network-instance:prefix-limit":{"config":{"max-prefixes":700,"prevent-teardown":false}}}`, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("PATCH neighbor ipv6-unicast container with both limits rejected",
+		processSetRequest(v6Url, `{"prefix-limit":{"config":{"max-prefixes":1}},"prefix-limit-received":{"config":{"max-prefixes":2}}}`, "PATCH", true,
+			tlerr.InvalidArgsError{Format: "BGP neighbor prefix-limit and prefix-limit-received cannot both be configured; only one limit is in effect per address family"}))
+	time.Sleep(1 * time.Second)
+
+	t.Run("PATCH neighbor IPv4 afi-safi instance with an ipv6-unicast prefix-limit rejected",
+		processSetRequest(niBgpNbrAfUrl, `{"afi-safi-name":"IPV4_UNICAST","config":{"afi-safi-name":"IPV4_UNICAST"},`+
+			`"ipv6-unicast":{"prefix-limit":{"config":{"max-prefixes":5}}}}`, "PATCH", true,
+			tlerr.InvalidArgsError{Format: "BGP neighbor ipv6-unicast prefix-limit does not belong to afi-safi ipv4_unicast"}))
+	time.Sleep(1 * time.Second)
+
+	t.Run("DELETE neighbor ipv6-unicast container",
+		processDeleteRequest(v6Url, false))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify ipv6-unicast DELETE clears the limit and keeps the family",
+		verifyDbResult(rclient, rowKey, niBgpNbrAfRow("ipv6_unicast", map[string]interface{}{"admin_status": "up"}), false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
