@@ -556,7 +556,7 @@ func rpolStmtGetTargetUris(policyName, stmtName string, entry db.Value) []string
 	if hasField(rpolMatchPrefixSetFld, rpolMatchIpv6PrefixSetFld) {
 		uris = append(uris, rpolStmtCondMatchPfxCfgUri(policyName, stmtName))
 	}
-	if hasField(rpolSetNextHopFld, rpolSetOriginFld, rpolSetLocalPrefFld, rpolSetMedFld) {
+	if hasField(rpolSetNextHopFld, rpolSetIpv6NextHopGlobalFld, rpolSetOriginFld, rpolSetLocalPrefFld, rpolSetMedFld) {
 		uris = append(uris, rpolStmtBgpActionsCfgUri(policyName, stmtName))
 	}
 	if hasField(rpolSetCommunityInlineFld, rpolSetCommunityRefFld) {
