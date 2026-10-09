@@ -20,6 +20,7 @@ package transformer
 
 import (
 	"fmt"
+	"net"
 	"reflect"
 	"regexp"
 	"runtime/debug"
@@ -56,6 +57,7 @@ const (
 	rpolSetAsnFld                            = "set_asn"
 	rpolSetRepeatAsnFld                      = "set_repeat_asn"
 	rpolSetNextHopFld                        = "set_next_hop"
+	rpolSetIpv6NextHopGlobalFld              = "set_ipv6_next_hop_global"
 	rpolSetOriginFld                         = "set_origin"
 	rpolSetLocalPrefFld                      = "set_local_pref"
 	rpolSetMedFld                            = "set_med"
@@ -2224,6 +2226,36 @@ func parseRpolStringValue(v interface{}) (string, bool) {
 	return "", false
 }
 
+// rpolSetNextHopFldFor picks the ROUTE_MAP field a next-hop is written to.
+// frrcfgd renders set_next_hop as "set ip next-hop", self included, and
+// set_ipv6_next_hop_global as "set ipv6 next-hop global", so an IPv6 address
+// in the first would be rejected by FRR and silently not applied.
+func rpolSetNextHopFldFor(nh string) (string, error) {
+	if strings.EqualFold(nh, "self") {
+		return rpolSetNextHopFld, nil
+	}
+	ip := net.ParseIP(nh)
+	switch {
+	case ip == nil:
+		return "", tlerr.InvalidArgsError{Format: fmt.Sprintf("routing-policy bgp-actions set-next-hop %q is neither an IP address nor SELF", nh)}
+	case ip.To4() != nil:
+		return rpolSetNextHopFld, nil
+	default:
+		return rpolSetIpv6NextHopGlobalFld, nil
+	}
+}
+
+// rpolBgpNextHopFromRow reports the next-hop a ROUTE_MAP row sets, from
+// whichever of its two fields holds it.
+func rpolBgpNextHopFromRow(entry db.Value) (string, bool) {
+	for _, fld := range []string{rpolSetNextHopFld, rpolSetIpv6NextHopGlobalFld} {
+		if nh := strings.TrimSpace(entry.Field[fld]); nh != "" {
+			return nh, true
+		}
+	}
+	return "", false
+}
+
 func parseRpolBgpSetNextHopValue(v interface{}) (string, bool) {
 	switch val := v.(type) {
 	case *ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_Config_SetNextHop_Union_String:
@@ -2751,7 +2783,7 @@ var rpolMatchPrefixSetFlds = []string{rpolMatchPrefixSetFld, rpolMatchIpv6Prefix
 var rpolBgpConditionsFlds = []string{rpolMatchMedFld, rpolMatchOriginFld, rpolMatchLocalPrefFld, rpolMatchCommunityFld, rpolMatchExtCommunityFld}
 var rpolSetCommunityFlds = []string{rpolSetCommunityInlineFld, rpolSetCommunityRefFld}
 var rpolSetAsPathPrependFlds = []string{rpolSetAsnFld, rpolSetRepeatAsnFld}
-var rpolBgpActionsFlds = append(append([]string{rpolSetNextHopFld, rpolSetOriginFld, rpolSetLocalPrefFld, rpolSetMedFld, rpolSetMetricActionFld, rpolSetMetricFld},
+var rpolBgpActionsFlds = append(append([]string{rpolSetNextHopFld, rpolSetIpv6NextHopGlobalFld, rpolSetOriginFld, rpolSetLocalPrefFld, rpolSetMedFld, rpolSetMetricActionFld, rpolSetMetricFld},
 	rpolSetCommunityFlds...), rpolSetAsPathPrependFlds...)
 
 // rpolStageSubOp merges rows into the sub-operation of oper, so that several
@@ -2785,13 +2817,27 @@ func rpolStageStaleMatchPrefixSet(inParams XfmrParams, reqInfo *rpolReqInfo, fie
 	if _, v6 := fields[rpolMatchIpv6PrefixSetFld]; v6 {
 		stale = rpolMatchPrefixSetFld
 	}
+	return rpolStageStaleFamilyField(inParams, reqInfo, fields, stale, rpolMatchPrefixSetFld, rpolMatchIpv6PrefixSetFld)
+}
+
+// rpolStageStaleNextHop does the same for the next-hop a statement sets, which
+// ROUTE_MAP spells as set_next_hop for an IPv4 address or self and as
+// set_ipv6_next_hop_global for an IPv6 address.
+func rpolStageStaleNextHop(inParams XfmrParams, reqInfo *rpolReqInfo, fields map[string]string) (bool, error) {
+	stale := rpolSetIpv6NextHopGlobalFld
+	if _, v6 := fields[rpolSetIpv6NextHopGlobalFld]; v6 {
+		stale = rpolSetNextHopFld
+	}
+	return rpolStageStaleFamilyField(inParams, reqInfo, fields, stale, rpolSetNextHopFld, rpolSetIpv6NextHopGlobalFld)
+}
+
+func rpolStageStaleFamilyField(inParams XfmrParams, reqInfo *rpolReqInfo, fields map[string]string, stale string, pair ...string) (bool, error) {
 	entry, err := inParams.dbs[db.ConfigDB].GetEntry(&db.TableSpec{Name: rpolRouteMapTbl}, db.Key{Comp: []string{reqInfo.policyName, reqInfo.stmtName}})
 	if err != nil || strings.TrimSpace(entry.Get(stale)) == "" {
 		return false, nil
 	}
 	if inParams.oper == REPLACE {
-		owned := map[string]bool{rpolMatchPrefixSetFld: true, rpolMatchIpv6PrefixSetFld: true}
-		row := niBgpReplaceRowFields(entry, fields, owned)
+		row := niBgpReplaceRowFields(entry, fields, rpolOwnedFldSet(pair))
 		rpolAddAuxField(inParams, reqInfo, stale)
 		return true, rpolStageSubOp(inParams, REPLACE, makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, row))
 	}
@@ -3071,6 +3117,7 @@ func rpolYangToDbXfmr(inParams XfmrParams) (res map[string]map[string]db.Value, 
 			switch reqInfo.targetLeaf {
 			case "":
 				fields[rpolSetNextHopFld] = ""
+				fields[rpolSetIpv6NextHopGlobalFld] = ""
 				fields[rpolSetOriginFld] = ""
 				fields[rpolSetLocalPrefFld] = ""
 				fields[rpolSetMedFld] = ""
@@ -3078,6 +3125,7 @@ func rpolYangToDbXfmr(inParams XfmrParams) (res map[string]map[string]db.Value, 
 				fields[rpolSetMetricFld] = ""
 			case rpolSetNextHopLeaf:
 				fields[rpolSetNextHopFld] = ""
+				fields[rpolSetIpv6NextHopGlobalFld] = ""
 			case rpolSetRouteOriginLeaf:
 				fields[rpolSetOriginFld] = ""
 			case rpolSetLocalPrefLeaf:
@@ -3414,18 +3462,21 @@ func rpolYangToDbXfmr(inParams XfmrParams) (res map[string]map[string]db.Value, 
 		cfgObj := getRpolPolicyStmtBgpActionsCfgObj(inParams.ygRoot, reqInfo.policyName, reqInfo.stmtName, false)
 		fields := map[string]string{}
 
+		nextHopGiven := false
 		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == rpolSetNextHopLeaf {
-			if nh, ok := parseRpolBgpSetNextHopValue(inParams.param); ok {
-				fields[rpolSetNextHopFld] = nh
-			} else if cfgObj != nil {
-				if nh, ok := parseRpolBgpSetNextHopValue(cfgObj.SetNextHop); ok {
-					fields[rpolSetNextHopFld] = nh
-				}
+			nh, ok := parseRpolBgpSetNextHopValue(inParams.param)
+			if !ok && cfgObj != nil {
+				nh, ok = parseRpolBgpSetNextHopValue(cfgObj.SetNextHop)
 			}
-			if reqInfo.targetLeaf == rpolSetNextHopLeaf {
-				if _, ok := fields[rpolSetNextHopFld]; !ok {
-					return res, tlerr.InvalidArgsError{Format: "routing-policy statement actions bgp-actions config set-next-hop is missing in request payload"}
+			if ok {
+				fld, fldErr := rpolSetNextHopFldFor(nh)
+				if fldErr != nil {
+					return res, fldErr
 				}
+				fields[fld] = nh
+				nextHopGiven = true
+			} else if reqInfo.targetLeaf == rpolSetNextHopLeaf {
+				return res, tlerr.InvalidArgsError{Format: "routing-policy statement actions bgp-actions config set-next-hop is missing in request payload"}
 			}
 		}
 
@@ -3507,6 +3558,17 @@ func rpolYangToDbXfmr(inParams XfmrParams) (res map[string]map[string]db.Value, 
 
 		if len(fields) == 0 {
 			return res, tlerr.InvalidArgsError{Format: "routing-policy statement actions bgp-actions config payload missing supported fields (set-next-hop/set-route-origin/set-local-pref/set-med/set-med-action)"}
+		}
+		if nextHopGiven {
+			// A statement sets one next-hop, so a write naming the other
+			// family's field replaces the one held, as the HLD requires.
+			staged, err := rpolStageStaleNextHop(inParams, reqInfo, fields)
+			if err != nil {
+				return res, err
+			}
+			if staged {
+				return res, nil
+			}
 		}
 		return makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, fields), nil
 	}
@@ -4202,8 +4264,7 @@ func rpolDbToYangXfmr(inParams XfmrParams) (err error) {
 		}
 
 		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == rpolSetNextHopLeaf {
-			if nh, ok := applied.Field[rpolSetNextHopFld]; ok && strings.TrimSpace(nh) != "" {
-				nextHop := strings.TrimSpace(nh)
+			if nextHop, ok := rpolBgpNextHopFromRow(applied); ok {
 				if strings.EqualFold(nextHop, "self") {
 					stateObj.SetNextHop = &ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_State_SetNextHop_Union_E_OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_Config_SetNextHop{
 						E_OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_Config_SetNextHop: ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_Config_SetNextHop_SELF,
@@ -4266,8 +4327,7 @@ func rpolDbToYangXfmr(inParams XfmrParams) (err error) {
 		}
 
 		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == rpolSetNextHopLeaf {
-			if nh, ok := entry.Field[rpolSetNextHopFld]; ok && strings.TrimSpace(nh) != "" {
-				nextHop := strings.TrimSpace(nh)
+			if nextHop, ok := rpolBgpNextHopFromRow(entry); ok {
 				if strings.EqualFold(nextHop, "self") {
 					cfgObj.SetNextHop = &ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_Config_SetNextHop_Union_E_OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_Config_SetNextHop{
 						E_OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_Config_SetNextHop: ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_Config_SetNextHop_SELF,
