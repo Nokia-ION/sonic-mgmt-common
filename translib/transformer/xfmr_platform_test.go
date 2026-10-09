@@ -1826,3 +1826,137 @@ func TestFillPcieName(t *testing.T) {
 		})
 	}
 }
+
+func seedStorageInfoEntry(t *testing.T, d *db.DB, name string, fields map[string]string) {
+	t.Helper()
+	if err := d.SetEntry(&db.TableSpec{Name: STORAGE_INFO}, db.Key{Comp: []string{name}}, db.Value{Field: fields}); err != nil {
+		t.Fatalf("failed to seed STORAGE_INFO for %s: %v", name, err)
+	}
+}
+
+func assertUint8Leaf(t *testing.T, got *uint8, want uint8, leaf string) {
+	t.Helper()
+	if got == nil {
+		t.Fatalf("%s is nil, want %d", leaf, want)
+	}
+	if *got != want {
+		t.Errorf("%s = %d, want %d", leaf, *got, want)
+	}
+}
+
+// stormond's STORAGE_INFO rows are served as STORAGE components under
+// "chassis 1", and a targeted leaf with no value is NotFound.
+func TestFillStorageInfo(t *testing.T) {
+	d, err := db.NewDB(getDBOptions(db.StateDB))
+	if err != nil {
+		t.Fatal("NewDB failed")
+	}
+	defer d.DeleteDB()
+	seedStorageInfoEntry(t, d, "sdz", map[string]string{
+		"device_model": "M.2 (S42) 3IE7",
+		"serial":       "YCA12404080220032",
+		"firmware":     "S23C27i",
+		"health":       "97.4",
+		"temperature":  "28",
+	})
+	seedStorageInfoEntry(t, d, "mmcblk9", map[string]string{
+		"device_model": "G1M15M",
+		"serial":       "0x1ba2a988",
+		"health":       "100.0",
+		"temperature":  "N/A",
+	})
+	seedStorageInfoEntry(t, d, STORAGE_FSSTATS_KEY, map[string]string{"successful_sync_time": "2026-10-07 03:20:45"})
+	defer d.DeleteEntry(&db.TableSpec{Name: STORAGE_INFO}, db.Key{Comp: []string{"sdz"}})
+	defer d.DeleteEntry(&db.TableSpec{Name: STORAGE_INFO}, db.Key{Comp: []string{"mmcblk9"}})
+	defer d.DeleteEntry(&db.TableSpec{Name: STORAGE_INFO}, db.Key{Comp: []string{STORAGE_FSSTATS_KEY}})
+
+	newComp := func() *ocbinds.OpenconfigPlatform_Components_Component {
+		comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+		ygot.BuildEmptyTree(comp)
+		return comp
+	}
+
+	t.Run("whole component", func(t *testing.T) {
+		comp := newComp()
+		if err := fillStorageInfo(comp, "sdz", AllPaths, COMP, d); err != nil {
+			t.Fatalf("fillStorageInfo() unexpected error: %v", err)
+		}
+		assertStrLeaf(t, comp.State.Name, "sdz", "state/name")
+		want, _ := comp.State.To_OpenconfigPlatform_Components_Component_State_Type_Union(
+			ocbinds.OpenconfigPlatformTypes_OPENCONFIG_HARDWARE_COMPONENT_STORAGE)
+		if !reflect.DeepEqual(comp.State.Type, want) {
+			t.Errorf("state/type == %v, want %v", comp.State.Type, want)
+		}
+		assertStrLeaf(t, comp.State.Parent, CHASSIS_COMP_NAME, "state/parent")
+		assertStrLeaf(t, comp.State.SerialNo, "YCA12404080220032", "state/serial-no")
+		assertStrLeaf(t, comp.State.ModelName, "M.2 (S42) 3IE7", "state/model-name")
+		assertStrLeaf(t, comp.State.FirmwareVersion, "S23C27i", "state/firmware-version")
+		if comp.State.Temperature.Instant == nil || *comp.State.Temperature.Instant != 28 {
+			t.Errorf("state/temperature/instant = %v, want 28", comp.State.Temperature.Instant)
+		}
+		assertUint8Leaf(t, comp.Storage.State.Counters.LifeLeft, 97, "storage/state/counters/life-left")
+		if comp.State.OperStatus != ocbinds.OpenconfigPlatformTypes_COMPONENT_OPER_STATUS_ACTIVE {
+			t.Errorf("state/oper-status == %v, want ACTIVE", comp.State.OperStatus)
+		}
+	})
+
+	t.Run("targeted oper-status", func(t *testing.T) {
+		comp := newComp()
+		if err := fillStorageInfo(comp, "mmcblk9", SingularPath, COMP_STATE_OPER_STATUS, d); err != nil {
+			t.Fatalf("fillStorageInfo() unexpected error: %v", err)
+		}
+		if comp.State.OperStatus != ocbinds.OpenconfigPlatformTypes_COMPONENT_OPER_STATUS_ACTIVE {
+			t.Errorf("state/oper-status == %v, want ACTIVE", comp.State.OperStatus)
+		}
+	})
+
+	t.Run("missing and N/A values", func(t *testing.T) {
+		comp := newComp()
+		if err := fillStorageInfo(comp, "mmcblk9", AllPaths, COMP, d); err != nil {
+			t.Fatalf("fillStorageInfo() unexpected error: %v", err)
+		}
+		assertStrLeafUnset(t, comp.State.FirmwareVersion, "state/firmware-version")
+		if comp.State.Temperature.Instant != nil {
+			t.Errorf("state/temperature/instant = %v, want unset", *comp.State.Temperature.Instant)
+		}
+		assertUint8Leaf(t, comp.Storage.State.Counters.LifeLeft, 100, "storage/state/counters/life-left")
+	})
+
+	t.Run("targeted life-left", func(t *testing.T) {
+		comp := newComp()
+		if err := fillStorageInfo(comp, "sdz", SingularPath, COMP_STORAGE_LIFE_LEFT, d); err != nil {
+			t.Fatalf("fillStorageInfo() unexpected error: %v", err)
+		}
+		assertUint8Leaf(t, comp.Storage.State.Counters.LifeLeft, 97, "storage/state/counters/life-left")
+	})
+
+	for _, uri := range []string{COMP_STATE_FIRM_VER, COMP_STATE_TEMP, COMP_STATE_MFG_NAME, COMP_STATE_PART_NO} {
+		t.Run("targeted "+uri, func(t *testing.T) {
+			if err := fillStorageInfo(newComp(), "mmcblk9", SingularPath, uri, d); !isNotFound(err) {
+				t.Fatalf("fillStorageInfo(%s) returned %T (%v), want tlerr.NotFoundError", uri, err, err)
+			}
+		})
+	}
+
+	t.Run("sync bookkeeping row", func(t *testing.T) {
+		if err := fillStorageInfo(newComp(), STORAGE_FSSTATS_KEY, AllPaths, COMP, d); !isNotFound(err) {
+			t.Fatalf("fillStorageInfo(%s) returned %T (%v), want tlerr.NotFoundError", STORAGE_FSSTATS_KEY, err, err)
+		}
+	})
+
+	t.Run("enumeration", func(t *testing.T) {
+		device := &ocbinds.Device{}
+		ygot.BuildEmptyTree(device)
+		var inParams XfmrParams
+		inParams.dbs[db.StateDB] = d
+		createCompAndFuncCall(device.Components, COMP, CompTypeStorage, inParams, STORAGE_INFO, STORAGE_NAME_PREFIX)
+		for _, name := range []string{"sdz", "mmcblk9"} {
+			if device.Components.Component[name] == nil {
+				t.Errorf("component %s not created", name)
+			}
+		}
+		if device.Components.Component[STORAGE_FSSTATS_KEY] != nil {
+			t.Errorf("component %s created, want skipped", STORAGE_FSSTATS_KEY)
+		}
+	})
+}

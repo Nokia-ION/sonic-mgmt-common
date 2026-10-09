@@ -20,6 +20,7 @@ package transformer
 
 import (
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -179,6 +180,14 @@ var hostCpuTypes = []componentType{CompTypeChassis}
 /* FRU component types that carry presence/status health in STATE_DB. */
 var fruTypes = []componentType{CompTypePsu, CompTypeFan, CompTypeFanTray}
 
+/* Component types with no presence or status in STATE_DB.  One that is served
+ * exists and is working, so its status properties are fixed: present, active,
+ * ACTIVE.  With no table to watch they can only be sampled. */
+var fixedStatusTypes = []componentType{CompTypeStorage}
+
+/* Component types carrying the status properties. */
+var statusTypes = slices.Concat(fruTypes, fixedStatusTypes)
+
 /* Maps a FRU component type to the STATE_DB table holding its presence/status. */
 var fruStatusTables = map[componentType]string{
 	CompTypePsu:     PSU_TBL,
@@ -209,10 +218,13 @@ func fruStatusEntry(compName string, cType componentType, dbs [db.MaxDB]*db.DB) 
  * !status -> INACTIVE, present and status -> ACTIVE. */
 func operStatusDescriptor() propDescriptor {
 	return propDescriptor{
-		types:     fruTypes,
+		types:     statusTypes,
 		tables:    fruStatusTables,
 		subFields: []string{"presence", "status"},
 		get: func(compName string, cType componentType, dbs [db.MaxDB]*db.DB) (interface{}, error) {
+			if slices.Contains(fixedStatusTypes, cType) {
+				return "ACTIVE", nil
+			}
 			entry, err := fruStatusEntry(compName, cType, dbs)
 			if err != nil {
 				return nil, err
@@ -235,10 +247,13 @@ func operStatusDescriptor() propDescriptor {
 /* Serves one boolean field of a FRU's health row as its own property. */
 func fruBool(field string) propDescriptor {
 	return propDescriptor{
-		types:  fruTypes,
+		types:  statusTypes,
 		tables: fruStatusTables,
 		field:  field,
 		get: func(compName string, cType componentType, dbs [db.MaxDB]*db.DB) (interface{}, error) {
+			if slices.Contains(fixedStatusTypes, cType) {
+				return true, nil
+			}
 			entry, err := fruStatusEntry(compName, cType, dbs)
 			if err != nil {
 				return nil, err
