@@ -175,10 +175,10 @@ func TestPropSubscribeInfo(t *testing.T) {
 	}, {
 		// A property read from the host has no table to watch.
 		prop:  "uptime",
-		cType: CompTypeChassis,
+		cType: CompTypeCpu,
 	}, {
 		prop:  "utilization",
-		cType: CompTypeChassis,
+		cType: CompTypeCpu,
 	}}
 
 	for _, c := range cases {
@@ -827,12 +827,12 @@ func TestFillPropertiesCapacityNotFound(t *testing.T) {
 	}
 }
 
-// Every host property is served on a chassis without a database client, since
-// none of them reads one.
+// Every host property is served on the host CPU without a database client,
+// since none of them reads one.
 func TestFillPropertiesHostCpuWithoutDb(t *testing.T) {
 	var dbs [db.MaxDB]*db.DB
 	comp := &ocbinds.OpenconfigPlatform_Components_Component{}
-	if err := fillProperties(comp, "chassis 1", CompTypeChassis, "", dbs); err != nil {
+	if err := fillProperties(comp, CPU_COMP_NAME, CompTypeCpu, "", dbs); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	for name := range nonDbProps {
