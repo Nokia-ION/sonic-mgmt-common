@@ -25,6 +25,7 @@ import (
 	"math"
 	"path"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -89,9 +90,12 @@ const (
 	XCVR_LANE_LIMIT = 8
 
 	XCVR_KEY_PREFIX     = "Ethernet"
-	STORAGE_NAME_PREFIX = "/*"
+	STORAGE_NAME_PREFIX = "*"
+	/* STORAGE_INFO row that holds stormond's sync bookkeeping, not a device. */
+	STORAGE_FSSTATS_KEY = "FSSTATS_SYNC"
 	IC_NAME_PREFIX      = "integrated_circuit"
 	CHASSIS_PREFIX      = "chassis"
+	CHASSIS_COMP_NAME   = "chassis 1" // CHASSIS_INFO_KEY in psud, thermalctld and sensormond
 	NW_STACK_PREFIX     = "network_stack"
 	OS_PREFIX           = "os"
 	BOOTL_PREFIX        = "boot_loader"
@@ -152,8 +156,10 @@ const (
 	COMP_STATE_PCIE_CORRECTABLE_ERRORS_TOTAL = "/openconfig-platform:components/component/state/pcie/correctable-errors/total-errors"
 
 	/** Supported Storage Component URIs **/
-	COMP_STORAGE    = "/openconfig-platform:components/component/storage"
-	COMP_STORAGE_ST = "/openconfig-platform:components/component/storage/state"
+	COMP_STORAGE           = "/openconfig-platform:components/component/storage"
+	COMP_STORAGE_ST        = "/openconfig-platform:components/component/storage/state"
+	COMP_STORAGE_CTRS      = "/openconfig-platform:components/component/storage/state/openconfig-platform-storage:counters"
+	COMP_STORAGE_LIFE_LEFT = "/openconfig-platform:components/component/storage/state/openconfig-platform-storage:counters/life-left"
 
 	/** Supported POWER SUPPLY URIs **/
 	COMP_PS                      = "/openconfig-platform:components/component/power-supply"
@@ -376,43 +382,11 @@ type HumiditySensorInfo struct {
 
 /*StorageInfo structure read from State DB*/
 type StorageInfo struct {
-	PartNo                         string
-	SerialNo                       string
-	Parent                         string
-	OperStatus                     string
-	Empty                          string
-	IOErrors                       string
-	Removable                      string
-	WriteAmplificationFactor       string
-	RawReadErrorRate               string
-	ThroughputPerformance          string
-	ReallocatedSectorCount         string
-	PowerOnSeconds                 string
-	SsdLifeLeft                    string
-	PowerCycleCount                string
-	UncorrectableSectorCountOnLine string
-	NumPureSpare                   string
-	NumInitialInvalidBlock         string
-	SlcTotalEraseCount             string
-	SlcMaxEraseCount               string
-	SlcMinEraseCount               string
-	SlcAvgEraseCount               string
-	TlcTotalEraseCount             string
-	TlcMaxEraseCount               string
-	TlcMinEraseCount               string
-	TlcAvgEraseCount               string
-	WearLevelingCount              string
-	ProgramFailCount               string
-	EraseFailCount                 string
-	PowerOffRetractCount           string
-	Temperature                    string
-	HardwareEccRecovered           string
-	ReallocationEventCount         string
-	UdmaCrcErrorsCount             string
-	AvailableReservedSpace         string
-	WriteSectorCount               string
-	ReadSectorCount                string
-	FlashWriteCount                string
+	SerialNo        string
+	ModelName       string
+	FirmwareVersion string
+	Health          string
+	Temperature     string
 }
 
 type DiskCarrierInfo struct {
@@ -1296,7 +1270,7 @@ func compTypesForSubscriptionUri(uri string) []componentType {
 	} else if strings.HasPrefix(uri, "/openconfig-platform:components/component/boot-loader") {
 		cTypes = []componentType{CompTypeBootLoader}
 	} else if strings.HasPrefix(uri, "/openconfig-platform:components/component/state/oper-status") {
-		cTypes = []componentType{CompTypeFan, CompTypeNWStack, CompTypeOS, CompTypeChassis, CompTypeTemp, CompTypePsu, CompTypeFanTray}
+		cTypes = []componentType{CompTypeFan, CompTypeNWStack, CompTypeOS, CompTypeChassis, CompTypeTemp, CompTypePsu, CompTypeFanTray, CompTypeStorage}
 	} else if strings.HasPrefix(uri, "/openconfig-platform:components/component/oc-transceiver:transceiver") {
 		cTypes = []componentType{CompTypeXcvr}
 	} else if strings.HasPrefix(uri, COMP_STATE_PARENT) || strings.HasPrefix(uri, COMP_STATE_INSTALL_POSITION) || strings.HasPrefix(uri, COMP_STATE_INSTALL_COMPONENT) || strings.HasPrefix(uri, COMP_STATE_REMOVABLE) {
@@ -2010,6 +1984,9 @@ func createCompAndFuncCall(pfCpts *ocbinds.OpenconfigPlatform_Components, target
 				compNames = []string{IC_COMP_NAME}
 			}
 		}
+	case CompTypeStorage:
+		compNames, err = getAllTableEntries(d, tblName, tblKey)
+		compNames = slices.DeleteFunc(compNames, func(n string) bool { return n == STORAGE_FSSTATS_KEY })
 	default:
 		compNames, err = getAllTableEntries(d, tblName, tblKey)
 	}
@@ -2653,98 +2630,82 @@ func fillFanInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 }
 
 func getStorageFromDb(name string, d *db.DB, tblName string) (StorageInfo, error) {
-	/* Backend is populating STORAGE_INFO in: sonic-platform-daemons/sonic-componentd/scripts/componentd */
+	/* Backend is populating STORAGE_INFO in: sonic-platform-daemons/sonic-stormond/scripts/stormond */
+	if name == STORAGE_FSSTATS_KEY {
+		return StorageInfo{}, tlerr.NotFound("%s is not a storage device", name)
+	}
 	storageEntry, err := d.GetEntry(&db.TableSpec{Name: tblName}, db.Key{Comp: []string{name}})
 	if err != nil {
 		log.V(lvl.DEBUG).Info("Cant get entry: ", name, "; Error: ", err)
 		return StorageInfo{}, err
 	}
-	storageInfo := StorageInfo{
-		IOErrors:                       storageEntry.Get("io-errors"),
-		PartNo:                         storageEntry.Get("part-no"),
-		Parent:                         storageEntry.Get("parent"),
-		SerialNo:                       storageEntry.Get("serial-no"),
-		Removable:                      storageEntry.Get("removable"),
-		OperStatus:                     storageEntry.Get("oper-status"),
-		Empty:                          storageEntry.Get("empty"),
-		WriteAmplificationFactor:       storageEntry.Get("write-amplification-factor"),
-		RawReadErrorRate:               storageEntry.Get("raw-read-error-rate"),
-		ThroughputPerformance:          storageEntry.Get("throughput-performance"),
-		ReallocatedSectorCount:         storageEntry.Get("reallocated-sector-count"),
-		PowerOnSeconds:                 storageEntry.Get("power-on-time"),
-		SsdLifeLeft:                    storageEntry.Get("ssd-life-left"),
-		PowerCycleCount:                storageEntry.Get("power-cycle-count"),
-		UncorrectableSectorCountOnLine: storageEntry.Get("uncorrectable-sector-count"),
-		NumPureSpare:                   storageEntry.Get("num-pure-spare"),
-		NumInitialInvalidBlock:         storageEntry.Get("num-initial-invalid-block"),
-		SlcTotalEraseCount:             storageEntry.Get("slc-total-erase-count"),
-		SlcMaxEraseCount:               storageEntry.Get("slc-max-erase-count"),
-		SlcMinEraseCount:               storageEntry.Get("slc-min-erase-count"),
-		SlcAvgEraseCount:               storageEntry.Get("slc-avg-erase-count"),
-		TlcTotalEraseCount:             storageEntry.Get("tlc-total-erase-count"),
-		TlcMaxEraseCount:               storageEntry.Get("tlc-max-erase-count"),
-		TlcMinEraseCount:               storageEntry.Get("tlc-min-erase-count"),
-		TlcAvgEraseCount:               storageEntry.Get("tlc-avg-erase-count"),
-		WearLevelingCount:              storageEntry.Get("wear-leveling-count"),
-		ProgramFailCount:               storageEntry.Get("program-fail-count"),
-		EraseFailCount:                 storageEntry.Get("erase-fail-count"),
-		PowerOffRetractCount:           storageEntry.Get("power-off-retract-count"),
-		Temperature:                    storageEntry.Get("temperature-celsius"),
-		HardwareEccRecovered:           storageEntry.Get("hardware-ecc-recovered"),
-		ReallocationEventCount:         storageEntry.Get("reallocation-event-count"),
-		UdmaCrcErrorsCount:             storageEntry.Get("udma-crc-error"),
-		AvailableReservedSpace:         storageEntry.Get("available-reserved-space"),
-		WriteSectorCount:               storageEntry.Get("host-writes"),
-		ReadSectorCount:                storageEntry.Get("read-sector-count"),
-		FlashWriteCount:                storageEntry.Get("nand-writes"),
+	return StorageInfo{
+		SerialNo:        storageEntry.Get("serial"),
+		ModelName:       storageEntry.Get("device_model"),
+		FirmwareVersion: storageEntry.Get("firmware"),
+		Health:          storageEntry.Get("health"),
+		Temperature:     storageEntry.Get("temperature"),
+	}, nil
+}
+
+/* Remaining device life as a whole percentage. stormond writes health as an
+ * integer or a float string, or N/A when the device does not report it. */
+func storageLifeLeft(health string) (uint8, bool) {
+	v, err := strconv.ParseFloat(health, 64)
+	if err != nil || math.IsNaN(v) || v < 0 || v > 100 {
+		return 0, false
 	}
-	return storageInfo, nil
+	return uint8(math.Round(v)), true
 }
 
 /* Filling in the state info for storage available in Redis DB */
 func fillStorageInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 	name string, pType PathType, targetUriPath string, stdb *db.DB) error {
-	statePresent := true
 	storageInfo, err := getStorageFromDb(name, stdb, STORAGE_INFO)
 	if err != nil {
 		log.V(lvl.DEBUG).Info("Error Getting Storage info from State DB: ", err.Error())
-		statePresent = false
-		if pType == StatePaths {
-			return err
-		}
+		return err
 	}
-	if (pType == AllPaths || pType == AllCompPaths) && !statePresent {
-		return fmt.Errorf("State DB entries not found for all paths; Error: %w", err)
-	}
+	ygot.BuildEmptyTree(comp)
+	ygot.BuildEmptyTree(comp.State)
+	ygot.BuildEmptyTree(comp.Storage)
+	ygot.BuildEmptyTree(comp.Storage.State)
 	compState := comp.State
-	ygot.BuildEmptyTree(compState)
-	compTemp := compState.Temperature
+	counters := comp.Storage.State.Counters
+	parent := entityParent(name, CHASSIS_COMP_NAME, stdb)
+	temp, terr := strconv.ParseFloat(storageInfo.Temperature, 64)
+	tempOk := terr == nil && !math.IsInf(temp, 0) && !math.IsNaN(temp)
+	lifeLeft, lifeLeftOk := storageLifeLeft(storageInfo.Health)
 
 	if targetUriPath == COMP || targetUriPath == COMP_CFG || targetUriPath == COMP_CONFIG_NAME {
 		comp.Config.Name = &name
 	}
 
-	// Filling in state values: name, type and io-errors
-	if ((pType == AllPaths || pType == AllCompPaths) && statePresent) || pType == StatePaths {
+	if pType == AllPaths || targetUriPath == COMP_ST {
+		compState.Name = &name
 		compState.Type, _ = compState.To_OpenconfigPlatform_Components_Component_State_Type_Union(
 			ocbinds.OpenconfigPlatformTypes_OPENCONFIG_HARDWARE_COMPONENT_STORAGE)
-		compState.Name = &name
-		if storageInfo.PartNo != "" {
-			compState.PartNo = &storageInfo.PartNo
-		}
+		compState.Parent = &parent
+		/* STORAGE_INFO has no oper-status. A device stormond reports is ACTIVE. */
+		compState.OperStatus = ocbinds.OpenconfigPlatformTypes_COMPONENT_OPER_STATUS_ACTIVE
 		if storageInfo.SerialNo != "" {
 			compState.SerialNo = &storageInfo.SerialNo
 		}
-		compState.Parent = StringWithDefault(&storageInfo.Parent, "Missing in State DB")
-		compState.Removable = String2Bool(&storageInfo.Removable, false)
-		if operStatus, err := operStatusFromString(storageInfo.OperStatus); err == nil {
-			compState.OperStatus = operStatus
+		if storageInfo.ModelName != "" {
+			compState.ModelName = &storageInfo.ModelName
 		}
-		if storageInfo.Empty != "" {
-			compState.Empty = String2Bool(&storageInfo.Empty, false)
+		if storageInfo.FirmwareVersion != "" {
+			compState.FirmwareVersion = &storageInfo.FirmwareVersion
 		}
+		if tempOk {
+			compState.Temperature.Instant = &temp
+		}
+	}
 
-		compTemp.Instant = String2Float(storageInfo.Temperature, 0.0)
+	if pType == AllPaths || targetUriPath == COMP_STORAGE || targetUriPath == COMP_STORAGE_ST || targetUriPath == COMP_STORAGE_CTRS {
+		if lifeLeftOk {
+			counters.LifeLeft = &lifeLeft
+		}
 	}
 
 	if pType != SingularPath {
@@ -2754,31 +2715,40 @@ func fillStorageInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 	switch targetUriPath {
 	case COMP_STATE_NAME:
 		compState.Name = &name
-	case COMP_STATE_PART_NO:
-		if storageInfo.PartNo != "" {
-			compState.PartNo = &storageInfo.PartNo
-		}
-	case COMP_STATE_SERIAL_NO:
-		if storageInfo.SerialNo != "" {
-			compState.SerialNo = &storageInfo.SerialNo
-		}
 	case COMP_STATE_TYPE:
 		compState.Type, _ = compState.To_OpenconfigPlatform_Components_Component_State_Type_Union(
 			ocbinds.OpenconfigPlatformTypes_OPENCONFIG_HARDWARE_COMPONENT_STORAGE)
 	case COMP_STATE_PARENT:
-		compState.Parent = StringWithDefault(&storageInfo.Parent, "Missing in State DB")
+		compState.Parent = &parent
 	case COMP_STATE_OPER_STATUS:
-		if operStatus, err := operStatusFromString(storageInfo.OperStatus); err == nil {
-			compState.OperStatus = operStatus
+		compState.OperStatus = ocbinds.OpenconfigPlatformTypes_COMPONENT_OPER_STATUS_ACTIVE
+	case COMP_STATE_SERIAL_NO:
+		if storageInfo.SerialNo == "" {
+			return tlerr.NotFound("%s has no serial-no", name)
 		}
-	case COMP_STATE_EMPTY:
-		if storageInfo.Empty != "" {
-			compState.Empty = String2Bool(&storageInfo.Empty, false)
+		compState.SerialNo = &storageInfo.SerialNo
+	case COMP_STATE_MODEL_NAME:
+		if storageInfo.ModelName == "" {
+			return tlerr.NotFound("%s has no model-name", name)
 		}
-	case COMP_STATE_REMOVABLE:
-		compState.Removable = String2Bool(&storageInfo.Removable, false)
+		compState.ModelName = &storageInfo.ModelName
+	case COMP_STATE_FIRM_VER:
+		if storageInfo.FirmwareVersion == "" {
+			return tlerr.NotFound("%s has no firmware-version", name)
+		}
+		compState.FirmwareVersion = &storageInfo.FirmwareVersion
 	case COMP_STATE_TEMP_CTR, COMP_STATE_TEMP:
-		compTemp.Instant = String2Float(storageInfo.Temperature, 0.0)
+		if !tempOk {
+			return tlerr.NotFound("%s has no temperature", name)
+		}
+		compState.Temperature.Instant = &temp
+	case COMP_STORAGE_LIFE_LEFT:
+		if !lifeLeftOk {
+			return tlerr.NotFound("%s has no life-left", name)
+		}
+		counters.LifeLeft = &lifeLeft
+	default:
+		return tlerr.NotFound("%s has no %s", name, path.Base(targetUriPath))
 	}
 	return nil
 }
