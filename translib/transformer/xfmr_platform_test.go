@@ -59,6 +59,7 @@ func TestComponentTypeString(t *testing.T) {
 		{CompTypeLineCard, "CompTypeLineCard"},
 		{CompTypeDiskCarrier, "CompTypeDiskCarrier"},
 		{CompTypeFilesystem, "CompTypeFilesystem"},
+		{CompTypeCpu, "CompTypeCpu"},
 	}
 	for _, c := range cases {
 		got := c.in.String()

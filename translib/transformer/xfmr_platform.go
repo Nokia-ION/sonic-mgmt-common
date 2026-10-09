@@ -87,6 +87,10 @@ const (
 	// switch-global rather than per circuit.
 	IC_COMP_NAME = IC_NAME_PREFIX + "0"
 
+	// CPU_COMP_NAME is the name under which the host CPU is served. Its data
+	// is read from the host, so no table holds a row by that name.
+	CPU_COMP_NAME = "host-cpu"
+
 	XCVR_LANE_LIMIT = 8
 
 	XCVR_KEY_PREFIX     = "Ethernet"
@@ -968,6 +972,7 @@ const (
 	/* A mounted filesystem, named by its mount point (e.g. "/var/log").  Distinct
 	 * from CompTypeStorage, which reads SMART data from STORAGE_INFO. */
 	CompTypeFilesystem
+	CompTypeCpu
 )
 
 func (ct componentType) String() string {
@@ -1018,6 +1023,8 @@ func (ct componentType) String() string {
 		return "CompTypeSystemEeprom"
 	case CompTypeFilesystem:
 		return "CompTypeFilesystem"
+	case CompTypeCpu:
+		return "CompTypeCpu"
 	}
 	return fmt.Sprintf("%s", ct)
 }
@@ -1072,6 +1079,8 @@ func getCompTypeByName(compName string) (componentType, error) {
 	switch {
 	case compName == SYS_EEPROM_NAME:
 		return CompTypeSystemEeprom, nil
+	case compName == CPU_COMP_NAME:
+		return CompTypeCpu, nil
 	case validPsuName(&compName):
 		return CompTypePsu, nil
 	case validFanName(&compName):
@@ -1224,13 +1233,14 @@ var Subscribe_pfm_components_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSubsc
 		return result, err
 	}
 
-	if key == "" || strings.Contains(key, "_sensor") || key == SYS_EEPROM_NAME || key == IC_COMP_NAME {
+	if key == "" || strings.Contains(key, "_sensor") || key == SYS_EEPROM_NAME || key == IC_COMP_NAME || key == CPU_COMP_NAME {
 		/* No need to verify dB data if we are requesting ALL components, a
-		   sensor, System Eeprom, or the integrated circuit.  The EEPROM_INFO
-		   table stores each attribute as its own row (keyed by index) with no
-		   "System Eeprom" key, and IC_COMP_NAME is no table's key either, so
-		   mark them as a virtual table to tell the framework to skip DB key
-		   validation and go straight to the subtree transformer. */
+		   sensor, System Eeprom, the integrated circuit, or the host CPU.  The
+		   EEPROM_INFO table stores each attribute as its own row (keyed by
+		   index) with no "System Eeprom" key, and IC_COMP_NAME and
+		   CPU_COMP_NAME are no table's key either, so mark them as a virtual
+		   table to tell the framework to skip DB key validation and go
+		   straight to the subtree transformer. */
 		result.isVirtualTbl = true
 		return result, err
 	}
@@ -1262,7 +1272,7 @@ func compTypesForSubscriptionUri(uri string) []componentType {
 	} else if strings.HasPrefix(uri, "/openconfig-platform:components/component/storage") {
 		cTypes = []componentType{CompTypeStorage}
 	} else if strings.HasPrefix(uri, COMP_CPU) {
-		cTypes = []componentType{CompTypeChassis}
+		cTypes = []componentType{CompTypeCpu}
 	} else if strings.HasPrefix(uri, "/openconfig-platform:components/component/integrated-circuit") {
 		cTypes = []componentType{CompTypeIC}
 	} else if strings.HasPrefix(uri, "/openconfig-platform:components/component/software-module") {
@@ -1270,7 +1280,7 @@ func compTypesForSubscriptionUri(uri string) []componentType {
 	} else if strings.HasPrefix(uri, "/openconfig-platform:components/component/boot-loader") {
 		cTypes = []componentType{CompTypeBootLoader}
 	} else if strings.HasPrefix(uri, "/openconfig-platform:components/component/state/oper-status") {
-		cTypes = []componentType{CompTypeFan, CompTypeNWStack, CompTypeOS, CompTypeChassis, CompTypeTemp, CompTypePsu, CompTypeFanTray, CompTypeStorage}
+		cTypes = []componentType{CompTypeFan, CompTypeNWStack, CompTypeOS, CompTypeChassis, CompTypeTemp, CompTypePsu, CompTypeFanTray, CompTypeStorage, CompTypeCpu}
 	} else if strings.HasPrefix(uri, "/openconfig-platform:components/component/oc-transceiver:transceiver") {
 		cTypes = []componentType{CompTypeXcvr}
 	} else if strings.HasPrefix(uri, COMP_STATE_PARENT) || strings.HasPrefix(uri, COMP_STATE_INSTALL_POSITION) || strings.HasPrefix(uri, COMP_STATE_INSTALL_COMPONENT) || strings.HasPrefix(uri, COMP_STATE_REMOVABLE) {
@@ -1694,6 +1704,10 @@ func getSysComponents(pf_cpts *ocbinds.OpenconfigPlatform_Components, targetUriP
 		cTypes := compTypesForSubscriptionUri(targetUriPath)
 		if len(cTypes) > 0 {
 			for _, cType := range cTypes {
+				if cType == CompTypeCpu {
+					createCpuComp(pf_cpts, targetUriPath, inParams)
+					continue
+				}
 				tbl, ok := compTblMap[cType]
 				if !ok || len(tbl) < 2 {
 					continue
@@ -1747,6 +1761,8 @@ func getSysComponents(pf_cpts *ocbinds.OpenconfigPlatform_Components, targetUriP
 				// Healthz should be populated for all comp types
 				fillHealthzInfo(SYS_EEPROM_NAME, "", targetUriPath, d, sysEeprom)
 			}
+
+			createCpuComp(pf_cpts, targetUriPath, inParams)
 		} else {
 			compType := getCompType(compName, d)
 			if compType == CompTypeInvalid {
@@ -1836,9 +1852,9 @@ func getSysComponents(pf_cpts *ocbinds.OpenconfigPlatform_Components, targetUriP
 		if isPropertiesPath(targetUriPath) && compType != CompTypeFilesystem {
 			return fillProperties(pf_comp, compName, compType, subKey, dbs)
 		}
-		/* The cpu anchor is served on the chassis alone. */
+		/* The cpu anchor is served on the host CPU alone. */
 		if strings.HasPrefix(targetUriPath, COMP_CPU) {
-			if compType != CompTypeChassis {
+			if compType != CompTypeCpu {
 				return tlerr.NotFound("%s has no cpu utilization", compName)
 			}
 			return fillCpuUtilization(pf_comp)
@@ -1960,6 +1976,8 @@ func getSysComponents(pf_cpts *ocbinds.OpenconfigPlatform_Components, targetUriP
 			return fillSysEepromInfo(pf_comp, compName, SingularPath, targetUriPath, d)
 		case CompTypeFilesystem:
 			return fillFilesystemInfo(pf_comp, compName, subKey)
+		case CompTypeCpu:
+			return fillCpuInfo(pf_comp, SingularPath, targetUriPath)
 		default:
 			return fmt.Errorf("Unhandled Component: %s", compName)
 		}
@@ -2057,14 +2075,9 @@ func compTypeToFuncCall(cType componentType, compName, subKey string, pfComp *oc
 	case CompTypeIC:
 		return fillICInfo(pfComp, compName, targetUriPath, dbs, ygRoot)
 	case CompTypeChassis:
-		/* A whole-component GET carries the host cpu utilization; having none
-		 * is not fatal to the rest of the component. */
-		if pType == AllPaths {
-			if err := fillCpuUtilization(pfComp); err != nil {
-				log.V(lvl.DEBUG).Infof("compTypeToFuncCall: cpu utilization for %s: %v", compName, err)
-			}
-		}
 		return fillFirmwareInfo(pfComp, compName, pType, targetUriPath, d, cfgdb)
+	case CompTypeCpu:
+		return fillCpuInfo(pfComp, pType, targetUriPath)
 	case CompTypeNWStack, CompTypeOS, CompTypeBootLoader:
 		return fillSWCompInfo(pfComp, compName, pType, targetUriPath, d, cType)
 	case CompTypePort:
