@@ -2,6 +2,7 @@ package transformer
 
 import (
 	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/Azure/sonic-mgmt-common/translib/db"
@@ -48,7 +49,7 @@ func TestPropTblShape(t *testing.T) {
 				name, desc.table, desc.tables)
 		}
 		for _, cType := range desc.types {
-			if desc.tables != nil && desc.tables[cType] == "" {
+			if desc.tables != nil && desc.tables[cType] == "" && !slices.Contains(fixedStatusTypes, cType) {
 				t.Errorf("property %q applies to %v but names no table for it", name, cType)
 			}
 		}
@@ -212,6 +213,12 @@ func TestPropTblEveryPropertyNamesItsField(t *testing.T) {
 		}
 		for _, cType := range desc.types {
 			_, fields, ok := propSubscribeInfo(name, cType)
+			if desc.tables != nil && slices.Contains(fixedStatusTypes, cType) {
+				if ok {
+					t.Errorf("property %q is subscribable on %v, want not", name, cType)
+				}
+				continue
+			}
 			if !ok {
 				t.Errorf("property %q cannot be subscribed on %v", name, cType)
 				continue
@@ -569,6 +576,35 @@ func TestFillPropertiesFruBool(t *testing.T) {
 		}
 		if !reflect.DeepEqual(prop.State.Value, wantUnion) {
 			t.Errorf("%s value == %v, want %v", name, prop.State.Value, wantUnion)
+		}
+	}
+}
+
+// A component type with no status source serves fixed status properties
+// without a database client.
+func TestFillPropertiesFixedStatus(t *testing.T) {
+	var dbs [db.MaxDB]*db.DB
+	want := map[string]interface{}{
+		"hwStatus":   true,
+		"active":     true,
+		"operStatus": "ACTIVE",
+	}
+	for _, cType := range fixedStatusTypes {
+		comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+		ygot.BuildEmptyTree(comp)
+		for name, raw := range want {
+			if err := fillProperties(comp, "comp", cType, name, dbs); err != nil {
+				t.Errorf("fillProperties(%v, %q) unexpected error: %v", cType, name, err)
+				continue
+			}
+			prop := comp.Properties.Property[name]
+			wantUnion, err := prop.State.To_OpenconfigPlatform_Components_Component_Properties_Property_State_Value_Union(raw)
+			if err != nil {
+				t.Fatalf("building union for %q: %v", name, err)
+			}
+			if !reflect.DeepEqual(prop.State.Value, wantUnion) {
+				t.Errorf("%v %s value == %v, want %v", cType, name, prop.State.Value, wantUnion)
+			}
 		}
 	}
 }
