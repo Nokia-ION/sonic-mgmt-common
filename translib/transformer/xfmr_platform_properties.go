@@ -183,7 +183,7 @@ var fruTypes = []componentType{CompTypePsu, CompTypeFan, CompTypeFanTray}
 /* Component types with no presence or status in STATE_DB.  One that is served
  * exists and is working, so its status properties are fixed: present, active,
  * ACTIVE.  With no table to watch they can only be sampled. */
-var fixedStatusTypes = []componentType{CompTypeStorage, CompTypeCpu}
+var fixedStatusTypes = []componentType{CompTypeChassis, CompTypeTemp, CompTypeStorage, CompTypeCpu}
 
 /* Component types carrying the status properties. */
 var statusTypes = slices.Concat(fruTypes, fixedStatusTypes)
