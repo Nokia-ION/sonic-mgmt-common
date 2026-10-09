@@ -112,6 +112,7 @@ type niBgpNbrReqInfo struct {
 	afiSafi      string
 	targetLeaf   string // "", "peer-group", "enabled", "peer-as"
 	targetPath   string
+	pfxCont      string // "prefix-limit" or "prefix-limit-received", below the family container
 }
 
 func init() {
@@ -132,6 +133,9 @@ func parseNiBgpNbrRequestUri(uri string) (*niBgpNbrReqInfo, error) {
 }
 
 func matchNiBgpNbrRequestUri(uri string) (*niBgpNbrReqInfo, error) {
+	if reqInfo, ok, err := matchNiBgpNbrPfxLimitUri(uri); ok {
+		return reqInfo, err
+	}
 	m := niBgpNbrReqUriRe.FindStringSubmatch(uri)
 	if len(m) >= 4 {
 		leaf := ""
@@ -553,7 +557,7 @@ func niBgpNbrPayloadAfiSafiName(param interface{}) (string, bool) {
 // payload carries. Naming an address family under a neighbor activates it
 // there, so the row carries admin_status even when enabled is absent, which is
 // what frrcfgd needs to emit "neighbor <addr> activate".
-func niBgpNbrAfInstFields(afObj *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Neighbors_Neighbor_AfiSafis_AfiSafi) (map[string]string, error) {
+func niBgpNbrAfInstFields(afObj *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Neighbors_Neighbor_AfiSafis_AfiSafi, afiSafi string) (map[string]string, error) {
 	fields := map[string]string{}
 	enabled := true
 	if afObj != nil && afObj.Config != nil && afObj.Config.Enabled != nil {
@@ -586,6 +590,13 @@ func niBgpNbrAfInstFields(afObj *ocbinds.OpenconfigNetworkInstance_NetworkInstan
 			fields[niBgpNbrRouteMapOutFld] = policy
 		}
 	}
+	pfxFields, received, err := niBgpNbrPfxFamilyPayload(afObj, afiSafi)
+	if err != nil {
+		return nil, err
+	}
+	for f, v := range niBgpNbrPfxWithMode(pfxFields, received) {
+		fields[f] = v
+	}
 	return fields, nil
 }
 
@@ -594,19 +605,32 @@ func niBgpNbrAfInstFields(afObj *ocbinds.OpenconfigNetworkInstance_NetworkInstan
 // keeps every other field of the row, such as the allowas_in pair that
 // as-path-options writes onto both families.
 var niBgpNbrAfInstOwnedFlds = map[string]bool{
-	niBgpNbrAdminStatus:    true,
-	niBgpNbrSendCommFld:    true,
-	niBgpNbrRouteMapInFld:  true,
-	niBgpNbrRouteMapOutFld: true,
+	niBgpNbrAdminStatus:       true,
+	niBgpNbrSendCommFld:       true,
+	niBgpNbrRouteMapInFld:     true,
+	niBgpNbrRouteMapOutFld:    true,
+	niBgpNbrMaxPfxFld:         true,
+	niBgpNbrMaxPfxWarnOnlyFld: true,
+	niBgpNbrMaxPfxThreshFld:   true,
+	niBgpNbrMaxPfxForceFld:    true,
 }
 
 // niBgpNbrAfInstWrite maps the row of one afi-safi instance a write carries.
-func niBgpNbrAfInstWrite(inParams XfmrParams, reqInfo *niBgpNbrReqInfo, afiSafi string, fields map[string]string) map[string]string {
-	if inParams.oper != REPLACE {
-		return fields
-	}
+// An update that moves the limit to the other prefix-limit container clears
+// what that container held beyond the payload.
+func niBgpNbrAfInstWrite(inParams XfmrParams, reqInfo *niBgpNbrReqInfo, afiSafi string, fields map[string]string) (map[string]string, error) {
 	existing := niBgpCfgDbEntry(inParams, niBgpNbrAfTbl, reqInfo.niName, reqInfo.neighborAddr, afiSafi)
-	return niBgpReplaceRowFields(existing, fields, niBgpNbrAfInstOwnedFlds)
+	if inParams.oper != REPLACE {
+		if _, ok := fields[niBgpNbrMaxPfxForceFld]; ok {
+			if clear := niBgpNbrPfxClear(existing, fields, fields[niBgpNbrMaxPfxForceFld] == "true", false); len(clear) > 0 {
+				if err := niBgpStageSubOp(inParams, DELETE, makeNiBgpNbrAfSingleResMap(reqInfo.niName, reqInfo.neighborAddr, afiSafi, clear)); err != nil {
+					return nil, err
+				}
+			}
+		}
+		return fields, nil
+	}
+	return niBgpReplaceRowFields(existing, fields, niBgpNbrAfInstOwnedFlds), nil
 }
 
 // niBgpNbrParentRowIfMissing adds the BGP_NEIGHBOR row an address-family write
@@ -634,11 +658,15 @@ func buildNiBgpNbrAfisResMap(inParams XfmrParams, s *ygot.GoStruct, reqInfo *niB
 		if !ok {
 			return nil, tlerr.InvalidArgsError{Format: fmt.Sprintf("unsupported afi-safi-name for network-instance BGP neighbor AFI-SAFI mapping: %v", afiEnum)}
 		}
-		fields, err := niBgpNbrAfInstFields(afObj)
+		fields, err := niBgpNbrAfInstFields(afObj, afiSafi)
 		if err != nil {
 			return nil, err
 		}
-		rows[reqInfo.niName+"|"+reqInfo.neighborAddr+"|"+afiSafi] = db.Value{Field: niBgpNbrAfInstWrite(inParams, reqInfo, afiSafi, fields)}
+		row, err := niBgpNbrAfInstWrite(inParams, reqInfo, afiSafi, fields)
+		if err != nil {
+			return nil, err
+		}
+		rows[reqInfo.niName+"|"+reqInfo.neighborAddr+"|"+afiSafi] = db.Value{Field: row}
 	}
 	return niBgpNbrParentRowIfMissing(inParams, map[string]map[string]db.Value{niBgpNbrAfTbl: rows}, reqInfo.niName, reqInfo.neighborAddr), nil
 }
@@ -733,6 +761,11 @@ func populateNiBgpNbrAfFromDb(cfgDb *db.DB, ygRoot *ygot.GoStruct, niName, proto
 		}
 		if policy := strings.TrimSpace(entry.Field[niBgpNbrRouteMapOutFld]); policy != "" {
 			afObj.ApplyPolicy.Config.ExportPolicy = []string{policy}
+		}
+	}
+	for _, received := range []bool{false, true} {
+		if err := populateNiBgpNbrPfxFromEntry(afObj, afiSafi, entry, received, ""); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -1834,6 +1867,9 @@ var YangToDb_ni_bgp_nbr_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 			// the row the instance names.
 			return makeNiBgpNbrAfSingleResMap(reqInfo.niName, reqInfo.neighborAddr, reqInfo.afiSafi, nil), nil
 		}
+		if reqInfo.targetPath == niBgpNbrTargetPfxLimitCfg || reqInfo.targetPath == niBgpNbrTargetAfFamily {
+			return niBgpNbrPfxLimitDelete(inParams, reqInfo)
+		}
 		if reqInfo.targetPath == "neighbor-af-apply-policy-config" {
 			switch reqInfo.targetLeaf {
 			case "":
@@ -1967,13 +2003,27 @@ var YangToDb_ni_bgp_nbr_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 			return buildNiBgpNbrAfisResMap(inParams, wrappedRoot, reqInfo)
 		}
 		afObj := getNiBgpNbrAfObj(wrappedRoot, reqInfo.niName, reqInfo.protoName, reqInfo.neighborAddr, reqInfo.afiSafi, false)
-		fields, err := niBgpNbrAfInstFields(afObj)
+		fields, err := niBgpNbrAfInstFields(afObj, reqInfo.afiSafi)
+		if err != nil {
+			return res, err
+		}
+		row, err := niBgpNbrAfInstWrite(inParams, reqInfo, reqInfo.afiSafi, fields)
 		if err != nil {
 			return res, err
 		}
 		return niBgpNbrParentRowIfMissing(inParams,
-			makeNiBgpNbrAfSingleResMap(reqInfo.niName, reqInfo.neighborAddr, reqInfo.afiSafi, niBgpNbrAfInstWrite(inParams, reqInfo, reqInfo.afiSafi, fields)),
+			makeNiBgpNbrAfSingleResMap(reqInfo.niName, reqInfo.neighborAddr, reqInfo.afiSafi, row),
 			reqInfo.niName, reqInfo.neighborAddr), nil
+	}
+
+	if reqInfo.targetPath == niBgpNbrTargetPfxLimitCfg {
+		return niBgpNbrPfxLimitWrite(inParams, reqInfo)
+	}
+	if reqInfo.targetPath == niBgpNbrTargetAfFamily {
+		if inParams.invokeCRUSubtreeOnce != nil {
+			*inParams.invokeCRUSubtreeOnce = true
+		}
+		return niBgpNbrAfFamilyWrite(inParams, reqInfo)
 	}
 
 	if reqInfo.targetPath == "neighbor-af-apply-policy-config" {
@@ -2181,6 +2231,10 @@ var DbToYang_ni_bgp_nbr_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams)
 			}
 		}
 		return populateNiBgpNbrAfStateReplay(inParams, wrappedRoot, reqInfo.niName, reqInfo.protoName, reqInfo.neighborAddr, stateFamilies)
+	}
+
+	if reqInfo.targetPath == niBgpNbrTargetPfxLimitCfg || reqInfo.targetPath == niBgpNbrTargetAfFamily {
+		return niBgpNbrPfxLimitRead(inParams, cfgDb, reqInfo)
 	}
 
 	if reqInfo.targetPath == "neighbor-af-config" {
@@ -2434,13 +2488,31 @@ var niBgpNbrCfgSubscMaps = map[string]niBgpSubscMap{
 		"import-policy": {niBgpNbrRouteMapInFld},
 		"export-policy": {niBgpNbrRouteMapOutFld},
 	}},
+	"/afi-safis/afi-safi/ipv4-unicast/prefix-limit/config":          niBgpNbrPfxLimitSubscMap,
+	"/afi-safis/afi-safi/ipv4-unicast/prefix-limit-received/config": niBgpNbrPfxLimitSubscMap,
+	"/afi-safis/afi-safi/ipv6-unicast/prefix-limit/config":          niBgpNbrPfxLimitSubscMap,
+	"/afi-safis/afi-safi/ipv6-unicast/prefix-limit-received/config": niBgpNbrPfxLimitSubscMap,
 }
+
+// Both prefix-limit containers read the same fields. A field maps to one leaf,
+// so the one that moves the limit between them is watched with max-prefixes.
+var niBgpNbrPfxLimitSubscMap = niBgpSubscMap{dbNum: db.ConfigDB, table: niBgpNbrAfTbl, key: niBgpSubscKeyNiNbrAf, fields: map[string][]string{
+	niBgpNbrMaxPrefixesLeaf:     {niBgpNbrMaxPfxFld, niBgpNbrMaxPfxForceFld},
+	niBgpNbrPreventTeardownLeaf: {niBgpNbrMaxPfxWarnOnlyFld},
+	niBgpNbrWarnThresholdLeaf:   {niBgpNbrMaxPfxThreshFld},
+}}
 
 // The nodes this transformer owns that hold no field of their own.
 var niBgpNbrCfgSubscVirtual = map[string]bool{
-	"/afi-safis":                       true,
-	"/afi-safis/afi-safi":              true,
-	"/afi-safis/afi-safi/apply-policy": true,
+	"/afi-safis":                                             true,
+	"/afi-safis/afi-safi":                                    true,
+	"/afi-safis/afi-safi/apply-policy":                       true,
+	"/afi-safis/afi-safi/ipv4-unicast":                       true,
+	"/afi-safis/afi-safi/ipv4-unicast/prefix-limit":          true,
+	"/afi-safis/afi-safi/ipv4-unicast/prefix-limit-received": true,
+	"/afi-safis/afi-safi/ipv6-unicast":                       true,
+	"/afi-safis/afi-safi/ipv6-unicast/prefix-limit":          true,
+	"/afi-safis/afi-safi/ipv6-unicast/prefix-limit-received": true,
 }
 
 // Subscribe_ni_bgp_nbr_cfg_xfmr maps a subscription to the neighbor config
