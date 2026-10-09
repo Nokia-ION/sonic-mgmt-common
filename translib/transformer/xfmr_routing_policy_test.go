@@ -3407,3 +3407,76 @@ func Test_openconfig_routing_policy_statement_state_from_applied(t *testing.T) {
 	unloadDB(db.ConfigDB, cleanupTbl)
 	unloadDB(db.StateDB, appliedTbl)
 }
+
+// A statement sets one next-hop, which ROUTE_MAP spells by family: an IPv4
+// address or self in set_next_hop, an IPv6 address in set_ipv6_next_hop_global.
+// frrcfgd renders the first as "set ip next-hop", so an IPv6 address written
+// there is rejected by FRR and never applied. A write of one family replaces
+// the other, by update and by replace, and the rest of the row is kept.
+func Test_openconfig_routing_policy_bgp_actions_set_next_hop_families(t *testing.T) {
+	preReqMap := map[string]interface{}{
+		"ROUTE_MAP_SET": map[string]interface{}{"POLNH": map[string]interface{}{}},
+		"ROUTE_MAP": map[string]interface{}{
+			"POLNH|10": map[string]interface{}{"route_operation": "permit", "set_local_pref": "200"},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"ROUTE_MAP":     map[string]interface{}{"POLNH|10": ""},
+		"ROUTE_MAP_SET": map[string]interface{}{"POLNH": ""},
+	}
+	unloadDB(db.ConfigDB, cleanupTbl)
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	url := "/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition[name=POLNH]" +
+		"/statements/statement[name=10]/actions/openconfig-bgp-policy:bgp-actions/config/set-next-hop"
+	row := func(nhFld, nh string) map[string]interface{} {
+		return map[string]interface{}{"ROUTE_MAP": map[string]interface{}{"POLNH|10": map[string]interface{}{
+			"route_operation": "permit", "set_local_pref": "200", nhFld: nh}}}
+	}
+	body := func(v string) string { return `{"openconfig-bgp-policy:set-next-hop":"` + v + `"}` }
+
+	t.Run("PATCH set-next-hop IPv6", processSetRequest(url, body("2001:db8::1"), "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify IPv6 next-hop in set_ipv6_next_hop_global",
+		verifyDbResult(rclient, "ROUTE_MAP|POLNH|10", row("set_ipv6_next_hop_global", "2001:db8::1"), false))
+	t.Run("GET set-next-hop IPv6", processGetRequest(url, nil, `{"openconfig-bgp-policy:set-next-hop":"2001:db8::1"}`, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("PATCH set-next-hop IPv4 over IPv6", processSetRequest(url, body("10.10.10.1"), "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify IPv4 next-hop replaced the IPv6 one",
+		verifyDbResult(rclient, "ROUTE_MAP|POLNH|10", row("set_next_hop", "10.10.10.1"), false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("PATCH set-next-hop SELF", processSetRequest(url, body("SELF"), "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify SELF stored as self", verifyDbResult(rclient, "ROUTE_MAP|POLNH|10", row("set_next_hop", "self"), false))
+	t.Run("GET set-next-hop SELF", processGetRequest(url, nil, `{"openconfig-bgp-policy:set-next-hop":"SELF"}`, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("PATCH set-next-hop IPv6 over SELF", processSetRequest(url, body("2001:db8::2"), "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("PUT set-next-hop IPv4 over IPv6", processSetRequest(url, body("10.10.10.2"), "PUT", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify the replace dropped the IPv6 next-hop",
+		verifyDbResult(rclient, "ROUTE_MAP|POLNH|10", row("set_next_hop", "10.10.10.2"), false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("PATCH set-next-hop that is not an address refused", processSetRequest(url, body("not-an-ip"), "PATCH", true))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify the refused write left the row alone",
+		verifyDbResult(rclient, "ROUTE_MAP|POLNH|10", row("set_next_hop", "10.10.10.2"), false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("PATCH set-next-hop IPv6 before delete", processSetRequest(url, body("2001:db8::3"), "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("DELETE set-next-hop", processDeleteRequest(url, false))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify both next-hop fields cleared", verifyDbResult(rclient, "ROUTE_MAP|POLNH|10",
+		map[string]interface{}{"ROUTE_MAP": map[string]interface{}{"POLNH|10": map[string]interface{}{
+			"route_operation": "permit", "set_local_pref": "200"}}}, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
