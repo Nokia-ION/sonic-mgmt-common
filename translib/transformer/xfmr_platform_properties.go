@@ -173,9 +173,9 @@ func hostProp(types []componentType, get propGetter) propDescriptor {
 	return propDescriptor{types: types, get: get}
 }
 
-/* Component type the host properties are served on, the one the kernel they
+/* Component type the host properties are served on, the CPU the kernel they
  * describe runs on. */
-var hostCpuTypes = []componentType{CompTypeChassis}
+var hostCpuTypes = []componentType{CompTypeCpu}
 
 /* FRU component types that carry presence/status health in STATE_DB. */
 var fruTypes = []componentType{CompTypePsu, CompTypeFan, CompTypeFanTray}
@@ -183,7 +183,7 @@ var fruTypes = []componentType{CompTypePsu, CompTypeFan, CompTypeFanTray}
 /* Component types with no presence or status in STATE_DB.  One that is served
  * exists and is working, so its status properties are fixed: present, active,
  * ACTIVE.  With no table to watch they can only be sampled. */
-var fixedStatusTypes = []componentType{CompTypeStorage}
+var fixedStatusTypes = []componentType{CompTypeStorage, CompTypeCpu}
 
 /* Component types carrying the status properties. */
 var statusTypes = slices.Concat(fruTypes, fixedStatusTypes)
