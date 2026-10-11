@@ -3369,24 +3369,7 @@ var YangToDb_intf_ip_addr_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (
 				/* Check for IP overlap */
 				overlapIP, oerr = validateIpOverlap(inParams.d, ifName, ipPref, tblName, true)
 
-				ipEntry, _ := inParams.d.GetEntry(&db.TableSpec{Name: intTbl.cfgDb.intfTN}, db.Key{Comp: []string{ifName, ipPref}})
-				ipMap, _ := getIntfIpByName(inParams.d, intTbl.cfgDb.intfTN, ifName, true, false, "")
-
 				m := make(map[string]string)
-				alrdyCfgredIP, primaryIpAlrdyCfgred, err := utlValidateIpTypeForCfgredDiffIp(m, ipMap, &ipEntry, &ipPref, &ifName)
-				if err != nil {
-					return nil, err
-				}
-				// Primary IP config already happened and replacing it with new one
-				if primaryIpAlrdyCfgred && len(alrdyCfgredIP) != 0 && alrdyCfgredIP != ipPref {
-					subIntfmap_del[tblName] = make(map[string]db.Value)
-					key := ifName + "|" + alrdyCfgredIP
-					subIntfmap_del[tblName][key] = value
-					subOpMap[db.ConfigDB] = subIntfmap_del
-					log.Info("subOpMap: ", subOpMap)
-					inParams.subOpDataMap[DELETE] = &subOpMap
-				}
-
 				intf_key := intf_intf_tbl_key_gen(ifName, *addr.Config.Ip, int(*addr.Config.PrefixLength), "|")
 				if intfType != IntfTypePortChannel {
 					m["family"] = "IPv4"
@@ -3519,19 +3502,6 @@ func utlCheckAndRetrievePrimaryIPConfigured(ipMap map[string]db.Value) (bool, st
 		return true, ipKey
 	}
 	return false, ""
-}
-
-func utlValidateIpTypeForCfgredDiffIp(m map[string]string, ipMap map[string]db.Value, ipEntry *db.Value, ipPref *string, ifName *string) (string, bool, error) {
-
-	dbgStr := "IPv4 address"
-	checkPrimIPCfgred, cfgredPrimIP := utlCheckAndRetrievePrimaryIPConfigured(ipMap)
-	if checkPrimIPCfgred && !ipEntry.IsPopulated() {
-		infoStr := "Primary " + dbgStr + " is already configured for interface: " + *ifName
-		log.Info(infoStr)
-		return cfgredPrimIP, true, nil
-	}
-
-	return "", false, nil
 }
 
 func intf_intf_tbl_key_gen(intfName string, ip string, prefixLen int, keySep string) string {
@@ -4176,6 +4146,205 @@ var YangToDb_intf_routed_vlan_name_xfmr FieldXfmrYangToDb = func(inParams XfmrPa
 	return nil, nil
 }
 
+func routedVlanAddrEffectivePath(inParams XfmrParams) string {
+	uri := inParams.requestUri
+	if uri == "" {
+		uri = inParams.uri
+	}
+	path := NewPathInfo(uri).YangPath
+	if path == "" {
+		path, _ = getYangPathFromUri(uri)
+	} else {
+		path, _ = getYangPathFromUri(path)
+	}
+	return path
+}
+
+func routedVlanAddrIsListPath(path string) bool {
+	p := strings.TrimSuffix(path, "/")
+	if strings.HasSuffix(p, "/addresses/address") {
+		return false
+	}
+	return strings.HasSuffix(p, "/addresses")
+}
+
+func routedVlanAddrPathFamily(path string) string {
+	if strings.Contains(path, "/ipv6/") || strings.Contains(path, ":ipv6/") {
+		return "ipv6"
+	}
+	if strings.Contains(path, "/ipv4/") || strings.Contains(path, ":ipv4/") {
+		return "ipv4"
+	}
+	return ""
+}
+
+func routedVlanAddrSuffixIsIPv4(ipPref string) bool {
+	ipB, _, err := parseCIDR(ipPref)
+	if err != nil {
+		return strings.Contains(ipPref, ".") && !strings.Contains(ipPref, ":")
+	}
+	return validIPv4(ipB.String())
+}
+
+func routedVlanWantKeysFromVlanMap(vlanIntfmap map[string]map[string]db.Value, tblName, ifName, family string) map[string]bool {
+	want := make(map[string]bool)
+	if vlanIntfmap == nil || vlanIntfmap[tblName] == nil {
+		return want
+	}
+	for k := range vlanIntfmap[tblName] {
+		if k == ifName || !strings.HasPrefix(k, ifName+"|") {
+			continue
+		}
+		suffix := strings.TrimPrefix(k, ifName+"|")
+		if family == "ipv4" && !routedVlanAddrSuffixIsIPv4(suffix) {
+			continue
+		}
+		if family == "ipv6" && routedVlanAddrSuffixIsIPv4(suffix) {
+			continue
+		}
+		want[k] = true
+	}
+	return want
+}
+
+func routedVlanPreserveAddrsFromDB(inParams XfmrParams, ifName, tblName, cfgTbl string,
+	vlanIntfmap map[string]map[string]db.Value, preserveFamily string) {
+	ipv4 := preserveFamily == "ipv4"
+	ipv6 := preserveFamily == "ipv6"
+	if preserveFamily == "" {
+		return
+	}
+	ipMap, _ := getIntfIpByName(inParams.d, cfgTbl, ifName, ipv4, ipv6, "")
+	for suffix := range ipMap {
+		key := ifName + "|" + suffix
+		if _, ok := vlanIntfmap[tblName]; !ok {
+			vlanIntfmap[tblName] = make(map[string]db.Value)
+		}
+		if _, exists := vlanIntfmap[tblName][key]; exists {
+			continue
+		}
+		vlanIntfmap[tblName][key] = db.Value{Field: map[string]string{"NULL": "NULL"}}
+	}
+}
+
+func routedVlanAddrIsAddressPath(path string) bool {
+	return strings.HasSuffix(path, "/ipv4/addresses/address") ||
+		strings.HasSuffix(path, "/ipv6/addresses/address") ||
+		strings.HasSuffix(path, "/openconfig-if-ip:ipv4/addresses/address") ||
+		strings.HasSuffix(path, "/openconfig-if-ip:ipv6/addresses/address")
+}
+
+func routedVlanAddrPathIsIPv4(path string) bool {
+	return routedVlanAddrPathFamily(path) == "ipv4"
+}
+
+func routedVlanAddrIsConfigPath(path string) bool {
+	return strings.HasSuffix(path, "/config") ||
+		strings.HasSuffix(path, "/ip") ||
+		strings.HasSuffix(path, "/prefix-length")
+}
+
+func routedVlanDesiredAddrKeys(ifName string, vlanIntfObj *ocbinds.OpenconfigInterfaces_Interfaces_Interface_RoutedVlan, wantIpv4, wantIpv6 bool) map[string]bool {
+	want := make(map[string]bool)
+	if vlanIntfObj == nil {
+		return want
+	}
+	if wantIpv4 && vlanIntfObj.Ipv4 != nil && vlanIntfObj.Ipv4.Addresses != nil {
+		for ocIP, addr := range vlanIntfObj.Ipv4.Addresses.Address {
+			if addr == nil || addr.Config == nil || addr.Config.PrefixLength == nil {
+				continue
+			}
+			host := ocIP
+			if addr.Config.Ip != nil {
+				host = *addr.Config.Ip
+			}
+			want[intf_intf_tbl_key_gen(ifName, host, int(*addr.Config.PrefixLength), "|")] = true
+		}
+	}
+	if wantIpv6 && vlanIntfObj.Ipv6 != nil && vlanIntfObj.Ipv6.Addresses != nil {
+		for ocIP, addr := range vlanIntfObj.Ipv6.Addresses.Address {
+			if addr == nil || addr.Config == nil || addr.Config.PrefixLength == nil {
+				continue
+			}
+			host := ocIP
+			if addr.Config.Ip != nil {
+				host = *addr.Config.Ip
+			}
+			want[intf_intf_tbl_key_gen(ifName, host, int(*addr.Config.PrefixLength), "|")] = true
+		}
+	}
+	return want
+}
+
+func routedVlanIpAddrApplyReplace(inParams XfmrParams, ifName, tblName, cfgTbl string,
+	vlanIntfObj *ocbinds.OpenconfigInterfaces_Interfaces_Interface_RoutedVlan, vlanIntfmap map[string]map[string]db.Value,
+	targetPath, targetIP string) error {
+	if inParams.oper != REPLACE {
+		return nil
+	}
+
+	isListOp := routedVlanAddrIsListPath(targetPath)
+	isAddrOp := routedVlanAddrIsAddressPath(targetPath) && targetIP != ""
+	isConfigOp := routedVlanAddrIsConfigPath(targetPath)
+
+	if !isListOp && !isAddrOp && !isConfigOp {
+		return tlerr.NotSupportedError{
+			Format: fmt.Sprintf("Operation %v not supported on path %s for routed-vlan addresses", inParams.oper, targetPath),
+		}
+	}
+
+	keysToDelete := make(map[string]db.Value)
+
+	if isListOp {
+		family := routedVlanAddrPathFamily(targetPath)
+		wantIpv4 := family == "ipv4"
+		wantIpv6 := family == "ipv6"
+		want := routedVlanWantKeysFromVlanMap(vlanIntfmap, tblName, ifName, family)
+		if len(want) == 0 {
+			want = routedVlanDesiredAddrKeys(ifName, vlanIntfObj, wantIpv4, wantIpv6)
+		}
+		ipMap, err := getIntfIpByName(inParams.d, cfgTbl, ifName, wantIpv4, wantIpv6, "")
+		if err != nil {
+			return err
+		}
+		for suffix := range ipMap {
+			fullKey := ifName + "|" + suffix
+			if !want[fullKey] {
+				keysToDelete[fullKey] = db.Value{}
+			}
+		}
+	} else if isAddrOp {
+		ipv4 := routedVlanAddrPathIsIPv4(targetPath)
+		ipv6 := !ipv4
+		hasAddr := false
+		if ipv4 && vlanIntfObj.Ipv4 != nil && vlanIntfObj.Ipv4.Addresses != nil {
+			hasAddr = vlanIntfObj.Ipv4.Addresses.Address[targetIP] != nil
+		} else if ipv6 && vlanIntfObj.Ipv6 != nil && vlanIntfObj.Ipv6.Addresses != nil {
+			hasAddr = vlanIntfObj.Ipv6.Addresses.Address[targetIP] != nil
+		}
+		if !hasAddr {
+			ipMap, err := getIntfIpByName(inParams.d, cfgTbl, ifName, ipv4, ipv6, targetIP)
+			if err != nil {
+				return err
+			}
+			for suffix := range ipMap {
+				keysToDelete[ifName+"|"+suffix] = db.Value{}
+			}
+		}
+	}
+
+	if len(keysToDelete) == 0 {
+		return nil
+	}
+	subOpMap := map[db.DBNum]map[string]map[string]db.Value{
+		db.ConfigDB: {
+			tblName: keysToDelete,
+		},
+	}
+	updateSubOpDataMap(subOpMap, DELETE, inParams)
+	return nil
+}
+
 var YangToDb_routed_vlan_ip_addr_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (map[string]map[string]db.Value, error) {
 	var err, oerr error
 	subOpMap := make(map[db.DBNum]map[string]map[string]db.Value)
@@ -4187,8 +4356,6 @@ var YangToDb_routed_vlan_ip_addr_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPa
 	pathInfo := NewPathInfo(inParams.uri)
 	ifName := pathInfo.Var("name")
 	intfType, _, ierr := getIntfTypeByName(ifName)
-
-	log.Info("arrived here")
 
 	intfsObj := getIntfsRoot(inParams.ygRoot)
 	if intfsObj == nil || len(intfsObj.Interface) < 1 {
@@ -4257,6 +4424,14 @@ var YangToDb_routed_vlan_ip_addr_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPa
 		return routed_vlan_ip_addr_del(inParams.d, ifName, tblName, vlanIntfObj)
 	}
 
+	targetPath := routedVlanAddrEffectivePath(inParams)
+	addrFamily := routedVlanAddrPathFamily(targetPath)
+	listReplace := inParams.oper == REPLACE && routedVlanAddrIsListPath(targetPath)
+	processIpv4 := vlanIntfObj.Ipv4 != nil && vlanIntfObj.Ipv4.Addresses != nil &&
+		(!listReplace || addrFamily == "ipv4")
+	processIpv6 := vlanIntfObj.Ipv6 != nil && vlanIntfObj.Ipv6.Addresses != nil &&
+		(!listReplace || addrFamily == "ipv6")
+
 	entry, dbErr := inParams.d.GetEntry(&db.TableSpec{Name: intTbl.cfgDb.intfTN}, db.Key{Comp: []string{ifName}})
 	if dbErr != nil || !entry.IsPopulated() {
 		ifdb := make(map[string]string)
@@ -4269,7 +4444,7 @@ var YangToDb_routed_vlan_ip_addr_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPa
 
 	}
 
-	if vlanIntfObj.Ipv4 != nil && vlanIntfObj.Ipv4.Addresses != nil {
+	if processIpv4 {
 		for ip := range vlanIntfObj.Ipv4.Addresses.Address {
 			addr := vlanIntfObj.Ipv4.Addresses.Address[ip]
 			if addr.Config != nil {
@@ -4293,24 +4468,7 @@ var YangToDb_routed_vlan_ip_addr_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPa
 				/* Check for IP overlap */
 				overlapIP, oerr = validateIpOverlap(inParams.d, ifName, ipPref, tblName, true)
 
-				ipEntry, _ := inParams.d.GetEntry(&db.TableSpec{Name: intTbl.cfgDb.intfTN}, db.Key{Comp: []string{ifName, ipPref}})
-				ipMap, _ := getIntfIpByName(inParams.d, intTbl.cfgDb.intfTN, ifName, true, false, "")
-
 				m := make(map[string]string)
-				alrdyCfgredIP, primaryIpAlrdyCfgred, err := utlValidateIpTypeForCfgredDiffIp(m, ipMap, &ipEntry, &ipPref, &ifName)
-				if err != nil {
-					return nil, err
-				}
-				// Primary IP config already happened and replacing it with new one
-				if primaryIpAlrdyCfgred && len(alrdyCfgredIP) != 0 && alrdyCfgredIP != ipPref {
-					vlanIntfmap_del[tblName] = make(map[string]db.Value)
-					key := ifName + "|" + alrdyCfgredIP
-					vlanIntfmap_del[tblName][key] = value
-					subOpMap[db.ConfigDB] = vlanIntfmap_del
-					log.Info("subOpMap: ", subOpMap)
-					inParams.subOpDataMap[DELETE] = &subOpMap
-				}
-
 				intf_key := intf_intf_tbl_key_gen(ifName, *addr.Config.Ip, int(*addr.Config.PrefixLength), "|")
 				m["NULL"] = "NULL"
 				value := db.Value{Field: m}
@@ -4322,7 +4480,7 @@ var YangToDb_routed_vlan_ip_addr_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPa
 			}
 		}
 	}
-	if vlanIntfObj.Ipv6 != nil && vlanIntfObj.Ipv6.Addresses != nil {
+	if processIpv6 {
 		for ip := range vlanIntfObj.Ipv6.Addresses.Address {
 			addr := vlanIntfObj.Ipv6.Addresses.Address[ip]
 			if addr.Config != nil {
@@ -4371,6 +4529,22 @@ var YangToDb_routed_vlan_ip_addr_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPa
 			log.Info("subOpMap: ", subOpMap)
 			inParams.subOpDataMap[DELETE] = &subOpMap
 		}
+	}
+
+	if listReplace {
+		if addrFamily == "ipv4" {
+			routedVlanPreserveAddrsFromDB(inParams, ifName, tblName, intTbl.cfgDb.intfTN, vlanIntfmap, "ipv6")
+		} else if addrFamily == "ipv6" {
+			routedVlanPreserveAddrsFromDB(inParams, ifName, tblName, intTbl.cfgDb.intfTN, vlanIntfmap, "ipv4")
+		}
+	}
+
+	targetIP := NewPathInfo(inParams.requestUri).Var("ip")
+	if targetIP == "" {
+		targetIP = pathInfo.Var("ip")
+	}
+	if err := routedVlanIpAddrApplyReplace(inParams, ifName, tblName, intTbl.cfgDb.intfTN, vlanIntfObj, vlanIntfmap, targetPath, targetIP); err != nil {
+		return vlanIntfmap, err
 	}
 
 	if log.V(3) {
