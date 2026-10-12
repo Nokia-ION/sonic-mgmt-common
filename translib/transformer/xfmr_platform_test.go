@@ -1318,6 +1318,34 @@ func TestFillFanHardwareVersionNotAvailableServed(t *testing.T) {
 	}
 }
 
+// A fan or fan drawer description is its model, served as stored.
+func TestFillFanDescriptionFromModel(t *testing.T) {
+	d, err := db.NewDB(getDBOptions(db.StateDB))
+	if err != nil {
+		t.Fatal("NewDB failed")
+	}
+	defer d.DeleteDB()
+	seedFanInfoEntry(t, d, "Fan13", map[string]string{"presence": "True", "model": "3HE12345AA"})
+	seedFanDrawerInfoEntry(t, d, "drawer13", map[string]string{"presence": "True", "model": "N/A"})
+
+	for _, c := range []struct {
+		name  string
+		cType componentType
+		want  string
+	}{{"Fan13", CompTypeFan, "3HE12345AA"}, {"drawer13", CompTypeFanTray, "N/A"}} {
+		for _, uri := range []string{COMP_ST, COMP_STATE_DESCR} {
+			t.Run(c.name+uri, func(t *testing.T) {
+				comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+				ygot.BuildEmptyTree(comp)
+				if err := fillFanInfo(comp, c.name, uri, d, c.cType); err != nil {
+					t.Fatalf("fillFanInfo(%s) unexpected error: %v", uri, err)
+				}
+				assertStrLeaf(t, comp.State.Description, c.want, "state/description")
+			})
+		}
+	}
+}
+
 func isNotFound(err error) bool {
 	_, ok := err.(tlerr.NotFoundError)
 	return ok
