@@ -2398,7 +2398,7 @@ func fillPsuInfo(psuCom *ocbinds.OpenconfigPlatform_Components_Component,
 		ensurePsuPowerSupplyState(psuCom)
 		psuCom.PowerSupply.State.OutputPower = psuInfo.Output_Power
 	default:
-		return fmt.Errorf("unsupported leaf path for PSU component: %v", targetUriPath)
+		return tlerr.NotFound("unsupported leaf path for PSU component: %v", targetUriPath)
 	}
 
 	return err
@@ -2522,9 +2522,14 @@ func fillFanInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 
 	comp.Name = &name
 	switch targetUriPath {
-	case COMP_STATE_MFG_NAME, COMP_STATE_FIRM_VER, COMP_STATE_SW_VER,
-		COMP_STATE_ID, COMP_STATE_TEMP:
-		return tlerr.NotFound("%s has no %s", name, path.Base(targetUriPath))
+	case COMP_STATE_DESCR, COMP_STATE_EMPTY, COMP_STATE_HW_VER, COMP_STATE_LOCATION,
+		COMP_STATE_MFG_DATE, COMP_STATE_NAME, COMP_STATE_OPER_STATUS, COMP_STATE_PARENT,
+		COMP_STATE_PART_NO, COMP_STATE_REMOVABLE, COMP_STATE_SERIAL_NO, COMP_STATE_TYPE,
+		COMP_STATE_INSTALL_COMPONENT, COMP_STATE_INSTALL_POSITION, COMP_STATE_MODEL_NAME:
+	default:
+		if strings.HasPrefix(targetUriPath, COMP_ST+"/") {
+			return tlerr.NotFound("unsupported leaf path for Fan component: %v", targetUriPath)
+		}
 	}
 	if allState || targetUriPath == COMP_STATE_EMPTY {
 		empty := !fanInfo.presence
@@ -2768,7 +2773,7 @@ func fillStorageInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 		}
 		counters.LifeLeft = &lifeLeft
 	default:
-		return tlerr.NotFound("%s has no %s", name, path.Base(targetUriPath))
+		return tlerr.NotFound("unsupported leaf path for Storage component: %v", targetUriPath)
 	}
 	return nil
 }
@@ -3374,8 +3379,6 @@ func fillXcvrInfo(xcvrCom *ocbinds.OpenconfigPlatform_Components_Component,
 			return tlerr.NotFound("%s has no mfg-date", name)
 		}
 		xcvrEEPROMState.MfgDate = &xcvrInfo.MfgDate
-	case COMP_STATE_MODEL_NAME, COMP_STATE_SW_VER, COMP_STATE_LOCATION:
-		return tlerr.NotFound("%s has no %s", name, path.Base(targetUriPath))
 	case COMP_STATE_OPER_STATUS:
 		if !xcvrStatusState.Presence {
 			return tlerr.NotFound("%s has no oper-status", name)
@@ -3416,6 +3419,10 @@ func fillXcvrInfo(xcvrCom *ocbinds.OpenconfigPlatform_Components_Component,
 			(targetUriPath == XCVR_OUTPUT_POWER_INSTANT && xcvrState.OutputPower.Instant == nil) ||
 			(targetUriPath == XCVR_LASER_BIAS_INSTANT && xcvrState.LaserBiasCurrent.Instant == nil) {
 			return tlerr.NotFound("%s has no reading", name)
+		}
+	default:
+		if strings.HasPrefix(targetUriPath, COMP_ST+"/") {
+			return tlerr.NotFound("unsupported leaf path for Transceiver component: %v", targetUriPath)
 		}
 	}
 	return err
@@ -3522,7 +3529,10 @@ func fillTempSensorInfo(temp *ocbinds.OpenconfigPlatform_Components_Component,
 			tempState.Name = &tempInfo.Name
 		}
 	case COMP_STATE_DESCR:
-		tempState.Description = NilIfStringEmpty(&tempInfo.Description)
+		if tempInfo.Description == "" {
+			return tlerr.NotFound("%s has no description", name)
+		}
+		tempState.Description = &tempInfo.Description
 	case COMP_STATE_LOCATION:
 		tempState.Location = &name
 	case COMP_STATE_PARENT:
@@ -3542,15 +3552,16 @@ func fillTempSensorInfo(temp *ocbinds.OpenconfigPlatform_Components_Component,
 	case COMP_STATE_OPER_STATUS:
 		tempState.OperStatus = ocbinds.OpenconfigPlatformTypes_COMPONENT_OPER_STATUS_ACTIVE
 	case TEMP_INSTANT:
-		if tempInfo.Current != "" {
-			cur, terr := strconv.ParseFloat(tempInfo.Current, 64)
-			if terr != nil {
-				return terr
-			}
-			tempCom.Instant = &cur
+		if tempInfo.Current == "" {
+			return tlerr.NotFound("%s has no instant", name)
 		}
+		cur, terr := strconv.ParseFloat(tempInfo.Current, 64)
+		if terr != nil {
+			return terr
+		}
+		tempCom.Instant = &cur
 	default:
-		return fmt.Errorf("unsupported leaf path for Sensor/CPU component: %v", targetUriPath)
+		return tlerr.NotFound("unsupported leaf path for Sensor component: %v", targetUriPath)
 	}
 
 	return nil
@@ -3743,7 +3754,9 @@ func fillICInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 		case COMP_STATE_OPER_STATUS:
 			stOper = true
 		default:
-			/* Unsupported path or /components/component */
+			if compSt {
+				return tlerr.NotFound("unsupported leaf path for Integrated Circuit component: %v", targetUriPath)
+			}
 		}
 		if all || stName {
 			comp.State.Name = &name
@@ -4025,6 +4038,32 @@ func fillSysEepromInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 	if shouldExportLeaf(pType, targetUriPath, StateLeaf, COMP_STATE_SW_VER) && eepromDb.Software_Version != "" {
 		compState.SoftwareVersion = &eepromDb.Software_Version
 	}
+
+	/* A targeted leaf with no value is NotFound: translib pre-creates the leaf
+	 * with its zero value, so leaving it unset would serve "" or 0.  Any other
+	 * state leaf is unsupported. */
+	if pType != SingularPath || !strings.HasPrefix(targetUriPath, COMP_ST+"/") {
+		return nil
+	}
+	switch targetUriPath {
+	case COMP_STATE_EMPTY, COMP_STATE_REMOVABLE, COMP_STATE_OPER_STATUS:
+		return nil
+	}
+	served := map[string]*string{
+		COMP_STATE_NAME: compState.Name, COMP_STATE_LOCATION: compState.Location,
+		COMP_STATE_ID: compState.Id, COMP_STATE_PART_NO: compState.PartNo,
+		COMP_STATE_SERIAL_NO: compState.SerialNo, COMP_STATE_BASE_MAC: compState.BaseMacAddress,
+		COMP_STATE_MFG_DATE: compState.MfgDate, COMP_STATE_HW_VER: compState.HardwareVersion,
+		COMP_STATE_DESCR: compState.Description, COMP_STATE_MFG_NAME: compState.MfgName,
+		COMP_STATE_SW_VER: compState.SoftwareVersion,
+	}
+	v, ok := served[targetUriPath]
+	if !ok {
+		return tlerr.NotFound("unsupported leaf path for System Eeprom component: %v", targetUriPath)
+	}
+	if v == nil || *v == "" {
+		return tlerr.NotFound("%s has no %s", name, path.Base(targetUriPath))
+	}
 	return nil
 }
 
@@ -4169,8 +4208,6 @@ func fillFirmwareInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 			return tlerr.NotFound("%s has no mfg-name", name)
 		}
 		compState.MfgName = &firmwareInfo.MfgName
-	case COMP_STATE_LOCATION, COMP_STATE_TEMP:
-		return tlerr.NotFound("%s has no %s", name, path.Base(targetUriPath))
 	case COMP_STATE_OPER_STATUS:
 		if firmwareInfo.OperStatus == "" {
 			compState.OperStatus = ocbinds.OpenconfigPlatformTypes_COMPONENT_OPER_STATUS_ACTIVE
@@ -4204,6 +4241,10 @@ func fillFirmwareInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 		compCfg.Name = &name
 		if firmwareCfg.Name != "" {
 			compCfg.Name = &firmwareCfg.Name
+		}
+	default:
+		if strings.HasPrefix(targetUriPath, COMP_ST+"/") {
+			return tlerr.NotFound("unsupported leaf path for Chassis component: %v", targetUriPath)
 		}
 	}
 	return nil

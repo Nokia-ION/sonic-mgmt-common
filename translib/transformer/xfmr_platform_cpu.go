@@ -20,7 +20,6 @@ package transformer
 
 import (
 	"os"
-	"path"
 	"strings"
 	"sync"
 
@@ -129,7 +128,7 @@ func fillCpuInfo(comp *ocbinds.OpenconfigPlatform_Components_Component, pType Pa
 		}
 		comp.State.Description = &model
 	default:
-		return tlerr.NotFound("%s has no %s", name, path.Base(targetUriPath))
+		return tlerr.NotFound("unsupported leaf path for CPU component: %v", targetUriPath)
 	}
 	return nil
 }
