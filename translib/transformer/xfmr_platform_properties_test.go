@@ -908,6 +908,11 @@ func TestFillPropertiesFanAndSensor(t *testing.T) {
 		"high_threshold":          "70",
 		"critical_high_threshold": "73",
 	})
+	seedTempInfoEntry(t, d, "PCB BACK", map[string]string{
+		"temperature":             "31.5",
+		"high_threshold":          "80.0",
+		"critical_high_threshold": "N/A",
+	})
 	var dbs [db.MaxDB]*db.DB
 	dbs[db.StateDB] = d
 
@@ -928,6 +933,13 @@ func TestFillPropertiesFanAndSensor(t *testing.T) {
 		if _, ok := comp.Properties.Property["speed"]; ok {
 			t.Error("property speed present on a sensor, want absent")
 		}
+	})
+	t.Run("sensor overheat without a critical threshold", func(t *testing.T) {
+		comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+		if err := fillProperties(comp, "PCB BACK", CompTypeTemp, "overheat_threshold", dbs); err != nil {
+			t.Fatalf("fillProperties(overheat_threshold) unexpected error: %v", err)
+		}
+		assertPropFloat(t, comp, "overheat_threshold", 80)
 	})
 	t.Run("temperature on a fan", func(t *testing.T) {
 		comp := &ocbinds.OpenconfigPlatform_Components_Component{}

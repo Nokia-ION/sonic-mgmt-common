@@ -313,9 +313,9 @@ var propTbl = map[string]propDescriptor{
 	/* FAN_INFO.speed is a percent of maximum, not an RPM count. */
 	"speed":       stateFloat([]componentType{CompTypeFan}, FAN_TBL, "speed"),
 	"temperature": stateFloat([]componentType{CompTypeTemp}, TEMP_TBL, "temperature"),
-	/* The overheat trip point is critical_high_threshold; high_threshold is the
-	 * warning level. */
-	"overheat_threshold": stateFloat([]componentType{CompTypeTemp}, TEMP_TBL, "critical_high_threshold"),
+	/* The overheat trip point is critical_high_threshold.  A sensor without one
+	 * serves high_threshold, its warning level. */
+	"overheat_threshold": stateFloat([]componentType{CompTypeTemp}, TEMP_TBL, "critical_high_threshold", "high_threshold"),
 
 	"operStatus": operStatusDescriptor(),
 	"hwStatus":   fruBool("presence"),
