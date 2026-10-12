@@ -1754,8 +1754,7 @@ func getSysComponents(pf_cpts *ocbinds.OpenconfigPlatform_Components, targetUriP
 			if err != nil {
 				log.V(lvl.DEBUG).Infof("Component creation failed with NewComponent for comp %v; err = %v", SYS_EEPROM_NAME, err)
 			} else {
-				ygot.BuildEmptyTree(sysEeprom)
-				if err = fillSysEepromInfo(sysEeprom, SYS_EEPROM_NAME, AllPaths, targetUriPath, d); err != nil {
+				if err = compTypeToFuncCall(CompTypeSystemEeprom, SYS_EEPROM_NAME, "", sysEeprom, targetUriPath, dbs, AllPaths, inParams.ygRoot); err != nil {
 					log.V(lvl.DEBUG).Info(err)
 				}
 				// Healthz should be populated for all comp types
