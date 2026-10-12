@@ -135,8 +135,8 @@ func TestFillCpuInfoLeaves(t *testing.T) {
 	for _, uri := range []string{COMP_STATE_SERIAL_NO, COMP_STATE_PART_NO, COMP_STATE_MFG_NAME} {
 		t.Run("targeted "+uri, func(t *testing.T) {
 			setCpuModel(t, "Test CPU")
-			if err := fillCpuInfo(newComp(), SingularPath, uri); !isNotFound(err) {
-				t.Fatalf("fillCpuInfo(%s) returned %T (%v), want tlerr.NotFoundError", uri, err, err)
+			if err := fillCpuInfo(newComp(), SingularPath, uri); !isUnsupportedLeaf(err) {
+				t.Fatalf("fillCpuInfo(%s) returned %v, want an unsupported leaf path NotFoundError", uri, err)
 			}
 		})
 	}

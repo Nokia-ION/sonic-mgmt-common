@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"math"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/Azure/sonic-mgmt-common/translib/db"
@@ -1191,17 +1192,27 @@ func TestFillFirmwareInfoMissingLeafNotFound(t *testing.T) {
 	for _, uri := range []string{
 		COMP_STATE_DESCR, COMP_STATE_FIRM_VER, COMP_STATE_HW_VER, COMP_STATE_PART_NO,
 		COMP_STATE_SERIAL_NO, COMP_STATE_MODEL_NAME, COMP_STATE_MFG_NAME,
-		COMP_STATE_LOCATION, COMP_STATE_TEMP,
 	} {
 		t.Run(uri, func(t *testing.T) {
 			comp := &ocbinds.OpenconfigPlatform_Components_Component{}
 			ygot.BuildEmptyTree(comp)
 			empty := ""
 			comp.State.FirmwareVersion = &empty
-			comp.State.Location = &empty
 			err := fillFirmwareInfo(comp, name, SingularPath, uri, stdb, cfgdb)
 			if !isNotFound(err) {
 				t.Fatalf("fillFirmwareInfo(%s) returned %T (%v), want tlerr.NotFoundError", uri, err, err)
+			}
+		})
+	}
+	for _, uri := range []string{COMP_STATE_LOCATION, COMP_STATE_TEMP} {
+		t.Run(uri, func(t *testing.T) {
+			comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+			ygot.BuildEmptyTree(comp)
+			empty := ""
+			comp.State.Location = &empty
+			err := fillFirmwareInfo(comp, name, SingularPath, uri, stdb, cfgdb)
+			if !isUnsupportedLeaf(err) {
+				t.Fatalf("fillFirmwareInfo(%s) returned %v, want an unsupported leaf path NotFoundError", uri, err)
 			}
 		})
 	}
@@ -1262,8 +1273,7 @@ func TestFillFanMissingLeafNotFound(t *testing.T) {
 		cType componentType
 	}{{"Fan11", CompTypeFan}, {"drawer11", CompTypeFanTray}} {
 		for _, uri := range []string{
-			COMP_STATE_DESCR, COMP_STATE_MFG_NAME, COMP_STATE_FIRM_VER, COMP_STATE_SW_VER,
-			COMP_STATE_ID, COMP_STATE_TEMP, COMP_STATE_HW_VER, COMP_STATE_PART_NO,
+			COMP_STATE_DESCR, COMP_STATE_HW_VER, COMP_STATE_PART_NO,
 			COMP_STATE_SERIAL_NO, COMP_STATE_MODEL_NAME, COMP_STATE_INSTALL_COMPONENT,
 			COMP_STATE_INSTALL_POSITION,
 		} {
@@ -1275,6 +1285,18 @@ func TestFillFanMissingLeafNotFound(t *testing.T) {
 				err := fillFanInfo(comp, c.name, uri, d, c.cType)
 				if !isNotFound(err) {
 					t.Fatalf("fillFanInfo(%s) returned %T (%v), want tlerr.NotFoundError", uri, err, err)
+				}
+			})
+		}
+		for _, uri := range []string{
+			COMP_STATE_MFG_NAME, COMP_STATE_FIRM_VER, COMP_STATE_SW_VER, COMP_STATE_ID, COMP_STATE_TEMP,
+		} {
+			t.Run(c.name+uri, func(t *testing.T) {
+				comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+				ygot.BuildEmptyTree(comp)
+				err := fillFanInfo(comp, c.name, uri, d, c.cType)
+				if !isUnsupportedLeaf(err) {
+					t.Fatalf("fillFanInfo(%s) returned %v, want an unsupported leaf path NotFoundError", uri, err)
 				}
 			})
 		}
@@ -1431,6 +1453,10 @@ func isNotFound(err error) bool {
 	return ok
 }
 
+func isUnsupportedLeaf(err error) bool {
+	return isNotFound(err) && strings.HasPrefix(err.Error(), "unsupported leaf path")
+}
+
 // Chassis oper-status is ACTIVE. CHASSIS_INFO does not carry it.
 func TestFillFirmwareInfoOperStatus(t *testing.T) {
 	stdb, err := db.NewDB(getDBOptions(db.StateDB))
@@ -1497,6 +1523,114 @@ func TestFillTempSensorOperStatus(t *testing.T) {
 				t.Errorf("oper-status = %v, want ACTIVE", comp.State.OperStatus)
 			}
 		})
+	}
+}
+
+// A targeted state leaf a component does not support is refused as an
+// unsupported path, even when translib has pre-created it with its zero value.
+func TestFillUnsupportedStateLeaf(t *testing.T) {
+	var dbs [db.MaxDB]*db.DB
+	for _, n := range []db.DBNum{db.StateDB, db.ConfigDB, db.CountersDB, db.AsicDB} {
+		d, err := db.NewDB(getDBOptions(n))
+		if err != nil {
+			t.Fatalf("NewDB(%v) failed: %v", n, err)
+		}
+		defer d.DeleteDB()
+		dbs[n] = d
+	}
+	stdb := dbs[db.StateDB]
+	seedChassisInfoEntry(t, stdb, "chassis 13", map[string]string{"model": "3HE18723AARA01"})
+	seedFanInfoEntry(t, stdb, "Fan14", map[string]string{"presence": "True", "status": "True"})
+	seedXcvrInfoEntry(t, stdb, "Ethernet920", map[string]string{"type": "QSFP-DD"})
+	seedXcvrDomEntry(t, stdb, "Ethernet920", map[string]string{"temperature": "25.5"})
+	t.Cleanup(func() {
+		stdb.DeleteEntry(&db.TableSpec{Name: TRANSCEIVER_TBL}, db.Key{Comp: []string{"Ethernet920"}})
+		stdb.DeleteEntry(&db.TableSpec{Name: TRANSCEIVER_DOM}, db.Key{Comp: []string{"Ethernet920"}})
+	})
+
+	fills := []struct {
+		name string
+		fill func(comp *ocbinds.OpenconfigPlatform_Components_Component, uri string) error
+	}{
+		{"chassis 13", func(comp *ocbinds.OpenconfigPlatform_Components_Component, uri string) error {
+			return fillFirmwareInfo(comp, "chassis 13", SingularPath, uri, stdb, dbs[db.ConfigDB])
+		}},
+		{"Fan14", func(comp *ocbinds.OpenconfigPlatform_Components_Component, uri string) error {
+			return fillFanInfo(comp, "Fan14", uri, stdb, CompTypeFan)
+		}},
+		{"Ethernet920", func(comp *ocbinds.OpenconfigPlatform_Components_Component, uri string) error {
+			return fillXcvrInfo(comp, "Ethernet920", false, "", uri, dbs)
+		}},
+		{IC_COMP_NAME, func(comp *ocbinds.OpenconfigPlatform_Components_Component, uri string) error {
+			return fillICInfo(comp, IC_COMP_NAME, uri, dbs, nil)
+		}},
+		{SYS_EEPROM_NAME, func(comp *ocbinds.OpenconfigPlatform_Components_Component, uri string) error {
+			return fillSysEepromInfo(comp, SYS_EEPROM_NAME, SingularPath, uri, stdb)
+		}},
+	}
+	for _, f := range fills {
+		for _, leaf := range []string{"clei-code", "redundant-role"} {
+			t.Run(f.name+"/"+leaf, func(t *testing.T) {
+				comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+				ygot.BuildEmptyTree(comp)
+				empty := ""
+				comp.State.CleiCode = &empty
+				err := f.fill(comp, COMP_ST+"/"+leaf)
+				if !isUnsupportedLeaf(err) {
+					t.Fatalf("returned %v, want an unsupported leaf path NotFoundError", err)
+				}
+			})
+		}
+	}
+
+	t.Run("System Eeprom served and empty leaves", func(t *testing.T) {
+		comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+		ygot.BuildEmptyTree(comp)
+		if err := fillSysEepromInfo(comp, SYS_EEPROM_NAME, SingularPath, COMP_STATE_LOCATION, stdb); err != nil {
+			t.Fatalf("location: unexpected error: %v", err)
+		}
+		assertStrLeaf(t, comp.State.Location, "Slot 1", "state/location")
+		empty := ""
+		comp.State.MfgName = &empty
+		if err := fillSysEepromInfo(comp, SYS_EEPROM_NAME, SingularPath, COMP_STATE_MFG_NAME, stdb); !isNotFound(err) {
+			t.Errorf("mfg-name with no EEPROM row returned %T (%v), want tlerr.NotFoundError", err, err)
+		}
+	})
+}
+
+// A targeted sensor leaf with no value is NotFound naming the component and
+// the leaf; one a sensor does not carry is an unsupported path.
+func TestFillTempSensorMissingLeafNotFound(t *testing.T) {
+	stdb, err := db.NewDB(getDBOptions(db.StateDB))
+	if err != nil {
+		t.Fatal("NewDB failed")
+	}
+	defer stdb.DeleteDB()
+
+	name := "exhaust_sensor_2"
+	seedTempInfoEntry(t, stdb, name, map[string]string{"high_threshold": "70.0"})
+
+	for _, c := range []struct{ uri, leaf string }{
+		{TEMP_INSTANT, "instant"},
+		{COMP_STATE_DESCR, "description"},
+	} {
+		t.Run(c.leaf, func(t *testing.T) {
+			comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+			ygot.BuildEmptyTree(comp)
+			err := fillTempSensorInfo(comp, name, SingularPath, c.uri, stdb)
+			if !isNotFound(err) {
+				t.Fatalf("fillTempSensorInfo(%s) returned %T (%v), want tlerr.NotFoundError", c.uri, err, err)
+			}
+			if want := name + " has no " + c.leaf; err.Error() != want {
+				t.Errorf("error = %q, want %q", err.Error(), want)
+			}
+		})
+	}
+	comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+	ygot.BuildEmptyTree(comp)
+	err = fillTempSensorInfo(comp, name, SingularPath, COMP_STATE_MFG_NAME, stdb)
+	if !isUnsupportedLeaf(err) {
+		t.Errorf("mfg-name returned %v, want an unsupported leaf path NotFoundError", err)
 	}
 }
 
@@ -1651,8 +1785,18 @@ func TestFillXcvrMissingLeafNotFound(t *testing.T) {
 	})
 
 	for _, targetUriPath := range []string{
-		COMP_STATE_FIRM_VER, COMP_STATE_HW_VER, XCVR_INPUT_POWER_INSTANT,
 		COMP_STATE_MODEL_NAME, COMP_STATE_SW_VER, COMP_STATE_LOCATION,
+	} {
+		t.Run(targetUriPath, func(t *testing.T) {
+			comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+			ygot.BuildEmptyTree(comp)
+			if err := fillXcvrInfo(comp, name, false, "", targetUriPath, dbs); !isUnsupportedLeaf(err) {
+				t.Fatalf("fillXcvrInfo(%s) returned %v, want an unsupported leaf path NotFoundError", targetUriPath, err)
+			}
+		})
+	}
+	for _, targetUriPath := range []string{
+		COMP_STATE_FIRM_VER, COMP_STATE_HW_VER, XCVR_INPUT_POWER_INSTANT,
 	} {
 		t.Run(targetUriPath, func(t *testing.T) {
 			comp := &ocbinds.OpenconfigPlatform_Components_Component{}
@@ -2039,10 +2183,17 @@ func TestFillStorageInfo(t *testing.T) {
 		assertUint8Leaf(t, comp.Storage.State.Counters.LifeLeft, 97, "storage/state/counters/life-left")
 	})
 
-	for _, uri := range []string{COMP_STATE_FIRM_VER, COMP_STATE_TEMP, COMP_STATE_MFG_NAME, COMP_STATE_PART_NO} {
+	for _, uri := range []string{COMP_STATE_FIRM_VER, COMP_STATE_TEMP} {
 		t.Run("targeted "+uri, func(t *testing.T) {
 			if err := fillStorageInfo(newComp(), "mmcblk9", SingularPath, uri, d); !isNotFound(err) {
 				t.Fatalf("fillStorageInfo(%s) returned %T (%v), want tlerr.NotFoundError", uri, err, err)
+			}
+		})
+	}
+	for _, uri := range []string{COMP_STATE_MFG_NAME, COMP_STATE_PART_NO} {
+		t.Run("targeted "+uri, func(t *testing.T) {
+			if err := fillStorageInfo(newComp(), "mmcblk9", SingularPath, uri, d); !isUnsupportedLeaf(err) {
+				t.Fatalf("fillStorageInfo(%s) returned %v, want an unsupported leaf path NotFoundError", uri, err)
 			}
 		})
 	}
