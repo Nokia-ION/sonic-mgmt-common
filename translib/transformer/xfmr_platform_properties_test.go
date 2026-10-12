@@ -49,7 +49,7 @@ func TestPropTblShape(t *testing.T) {
 				name, desc.table, desc.tables)
 		}
 		for _, cType := range desc.types {
-			if desc.tables != nil && desc.tables[cType] == "" && !slices.Contains(fixedOperStatusTypes, cType) {
+			if desc.tables != nil && desc.tables[cType] == "" && !slices.Contains(sampledOperStatusTypes, cType) {
 				t.Errorf("property %q applies to %v but names no table for it", name, cType)
 			}
 		}
@@ -213,7 +213,7 @@ func TestPropTblEveryPropertyNamesItsField(t *testing.T) {
 		}
 		for _, cType := range desc.types {
 			_, fields, ok := propSubscribeInfo(name, cType)
-			if desc.tables != nil && slices.Contains(fixedOperStatusTypes, cType) {
+			if desc.tables != nil && slices.Contains(sampledOperStatusTypes, cType) {
 				if ok {
 					t.Errorf("property %q is subscribable on %v, want not", name, cType)
 				}
