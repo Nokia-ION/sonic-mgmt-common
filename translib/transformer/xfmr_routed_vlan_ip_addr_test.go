@@ -9,36 +9,25 @@ import (
 	"github.com/openconfig/ygot/ygot"
 )
 
-type routedVlanIpAddrMockDB struct {
-	db.DB
-	keys   []db.Key
-	getErr error
-}
-
-func (m *routedVlanIpAddrMockDB) GetKeys(table *db.TableSpec) ([]db.Key, error) {
-	if m.getErr != nil {
-		return nil, m.getErr
-	}
-	return m.keys, nil
-}
-
-func (m *routedVlanIpAddrMockDB) GetEntry(table *db.TableSpec, key db.Key) (db.Value, error) {
-	return db.Value{Field: map[string]string{"NULL": "NULL"}}, nil
-}
-
 func Test_routedVlanIpAddrApplyReplace_ListPruneIPv4(t *testing.T) {
 	const ifName = "Vlan100"
 	const tblName = "VLAN_INTERFACE"
 	const ipKeep = "10.0.0.1"
 	const ipDrop = "10.0.0.2"
 
-	mockDB := &routedVlanIpAddrMockDB{
-		keys: []db.Key{
-			{Comp: []string{ifName, ipKeep + "/24"}},
-			{Comp: []string{ifName, ipDrop + "/24"}},
-		},
+	cfgDb, err := db.NewDB(getDBOptions(db.ConfigDB))
+	if err != nil {
+		t.Fatalf("db.NewDB(CONFIG_DB): %v", err)
 	}
-	mockDB.Opts = &db.Options{KeySeparator: "|", TableNameSeparator: "|"}
+	defer cfgDb.DeleteDB()
+
+	ts := &db.TableSpec{Name: tblName}
+	nullVal := db.Value{Field: map[string]string{"NULL": "NULL"}}
+	for _, suffix := range []string{ipKeep + "/24", ipDrop + "/24"} {
+		if err := cfgDb.SetEntry(ts, db.Key{Comp: []string{ifName, suffix}}, nullVal); err != nil {
+			t.Fatalf("SetEntry(%s|%s): %v", ifName, suffix, err)
+		}
+	}
 
 	d := &ocbinds.Device{}
 	d.Interfaces = &ocbinds.OpenconfigInterfaces_Interfaces{}
@@ -55,7 +44,7 @@ func Test_routedVlanIpAddrApplyReplace_ListPruneIPv4(t *testing.T) {
 	ygRoot := ygot.GoStruct(d)
 	subOpDataMap := make(map[Operation]*map[db.DBNum]map[string]map[string]db.Value)
 	inParams := XfmrParams{
-		d:            mockDB,
+		d:            cfgDb,
 		ygRoot:       &ygRoot,
 		oper:         REPLACE,
 		uri:          "/openconfig-interfaces:interfaces/interface[name=Vlan100]/routed-vlan/ipv4/addresses",
@@ -69,7 +58,7 @@ func Test_routedVlanIpAddrApplyReplace_ListPruneIPv4(t *testing.T) {
 			ifName + "|" + ipKeep + "/24": {Field: map[string]string{"NULL": "NULL"}},
 		},
 	}
-	err := routedVlanIpAddrApplyReplace(inParams, ifName, tblName, tblName, iface.RoutedVlan, vlanIntfmap, targetPath, "")
+	err = routedVlanIpAddrApplyReplace(inParams, ifName, tblName, tblName, iface.RoutedVlan, vlanIntfmap, targetPath, "")
 	if err != nil {
 		t.Fatalf("routedVlanIpAddrApplyReplace() error = %v", err)
 	}
