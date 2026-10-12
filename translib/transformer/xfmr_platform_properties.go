@@ -185,6 +185,10 @@ var fruTypes = []componentType{CompTypePsu, CompTypeFan, CompTypeFanTray}
  * ACTIVE.  With no table to watch they can only be sampled. */
 var fixedStatusTypes = []componentType{CompTypeChassis, CompTypeTemp, CompTypeStorage, CompTypeCpu}
 
+/* Component types whose operStatus is fixed at ACTIVE: those above, plus types
+ * that carry operStatus alone among the status properties. */
+var fixedOperStatusTypes = slices.Concat(fixedStatusTypes, []componentType{CompTypeSystemEeprom, CompTypeIC})
+
 /* Component types carrying the status properties. */
 var statusTypes = slices.Concat(fruTypes, fixedStatusTypes)
 
@@ -218,11 +222,11 @@ func fruStatusEntry(compName string, cType componentType, dbs [db.MaxDB]*db.DB) 
  * !status -> INACTIVE, present and status -> ACTIVE. */
 func operStatusDescriptor() propDescriptor {
 	return propDescriptor{
-		types:     statusTypes,
+		types:     slices.Concat(fruTypes, fixedOperStatusTypes),
 		tables:    fruStatusTables,
 		subFields: []string{"presence", "status"},
 		get: func(compName string, cType componentType, dbs [db.MaxDB]*db.DB) (interface{}, error) {
-			if slices.Contains(fixedStatusTypes, cType) {
+			if slices.Contains(fixedOperStatusTypes, cType) {
 				return "ACTIVE", nil
 			}
 			entry, err := fruStatusEntry(compName, cType, dbs)

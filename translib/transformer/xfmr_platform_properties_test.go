@@ -49,7 +49,7 @@ func TestPropTblShape(t *testing.T) {
 				name, desc.table, desc.tables)
 		}
 		for _, cType := range desc.types {
-			if desc.tables != nil && desc.tables[cType] == "" && !slices.Contains(fixedStatusTypes, cType) {
+			if desc.tables != nil && desc.tables[cType] == "" && !slices.Contains(fixedOperStatusTypes, cType) {
 				t.Errorf("property %q applies to %v but names no table for it", name, cType)
 			}
 		}
@@ -213,7 +213,7 @@ func TestPropTblEveryPropertyNamesItsField(t *testing.T) {
 		}
 		for _, cType := range desc.types {
 			_, fields, ok := propSubscribeInfo(name, cType)
-			if desc.tables != nil && slices.Contains(fixedStatusTypes, cType) {
+			if desc.tables != nil && slices.Contains(fixedOperStatusTypes, cType) {
 				if ok {
 					t.Errorf("property %q is subscribable on %v, want not", name, cType)
 				}
@@ -604,6 +604,32 @@ func TestFillPropertiesFixedStatus(t *testing.T) {
 			}
 			if !reflect.DeepEqual(prop.State.Value, wantUnion) {
 				t.Errorf("%v %s value == %v, want %v", cType, name, prop.State.Value, wantUnion)
+			}
+		}
+	}
+}
+
+// System Eeprom and integrated circuits serve operStatus ACTIVE and no other
+// status property.
+func TestFillPropertiesFixedOperStatusOnly(t *testing.T) {
+	var dbs [db.MaxDB]*db.DB
+	for _, cType := range []componentType{CompTypeSystemEeprom, CompTypeIC} {
+		comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+		ygot.BuildEmptyTree(comp)
+		if err := fillProperties(comp, "comp", cType, "operStatus", dbs); err != nil {
+			t.Fatalf("fillProperties(%v, operStatus) unexpected error: %v", cType, err)
+		}
+		prop := comp.Properties.Property["operStatus"]
+		want, err := prop.State.To_OpenconfigPlatform_Components_Component_Properties_Property_State_Value_Union("ACTIVE")
+		if err != nil {
+			t.Fatalf("building union: %v", err)
+		}
+		if !reflect.DeepEqual(prop.State.Value, want) {
+			t.Errorf("%v operStatus value == %v, want %v", cType, prop.State.Value, want)
+		}
+		for _, name := range []string{"hwStatus", "active"} {
+			if err := fillProperties(comp, "comp", cType, name, dbs); !isNotFound(err) {
+				t.Errorf("fillProperties(%v, %q) returned %T (%v), want tlerr.NotFoundError", cType, name, err, err)
 			}
 		}
 	}
