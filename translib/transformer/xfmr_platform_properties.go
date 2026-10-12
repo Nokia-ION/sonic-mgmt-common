@@ -189,8 +189,26 @@ var fixedStatusTypes = []componentType{CompTypeChassis, CompTypeTemp, CompTypeSt
  * that carry operStatus alone among the status properties. */
 var fixedOperStatusTypes = slices.Concat(fixedStatusTypes, []componentType{CompTypeSystemEeprom, CompTypeIC})
 
+/* Component types whose operStatus has no table to watch, so it can only be
+ * sampled. */
+var sampledOperStatusTypes = slices.Concat(fixedOperStatusTypes, []componentType{CompTypeXcvr})
+
 /* Component types carrying the status properties. */
 var statusTypes = slices.Concat(fruTypes, fixedStatusTypes)
+
+/* A transceiver's operStatus is ACTIVE when its module is present and NotFound
+ * otherwise.  Presence spans several tables, so it can only be sampled. */
+func xcvrOperStatus(compName string, dbs [db.MaxDB]*db.DB) (interface{}, error) {
+	d := dbs[db.StateDB]
+	if d == nil {
+		return nil, tlerr.NotFound("no STATE_DB client")
+	}
+	status, err := getXcvrStatusInfoFromDb(compName, d)
+	if err != nil || !status.Presence {
+		return nil, tlerr.NotFound("%s has no operStatus", compName)
+	}
+	return "ACTIVE", nil
+}
 
 /* Maps a FRU component type to the STATE_DB table holding its presence/status. */
 var fruStatusTables = map[componentType]string{
@@ -222,12 +240,15 @@ func fruStatusEntry(compName string, cType componentType, dbs [db.MaxDB]*db.DB) 
  * !status -> INACTIVE, present and status -> ACTIVE. */
 func operStatusDescriptor() propDescriptor {
 	return propDescriptor{
-		types:     slices.Concat(fruTypes, fixedOperStatusTypes),
+		types:     slices.Concat(fruTypes, sampledOperStatusTypes),
 		tables:    fruStatusTables,
 		subFields: []string{"presence", "status"},
 		get: func(compName string, cType componentType, dbs [db.MaxDB]*db.DB) (interface{}, error) {
 			if slices.Contains(fixedOperStatusTypes, cType) {
 				return "ACTIVE", nil
+			}
+			if cType == CompTypeXcvr {
+				return xcvrOperStatus(compName, dbs)
 			}
 			entry, err := fruStatusEntry(compName, cType, dbs)
 			if err != nil {

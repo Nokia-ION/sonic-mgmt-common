@@ -3378,6 +3378,9 @@ func fillXcvrInfo(xcvrCom *ocbinds.OpenconfigPlatform_Components_Component,
 	case COMP_STATE_MODEL_NAME, COMP_STATE_SW_VER, COMP_STATE_LOCATION:
 		return tlerr.NotFound("%s has no %s", name, path.Base(targetUriPath))
 	case COMP_STATE_OPER_STATUS:
+		if !xcvrStatusState.Presence {
+			return tlerr.NotFound("%s has no oper-status", name)
+		}
 		xcvrEEPROMState.OperStatus = ocbinds.OpenconfigPlatformTypes_COMPONENT_OPER_STATUS_ACTIVE
 	case COMP_STATE_TEMP_CTR, COMP_STATE_TEMP:
 		if xcvrInfo.Temperature != "" {

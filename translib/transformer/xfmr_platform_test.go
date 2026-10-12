@@ -1346,6 +1346,61 @@ func TestFillFanDescriptionFromModel(t *testing.T) {
 	}
 }
 
+// A transceiver's oper-status leaf and operStatus property are ACTIVE when the
+// module is present and NotFound when it is removed or has no rows.
+func TestXcvrOperStatus(t *testing.T) {
+	d, err := db.NewDB(getDBOptions(db.StateDB))
+	if err != nil {
+		t.Fatal("NewDB failed")
+	}
+	defer d.DeleteDB()
+	seed := func(table, name string, fields map[string]string) {
+		t.Helper()
+		if err := d.SetEntry(&db.TableSpec{Name: table}, db.Key{Comp: []string{name}}, db.Value{Field: fields}); err != nil {
+			t.Fatalf("failed to seed %s|%s: %v", table, name, err)
+		}
+		t.Cleanup(func() { d.DeleteEntry(&db.TableSpec{Name: table}, db.Key{Comp: []string{name}}) })
+	}
+	seed(TRANSCEIVER_TBL, "Ethernet900", map[string]string{"type": "QSFP-DD"})
+	seed(TRANSCEIVER_DOM, "Ethernet900", map[string]string{"temperature": "25.5"})
+	seed(TRANSCEIVER_STATUS, "Ethernet904", map[string]string{"tx1disable": "False"})
+	seed(TRANSCEIVER_STATUS_SW, "Ethernet904", map[string]string{"cmis_state": "REMOVED", "status": SFP_STATUS_REMOVED})
+	seed(TRANSCEIVER_STATUS_SW, "Ethernet908", map[string]string{"cmis_state": "REMOVED", "status": SFP_STATUS_REMOVED})
+	var dbs [db.MaxDB]*db.DB
+	dbs[db.StateDB] = d
+
+	t.Run("present", func(t *testing.T) {
+		comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+		ygot.BuildEmptyTree(comp)
+		if err := fillXcvrInfo(comp, "Ethernet900", false, "", COMP_STATE_OPER_STATUS, dbs); err != nil {
+			t.Fatalf("fillXcvrInfo() unexpected error: %v", err)
+		}
+		if comp.State.OperStatus != ocbinds.OpenconfigPlatformTypes_COMPONENT_OPER_STATUS_ACTIVE {
+			t.Errorf("state/oper-status == %v, want ACTIVE", comp.State.OperStatus)
+		}
+		if err := fillProperties(comp, "Ethernet900", CompTypeXcvr, "operStatus", dbs); err != nil {
+			t.Fatalf("fillProperties(operStatus) unexpected error: %v", err)
+		}
+		prop := comp.Properties.Property["operStatus"]
+		want, _ := prop.State.To_OpenconfigPlatform_Components_Component_Properties_Property_State_Value_Union("ACTIVE")
+		if !reflect.DeepEqual(prop.State.Value, want) {
+			t.Errorf("operStatus value == %v, want ACTIVE", prop.State.Value)
+		}
+	})
+	for _, name := range []string{"Ethernet904", "Ethernet908"} {
+		t.Run(name, func(t *testing.T) {
+			comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+			ygot.BuildEmptyTree(comp)
+			if err := fillXcvrInfo(comp, name, false, "", COMP_STATE_OPER_STATUS, dbs); err == nil {
+				t.Errorf("fillXcvrInfo(oper-status) returned nil, want an error")
+			}
+			if err := fillProperties(comp, name, CompTypeXcvr, "operStatus", dbs); !isNotFound(err) {
+				t.Errorf("fillProperties(operStatus) returned %T (%v), want tlerr.NotFoundError", err, err)
+			}
+		})
+	}
+}
+
 // An integrated circuit's oper-status is ACTIVE.
 func TestFillICInfoOperStatus(t *testing.T) {
 	var dbs [db.MaxDB]*db.DB
