@@ -218,15 +218,8 @@ func TestFillFilesystemInfo(t *testing.T) {
 	if comp.State == nil || comp.State.Name == nil || *comp.State.Name != "/" {
 		t.Errorf("state/name not set to the component name: %v", comp.State)
 	}
-	// The union members are pointers to generated structs, so compare with
-	// DeepEqual rather than ==, which would compare the pointers.
-	wantType, err := comp.State.To_OpenconfigPlatform_Components_Component_State_Type_Union(
-		ocbinds.OpenconfigPlatformTypes_OPENCONFIG_HARDWARE_COMPONENT_STORAGE)
-	if err != nil {
-		t.Fatalf("unexpected error building the expected type union: %v", err)
-	}
-	if !reflect.DeepEqual(comp.State.Type, wantType) {
-		t.Errorf("state/type == %v, want %v", comp.State.Type, wantType)
+	if comp.State.Type != nil {
+		t.Errorf("state/type == %v, want unset", comp.State.Type)
 	}
 
 	if got := len(comp.Properties.Property); got != len(fsPropFields) {
