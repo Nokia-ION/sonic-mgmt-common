@@ -1346,6 +1346,31 @@ func TestFillFanDescriptionFromModel(t *testing.T) {
 	}
 }
 
+// An integrated circuit's oper-status is ACTIVE.
+func TestFillICInfoOperStatus(t *testing.T) {
+	var dbs [db.MaxDB]*db.DB
+	for _, n := range []db.DBNum{db.ConfigDB, db.CountersDB, db.AsicDB} {
+		d, err := db.NewDB(getDBOptions(n))
+		if err != nil {
+			t.Fatalf("NewDB(%v) failed: %v", n, err)
+		}
+		defer d.DeleteDB()
+		dbs[n] = d
+	}
+	for _, uri := range []string{COMP_ST, COMP_STATE_OPER_STATUS} {
+		t.Run(uri, func(t *testing.T) {
+			comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+			ygot.BuildEmptyTree(comp)
+			if err := fillICInfo(comp, "integrated_circuit0", uri, dbs, nil); err != nil {
+				t.Fatalf("fillICInfo(%s) unexpected error: %v", uri, err)
+			}
+			if comp.State.OperStatus != ocbinds.OpenconfigPlatformTypes_COMPONENT_OPER_STATUS_ACTIVE {
+				t.Errorf("state/oper-status == %v, want ACTIVE", comp.State.OperStatus)
+			}
+		})
+	}
+}
+
 func isNotFound(err error) bool {
 	_, ok := err.(tlerr.NotFoundError)
 	return ok

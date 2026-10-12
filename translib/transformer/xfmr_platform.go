@@ -3726,18 +3726,20 @@ func fillICInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 	 * is the list key. */
 	comp.Config.Name = &name
 
-	/* Handle component state paths: name, type, parent */
+	/* Handle component state paths: name, type, parent, oper-status */
 	if all || compSt {
-		var stName, stType, stParent bool
+		var stName, stType, stParent, stOper bool
 		switch targetUriPath {
 		case COMP_ST:
-			stName, stType, stParent = true, true, true
+			stName, stType, stParent, stOper = true, true, true, true
 		case COMP_STATE_NAME:
 			stName = true
 		case COMP_STATE_TYPE:
 			stType = true
 		case COMP_STATE_PARENT:
 			stParent = true
+		case COMP_STATE_OPER_STATUS:
+			stOper = true
 		default:
 			/* Unsupported path or /components/component */
 		}
@@ -3757,6 +3759,10 @@ func fillICInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 			if nodeCfg.Parent != "" {
 				comp.State.Parent = &nodeCfg.Parent
 			}
+		}
+		/* No table carries the ASIC's oper-status; a served one is ACTIVE. */
+		if all || stOper {
+			comp.State.OperStatus = ocbinds.OpenconfigPlatformTypes_COMPONENT_OPER_STATUS_ACTIVE
 		}
 	}
 
