@@ -126,7 +126,7 @@ var fsPropFields = map[string]func(*syscall.Statfs_t) uint64{
  * property. */
 func fillFilesystemInfo(comp *ocbinds.OpenconfigPlatform_Components_Component, name, subKey string) error {
 	/* A name that does not resolve on this platform must yield no component at
-	 * all, rather than a typed one with no properties. */
+	 * all, rather than a named one with no properties. */
 	var st syscall.Statfs_t
 	if err := syscall.Statfs(hostPath(name), &st); err != nil {
 		log.V(lvl.DEBUG).Infof("fillFilesystemInfo: statfs on %s failed: %v", name, err)
@@ -142,8 +142,6 @@ func fillFilesystemInfo(comp *ocbinds.OpenconfigPlatform_Components_Component, n
 	compState := comp.State
 	ygot.BuildEmptyTree(compState)
 	compState.Name = &name
-	compState.Type, _ = compState.To_OpenconfigPlatform_Components_Component_State_Type_Union(
-		ocbinds.OpenconfigPlatformTypes_OPENCONFIG_HARDWARE_COMPONENT_STORAGE)
 
 	for propName, field := range fsPropFields {
 		if subKey != "" && propName != subKey {
