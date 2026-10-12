@@ -2481,6 +2481,7 @@ func fillFanInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 	}
 
 	/* Supported fan/fan-tray leaves are:
+	 *   - /components/component/state/description
 	 *   - /components/component/state/empty
 	 *   - /components/component/state/hardware-version
 	 *   - /components/component/state/location
@@ -2522,7 +2523,7 @@ func fillFanInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 
 	comp.Name = &name
 	switch targetUriPath {
-	case COMP_STATE_DESCR, COMP_STATE_MFG_NAME, COMP_STATE_FIRM_VER, COMP_STATE_SW_VER,
+	case COMP_STATE_MFG_NAME, COMP_STATE_FIRM_VER, COMP_STATE_SW_VER,
 		COMP_STATE_ID, COMP_STATE_TEMP:
 		return tlerr.NotFound("%s has no %s", name, path.Base(targetUriPath))
 	}
@@ -2626,6 +2627,13 @@ func fillFanInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 			comp.State.ModelName = &fanInfo.model
 		} else if !allState {
 			return tlerr.NotFound("%s has no model-name", name)
+		}
+	}
+	if allState || targetUriPath == COMP_STATE_DESCR {
+		if fanInfo.model != "" {
+			comp.State.Description = &fanInfo.model
+		} else if !allState {
+			return tlerr.NotFound("%s has no description", name)
 		}
 	}
 	if allFan || targetUriPath == COMP_FAN_SPEED {
