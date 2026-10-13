@@ -831,10 +831,11 @@ var DbToYang_grpc_server_key_xfmr KeyXfmrDbToYang = func(inParams XfmrParams) (m
 // notification is dropped. That is what a client discovering servers with a
 // wildcard sees as an empty result.
 //
-// The server name is the third component of a CREDENTIALS|CERT|<name> key, the
-// same source a Get of the list enumerates. The pathz policy is stored once
-// under a key that names no server, and is reported against the default
-// server, matching how the read path reports it.
+// The single server is reported from the default profile's CREDENTIALS|CERT
+// row; the rows of other Certz profiles describe profiles, not servers, and
+// name none. The pathz policy is stored once under a key that names no server,
+// and is reported against the default server, matching how the read path
+// reports it.
 var DbToYangPath_grpc_server_path_xfmr PathXfmrDbToYangFunc = func(params XfmrDbToYgPathParams) error {
 	if params.tblName != CREDENTIALS_TBL {
 		log.V(3).Infof("DbToYangPath_grpc_server_path_xfmr: unexpected table %v", params.tblName)
@@ -843,8 +844,8 @@ var DbToYangPath_grpc_server_path_xfmr PathXfmrDbToYangFunc = func(params XfmrDb
 
 	var serverName string
 	switch {
-	case len(params.tblKeyComp) > 1 && params.tblKeyComp[0] == CRED_CERT_PREFIX:
-		serverName = params.tblKeyComp[1]
+	case len(params.tblKeyComp) > 1 && params.tblKeyComp[0] == CRED_CERT_PREFIX && params.tblKeyComp[1] == GNXI_ID:
+		serverName = GNXI_ID
 	case len(params.tblKeyComp) > 0 && params.tblKeyComp[0] == CRED_PATHZ_PREFIX:
 		serverName = GNXI_ID
 	default:
@@ -867,6 +868,27 @@ const (
 	GNMI_CFG_KEY = "gnmi"
 	GNMI_CERT_ID = "certificate_id"
 )
+
+// The device runs a single gRPC server for gNMI/gNOI/gNSI, named "gnxi" as the
+// featureprofiles default server is. CREDENTIALS|CERT holds one row per gNSI
+// Certz SSL profile, and a profile is not a server, so that table must not be
+// used to enumerate the grpc-server list.
+func checkGrpcServerName(name string) error {
+	if name != GNXI_ID {
+		return fmt.Errorf("grpc-server %q not found; the only gRPC server is %q", name, GNXI_ID)
+	}
+	return nil
+}
+
+// grpcServerNameFromUri returns the grpc-server a request addresses. An unset
+// key and an explicit "*" both address every server, which is the one server.
+func grpcServerNameFromUri(pathInfo *PathInfo) (string, error) {
+	name := pathInfo.Var("name")
+	if name == "" || name == "*" {
+		return GNXI_ID, nil
+	}
+	return name, checkGrpcServerName(name)
+}
 
 // grpcServerDefaultDscp is the YANG default of the grpc-server config/dscp
 // leaf, or nil if the model declares none.
@@ -944,6 +966,10 @@ var YangToDb_grpc_server_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (m
 	}
 	log.V(3).Infof("YangToDb_grpc_server_xfmr: op=%v uri=%s target=%s", inParams.oper, inParams.uri, targetUriPath)
 
+	if _, err := grpcServerNameFromUri(pathInfo); err != nil {
+		return nil, tlerr.InvalidArgs("%v", err)
+	}
+
 	// DELETE of an individual leaf clears just that field in GNMI|gnmi.
 	// The last path token may carry a module prefix for augmented leaves
 	// (e.g. .../config/openconfig-system-grpc-ext:dscp), so normalize it to the
@@ -983,6 +1009,9 @@ var YangToDb_grpc_server_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (m
 
 	fields := make(map[string]string)
 	for serverName, serverObj := range sysObj.GrpcServers.GrpcServer {
+		if err := checkGrpcServerName(serverName); err != nil {
+			return nil, tlerr.InvalidArgs("%v", err)
+		}
 		if serverObj == nil || serverObj.Config == nil {
 			continue
 		}
@@ -1011,7 +1040,11 @@ var YangToDb_grpc_server_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (m
 
 var DbToYang_grpc_server_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) error {
 	pathInfo := NewPathInfo(inParams.uri)
-	serverNames := []string{pathInfo.Var("name")}
+	serverName, err := grpcServerNameFromUri(pathInfo)
+	if err != nil {
+		return tlerr.NotFound("%v", err)
+	}
+	serverNames := []string{serverName}
 	targetUriPath, err := getYangPathFromUri(pathInfo.Path)
 	if err != nil {
 		log.V(0).Infof("Error Parsing Uri Path, err: %v", err)
@@ -1024,15 +1057,6 @@ var DbToYang_grpc_server_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) er
 	stateDb := inParams.dbs[db.StateDB]
 	if stateDb == nil {
 		return errors.New("DbToYang_grpc_server_xfmr stateDb is nil!")
-	}
-	// An unset key and an explicit "*" both mean "every gRPC server"; without
-	// the wildcard case a Get on grpc-server[name=*] looks up a profile
-	// literally named "*" and comes back empty.
-	if len(serverNames) == 0 || len(serverNames[0]) == 0 || serverNames[0] == "*" {
-		var err error
-		if serverNames, err = getAllKeys(stateDb, CERT_TBL); err != nil {
-			return err
-		}
 	}
 	sysObj := getAppRootObject(inParams)
 	ygot.BuildEmptyTree(sysObj)
@@ -1146,13 +1170,6 @@ var DbToYang_grpc_server_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) er
 			serverObj.Config.Dscp = cfgDscp
 			serverObj.State.Dscp = &stDscp
 		}
-		// There is a single gRPC listener and a single binding for it in
-		// GNMI|gnmi, but this list is keyed from CREDENTIALS|CERT, so every
-		// Certz profile shows up as its own entry. Each entry is therefore a
-		// view of the same listener: report the binding on all of them, so
-		// that reading back any entry a controller just wrote to returns the
-		// value it set.
-		//
 		// An unset binding means the listener serves the default profile, so
 		// report that rather than leaving the leaf absent.
 		cfgCertId := GNXI_ID
