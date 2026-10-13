@@ -2254,6 +2254,10 @@ func fillPsuInfo(psuCom *ocbinds.OpenconfigPlatform_Components_Component,
 	if all {
 		psuCom.Config.Name = &name
 		if getPowerStats {
+			if psuInfo.Capacity == nil && psuInfo.Input_Current == nil && psuInfo.Input_Voltage == nil &&
+				psuInfo.Output_Current == nil && psuInfo.Output_Voltage == nil && psuInfo.Output_Power == nil {
+				return tlerr.NotFound("%s has no power-supply state", name)
+			}
 			applyPsuPowerSupplyState(psuCom, psuInfo)
 			return nil
 		}
@@ -2380,21 +2384,39 @@ func fillPsuInfo(psuCom *ocbinds.OpenconfigPlatform_Components_Component,
 	case COMP_STATE_REMOVABLE:
 		psuEepromState.Removable = &psuInfo.Removable
 	case COMP_PS_STATE_CAPACITY:
+		if psuInfo.Capacity == nil {
+			return tlerr.NotFound("%s has no capacity", name)
+		}
 		ensurePsuPowerSupplyState(psuCom)
 		psuCom.PowerSupply.State.Capacity = psuInfo.Capacity
 	case COMP_PS_STATE_INPUT_CURRENT:
+		if psuInfo.Input_Current == nil {
+			return tlerr.NotFound("%s has no input-current", name)
+		}
 		ensurePsuPowerSupplyState(psuCom)
 		psuCom.PowerSupply.State.InputCurrent = psuInfo.Input_Current
 	case COMP_PS_STATE_INPUT_VOLTAGE:
+		if psuInfo.Input_Voltage == nil {
+			return tlerr.NotFound("%s has no input-voltage", name)
+		}
 		ensurePsuPowerSupplyState(psuCom)
 		psuCom.PowerSupply.State.InputVoltage = psuInfo.Input_Voltage
 	case COMP_PS_STATE_OUTPUT_CURRENT:
+		if psuInfo.Output_Current == nil {
+			return tlerr.NotFound("%s has no output-current", name)
+		}
 		ensurePsuPowerSupplyState(psuCom)
 		psuCom.PowerSupply.State.OutputCurrent = psuInfo.Output_Current
 	case COMP_PS_STATE_OUTPUT_VOLTAGE:
+		if psuInfo.Output_Voltage == nil {
+			return tlerr.NotFound("%s has no output-voltage", name)
+		}
 		ensurePsuPowerSupplyState(psuCom)
 		psuCom.PowerSupply.State.OutputVoltage = psuInfo.Output_Voltage
 	case COMP_PS_STATE_OUTPUT_POWER:
+		if psuInfo.Output_Power == nil {
+			return tlerr.NotFound("%s has no output-power", name)
+		}
 		ensurePsuPowerSupplyState(psuCom)
 		psuCom.PowerSupply.State.OutputPower = psuInfo.Output_Power
 	default:
@@ -2641,6 +2663,7 @@ func fillFanInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 		}
 	}
 	if allFan || targetUriPath == COMP_FAN_SPEED {
+		comp.Fan.State.Speed = nil
 		if fanInfo.speed != "" {
 			speedU64, err := strconv.ParseUint(fanInfo.speed, 10, 32)
 			if err != nil {
@@ -2649,6 +2672,9 @@ func fillFanInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 				speedU32 := uint32(speedU64)
 				comp.Fan.State.Speed = &speedU32
 			}
+		}
+		if comp.Fan.State.Speed == nil && targetUriPath != COMP {
+			return tlerr.NotFound("%s has no speed", name)
 		}
 	}
 	return nil
@@ -2730,6 +2756,8 @@ func fillStorageInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 	if pType == AllPaths || targetUriPath == COMP_STORAGE || targetUriPath == COMP_STORAGE_ST || targetUriPath == COMP_STORAGE_CTRS {
 		if lifeLeftOk {
 			counters.LifeLeft = &lifeLeft
+		} else if pType != AllPaths {
+			return tlerr.NotFound("%s has no life-left", name)
 		}
 	}
 
@@ -2767,7 +2795,7 @@ func fillStorageInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 			return tlerr.NotFound("%s has no temperature", name)
 		}
 		compState.Temperature.Instant = &temp
-	case COMP_STORAGE_LIFE_LEFT:
+	case COMP_STORAGE_CTRS, COMP_STORAGE_LIFE_LEFT:
 		if !lifeLeftOk {
 			return tlerr.NotFound("%s has no life-left", name)
 		}
@@ -3267,11 +3295,9 @@ func fillXcvrInfo(xcvrCom *ocbinds.OpenconfigPlatform_Components_Component,
 			xcvrEEPROMState.OperStatus = ocbinds.OpenconfigPlatformTypes_COMPONENT_OPER_STATUS_ACTIVE
 		}
 
-		if xcvrInfo.Temperature != "" {
-			if float64val, err := strconv.ParseFloat(xcvrInfo.Temperature, 64); err == nil {
-				ygot.BuildEmptyTree(xcvrEEPROMState.Temperature)
-				xcvrEEPROMState.Temperature.Instant = &float64val
-			}
+		if temp, ok := parseXcvrDomValue(xcvrInfo.Temperature); ok {
+			ygot.BuildEmptyTree(xcvrEEPROMState.Temperature)
+			xcvrEEPROMState.Temperature.Instant = &temp
 		}
 
 		/* Physical-Channels level */
@@ -3385,16 +3411,12 @@ func fillXcvrInfo(xcvrCom *ocbinds.OpenconfigPlatform_Components_Component,
 		}
 		xcvrEEPROMState.OperStatus = ocbinds.OpenconfigPlatformTypes_COMPONENT_OPER_STATUS_ACTIVE
 	case COMP_STATE_TEMP_CTR, COMP_STATE_TEMP:
-		if xcvrInfo.Temperature != "" {
-			float64val, err := strconv.ParseFloat(xcvrInfo.Temperature, 64)
-			if err != nil {
-				return err
-			}
-			ygot.BuildEmptyTree(xcvrEEPROMState.Temperature)
-			xcvrEEPROMState.Temperature.Instant = &float64val
-		} else if targetUriPath == COMP_STATE_TEMP {
+		temp, ok := parseXcvrDomValue(xcvrInfo.Temperature)
+		if !ok {
 			return tlerr.NotFound("%s has no temperature", name)
 		}
+		ygot.BuildEmptyTree(xcvrEEPROMState.Temperature)
+		xcvrEEPROMState.Temperature.Instant = &temp
 
 	case COMP_STATE_REMOVABLE:
 		q := true
@@ -3415,9 +3437,16 @@ func fillXcvrInfo(xcvrCom *ocbinds.OpenconfigPlatform_Components_Component,
 		XCVR_OUTPUT_POWER, XCVR_OUTPUT_POWER_INSTANT,
 		XCVR_LASER_BIAS, XCVR_LASER_BIAS_INSTANT:
 		fillXcvrAggregatePower(xcvrState, xcvrInfo)
-		if (targetUriPath == XCVR_INPUT_POWER_INSTANT && xcvrState.InputPower.Instant == nil) ||
-			(targetUriPath == XCVR_OUTPUT_POWER_INSTANT && xcvrState.OutputPower.Instant == nil) ||
-			(targetUriPath == XCVR_LASER_BIAS_INSTANT && xcvrState.LaserBiasCurrent.Instant == nil) {
+		var instant *float64
+		switch targetUriPath {
+		case XCVR_INPUT_POWER, XCVR_INPUT_POWER_INSTANT:
+			instant = xcvrState.InputPower.Instant
+		case XCVR_OUTPUT_POWER, XCVR_OUTPUT_POWER_INSTANT:
+			instant = xcvrState.OutputPower.Instant
+		default:
+			instant = xcvrState.LaserBiasCurrent.Instant
+		}
+		if instant == nil {
 			return tlerr.NotFound("%s has no reading", name)
 		}
 	default:
@@ -3488,7 +3517,12 @@ func fillTempSensorInfo(temp *ocbinds.OpenconfigPlatform_Components_Component,
 	tempCom := temp.State.Temperature
 	tempState := temp.State
 	defaultParentVal := CHASSIS_PREFIX
+	cur, cerr := strconv.ParseFloat(tempInfo.Current, 64)
+	curOk := cerr == nil && !math.IsInf(cur, 0) && !math.IsNaN(cur)
 
+	if targetUriPath == TEMP_COMP && !curOk {
+		return tlerr.NotFound("%s has no instant", name)
+	}
 	if pType == AllPaths || pType == AllCompPaths || pType == StatePaths || targetUriPath == TEMP_COMP {
 		tempState.Name = &name
 		tempState.Location = &name
@@ -3505,13 +3539,8 @@ func fillTempSensorInfo(temp *ocbinds.OpenconfigPlatform_Components_Component,
 		}
 		/* TEMPERATURE_INFO has no oper-status. A sensor that is present is ACTIVE. */
 		tempState.OperStatus = ocbinds.OpenconfigPlatformTypes_COMPONENT_OPER_STATUS_ACTIVE
-		if tempInfo.Current != "" {
-			cur, terr := strconv.ParseFloat(tempInfo.Current, 64)
-			if terr != nil {
-				log.V(lvl.DEBUG).Infof("Error in ParseFloat conversion for tempInfo.Current (%v): %v", tempInfo.Current, terr)
-			} else {
-				tempCom.Instant = &cur
-			}
+		if curOk {
+			tempCom.Instant = &cur
 		}
 
 		if pType == StatePaths {
@@ -3552,12 +3581,8 @@ func fillTempSensorInfo(temp *ocbinds.OpenconfigPlatform_Components_Component,
 	case COMP_STATE_OPER_STATUS:
 		tempState.OperStatus = ocbinds.OpenconfigPlatformTypes_COMPONENT_OPER_STATUS_ACTIVE
 	case TEMP_INSTANT:
-		if tempInfo.Current == "" {
+		if !curOk {
 			return tlerr.NotFound("%s has no instant", name)
-		}
-		cur, terr := strconv.ParseFloat(tempInfo.Current, 64)
-		if terr != nil {
-			return terr
 		}
 		tempCom.Instant = &cur
 	default:
