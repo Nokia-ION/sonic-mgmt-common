@@ -561,34 +561,35 @@ func TestFillFanSpeed(t *testing.T) {
 		})
 	}
 
-	t.Run("invalid speed leaves speed unset", func(t *testing.T) {
-		seedFanInfoEntry(t, d, "Fan3", map[string]string{
-			"presence": "true",
-			"speed":    "bad",
+	/* Fan3 has an invalid speed and Fan4 has none. Every path down to speed is
+	 * NotFound, even when translib has pre-created the leaf as 0; the whole
+	 * component omits the leaf. */
+	seedFanInfoEntry(t, d, "Fan3", map[string]string{"presence": "true", "speed": "bad"})
+	seedFanInfoEntry(t, d, "Fan4", map[string]string{"presence": "true"})
+	for _, fan := range []string{"Fan3", "Fan4"} {
+		for _, uri := range []string{COMP_FAN, COMP_FAN_ST, COMP_FAN_SPEED} {
+			t.Run(fan+uri, func(t *testing.T) {
+				comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+				ygot.BuildEmptyTree(comp)
+				ygot.BuildEmptyTree(comp.Fan)
+				zero := uint32(0)
+				comp.Fan.State.Speed = &zero
+				if err := fillFanInfo(comp, fan, uri, d, CompTypeFan); !isNotFound(err) {
+					t.Fatalf("fillFanInfo(%s, %s) returned %T (%v), want tlerr.NotFoundError", fan, uri, err, err)
+				}
+			})
+		}
+		t.Run(fan+" whole component", func(t *testing.T) {
+			comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+			ygot.BuildEmptyTree(comp)
+			if err := fillFanInfo(comp, fan, COMP, d, CompTypeFan); err != nil {
+				t.Fatalf("fillFanInfo() unexpected error: %v", err)
+			}
+			if comp.Fan.State.Speed != nil {
+				t.Fatalf("Fan.State.Speed = %d, want nil", *comp.Fan.State.Speed)
+			}
 		})
-		comp := &ocbinds.OpenconfigPlatform_Components_Component{}
-		ygot.BuildEmptyTree(comp)
-		if err := fillFanInfo(comp, "Fan3", COMP_FAN_SPEED, d, CompTypeFan); err != nil {
-			t.Fatalf("fillFanInfo() unexpected error: %v", err)
-		}
-		if comp.Fan != nil && comp.Fan.State != nil && comp.Fan.State.Speed != nil {
-			t.Fatalf("Fan.State.Speed = %d, want nil for invalid speed", *comp.Fan.State.Speed)
-		}
-	})
-
-	t.Run("missing speed leaves speed unset", func(t *testing.T) {
-		seedFanInfoEntry(t, d, "Fan4", map[string]string{
-			"presence": "true",
-		})
-		comp := &ocbinds.OpenconfigPlatform_Components_Component{}
-		ygot.BuildEmptyTree(comp)
-		if err := fillFanInfo(comp, "Fan4", COMP_FAN_SPEED, d, CompTypeFan); err != nil {
-			t.Fatalf("fillFanInfo() unexpected error: %v", err)
-		}
-		if comp.Fan != nil && comp.Fan.State != nil && comp.Fan.State.Speed != nil {
-			t.Fatalf("Fan.State.Speed = %d, want nil when speed field is absent", *comp.Fan.State.Speed)
-		}
-	})
+	}
 }
 
 // TestGetSysComponentsFanWildcard exercises the wildcard (no component name)
@@ -1242,6 +1243,8 @@ func TestFillPsuMissingLeafNotFound(t *testing.T) {
 		COMP_STATE_SERIAL_NO, COMP_STATE_DESCR, COMP_STATE_MODEL_NAME, COMP_STATE_HW_VER,
 		COMP_STATE_MFG_NAME, COMP_STATE_PART_NO, COMP_STATE_LOCATION,
 		COMP_STATE_INSTALL_POSITION, COMP_STATE_INSTALL_COMPONENT,
+		COMP_PS_STATE_CAPACITY, COMP_PS_STATE_INPUT_CURRENT, COMP_PS_STATE_INPUT_VOLTAGE,
+		COMP_PS_STATE_OUTPUT_CURRENT, COMP_PS_STATE_OUTPUT_VOLTAGE, COMP_PS_STATE_OUTPUT_POWER,
 	} {
 		t.Run(uri, func(t *testing.T) {
 			comp := &ocbinds.OpenconfigPlatform_Components_Component{}
@@ -1254,6 +1257,24 @@ func TestFillPsuMissingLeafNotFound(t *testing.T) {
 			}
 		})
 	}
+	for _, uri := range []string{COMP_PS, COMP_PS_STATE} {
+		t.Run(uri, func(t *testing.T) {
+			comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+			ygot.BuildEmptyTree(comp)
+			if err := fillPsuInfo(comp, "PSU10", true, true, uri, d); !isNotFound(err) {
+				t.Fatalf("fillPsuInfo(%s) returned %T (%v), want tlerr.NotFoundError", uri, err, err)
+			}
+		})
+	}
+	seedPsuInfoEntry(t, d, "PSU11", map[string]string{"presence": "true", "status": "true", "power": "24.0"})
+	t.Run("power-supply/state with one reading", func(t *testing.T) {
+		comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+		ygot.BuildEmptyTree(comp)
+		if err := fillPsuInfo(comp, "PSU11", true, true, COMP_PS_STATE, d); err != nil {
+			t.Fatalf("fillPsuInfo() unexpected error: %v", err)
+		}
+		assertIEEEFloat32(t, comp.PowerSupply.State.OutputPower, 24.0)
+	})
 }
 
 // A targeted fan or fan drawer leaf with no value is NotFound, even when
@@ -1526,6 +1547,37 @@ func TestFillTempSensorOperStatus(t *testing.T) {
 	}
 }
 
+// A sensor serves its reading on the temperature container and on its instant leaf.
+func TestFillTempSensorTemperature(t *testing.T) {
+	stdb, err := db.NewDB(getDBOptions(db.StateDB))
+	if err != nil {
+		t.Fatal("NewDB failed")
+	}
+	defer stdb.DeleteDB()
+
+	name := "exhaust_sensor_3"
+	seedTempInfoEntry(t, stdb, name, map[string]string{"temperature": "42.5"})
+
+	for _, c := range []struct {
+		pType PathType
+		uri   string
+	}{
+		{AllCompPaths, TEMP_COMP},
+		{SingularPath, TEMP_INSTANT},
+	} {
+		t.Run(c.uri, func(t *testing.T) {
+			comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+			ygot.BuildEmptyTree(comp)
+			if err := fillTempSensorInfo(comp, name, c.pType, c.uri, stdb); err != nil {
+				t.Fatalf("fillTempSensorInfo() unexpected error: %v", err)
+			}
+			if got := comp.State.Temperature.Instant; got == nil || *got != 42.5 {
+				t.Errorf("state/temperature/instant = %v, want 42.5", got)
+			}
+		})
+	}
+}
+
 // A targeted state leaf a component does not support is refused as an
 // unsupported path, even when translib has pre-created it with its zero value.
 func TestFillUnsupportedStateLeaf(t *testing.T) {
@@ -1598,8 +1650,9 @@ func TestFillUnsupportedStateLeaf(t *testing.T) {
 	})
 }
 
-// A targeted sensor leaf with no value is NotFound naming the component and
-// the leaf; one a sensor does not carry is an unsupported path.
+// A targeted sensor leaf, or the temperature container, with no value is
+// NotFound naming the component and the leaf; a leaf a sensor does not carry
+// is an unsupported path.
 func TestFillTempSensorMissingLeafNotFound(t *testing.T) {
 	stdb, err := db.NewDB(getDBOptions(db.StateDB))
 	if err != nil {
@@ -1608,9 +1661,10 @@ func TestFillTempSensorMissingLeafNotFound(t *testing.T) {
 	defer stdb.DeleteDB()
 
 	name := "exhaust_sensor_2"
-	seedTempInfoEntry(t, stdb, name, map[string]string{"high_threshold": "70.0"})
+	seedTempInfoEntry(t, stdb, name, map[string]string{"high_threshold": "70.0", "temperature": "N/A"})
 
 	for _, c := range []struct{ uri, leaf string }{
+		{TEMP_COMP, "instant"},
 		{TEMP_INSTANT, "instant"},
 		{COMP_STATE_DESCR, "description"},
 	} {
@@ -1758,8 +1812,9 @@ func TestFillXcvrTemperature(t *testing.T) {
 	}
 }
 
-// A targeted leaf that an SFF module has no value for is NotFound, even when
-// translib has pre-created it with its zero value.
+// A targeted leaf that an SFF module has no value for, or a container holding
+// only such a leaf, is NotFound, even when translib has pre-created the leaf
+// with its zero value. A container with a reading serves it.
 func TestFillXcvrMissingLeafNotFound(t *testing.T) {
 	d, err := db.NewDB(getDBOptions(db.StateDB))
 	if err != nil {
@@ -1782,8 +1837,21 @@ func TestFillXcvrMissingLeafNotFound(t *testing.T) {
 	})
 	seedXcvrDomEntry(t, d, name, map[string]string{
 		"rx1power": "-inf", "rx2power": "N/A", "rx3power": "N/A", "rx4power": "N/A",
+		"tx1power": "-4.0", "temperature": "N/A",
 	})
 
+	for _, targetUriPath := range []string{XCVR_OUTPUT_POWER, XCVR_OUTPUT_POWER_INSTANT} {
+		t.Run(targetUriPath, func(t *testing.T) {
+			comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+			ygot.BuildEmptyTree(comp)
+			if err := fillXcvrInfo(comp, name, false, "", targetUriPath, dbs); err != nil {
+				t.Fatalf("fillXcvrInfo(%s) unexpected error: %v", targetUriPath, err)
+			}
+			if got := comp.Transceiver.State.OutputPower.Instant; got == nil || math.Abs(*got-(-4.0)) > 1e-9 {
+				t.Errorf("output-power/instant = %v, want -4.0", got)
+			}
+		})
+	}
 	for _, targetUriPath := range []string{
 		COMP_STATE_MODEL_NAME, COMP_STATE_SW_VER, COMP_STATE_LOCATION,
 	} {
@@ -1796,7 +1864,8 @@ func TestFillXcvrMissingLeafNotFound(t *testing.T) {
 		})
 	}
 	for _, targetUriPath := range []string{
-		COMP_STATE_FIRM_VER, COMP_STATE_HW_VER, XCVR_INPUT_POWER_INSTANT,
+		COMP_STATE_FIRM_VER, COMP_STATE_HW_VER, COMP_STATE_TEMP_CTR, COMP_STATE_TEMP,
+		XCVR_INPUT_POWER, XCVR_INPUT_POWER_INSTANT, XCVR_LASER_BIAS, XCVR_LASER_BIAS_INSTANT,
 	} {
 		t.Run(targetUriPath, func(t *testing.T) {
 			comp := &ocbinds.OpenconfigPlatform_Components_Component{}
@@ -1809,7 +1878,9 @@ func TestFillXcvrMissingLeafNotFound(t *testing.T) {
 			comp.State.ModelName = &empty
 			comp.State.SoftwareVersion = &empty
 			comp.State.Location = &empty
+			comp.State.Temperature.Instant = &zero
 			comp.Transceiver.State.InputPower.Instant = &zero
+			comp.Transceiver.State.LaserBiasCurrent.Instant = &zero
 
 			err := fillXcvrInfo(comp, name, false, "", targetUriPath, dbs)
 			if _, ok := err.(tlerr.NotFoundError); !ok {
@@ -2118,8 +2189,10 @@ func TestFillStorageInfo(t *testing.T) {
 		"health":       "100.0",
 		"temperature":  "N/A",
 	})
+	seedStorageInfoEntry(t, d, "sdy", map[string]string{"device_model": "M.2 (S42) 3IE7", "health": "N/A"})
 	seedStorageInfoEntry(t, d, STORAGE_FSSTATS_KEY, map[string]string{"successful_sync_time": "2026-10-07 03:20:45"})
 	defer d.DeleteEntry(&db.TableSpec{Name: STORAGE_INFO}, db.Key{Comp: []string{"sdz"}})
+	defer d.DeleteEntry(&db.TableSpec{Name: STORAGE_INFO}, db.Key{Comp: []string{"sdy"}})
 	defer d.DeleteEntry(&db.TableSpec{Name: STORAGE_INFO}, db.Key{Comp: []string{"mmcblk9"}})
 	defer d.DeleteEntry(&db.TableSpec{Name: STORAGE_INFO}, db.Key{Comp: []string{STORAGE_FSSTATS_KEY}})
 
@@ -2175,13 +2248,27 @@ func TestFillStorageInfo(t *testing.T) {
 		assertUint8Leaf(t, comp.Storage.State.Counters.LifeLeft, 100, "storage/state/counters/life-left")
 	})
 
-	t.Run("targeted life-left", func(t *testing.T) {
-		comp := newComp()
-		if err := fillStorageInfo(comp, "sdz", SingularPath, COMP_STORAGE_LIFE_LEFT, d); err != nil {
-			t.Fatalf("fillStorageInfo() unexpected error: %v", err)
-		}
-		assertUint8Leaf(t, comp.Storage.State.Counters.LifeLeft, 97, "storage/state/counters/life-left")
-	})
+	/* Each level down to life-left, with the path type getSysComponents passes. */
+	for _, c := range []struct {
+		pType PathType
+		uri   string
+	}{
+		{AllCompPaths, COMP_STORAGE},
+		{StatePaths, COMP_STORAGE_ST},
+		{SingularPath, COMP_STORAGE_CTRS},
+		{SingularPath, COMP_STORAGE_LIFE_LEFT},
+	} {
+		t.Run("targeted "+c.uri, func(t *testing.T) {
+			comp := newComp()
+			if err := fillStorageInfo(comp, "sdz", c.pType, c.uri, d); err != nil {
+				t.Fatalf("fillStorageInfo() unexpected error: %v", err)
+			}
+			assertUint8Leaf(t, comp.Storage.State.Counters.LifeLeft, 97, "storage/state/counters/life-left")
+			if err := fillStorageInfo(newComp(), "sdy", c.pType, c.uri, d); !isNotFound(err) {
+				t.Fatalf("fillStorageInfo(sdy, %s) returned %T (%v), want tlerr.NotFoundError", c.uri, err, err)
+			}
+		})
+	}
 
 	for _, uri := range []string{COMP_STATE_FIRM_VER, COMP_STATE_TEMP} {
 		t.Run("targeted "+uri, func(t *testing.T) {
