@@ -41,10 +41,11 @@ func TestDbToYangPathGrpcServerPathXfmr(t *testing.T) {
 		tblKeyComp: []string{CRED_CERT_PREFIX, "gnxi"},
 		want:       map[string]string{nameKey: "gnxi"},
 	}, {
-		name:       "a second server is named by its own key",
+		// A Certz SSL profile other than the default is not a gRPC server.
+		name:       "another ssl profile names no server",
 		tblName:    CREDENTIALS_TBL,
-		tblKeyComp: []string{CRED_CERT_PREFIX, "other"},
-		want:       map[string]string{nameKey: "other"},
+		tblKeyComp: []string{CRED_CERT_PREFIX, "octa-ssl-profile"},
+		want:       map[string]string{},
 	}, {
 		// Stored once under a key naming no server, and reported against the
 		// default server, as the read path does.
@@ -158,6 +159,47 @@ func TestSubscribeGrpcServerXfmrRegistersOnlyRowsItReads(t *testing.T) {
 			}
 			if gotSample := out.nOpts.pType == Sample; gotSample != tt.wantSample {
 				t.Errorf("sampled = %v, want %v", gotSample, tt.wantSample)
+			}
+		})
+	}
+}
+
+func TestGrpcServerNameFromUri(t *testing.T) {
+	tests := []struct {
+		name    string
+		uri     string
+		want    string
+		wantErr bool
+	}{{
+		name: "an unset key addresses the one server",
+		uri:  GRPC_SERVER + "/config/port",
+		want: GNXI_ID,
+	}, {
+		name: "a wildcard addresses the one server",
+		uri:  GRPC_OC_SERVERS + "/grpc-server[name=*]/config/port",
+		want: GNXI_ID,
+	}, {
+		name: "the server by name",
+		uri:  GRPC_OC_SERVERS + "/grpc-server[name=gnxi]/config/port",
+		want: GNXI_ID,
+	}, {
+		name:    "an ssl profile is not a server",
+		uri:     GRPC_OC_SERVERS + "/grpc-server[name=octa-ssl-profile]/config/port",
+		wantErr: true,
+	}, {
+		name:    "the OC default name is not this server",
+		uri:     GRPC_OC_SERVERS + "/grpc-server[name=DEFAULT]/config/port",
+		wantErr: true,
+	}}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := grpcServerNameFromUri(NewPathInfo(tt.uri))
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("grpcServerNameFromUri() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if !tt.wantErr && got != tt.want {
+				t.Errorf("grpcServerNameFromUri() = %q, want %q", got, tt.want)
 			}
 		})
 	}
