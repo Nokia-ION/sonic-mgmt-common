@@ -439,8 +439,11 @@ var DbToYang_sys_state_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) erro
 		return nil
 	}
 
+	currentDatetime := time.Now().UTC().Format(time.RFC3339)
+
 	ygot.BuildEmptyTree(sysObj)
 	sysObj.State.BootTime = &bootTime
+	sysObj.State.CurrentDatetime = &currentDatetime
 	sysObj.State.UpTime = &upTime
 	sysObj.State.Hostname = optionalString(hostname)
 	sysObj.State.DomainName = optionalString(domainName)
