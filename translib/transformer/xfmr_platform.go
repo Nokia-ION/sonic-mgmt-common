@@ -1974,7 +1974,7 @@ func getSysComponents(pf_cpts *ocbinds.OpenconfigPlatform_Components, targetUriP
 		case CompTypeSystemEeprom:
 			return fillSysEepromInfo(pf_comp, compName, SingularPath, targetUriPath, d)
 		case CompTypeFilesystem:
-			return fillFilesystemInfo(pf_comp, compName, subKey)
+			return fillFilesystemInfo(pf_comp, compName, subKey, targetUriPath)
 		case CompTypeCpu:
 			return fillCpuInfo(pf_comp, SingularPath, targetUriPath)
 		default:
@@ -2095,7 +2095,7 @@ func compTypeToFuncCall(cType componentType, compName, subKey string, pfComp *oc
 		return fillSysEepromInfo(pfComp, compName, pType, targetUriPath, d)
 	case CompTypeFilesystem:
 		/* The only arm that takes no *db.DB; a filesystem touches no database. */
-		return fillFilesystemInfo(pfComp, compName, subKey)
+		return fillFilesystemInfo(pfComp, compName, subKey, targetUriPath)
 	}
 	return errors.New("Invalid component type")
 }

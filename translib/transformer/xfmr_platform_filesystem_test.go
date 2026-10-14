@@ -101,7 +101,7 @@ func TestHostPath(t *testing.T) {
 // typed one with no properties.
 func TestFillFilesystemInfoUnresolvedName(t *testing.T) {
 	comp := &ocbinds.OpenconfigPlatform_Components_Component{}
-	err := fillFilesystemInfo(comp, "/no/such/mount/point", "")
+	err := fillFilesystemInfo(comp, "/no/such/mount/point", "", COMP)
 	if err == nil {
 		t.Fatal("fillFilesystemInfo on a nonexistent path returned nil error")
 	}
@@ -199,7 +199,7 @@ func TestSubscribe_pfm_components_filesystem_wildcard(t *testing.T) {
 // not answered with an empty component the caller cannot interpret.
 func TestFillFilesystemInfoUnknownProperty(t *testing.T) {
 	comp := &ocbinds.OpenconfigPlatform_Components_Component{}
-	err := fillFilesystemInfo(comp, "/", "bogus")
+	err := fillFilesystemInfo(comp, "/", "bogus", COMP_PROP_STATE_VALUE)
 	if _, ok := err.(tlerr.NotFoundError); !ok {
 		t.Fatalf("fillFilesystemInfo with an unknown property returned %T (%v), want tlerr.NotFoundError", err, err)
 	}
@@ -211,7 +211,7 @@ func TestFillFilesystemInfoUnknownProperty(t *testing.T) {
 func TestFillFilesystemInfo(t *testing.T) {
 	// "/" resolves everywhere this test can run, including a build container.
 	comp := &ocbinds.OpenconfigPlatform_Components_Component{}
-	if err := fillFilesystemInfo(comp, "/", ""); err != nil {
+	if err := fillFilesystemInfo(comp, "/", "", COMP); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -260,7 +260,7 @@ func TestFillFilesystemInfo(t *testing.T) {
 // A property name in the request must select exactly that one property.
 func TestFillFilesystemInfoSingleProperty(t *testing.T) {
 	comp := &ocbinds.OpenconfigPlatform_Components_Component{}
-	if err := fillFilesystemInfo(comp, "/", "used_bytes"); err != nil {
+	if err := fillFilesystemInfo(comp, "/", "used_bytes", COMP_PROP_STATE_VALUE); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if got := len(comp.Properties.Property); got != 1 {
@@ -279,7 +279,7 @@ func TestFillFilesystemInfoPreCreatedProperty(t *testing.T) {
 	if _, err := comp.Properties.NewProperty("free_bytes"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if err := fillFilesystemInfo(comp, "/", "free_bytes"); err != nil {
+	if err := fillFilesystemInfo(comp, "/", "free_bytes", COMP_PROP_STATE_VALUE); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	prop := comp.Properties.Property["free_bytes"]
@@ -320,5 +320,26 @@ func TestSubscribe_pfm_components_filesystem(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// A filesystem serves state/name and its properties; any other targeted path
+// is NotFound rather than an empty leaf.
+func TestFillFilesystemInfoTargetedPaths(t *testing.T) {
+	for _, uri := range []string{COMP, COMP_ST, COMP_STATE_NAME, COMP_PROPS, COMP_PROP_STATE_VALUE} {
+		t.Run(uri, func(t *testing.T) {
+			comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+			if err := fillFilesystemInfo(comp, "/", "", uri); err != nil {
+				t.Fatalf("fillFilesystemInfo(%s) unexpected error: %v", uri, err)
+			}
+		})
+	}
+	for _, uri := range []string{COMP_STATE_SERIAL_NO, COMP_STATE_TYPE, XCVR_BASE_PREFIX + "/state/input-power/instant"} {
+		t.Run(uri, func(t *testing.T) {
+			comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+			if err := fillFilesystemInfo(comp, "/", "", uri); !isUnsupportedLeaf(err) {
+				t.Fatalf("fillFilesystemInfo(%s) returned %v, want an unsupported leaf path NotFoundError", uri, err)
+			}
+		})
 	}
 }

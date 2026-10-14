@@ -123,14 +123,20 @@ var fsPropFields = map[string]func(*syscall.Statfs_t) uint64{
 
 /* Fills the state and properties of a mounted filesystem from statfs(2).  name
  * is the mount point, and subKey is the property name, or empty to emit every
- * property. */
-func fillFilesystemInfo(comp *ocbinds.OpenconfigPlatform_Components_Component, name, subKey string) error {
+ * property.  Only state/name and the properties are served. */
+func fillFilesystemInfo(comp *ocbinds.OpenconfigPlatform_Components_Component, name, subKey, targetUriPath string) error {
 	/* A name that does not resolve on this platform must yield no component at
 	 * all, rather than a named one with no properties. */
 	var st syscall.Statfs_t
 	if err := syscall.Statfs(hostPath(name), &st); err != nil {
 		log.V(lvl.DEBUG).Infof("fillFilesystemInfo: statfs on %s failed: %v", name, err)
 		return err
+	}
+
+	switch {
+	case targetUriPath == COMP, targetUriPath == COMP_ST, targetUriPath == COMP_STATE_NAME, isPropertiesPath(targetUriPath):
+	default:
+		return tlerr.NotFound("unsupported leaf path for Filesystem component: %v", targetUriPath)
 	}
 
 	/* A named property that does not exist must be reported. */
