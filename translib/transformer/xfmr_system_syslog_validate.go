@@ -209,6 +209,70 @@ func validateSyslogServerFields(cfgDb *db.DB, host string, fields map[string]str
 	return validateSyslogSourceInVrf(source, vrf, view)
 }
 
+// syslogIntfAddrFamilies reports which address families ifName can supply as
+// a syslog source. It mirrors rsyslog-config.sh, which takes any IPv4 address
+// but only scope-global IPv6 addresses of SYSLOG_CONFIG|GLOBAL:src_intf.
+func syslogIntfAddrFamilies(ifName string, view *syslogLinuxIPView) (hasV4, hasV6 bool) {
+	if view == nil {
+		return false, false
+	}
+	for _, addr := range view.intfIPs[ifName] {
+		ip := net.ParseIP(addr)
+		if ip == nil {
+			continue
+		}
+		if ip.To4() != nil {
+			hasV4 = true
+		} else if !ip.IsLinkLocalUnicast() && !ip.IsLoopback() {
+			hasV6 = true
+		}
+	}
+	return hasV4, hasV6
+}
+
+// validateSyslogSrcIntfForServer rejects a global source-interface that has no
+// address of the remote server's family. Servers with a per-server
+// source-address and non-IP hosts do not use the source-interface address.
+// The family test matches rsyslog.conf.j2 (':' in host means IPv6).
+func validateSyslogSrcIntfForServer(host, source, srcIntf string, view *syslogLinuxIPView) error {
+	if srcIntf == "" || source != "" || net.ParseIP(host) == nil {
+		return nil
+	}
+	hasV4, hasV6 := syslogIntfAddrFamilies(srcIntf, view)
+	if strings.Contains(host, ":") {
+		if !hasV6 {
+			return tlerr.InvalidArgsError{
+				Format: fmt.Sprintf("Invalid value for source-interface: %s has no global IPv6 address for remote-server %s (IP address family mismatch)", srcIntf, host),
+			}
+		}
+		return nil
+	}
+	if !hasV4 {
+		return tlerr.InvalidArgsError{
+			Format: fmt.Sprintf("Invalid value for source-interface: %s has no IPv4 address for remote-server %s (IP address family mismatch)", srcIntf, host),
+		}
+	}
+	return nil
+}
+
+// validateSyslogSrcIntfForServers checks srcIntf against every remote server
+// (host -> per-server source-address) that would fall back to it.
+func validateSyslogSrcIntfForServers(srcIntf string, servers map[string]string) error {
+	if srcIntf == "" || len(servers) == 0 {
+		return nil
+	}
+	view, err := syslogLinuxIPViewProvider()
+	if err != nil {
+		return tlerr.InvalidArgsError{Format: err.Error()}
+	}
+	for host, source := range servers {
+		if err := validateSyslogSrcIntfForServer(host, source, srcIntf, view); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func mustGetSyslogLinuxIPView() *syslogLinuxIPView {
 	view, err := syslogLinuxIPViewProvider()
 	if err != nil {
