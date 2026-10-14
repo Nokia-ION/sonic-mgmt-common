@@ -2323,6 +2323,32 @@ func subscribeTestDbs(t *testing.T, nums ...db.DBNum) [db.MaxDB]*db.DB {
 	return dbs
 }
 
+// A wildcard subscribe covering System Eeprom watches EEPROM_INFO|State; one
+// scoped to another component type does not.
+func TestSubscribe_pfm_components_sys_eeprom_wildcard(t *testing.T) {
+	dbs := subscribeTestDbs(t, db.StateDB, db.ConfigDB)
+	cases := []struct {
+		uri  string
+		want bool
+	}{
+		{"/openconfig-platform:components/component[name=*]/state/serial-no", true},
+		{"/openconfig-platform:components/component[name=*]/properties/property[name=operStatus]/state/value", true},
+		{"/openconfig-platform:components/component[name=*]/fan/state/speed", false},
+	}
+	for _, c := range cases {
+		t.Run(c.uri, func(t *testing.T) {
+			in := XfmrSubscInParams{uri: c.uri, requestURI: c.uri, subscProc: TRANSLATE_SUBSCRIBE, dbs: dbs}
+			out, err := Subscribe_pfm_components_xfmr(in)
+			if err != nil {
+				t.Fatalf("Subscribe_pfm_components_xfmr failed: %v", err)
+			}
+			if _, got := out.dbDataMap[db.StateDB][EEPROM_TBL][EEPROM_STATE_KEY]; got != c.want {
+				t.Errorf("%s|%s watched == %v, want %v: %v", EEPROM_TBL, EEPROM_STATE_KEY, got, c.want, out.dbDataMap)
+			}
+		})
+	}
+}
+
 // A wildcard subscribe watches CRM:STATS for the integrated circuit when
 // NODE_CFG holds no row for it, even before CRM:STATS is written, and NODE_CFG
 // when it does.
@@ -2553,6 +2579,7 @@ func TestDbToYangPath_pfm_components_virtual(t *testing.T) {
 	}{
 		{CRM_TBL, CRM_STATS_KEY, IC_COMP_NAME},
 		{CPU_INFO_TBL, CPU_COMP_NAME, CPU_COMP_NAME},
+		{EEPROM_TBL, EEPROM_STATE_KEY, SYS_EEPROM_NAME},
 	}
 	for _, c := range cases {
 		in := XfmrDbToYgPathParams{tblName: c.tbl, tblKeyComp: []string{c.key}, ygPathKeys: map[string]string{}}
