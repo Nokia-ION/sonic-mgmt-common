@@ -2307,3 +2307,260 @@ func TestFillStorageInfo(t *testing.T) {
 		}
 	})
 }
+
+// Opens the given DBs for a subscribe test.
+func subscribeTestDbs(t *testing.T, nums ...db.DBNum) [db.MaxDB]*db.DB {
+	t.Helper()
+	var dbs [db.MaxDB]*db.DB
+	for _, n := range nums {
+		d, err := db.NewDB(getDBOptions(n))
+		if err != nil {
+			t.Fatalf("NewDB(%v) failed: %v", n, err)
+		}
+		t.Cleanup(func() { d.DeleteDB() })
+		dbs[n] = d
+	}
+	return dbs
+}
+
+// A wildcard subscribe watches CRM:STATS for the integrated circuit when
+// NODE_CFG holds no row for it, even before CRM:STATS is written, and NODE_CFG
+// when it does.
+func TestSubscribe_pfm_components_ic_wildcard(t *testing.T) {
+	dbs := subscribeTestDbs(t, db.StateDB, db.ConfigDB, db.CountersDB)
+	nodeCfg := &db.TableSpec{Name: NODE_CFG_TBL}
+	crm := &db.TableSpec{Name: CRM_TBL}
+	crmKey := db.Key{Comp: []string{CRM_STATS_KEY}}
+	dbs[db.ConfigDB].DeleteKeys(nodeCfg, db.Key{Comp: []string{IC_NAME_PREFIX + "*"}})
+	t.Cleanup(func() {
+		dbs[db.ConfigDB].DeleteKeys(nodeCfg, db.Key{Comp: []string{IC_NAME_PREFIX + "*"}})
+		dbs[db.CountersDB].DeleteEntry(crm, crmKey)
+	})
+	if err := dbs[db.CountersDB].SetEntry(crm, crmKey, db.Value{Field: map[string]string{"crm_stats_ipv4_route_used": "1"}}); err != nil {
+		t.Fatalf("seeding %s failed: %v", CRM_TBL, err)
+	}
+
+	uri := "/openconfig-platform:components/component[name=*]/integrated-circuit/utilization/resources/resource[name=V4Routes]/state/used"
+	subscribe := func() XfmrSubscOutParams {
+		t.Helper()
+		in := XfmrSubscInParams{uri: uri, requestURI: uri, subscProc: TRANSLATE_SUBSCRIBE, dbs: dbs}
+		out, err := Subscribe_pfm_components_xfmr(in)
+		if err != nil {
+			t.Fatalf("Subscribe_pfm_components_xfmr failed: %v", err)
+		}
+		return out
+	}
+
+	t.Run("no NODE_CFG row", func(t *testing.T) {
+		out := subscribe()
+		if _, ok := out.dbDataMap[db.CountersDB][CRM_TBL][CRM_STATS_KEY]; !ok {
+			t.Errorf("%s:%s not watched: %v", CRM_TBL, CRM_STATS_KEY, out.dbDataMap)
+		}
+		if _, ok := out.dbDataMap[db.ConfigDB][NODE_CFG_TBL]; ok {
+			t.Errorf("%s watched with no row: %v", NODE_CFG_TBL, out.dbDataMap)
+		}
+	})
+
+	t.Run("no NODE_CFG row and no CRM:STATS yet", func(t *testing.T) {
+		dbs[db.CountersDB].DeleteEntry(crm, crmKey)
+		out := subscribe()
+		if _, ok := out.dbDataMap[db.CountersDB][CRM_TBL][CRM_STATS_KEY]; !ok {
+			t.Errorf("%s:%s not watched: %v", CRM_TBL, CRM_STATS_KEY, out.dbDataMap)
+		}
+		if _, ok := out.dbDataMap[db.ConfigDB][NODE_CFG_TBL]; ok {
+			t.Errorf("%s watched with no row: %v", NODE_CFG_TBL, out.dbDataMap)
+		}
+		icUri := "/openconfig-platform:components/component[name=" + IC_COMP_NAME + "]/state"
+		in := XfmrSubscInParams{uri: icUri, requestURI: icUri, subscProc: TRANSLATE_EXISTS, dbs: dbs}
+		exists, err := Subscribe_pfm_components_xfmr(in)
+		if err != nil {
+			t.Fatalf("TRANSLATE_EXISTS failed: %v", err)
+		}
+		if _, ok := exists.dbDataMap[db.CountersDB][CRM_TBL][CRM_STATS_KEY]; !ok {
+			t.Errorf("TRANSLATE_EXISTS does not check %s:%s: %v", CRM_TBL, CRM_STATS_KEY, exists.dbDataMap)
+		}
+	})
+
+	t.Run("NODE_CFG row", func(t *testing.T) {
+		if err := dbs[db.ConfigDB].SetEntry(nodeCfg, db.Key{Comp: []string{IC_COMP_NAME}}, db.Value{Field: map[string]string{"NULL": "NULL"}}); err != nil {
+			t.Fatalf("seeding %s failed: %v", NODE_CFG_TBL, err)
+		}
+		out := subscribe()
+		if _, ok := out.dbDataMap[db.ConfigDB][NODE_CFG_TBL][IC_NAME_PREFIX+"*"]; !ok {
+			t.Errorf("%s|%s* not watched: %v", NODE_CFG_TBL, IC_NAME_PREFIX, out.dbDataMap)
+		}
+		if _, ok := out.dbDataMap[db.CountersDB][CRM_TBL]; ok {
+			t.Errorf("%s watched with a NODE_CFG row: %v", CRM_TBL, out.dbDataMap)
+		}
+	})
+}
+
+// A subscribe covering the host CPU watches CPU_INFO|host-cpu; one scoped to
+// another component type does not.  A named host CPU refuses on-change.
+func TestSubscribe_pfm_components_cpu(t *testing.T) {
+	dbs := subscribeTestDbs(t, db.StateDB, db.ConfigDB)
+	cases := []struct {
+		uri      string
+		watched  bool
+		onChange bool
+	}{
+		{"/openconfig-platform:components/component[name=*]/properties/property[name=loadAvg1m]/state/value", true, false},
+		{"/openconfig-platform:components/component[name=*]/state/oper-status", true, true},
+		{"/openconfig-platform:components/component[name=*]/cpu/utilization/state/instant", true, false},
+		{"/openconfig-platform:components/component[name=*]/fan/state/speed", false, true},
+		{"/openconfig-platform:components/component[name=host-cpu]/state/type", true, false},
+		{"/openconfig-platform:components/component[name=host-cpu]/config/name", true, false},
+		{"/openconfig-platform:components/component[name=host-cpu]/properties/property[name=loadAvg1m]/state/value", true, false},
+		{"/openconfig-platform:components/component[name=host-cpu]/cpu/utilization/state/instant", true, false},
+		{"/openconfig-platform:components/component[name=host-cpu]", true, false},
+	}
+	for _, c := range cases {
+		t.Run(c.uri, func(t *testing.T) {
+			in := XfmrSubscInParams{uri: c.uri, requestURI: c.uri, subscProc: TRANSLATE_SUBSCRIBE, dbs: dbs}
+			out, err := Subscribe_pfm_components_xfmr(in)
+			if err != nil {
+				t.Fatalf("Subscribe_pfm_components_xfmr failed: %v", err)
+			}
+			if out.isVirtualTbl {
+				t.Fatalf("isVirtualTbl set for a subscription")
+			}
+			if _, got := out.dbDataMap[db.StateDB][CPU_INFO_TBL][CPU_COMP_NAME]; got != c.watched {
+				t.Errorf("%s|%s watched == %v, want %v: %v", CPU_INFO_TBL, CPU_COMP_NAME, got, c.watched, out.dbDataMap)
+			}
+			if got := out.onChange != OnchangeDisable; got != c.onChange {
+				t.Errorf("on-change allowed == %v, want %v", got, c.onChange)
+			}
+		})
+	}
+}
+
+// A named integrated circuit subscribe watches CRM:STATS when NODE_CFG holds no
+// row for it, and allows on-change only outside the counter subtrees.
+func TestSubscribe_pfm_components_ic_named(t *testing.T) {
+	dbs := subscribeTestDbs(t, db.StateDB, db.ConfigDB, db.CountersDB)
+	nodeCfg := &db.TableSpec{Name: NODE_CFG_TBL}
+	crm := &db.TableSpec{Name: CRM_TBL}
+	crmKey := db.Key{Comp: []string{CRM_STATS_KEY}}
+	dbs[db.ConfigDB].DeleteKeys(nodeCfg, db.Key{Comp: []string{IC_NAME_PREFIX + "*"}})
+	t.Cleanup(func() { dbs[db.CountersDB].DeleteEntry(crm, crmKey) })
+	if err := dbs[db.CountersDB].SetEntry(crm, crmKey, db.Value{Field: map[string]string{"crm_stats_ipv4_route_used": "1"}}); err != nil {
+		t.Fatalf("seeding %s failed: %v", CRM_TBL, err)
+	}
+
+	cases := []struct {
+		uri      string
+		onChange bool
+	}{
+		{"/openconfig-platform:components/component[name=integrated_circuit0]/state/type", true},
+		{"/openconfig-platform:components/component[name=integrated_circuit0]/integrated-circuit/utilization/resources/resource[name=V4Routes]/state/used", false},
+	}
+	for _, c := range cases {
+		t.Run(c.uri, func(t *testing.T) {
+			in := XfmrSubscInParams{uri: c.uri, requestURI: c.uri, subscProc: TRANSLATE_SUBSCRIBE, dbs: dbs}
+			out, err := Subscribe_pfm_components_xfmr(in)
+			if err != nil {
+				t.Fatalf("Subscribe_pfm_components_xfmr failed: %v", err)
+			}
+			if out.isVirtualTbl {
+				t.Fatalf("isVirtualTbl set for a subscription")
+			}
+			if _, ok := out.dbDataMap[db.CountersDB][CRM_TBL][CRM_STATS_KEY]; !ok {
+				t.Errorf("%s:%s not watched: %v", CRM_TBL, CRM_STATS_KEY, out.dbDataMap)
+			}
+			if got := out.onChange != OnchangeDisable; got != c.onChange {
+				t.Errorf("on-change allowed == %v, want %v", got, c.onChange)
+			}
+		})
+	}
+}
+
+// The key check of a GET and TRANSLATE_EXISTS map the integrated circuit to
+// CRM:STATS and the host CPU to CPU_INFO, as a subscription does.
+func TestSubscribe_pfm_components_ic_cpu_rows(t *testing.T) {
+	dbs := subscribeTestDbs(t, db.StateDB, db.ConfigDB, db.CountersDB)
+	nodeCfg := &db.TableSpec{Name: NODE_CFG_TBL}
+	crm := &db.TableSpec{Name: CRM_TBL}
+	crmKey := db.Key{Comp: []string{CRM_STATS_KEY}}
+	dbs[db.ConfigDB].DeleteKeys(nodeCfg, db.Key{Comp: []string{IC_NAME_PREFIX + "*"}})
+	t.Cleanup(func() { dbs[db.CountersDB].DeleteEntry(crm, crmKey) })
+	if err := dbs[db.CountersDB].SetEntry(crm, crmKey, db.Value{Field: map[string]string{"crm_stats_ipv4_route_used": "1"}}); err != nil {
+		t.Fatalf("seeding %s failed: %v", CRM_TBL, err)
+	}
+
+	cases := []struct {
+		name     string
+		dbNum    db.DBNum
+		tbl, key string
+	}{
+		{IC_COMP_NAME, db.CountersDB, CRM_TBL, CRM_STATS_KEY},
+		{CPU_COMP_NAME, db.StateDB, CPU_INFO_TBL, CPU_COMP_NAME},
+	}
+	for _, c := range cases {
+		uri := "/openconfig-platform:components/component[name=" + c.name + "]/state"
+		for _, in := range []XfmrSubscInParams{
+			{uri: uri, subscProc: TRANSLATE_SUBSCRIBE, dbs: dbs},
+			{uri: uri, requestURI: uri, subscProc: TRANSLATE_EXISTS, dbs: dbs},
+		} {
+			out, err := Subscribe_pfm_components_xfmr(in)
+			if err != nil {
+				t.Fatalf("Subscribe_pfm_components_xfmr(%s, %v) failed: %v", c.name, in.subscProc, err)
+			}
+			if out.isVirtualTbl {
+				t.Errorf("Subscribe_pfm_components_xfmr(%s, %v) isVirtualTbl == true, want false", c.name, in.subscProc)
+			}
+			if _, ok := out.dbDataMap[c.dbNum][c.tbl][c.key]; !ok {
+				t.Errorf("Subscribe_pfm_components_xfmr(%s, %v) does not map %s|%s: %v", c.name, in.subscProc, c.tbl, c.key, out.dbDataMap)
+			}
+		}
+	}
+}
+
+// The CPU table holds the host CPU row.
+func TestWriteCpuTable(t *testing.T) {
+	d, err := db.NewDB(getDBOptions(db.StateDB))
+	if err != nil {
+		t.Fatal("NewDB failed")
+	}
+	defer d.DeleteDB()
+	ts := &db.TableSpec{Name: CPU_INFO_TBL}
+	defer d.DeleteKeys(ts, db.Key{Comp: []string{"*"}})
+
+	if err := writeCpuTable(d); err != nil {
+		t.Fatalf("writeCpuTable failed: %v", err)
+	}
+	keys, err := d.GetKeysPattern(ts, db.Key{Comp: []string{"*"}})
+	if err != nil {
+		t.Fatalf("reading %s failed: %v", CPU_INFO_TBL, err)
+	}
+	if len(keys) != 1 || keys[0].Get(0) != CPU_COMP_NAME {
+		t.Errorf("%s keys == %v, want only %s", CPU_INFO_TBL, keys, CPU_COMP_NAME)
+	}
+}
+
+// A wildcard transceiver subscribe expands transceiver components only.
+func TestCompTypesForSubscriptionUriXcvr(t *testing.T) {
+	uri := XCVR_BASE_PREFIX + "/state/input-power/instant"
+	if got := compTypesForSubscriptionUri(uri); !reflect.DeepEqual(got, []componentType{CompTypeXcvr}) {
+		t.Errorf("compTypesForSubscriptionUri(%q) == %v, want [%v]", uri, got, CompTypeXcvr)
+	}
+}
+
+// The rows watched for the integrated circuit and the host CPU name those
+// components.
+func TestDbToYangPath_pfm_components_virtual(t *testing.T) {
+	cases := []struct {
+		tbl, key, want string
+	}{
+		{CRM_TBL, CRM_STATS_KEY, IC_COMP_NAME},
+		{CPU_INFO_TBL, CPU_COMP_NAME, CPU_COMP_NAME},
+	}
+	for _, c := range cases {
+		in := XfmrDbToYgPathParams{tblName: c.tbl, tblKeyComp: []string{c.key}, ygPathKeys: map[string]string{}}
+		if err := DbToYangPath_pfm_components_path_xfmr(in); err != nil {
+			t.Fatalf("DbToYangPath_pfm_components_path_xfmr(%s|%s) failed: %v", c.tbl, c.key, err)
+		}
+		if got := in.ygPathKeys[COMP+"/name"]; got != c.want {
+			t.Errorf("%s|%s name == %q, want %q", c.tbl, c.key, got, c.want)
+		}
+	}
+}
