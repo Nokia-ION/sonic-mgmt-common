@@ -46,9 +46,61 @@ var YangToDb_logging_config_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 	if cfg.SourceInterface == nil {
 		return res, nil
 	}
+	if err := validateSyslogSrcIntfForServers(*cfg.SourceInterface, syslogServersForSrcIntfCheck(inParams, sysObj)); err != nil {
+		return nil, err
+	}
 	val := db.Value{Field: map[string]string{syslogSrcIntfField: *cfg.SourceInterface}}
 	res[SYSLOG_CONFIG_TABLE_NAME] = map[string]db.Value{SYSLOG_GLOBAL_KEY: val}
 	return res, nil
+}
+
+// syslogServersForSrcIntfCheck returns host -> per-server source-address for
+// the remote servers in CONFIG_DB, overlaid with any servers in the request.
+func syslogServersForSrcIntfCheck(inParams XfmrParams, sysObj *ocbinds.OpenconfigSystem_System) map[string]string {
+	servers := make(map[string]string)
+	if cfgDb := inParams.dbs[db.ConfigDB]; cfgDb != nil {
+		keys, _ := dbGetKeys(cfgDb, &db.TableSpec{Name: SYSLOG_SERVER_TABLE_NAME})
+		for _, key := range keys {
+			if len(key.Comp) == 0 {
+				continue
+			}
+			host := key.Comp[0]
+			servers[host] = ""
+			if entry, err := dbGetEntry(cfgDb, &db.TableSpec{Name: SYSLOG_SERVER_TABLE_NAME}, key); err == nil {
+				servers[host] = entry.Get(SYSLOG_FIELD_SOURCE)
+			}
+		}
+	}
+	if sysObj != nil && sysObj.Logging != nil && sysObj.Logging.RemoteServers != nil {
+		for host, server := range sysObj.Logging.RemoteServers.RemoteServer {
+			if _, ok := servers[host]; !ok {
+				servers[host] = ""
+			}
+			if server != nil && server.Config != nil && server.Config.SourceAddress != nil {
+				servers[host] = *server.Config.SourceAddress
+			}
+		}
+	}
+	return servers
+}
+
+// syslogGlobalSrcIntf returns the global logging source-interface, preferring
+// a value carried in the same request over the one in CONFIG_DB.
+func syslogGlobalSrcIntf(inParams XfmrParams, cfgDb *db.DB) string {
+	if inParams.ygRoot != nil {
+		if sysObj := getAppRootObject(inParams); sysObj != nil && sysObj.Logging != nil &&
+			sysObj.Logging.Config != nil && sysObj.Logging.Config.SourceInterface != nil {
+			return *sysObj.Logging.Config.SourceInterface
+		}
+	}
+	if cfgDb == nil {
+		return ""
+	}
+	entry, err := dbGetEntry(cfgDb, &db.TableSpec{Name: SYSLOG_CONFIG_TABLE_NAME}, db.Key{Comp: []string{SYSLOG_GLOBAL_KEY}})
+	if err != nil {
+		return ""
+	}
+	return entry.Get(syslogSrcIntfField)
 }
 
 // DbToYang_logging_config_xfmr populates the logging source-interface from
