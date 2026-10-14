@@ -3431,6 +3431,9 @@ var YangToDb_intf_ip_addr_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (
 			log.Error(oerr)
 			return nil, tlerr.InvalidArgsError{Format: oerr.Error()}
 		} else {
+			if verr := validateIntfPrefixRemoveBlockedByVrrp(inParams.d, ifName, overlapIP); verr != nil {
+				return nil, verr
+			}
 			subIntfmap_del[tblName] = make(map[string]db.Value)
 			key := ifName + "|" + overlapIP
 			subIntfmap_del[tblName][key] = value
@@ -3737,6 +3740,9 @@ func intf_ip_addr_del(d *db.DB, ifName string, tblName string, subIntf *ocbinds.
 		}
 	}
 	if len(intfIpMap) > 0 {
+		if verr := validateIntfIpRemoveBlockedByVrrp(d, ifName, intfIpMap); verr != nil {
+			return nil, verr
+		}
 		if _, ok := subIntfmap[tblName]; !ok {
 			subIntfmap[tblName] = make(map[string]db.Value)
 		}
@@ -3850,6 +3856,9 @@ func routed_vlan_ip_addr_del(d *db.DB, ifName string, tblName string, routedVlan
 	// There is atleast one IP Address Configured on Vlan Intf
 	// Add the key "<ifname>|<IP>" to the Map
 	if len(intfIpMap) > 0 {
+		if verr := validateIntfIpRemoveBlockedByVrrp(d, ifName, intfIpMap); verr != nil {
+			return nil, verr
+		}
 		if _, ok := vlanIntfmap[tblName]; !ok {
 			vlanIntfmap[tblName] = make(map[string]db.Value)
 		}
@@ -4336,6 +4345,15 @@ func routedVlanIpAddrApplyReplace(inParams XfmrParams, ifName, tblName, cfgTbl s
 	if len(keysToDelete) == 0 {
 		return nil
 	}
+
+	removePrefixes := make(map[string]db.Value, len(keysToDelete))
+	for fullKey := range keysToDelete {
+		removePrefixes[strings.TrimPrefix(fullKey, ifName+"|")] = db.Value{}
+	}
+	if err := validateIntfIpRemoveBlockedByVrrp(inParams.d, ifName, removePrefixes); err != nil {
+		return err
+	}
+
 	subOpMap := map[db.DBNum]map[string]map[string]db.Value{
 		db.ConfigDB: {
 			tblName: keysToDelete,
@@ -4522,6 +4540,9 @@ var YangToDb_routed_vlan_ip_addr_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPa
 			log.Warning(oerr)
 			return nil, tlerr.InvalidArgsError{Format: oerr.Error()}
 		} else {
+			if verr := validateIntfPrefixRemoveBlockedByVrrp(inParams.d, ifName, overlapIP); verr != nil {
+				return nil, verr
+			}
 			vlanIntfmap_del[tblName] = make(map[string]db.Value)
 			key := ifName + "|" + overlapIP
 			vlanIntfmap_del[tblName][key] = value
