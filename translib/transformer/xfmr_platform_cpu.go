@@ -23,6 +23,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/Azure/sonic-mgmt-common/translib/db"
 	lvl "github.com/Azure/sonic-mgmt-common/translib/log"
 	"github.com/Azure/sonic-mgmt-common/translib/ocbinds"
 	"github.com/Azure/sonic-mgmt-common/translib/tlerr"
@@ -30,10 +31,45 @@ import (
 	"github.com/openconfig/ygot/ygot"
 )
 
+/* STATE_DB table naming the host CPU component, so that a subscription has a
+ * row to watch.  The row carries no values; those are read from /proc. */
+const CPU_INFO_TBL = "CPU_INFO"
+
 var (
 	cpuModelOnce sync.Once
 	cpuModel     string
+
+	cpuTableMu      sync.Mutex
+	cpuTableWritten bool
 )
+
+/* Writes CPU_INFO_TBL once per process.  A failed write is retried on the next
+ * call. */
+func ensureCpuTable() {
+	cpuTableMu.Lock()
+	defer cpuTableMu.Unlock()
+	if cpuTableWritten {
+		return
+	}
+	d, err := db.NewDB(getDBOptions(db.StateDB))
+	if err != nil {
+		log.Warningf("ensureCpuTable: opening %v failed: %v", db.StateDB.Name(), err)
+		return
+	}
+	defer d.DeleteDB()
+	if err = writeCpuTable(d); err != nil {
+		log.Warningf("ensureCpuTable: writing %s failed: %v", CPU_INFO_TBL, err)
+		return
+	}
+	cpuTableWritten = true
+}
+
+/* Writes the CPU_INFO_TBL row of the host CPU.  Redis drops a hash with no
+ * fields, so the row holds NULL:NULL. */
+func writeCpuTable(d *db.DB) error {
+	row := db.Value{Field: map[string]string{"NULL": "NULL"}}
+	return d.SetEntry(&db.TableSpec{Name: CPU_INFO_TBL}, db.Key{Comp: []string{CPU_COMP_NAME}}, row)
+}
 
 /* The cpu model string does not change while the host runs, so
  * /proc/cpuinfo is read once per process. */
