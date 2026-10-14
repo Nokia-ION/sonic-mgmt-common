@@ -1018,6 +1018,11 @@ func storeSyslogServerDbMutation(inParams XfmrParams, cfgDb *db.DB, syslogTableO
 	if err != nil {
 		return err
 	}
+	if srcIntf := syslogGlobalSrcIntf(inParams, cfgDb); srcIntf != "" {
+		if err := validateSyslogSrcIntfForServers(srcIntf, map[string]string{host: value.Field[SYSLOG_FIELD_SOURCE]}); err != nil {
+			return err
+		}
+	}
 	if len(delFields) > 0 && inParams.subOpDataMap != nil {
 		// translib processCommon applies DELETE sub-ops before UPDATE, so an
 		// HDEL of tls_profile_id fails CVL while protocol is still tls.
