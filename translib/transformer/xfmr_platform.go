@@ -1172,6 +1172,8 @@ var DbToYangPath_pfm_components_path_xfmr PathXfmrDbToYangFunc = func(inParams X
 		inParams.ygPathKeys[rootPath+"/name"] = portName
 	case POWER_INFO_TBL:
 		inParams.ygPathKeys[rootPath+"/name"] = tblKey
+	case CRM_TBL:
+		inParams.ygPathKeys[rootPath+"/name"] = IC_COMP_NAME
 	case "BREAKOUT_PORT_XCVR_CFG":
 		inParams.ygPathKeys[rootPath+"/name"] = tblKey
 		if subKey != "" {
@@ -1222,6 +1224,7 @@ var DbToYangPath_pfm_components_path_xfmr PathXfmrDbToYangFunc = func(inParams X
 var Subscribe_pfm_components_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSubscInParams) (XfmrSubscOutParams, error) {
 	var result XfmrSubscOutParams
 	ensureFilesystemTable()
+	ensureCpuTable()
 	key := NewPathInfo(inParams.uri).Var("name")
 
 	log.V(lvl.DEBUG).Infof("+++ Subscribe_pfm_components_xfmr uri (%v) key(%s) mode(%v) +++", inParams.uri, key, inParams.subscProc)
@@ -1233,14 +1236,12 @@ var Subscribe_pfm_components_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSubsc
 		return result, err
 	}
 
-	if key == "" || strings.Contains(key, "_sensor") || key == SYS_EEPROM_NAME || key == IC_COMP_NAME || key == CPU_COMP_NAME {
+	if key == "" || strings.Contains(key, "_sensor") || key == SYS_EEPROM_NAME {
 		/* No need to verify dB data if we are requesting ALL components, a
-		   sensor, System Eeprom, the integrated circuit, or the host CPU.  The
-		   EEPROM_INFO table stores each attribute as its own row (keyed by
-		   index) with no "System Eeprom" key, and IC_COMP_NAME and
-		   CPU_COMP_NAME are no table's key either, so mark them as a virtual
-		   table to tell the framework to skip DB key validation and go
-		   straight to the subtree transformer. */
+		   sensor or System Eeprom.  The EEPROM_INFO table stores each
+		   attribute as its own row (keyed by index) with no "System Eeprom"
+		   key, so mark it as a virtual table to tell the framework to skip DB
+		   key validation and go straight to the subtree transformer. */
 		result.isVirtualTbl = true
 		return result, err
 	}
@@ -1281,7 +1282,7 @@ func compTypesForSubscriptionUri(uri string) []componentType {
 		cTypes = []componentType{CompTypeBootLoader}
 	} else if strings.HasPrefix(uri, "/openconfig-platform:components/component/state/oper-status") {
 		cTypes = []componentType{CompTypeFan, CompTypeNWStack, CompTypeOS, CompTypeChassis, CompTypeTemp, CompTypePsu, CompTypeFanTray, CompTypeStorage, CompTypeCpu}
-	} else if strings.HasPrefix(uri, "/openconfig-platform:components/component/oc-transceiver:transceiver") {
+	} else if strings.HasPrefix(uri, XCVR_BASE_PREFIX) {
 		cTypes = []componentType{CompTypeXcvr}
 	} else if strings.HasPrefix(uri, COMP_STATE_PARENT) || strings.HasPrefix(uri, COMP_STATE_INSTALL_POSITION) || strings.HasPrefix(uri, COMP_STATE_INSTALL_COMPONENT) || strings.HasPrefix(uri, COMP_STATE_REMOVABLE) {
 		/* Everything except chassis */
@@ -1319,6 +1320,15 @@ func translateExists(inParams XfmrSubscInParams, key, targetUriPath string) (Xfm
 		}
 	}
 
+	switch {
+	case compType == CompTypeCpu:
+		result.dbDataMap = RedisDbSubscribeMap{db.StateDB: {CPU_INFO_TBL: {CPU_COMP_NAME: {}}}}
+		return result, nil
+	case compType == CompTypeIC && icServedFromCrmStats(inParams.dbs):
+		result.dbDataMap = RedisDbSubscribeMap{db.CountersDB: {CRM_TBL: {CRM_STATS_KEY: {}}}}
+		return result, nil
+	}
+
 	tblInfo, ok := compTblMap[compType]
 	if !ok {
 		return result, errors.New("table not found.")
@@ -1347,6 +1357,18 @@ func translateExists(inParams XfmrSubscInParams, key, targetUriPath string) (Xfm
 	result.dbDataMap = RedisDbSubscribeMap{dbNum: {tblName: {tblKey: {}}}}
 	log.V(lvl.DEBUG).Infof("+++ Subscribe_pfm_components_xfmr result: %v %v %v +++", dbNum, tblName, tblKey)
 	return result, nil
+}
+
+/* Reports whether the integrated circuit is served from CRM:STATS, which is
+ * the case when NODE_CFG holds no integrated circuit row.  This holds before
+ * CRM:STATS is first written, so a subscription watches it from the start. */
+func icServedFromCrmStats(dbs [db.MaxDB]*db.DB) bool {
+	cfgdb := dbs[db.ConfigDB]
+	if cfgdb == nil {
+		return false
+	}
+	keys, err := cfgdb.GetKeysPattern(&db.TableSpec{Name: NODE_CFG_TBL}, db.Key{Comp: []string{IC_NAME_PREFIX + "*"}})
+	return err != nil || len(keys) == 0
 }
 
 /* Helper for the main subscribe transformer handling the TRANSLATE_SUBSCRIBE case. */
@@ -1418,6 +1440,9 @@ func translateSubscribe(inParams XfmrSubscInParams, key, targetUriPath string) (
 			 * sample cases on the specific counter paths we need the counter
 			 * tables. */
 			tblDb = db.ConfigDB
+			if icServedFromCrmStats(inParams.dbs) {
+				tblDb, tblName, tblKey = db.CountersDB, CRM_TBL, CRM_STATS_KEY
+			}
 			if strings.HasPrefix(targetUriPath, COMP_IC_MEM) {
 				result.onChange = OnchangeDisable
 			} else if strings.HasPrefix(targetUriPath, COMP_IC_PLC) {
@@ -1547,6 +1572,22 @@ func translateSubscribe(inParams XfmrSubscInParams, key, targetUriPath string) (
 			}
 		}
 	}
+
+	/* The host CPU row holds none of its values, so a named host CPU refuses
+	 * on-change. */
+	if len(compTypeFilter) == 0 || slices.Contains(compTypeFilter, CompTypeCpu) {
+		if result.dbDataMap[db.StateDB] == nil {
+			result.dbDataMap[db.StateDB] = make(map[string]map[string]map[string]string)
+		}
+		if result.dbDataMap[db.StateDB][CPU_INFO_TBL] == nil {
+			result.dbDataMap[db.StateDB][CPU_INFO_TBL] = make(map[string]map[string]string)
+		}
+		result.dbDataMap[db.StateDB][CPU_INFO_TBL][CPU_COMP_NAME] = map[string]string{}
+		if key != "*" {
+			result.onChange = OnchangeDisable
+		}
+	}
+
 	if log.V(lvl.DEBUG) {
 		for db, _ := range result.dbDataMap {
 			for tbl, _ := range result.dbDataMap[db] {
