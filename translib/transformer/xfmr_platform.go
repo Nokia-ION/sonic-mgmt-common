@@ -73,6 +73,7 @@ const (
 	VOLTAGE_INFO_TBL      = "VOLTAGE_INFO"
 	FAULT_INFO_TBL        = "FAULT_INFO"
 	EEPROM_TBL            = "EEPROM_INFO"
+	EEPROM_STATE_KEY      = "State"
 	CRM_TBL               = "CRM"
 	CRM_STATS_KEY         = "STATS"
 
@@ -1174,6 +1175,8 @@ var DbToYangPath_pfm_components_path_xfmr PathXfmrDbToYangFunc = func(inParams X
 		inParams.ygPathKeys[rootPath+"/name"] = tblKey
 	case CRM_TBL:
 		inParams.ygPathKeys[rootPath+"/name"] = IC_COMP_NAME
+	case EEPROM_TBL:
+		inParams.ygPathKeys[rootPath+"/name"] = SYS_EEPROM_NAME
 	case "BREAKOUT_PORT_XCVR_CFG":
 		inParams.ygPathKeys[rootPath+"/name"] = tblKey
 		if subKey != "" {
@@ -1586,6 +1589,18 @@ func translateSubscribe(inParams XfmrSubscInParams, key, targetUriPath string) (
 		if key != "*" {
 			result.onChange = OnchangeDisable
 		}
+	}
+
+	/* EEPROM_INFO holds one row per System Eeprom attribute, so a wildcard
+	 * watches its State row, which the path transformer maps to System Eeprom. */
+	if key == "*" && (len(compTypeFilter) == 0 || slices.Contains(compTypeFilter, CompTypeSystemEeprom)) {
+		if result.dbDataMap[db.StateDB] == nil {
+			result.dbDataMap[db.StateDB] = make(map[string]map[string]map[string]string)
+		}
+		if result.dbDataMap[db.StateDB][EEPROM_TBL] == nil {
+			result.dbDataMap[db.StateDB][EEPROM_TBL] = make(map[string]map[string]string)
+		}
+		result.dbDataMap[db.StateDB][EEPROM_TBL][EEPROM_STATE_KEY] = map[string]string{}
 	}
 
 	if log.V(lvl.DEBUG) {
