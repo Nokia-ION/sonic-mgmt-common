@@ -2523,6 +2523,140 @@ func getParentIntfIPPrefixes(cfgDb *db.DB, ifName string) []string {
 	return out
 }
 
+func vrrpCanonPrefix(pref string) (canon string, network *net.IPNet, isIPv4 bool, ok bool) {
+	ip, ipNet, err := net.ParseCIDR(strings.TrimSpace(pref))
+	if err != nil {
+		return "", nil, false, false
+	}
+	ones, _ := ipNet.Mask.Size()
+	return ip.String() + "/" + strconv.Itoa(ones), ipNet, ip.To4() != nil, true
+}
+
+func vrrpOwnedParentPrefixNetwork(vip string, parentPrefixes []string) (*net.IPNet, bool) {
+	vipAddr := net.ParseIP(strings.TrimSpace(vip))
+	if vipAddr == nil {
+		return nil, false
+	}
+	vipIsIPv4 := vipAddr.To4() != nil
+
+	var best *net.IPNet
+	bestLen := -1
+	for _, pref := range parentPrefixes {
+		_, network, isIPv4, ok := vrrpCanonPrefix(pref)
+		if !ok || isIPv4 != vipIsIPv4 {
+			continue
+		}
+		if !network.Contains(vipAddr) {
+			continue
+		}
+		if ones, _ := network.Mask.Size(); ones > bestLen {
+			best = network
+			bestLen = ones
+		}
+	}
+	return best, best != nil
+}
+
+func validateIntfPrefixRemoveBlockedByVrrp(cfgDb *db.DB, ifName, prefix string) error {
+	return validateIntfPrefixesRemoveBlockedByVrrp(cfgDb, ifName, []string{prefix})
+}
+
+func validateIntfPrefixesRemoveBlockedByVrrp(cfgDb *db.DB, ifName string, prefixes []string) error {
+	if cfgDb == nil || ifName == "" || len(prefixes) == 0 {
+		return nil
+	}
+
+	removed := make(map[string]bool, len(prefixes))
+	for _, pref := range prefixes {
+		if canon, _, _, ok := vrrpCanonPrefix(pref); ok {
+			removed[canon] = true
+		}
+	}
+	if len(removed) == 0 {
+		return nil
+	}
+
+	parents := getParentIntfIPPrefixes(cfgDb, ifName)
+	if len(parents) == 0 {
+		return nil
+	}
+
+	remaining := make(map[string]int)
+	removing := make(map[string][]string)
+	for _, pref := range parents {
+		canon, network, _, ok := vrrpCanonPrefix(pref)
+		if !ok {
+			continue
+		}
+		if removed[canon] {
+			removing[network.String()] = append(removing[network.String()], canon)
+		} else {
+			remaining[network.String()]++
+		}
+	}
+	if len(removing) == 0 {
+		return nil
+	}
+
+	var details []string
+	blocking := make(map[string]bool)
+	for _, isIPv6 := range []bool{false, true} {
+		vrrpTbl, label := VRRP_TBL, "VRRP"
+		if isIPv6 {
+			vrrpTbl, label = VRRP6_TBL, "VRRP6"
+		}
+		data, _ := getIntfVrrpData(cfgDb, ifName, "", vrrpTbl, isIPv6)
+		vrids := make([]int, 0, len(data))
+		for vrid := range data {
+			vrids = append(vrids, int(vrid))
+		}
+		sort.Ints(vrids)
+
+		for _, vrid := range vrids {
+			for _, vip := range data[uint8(vrid)].virtualAddresses {
+				owner, ok := vrrpOwnedParentPrefixNetwork(vip, parents)
+				if !ok {
+					continue
+				}
+				key := owner.String()
+				if len(removing[key]) > 0 && remaining[key] == 0 {
+					details = append(details, fmt.Sprintf("%s VIP %s (VR Id: %d)", label, vip, vrid))
+					for _, canon := range removing[key] {
+						blocking[canon] = true
+					}
+				}
+			}
+		}
+	}
+
+	if len(details) == 0 {
+		return nil
+	}
+	verb := "is"
+	if len(details) > 1 {
+		verb = "are"
+	}
+	blockingPrefixes := make([]string, 0, len(blocking))
+	for canon := range blocking {
+		blockingPrefixes = append(blockingPrefixes, canon)
+	}
+	sort.Strings(blockingPrefixes)
+	return tlerr.InvalidArgs("Cannot change interface IP %s on %s: %s %s associated with this prefix.",
+		strings.Join(blockingPrefixes, ", "), ifName, strings.Join(details, ", "), verb)
+}
+
+func validateIntfIpRemoveBlockedByVrrp(cfgDb *db.DB, ifName string, ipMap map[string]db.Value) error {
+	if len(ipMap) == 0 {
+		return nil
+	}
+	prefixes := make([]string, 0, len(ipMap))
+	for pref := range ipMap {
+		prefixes = append(prefixes, pref)
+	}
+	sort.Strings(prefixes)
+	return validateIntfPrefixesRemoveBlockedByVrrp(cfgDb, ifName, prefixes)
+}
+
 func parseUint8(val string, def uint8) uint8 {
 	if val == "" {
 		return def
