@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"math"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -2615,6 +2616,28 @@ func TestCompTypesForSubscriptionUriXcvr(t *testing.T) {
 	uri := XCVR_BASE_PREFIX + "/state/input-power/instant"
 	if got := compTypesForSubscriptionUri(uri); !reflect.DeepEqual(got, []componentType{CompTypeXcvr}) {
 		t.Errorf("compTypesForSubscriptionUri(%q) == %v, want [%v]", uri, got, CompTypeXcvr)
+	}
+}
+
+// A wildcard subscribe on a filtered state leaf covers every component type the
+// Get serves that leaf on.
+func TestCompTypesForSubscriptionUriStateLeaves(t *testing.T) {
+	cases := []struct {
+		uri  string
+		want []componentType
+	}{
+		{COMP_STATE_OPER_STATUS, []componentType{CompTypeXcvr, CompTypeIC, CompTypeSystemEeprom}},
+		{COMP_STATE_PARENT, []componentType{CompTypeCpu}},
+		{COMP_STATE_REMOVABLE, []componentType{CompTypeSystemEeprom}},
+		{COMP_STATE_SW_VER, []componentType{CompTypeChassis}},
+	}
+	for _, c := range cases {
+		got := compTypesForSubscriptionUri(c.uri)
+		for _, ct := range c.want {
+			if !slices.Contains(got, ct) {
+				t.Errorf("compTypesForSubscriptionUri(%q) == %v, missing %v", c.uri, got, ct)
+			}
+		}
 	}
 }
 

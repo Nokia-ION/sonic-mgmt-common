@@ -1284,14 +1284,14 @@ func compTypesForSubscriptionUri(uri string) []componentType {
 	} else if strings.HasPrefix(uri, "/openconfig-platform:components/component/boot-loader") {
 		cTypes = []componentType{CompTypeBootLoader}
 	} else if strings.HasPrefix(uri, "/openconfig-platform:components/component/state/oper-status") {
-		cTypes = []componentType{CompTypeFan, CompTypeNWStack, CompTypeOS, CompTypeChassis, CompTypeTemp, CompTypePsu, CompTypeFanTray, CompTypeStorage, CompTypeCpu}
+		cTypes = []componentType{CompTypeFan, CompTypeNWStack, CompTypeOS, CompTypeChassis, CompTypeTemp, CompTypePsu, CompTypeFanTray, CompTypeStorage, CompTypeCpu, CompTypeXcvr, CompTypeIC, CompTypeSystemEeprom}
 	} else if strings.HasPrefix(uri, XCVR_BASE_PREFIX) {
 		cTypes = []componentType{CompTypeXcvr}
 	} else if strings.HasPrefix(uri, COMP_STATE_PARENT) || strings.HasPrefix(uri, COMP_STATE_INSTALL_POSITION) || strings.HasPrefix(uri, COMP_STATE_INSTALL_COMPONENT) || strings.HasPrefix(uri, COMP_STATE_REMOVABLE) {
 		/* Everything except chassis */
-		cTypes = []componentType{CompTypePsu, CompTypeFan, CompTypeFanTray, CompTypeStorage, CompTypeXcvr, CompTypeTemp, CompTypeIC, CompTypeNWStack, CompTypeOS, CompTypeBootLoader, CompTypePort, CompTypePcie, CompTypePowerSupplyVR, CompTypePowerSupplyPB, CompTypePowerSupplyPH, CompTypePowerSupplyPSEQ, CompTypeControllerCard, CompTypeLineCard}
+		cTypes = []componentType{CompTypePsu, CompTypeFan, CompTypeFanTray, CompTypeStorage, CompTypeXcvr, CompTypeTemp, CompTypeIC, CompTypeNWStack, CompTypeOS, CompTypeBootLoader, CompTypePort, CompTypePcie, CompTypePowerSupplyVR, CompTypePowerSupplyPB, CompTypePowerSupplyPH, CompTypePowerSupplyPSEQ, CompTypeControllerCard, CompTypeLineCard, CompTypeCpu, CompTypeSystemEeprom}
 	} else if strings.HasPrefix(uri, "/openconfig-platform:components/component/state/software-version") {
-		cTypes = []componentType{CompTypeNWStack, CompTypeOS, CompTypeBootLoader}
+		cTypes = []componentType{CompTypeNWStack, CompTypeOS, CompTypeBootLoader, CompTypeChassis}
 	}
 	return cTypes
 }
