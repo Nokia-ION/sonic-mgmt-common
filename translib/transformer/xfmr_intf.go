@@ -22,9 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"reflect"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -4747,141 +4745,35 @@ var DbToYang_subintf_ipv6_tbl_key_xfmr KeyXfmrDbToYang = func(inParams XfmrParam
 	return rmap, nil
 }
 
-// YangToDb_ipv6_enabled_xfmr is a YangToDB Field transformer for IPv6 config "enabled".
+// YangToDb_ipv6_enabled_xfmr handles IPv6 config "enabled". IPv6 cannot be disabled on SONiC.
 var YangToDb_ipv6_enabled_xfmr FieldXfmrYangToDb = func(inParams XfmrParams) (map[string]string, error) {
-	if log.V(3) {
-		log.Info("Entering YangToDb_ipv6_enabled_xfmr")
-	}
-	var err error
 	res_map := make(map[string]string)
-	pathInfo := NewPathInfo(inParams.uri)
-	ifUIName := pathInfo.Var("name")
 
-	intfType, _, ierr := getIntfTypeByName(ifUIName)
-	if ierr != nil || intfType == IntfTypeUnset {
-		return res_map, errors.New("YangToDb_ipv6_enabled_xfmr, Error: Unsupported Interface: " + ifUIName)
-	}
-
-	if ifUIName == "" {
-		errStr := "Interface KEY not present"
-		log.Info("YangToDb_ipv6_enabled_xfmr: " + errStr)
-		return res_map, errors.New(errStr)
+	if inParams.oper == DELETE {
+		return res_map, errors.New("IPv6 cannot be disabled on subinterface")
 	}
 
 	if inParams.param == nil {
-		return res_map, err
-	}
-
-	// Vlan Interface (routed-vlan) contains only one Key "ifname"
-	// For all other interfaces (subinterfaces/subintfaces) will have 2 keys "ifname" & "subintf-index"
-	if len(pathInfo.Vars) < 2 && intfType != IntfTypeVlan {
-		return res_map, errors.New("YangToDb_ipv6_enabled_xfmr, Error: Invalid Key length")
-	}
-
-	if log.V(3) {
-		log.Info("YangToDb_ipv6_enabled_xfmr, inParams.key: ", inParams.key)
-	}
-
-	ifName := &ifUIName
-
-	intTbl := IntfTypeTblMap[intfType]
-	tblName := intTbl.cfgDb.intfTN
-	ipMap, _ := getIntfIpByName(inParams.d, tblName, *ifName, true, true, "")
-	var enStr string
-	subOpMap := make(map[db.DBNum]map[string]map[string]db.Value)
-	subOpTblMap := make(map[string]map[string]db.Value)
-	field_map := make(map[string]db.Value)
-	res_values := db.Value{Field: map[string]string{}}
-	IntfMap := make(map[string]string)
-
-	enabled, _ := inParams.param.(*bool)
-	if *enabled {
-		enStr = "enable"
-	} else {
-		enStr = "disable"
-	}
-
-	IntfMapObj, err := inParams.d.GetEntry(&db.TableSpec{Name: tblName}, db.Key{Comp: []string{*ifName}})
-	if err == nil || IntfMapObj.IsPopulated() {
-		IntfMap = IntfMapObj.Field
-	}
-	val, fieldExists := IntfMap["ipv6_use_link_local_only"]
-	if fieldExists && val == enStr {
-		// Check if already set to required value
-		log.Info("IPv6 is already %s.", enStr)
 		return nil, nil
 	}
 
-	res_map["ipv6_use_link_local_only"] = enStr
-	if log.V(3) {
-		log.Info("YangToDb_ipv6_enabled_xfmr, res_map: ", res_map)
+	enabled, ok := inParams.param.(*bool)
+	if !ok {
+		return res_map, errors.New("YangToDb_ipv6_enabled_xfmr: invalid parameter type")
 	}
 
-	if enStr == "disable" {
-
-		if len(IntfMap) == 0 {
-			return nil, nil
-		}
-
-		keys := make([]string, 0, len(IntfMap))
-		for k := range IntfMap {
-			keys = append(keys, k)
-		}
-		check_keys := []string{"NULL", "ipv6_use_link_local_only"}
-		sort.Strings(keys)
-		/* Delete interface from interface table if disabling IPv6 and no other interface attributes/ip
-		   else remove ipv6_use_link_local_only field */
-		if !((reflect.DeepEqual(keys, check_keys) || reflect.DeepEqual(keys, check_keys[1:])) && len(ipMap) == 0) {
-			//Checking if field entry exists
-			if !fieldExists {
-				//Nothing to delete
-				return nil, nil
-			}
-			log.Info("YangToDb_ipv6_enabled_xfmr, deleting ipv6_use_link_local_only field")
-			//Delete field entry
-			(&res_values).Set("ipv6_use_link_local_only", enStr)
-		}
-		field_map[*ifName] = res_values
-		subOpTblMap[tblName] = field_map
-		subOpMap[db.ConfigDB] = subOpTblMap
-		inParams.subOpDataMap[DELETE] = &subOpMap
-		if log.V(3) {
-			log.Info("YangToDb_ipv6_enabled_xfmr, subOpMap: ", subOpMap)
-		}
-		return nil, nil
+	if !*enabled {
+		return res_map, errors.New("IPv6 cannot be disabled on subinterface")
 	}
-	return res_map, nil
+
+	// enabled=true is the only supported value; no CONFIG_DB field to update.
+	return nil, nil
 }
 
-// DbToYang_ipv6_enabled_xfmr is a DbToYang Field transformer for IPv6 config "enabled". */
+// DbToYang_ipv6_enabled_xfmr always reports IPv6 as enabled on subinterfaces.
 var DbToYang_ipv6_enabled_xfmr FieldXfmrDbtoYang = func(inParams XfmrParams) (map[string]interface{}, error) {
-	if log.V(3) {
-		log.Info("Entering DbToYang_ipv6_enabled_xfmr")
-	}
 	res_map := make(map[string]interface{})
-
-	if log.V(3) {
-		log.Info("DbToYang_ipv6_enabled_xfmr, inParams.key ", inParams.key)
-	}
-	pathInfo := NewPathInfo(inParams.uri)
-	ifName := pathInfo.Var("name")
-
-	ifUIName := &ifName
-	log.Info("Interface Name = ", *ifUIName)
-
-	intfType, _, _ := getIntfTypeByName(inParams.key)
-
-	intTbl := IntfTypeTblMap[intfType]
-	tblName, _ := getIntfTableNameByDBId(intTbl, inParams.curDb)
-
-	data := (*inParams.dbDataMap)[inParams.curDb]
-
-	res_map["enabled"] = false
-	ipv6_status, ok := data[tblName][inParams.key].Field["ipv6_use_link_local_only"]
-
-	if ok && ipv6_status == "enable" {
-		res_map["enabled"] = true
-	}
+	res_map["enabled"] = true
 	return res_map, nil
 }
 
