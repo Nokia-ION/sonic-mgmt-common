@@ -1496,10 +1496,18 @@ func translateSubscribe(inParams XfmrSubscInParams, key, targetUriPath string) (
 		if isPropertiesPath(targetUriPath) && cType != CompTypeFilesystem {
 			propName := propNameFromSubscribeUri(inParams.uri, inParams.requestURI)
 			propTable, propFields, ok := propSubscribeInfo(propName, cType)
+			desc, known := propTbl[propName]
+			if key == "*" && known && !desc.appliesTo(cType) {
+				/* A wildcard leaves out types not carrying the property. */
+				continue
+			}
 			if !ok || !propOnChangeSupported(targetUriPath) {
-				/* No single property to watch, so refuse on-change and leave
-				 * SAMPLE to the default handling below. */
-				result.onChange = OnchangeDisable
+				/* No single field to watch.  A wildcard watches the component
+				 * row instead; otherwise refuse on-change and leave SAMPLE to
+				 * the default handling below. */
+				if key != "*" || !known || !propOnChangeSupported(targetUriPath) || propReadFromHost(propName) {
+					result.onChange = OnchangeDisable
+				}
 			} else {
 				if result.dbDataMap[db.StateDB] == nil {
 					result.dbDataMap[db.StateDB] = make(map[string]map[string]map[string]string)
@@ -1576,8 +1584,8 @@ func translateSubscribe(inParams XfmrSubscInParams, key, targetUriPath string) (
 		}
 	}
 
-	/* The host CPU row holds none of its values, so a named host CPU refuses
-	 * on-change. */
+	/* The host CPU row holds none of its values, so a named host CPU, or a
+	 * property read from the host, refuses on-change. */
 	if len(compTypeFilter) == 0 || slices.Contains(compTypeFilter, CompTypeCpu) {
 		if result.dbDataMap[db.StateDB] == nil {
 			result.dbDataMap[db.StateDB] = make(map[string]map[string]map[string]string)
@@ -1586,7 +1594,7 @@ func translateSubscribe(inParams XfmrSubscInParams, key, targetUriPath string) (
 			result.dbDataMap[db.StateDB][CPU_INFO_TBL] = make(map[string]map[string]string)
 		}
 		result.dbDataMap[db.StateDB][CPU_INFO_TBL][CPU_COMP_NAME] = map[string]string{}
-		if key != "*" {
+		if key != "*" || (isPropertiesPath(targetUriPath) && propReadFromHost(propNameFromSubscribeUri(inParams.uri, inParams.requestURI))) {
 			result.onChange = OnchangeDisable
 		}
 	}
