@@ -365,6 +365,13 @@ func propOnChangeSupported(targetUriPath string) bool {
 	return targetUriPath == COMP_PROP_STATE || targetUriPath == COMP_PROP_STATE_VALUE
 }
 
+/* True when the property is read from the host, so no row changes when its
+ * value does. */
+func propReadFromHost(propName string) bool {
+	desc, found := propTbl[propName]
+	return found && desc.table == "" && desc.tables == nil
+}
+
 /* Property named by a subscribe request, empty when the request covers the whole
  * properties container. */
 func propNameFromSubscribeUri(uri, requestUri string) string {

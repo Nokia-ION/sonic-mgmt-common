@@ -2323,6 +2323,53 @@ func subscribeTestDbs(t *testing.T, nums ...db.DBNum) [db.MaxDB]*db.DB {
 	return dbs
 }
 
+// A wildcard property subscribe allows on-change unless the property is read
+// from the host, and watches the table and field the property reads.
+func TestSubscribe_pfm_components_prop_wildcard_onchange(t *testing.T) {
+	dbs := subscribeTestDbs(t, db.StateDB, db.ConfigDB, db.CountersDB)
+	prop := func(comp, name string) string {
+		return "/openconfig-platform:components/component[name=" + comp + "]/properties/property[name=" + name + "]/state/value"
+	}
+	cases := []struct {
+		uri        string
+		onChange   bool
+		tbl, key   string
+		watchField string
+	}{
+		{prop("*", "speed"), true, FAN_TBL, "*", "speed"},
+		{prop("*", "temperature"), true, TEMP_TBL, "*", "temperature"},
+		{prop("*", "outputPower"), true, PSU_TBL, "PSU*", "power"},
+		{prop("*", "laser-module-voltage"), true, TRANSCEIVER_DOM, XCVR_KEY_PREFIX + "*", "voltage"},
+		{prop("*", "hwStatus"), true, FAN_TBL, "*", "presence"},
+		{prop("*", "operStatus"), true, PSU_TBL, "PSU*", "status"},
+		{prop("*", "loadAvg1m"), false, "", "", ""},
+		{prop("Fan1", "speed"), true, FAN_TBL, "Fan1", "speed"},
+		{prop("chassis 1", "operStatus"), false, "", "", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.uri, func(t *testing.T) {
+			in := XfmrSubscInParams{uri: c.uri, requestURI: c.uri, subscProc: TRANSLATE_SUBSCRIBE, dbs: dbs}
+			out, err := Subscribe_pfm_components_xfmr(in)
+			if err != nil {
+				t.Fatalf("Subscribe_pfm_components_xfmr failed: %v", err)
+			}
+			if got := out.onChange != OnchangeDisable; got != c.onChange {
+				t.Errorf("on-change allowed == %v, want %v: %v", got, c.onChange, out.dbDataMap)
+			}
+			if c.tbl == "" {
+				return
+			}
+			fields, ok := out.dbDataMap[db.StateDB][c.tbl][c.key]
+			if !ok {
+				t.Fatalf("%s|%s not watched: %v", c.tbl, c.key, out.dbDataMap)
+			}
+			if _, ok := fields[c.watchField]; !ok {
+				t.Errorf("%s|%s watches %v, want field %s", c.tbl, c.key, fields, c.watchField)
+			}
+		})
+	}
+}
+
 // A wildcard subscribe covering System Eeprom watches EEPROM_INFO|State; one
 // scoped to another component type does not.
 func TestSubscribe_pfm_components_sys_eeprom_wildcard(t *testing.T) {
