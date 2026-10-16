@@ -231,11 +231,16 @@ func (respXlator *subscribeNotfRespXlator) handlePathTransformer(ygXpathInfo *ya
 			if log.V(dbLgLvl) {
 				log.Info(respXlator.ntfXlateReq.reqLogId, "handlePathTransformer: yang map keys: yang key path:", ygpath, "/", keyName)
 			}
+			// A key the db key cannot name, such as a component's property
+			// name when one row backs every property, stays a wildcard. The
+			// caller decides whether the rest of the path can still be served.
 			ygKeyVal, ok := inParam.ygPathKeys[ygpath+"/"+keyName]
 			if !ok {
-				return fmt.Errorf(respXlator.ntfXlateReq.reqLogId+"Error: path transformer callback (%v)"+
-					" response yang key map does not have the yang key value for the yang key: %v ",
-					ygXpathInfo.xfmrPath, ygpath+"/"+keyName)
+				if log.V(dbLgLvl) {
+					log.Infof("%v handlePathTransformer: path transformer callback (%v) left the yang key %v unresolved",
+						respXlator.ntfXlateReq.reqLogId, ygXpathInfo.xfmrPath, ygpath+"/"+keyName)
+				}
+				continue
 			}
 			respXlator.ntfXlateReq.path.Elem[idx].Key[keyName] = ygKeyVal
 		}
