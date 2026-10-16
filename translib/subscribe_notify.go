@@ -705,7 +705,7 @@ func (ne *notificationEvent) processSubscribe(nInfo *notificationInfo, subpath s
 		out.path = path.SubPath(out.path, 0, tLen)
 	}
 
-	if path.HasWildcardKey(out.path) {
+	if path.HasWildcardKey(out.path) && fanoutListIndex(out.path) < 0 {
 		log.Warningf("[%s] processSubscribe did not resolve all wildcards: \"%s\"",
 			ne.id, path.String(out.path))
 		return nil
@@ -761,6 +761,10 @@ func (ne *notificationEvent) sendNotification(nInfo *notificationInfo, relativeP
 	}
 	if prefix == nil {
 		log.Warningf("[%s] skip notification -- processSubscribe failed", ne.id)
+		return
+	}
+	if k := fanoutListIndex(prefix); k > 0 {
+		ne.sendFanoutNotification(nInfo, prefix, k, fields)
 		return
 	}
 
@@ -868,6 +872,79 @@ func (ne *notificationEvent) sendNotification(nInfo *notificationInfo, relativeP
 	}
 
 	log.Infof("[%s] Sending %d updates and %d deletes", ne.id, numUpdate, numDelete)
+	ne.send(resp)
+}
+
+// sendFanoutNotification serves a path whose wildcarded list at listIdx could
+// not be resolved from the db key, because one db entry backs every instance of
+// that list; the properties of a component, all read from its one row, are an
+// example. The node above that list is read, and only the nodes the rest of the
+// path names are kept, so each instance is reported at its own path.
+//
+// The db fields cannot say which instances changed, so after the initial sync
+// a deleted field or a read that no longer matches anything replaces the whole
+// node: it is deleted, and the instances still present are sent with it.
+func (ne *notificationEvent) sendFanoutNotification(nInfo *notificationInfo, prefix *gnmi.Path, listIdx int, fields []*yangNodeInfo) {
+	readPath := path.Clone(path.SubPath(prefix, 0, listIdx))
+	readPathStr, err := ygot.PathToString(readPath)
+	if err != nil {
+		log.Warningf("[%s] skip notification -- %v", ne.id, err)
+		return
+	}
+
+	resp := &SubscribeResponse{
+		Path:      readPathStr,
+		Timestamp: time.Now().UnixNano(),
+	}
+
+	parent, err := ne.getValue(nInfo, readPathStr)
+	if ne.sInfo.syncDone && isNotFoundError(err) {
+		log.Infof("[%s] '%s' not found", ne.id, readPathStr)
+		resp.Delete = []string{""}
+		ne.send(resp)
+		return
+	}
+	if err != nil {
+		log.V(2).Infof("[%s] '%s' skipped due to error: %v", ne.id, readPathStr, err)
+		return
+	}
+
+	// getValue returns the parent of the node it was asked for.
+	n := path.Len(readPath)
+	node, err := getYgotAtPath(parent, path.Clone(path.SubPath(readPath, n-1, n)))
+	if err != nil {
+		log.Warningf("[%s] skip notification -- %v", ne.id, err)
+		return
+	}
+
+	pattern := path.SubPath(prefix, listIdx, path.Len(prefix))
+	update, err := pruneYgotToPattern(node, pattern)
+	if err != nil {
+		log.Warningf("[%s] skip notification -- %v", ne.id, err)
+		return
+	}
+
+	replace := false
+	if ne.sInfo.syncDone {
+		replace = update == nil
+		for _, f := range fields {
+			if f.deleted {
+				replace = true
+				break
+			}
+		}
+	}
+	if replace {
+		resp.Delete = []string{""}
+	}
+	if update == nil && !replace {
+		log.Warningf("[%s] skip notification -- no instance under %s carries %s",
+			ne.id, readPathStr, path.String(pattern))
+		return
+	}
+
+	resp.Update = update
+	log.Infof("[%s] Sending fanout notification for %s; replace=%v", ne.id, readPathStr, replace)
 	ne.send(resp)
 }
 
