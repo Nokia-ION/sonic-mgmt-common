@@ -22,6 +22,7 @@ package translib
 import (
 	"fmt"
 	"reflect"
+	"strings"
 	"sync/atomic"
 
 	"github.com/Azure/sonic-mgmt-common/translib/ocbinds"
@@ -29,6 +30,8 @@ import (
 	"github.com/Azure/sonic-mgmt-common/translib/utils"
 	"github.com/kylelemons/godebug/pretty"
 	"github.com/openconfig/gnmi/proto/gnmi"
+	"github.com/openconfig/goyang/pkg/yang"
+	"github.com/openconfig/ygot/util"
 	"github.com/openconfig/ygot/ygot"
 	"github.com/openconfig/ygot/ytypes"
 )
@@ -131,6 +134,158 @@ func getYgotAtPath(parent ygot.ValidatedGoStruct, childPath *gnmi.Path) (ygot.Va
 	}
 
 	return nil, fmt.Errorf("Not a ValidatedGoStruct")
+}
+
+// fanoutListIndex returns the index of the first wildcarded list in p, when the
+// wildcards p still carries can be served by reading below one list instance:
+// a list above the first wildcard has concrete keys, so the read covers that
+// instance alone. Returns -1 when p carries no wildcard or no such list.
+func fanoutListIndex(p *gnmi.Path) int {
+	keyedAbove := false
+	for i, e := range p.GetElem() {
+		if path.HasWildcardAtKey(p, i) {
+			if keyedAbove {
+				return i
+			}
+			return -1
+		}
+		if len(e.Key) != 0 {
+			keyedAbove = true
+		}
+	}
+	return -1
+}
+
+// pruneYgotToPattern returns a new struct of node's type holding only the nodes
+// pattern names below node. pattern may carry wildcard keys; each list instance
+// they match is kept under its own keys, and an instance that does not carry
+// the named node is left out. Returns nil when nothing matches.
+func pruneYgotToPattern(node ygot.ValidatedGoStruct, pattern *gnmi.Path) (ygot.ValidatedGoStruct, error) {
+	schema, ok := ocbinds.SchemaTree[reflect.TypeOf(node).Elem().Name()]
+	if !ok {
+		return nil, fmt.Errorf("Could not find schema for %T", node)
+	}
+	rel := path.Clone(pattern)
+	path.RemoveModulePrefix(rel)
+
+	matches := collectYgotMatches(schema, node, nil, rel.Elem)
+	if len(matches) == 0 {
+		return nil, nil
+	}
+
+	pruned, ok := reflect.New(reflect.TypeOf(node).Elem()).Interface().(ygot.ValidatedGoStruct)
+	if !ok {
+		return nil, fmt.Errorf("%T is not a ValidatedGoStruct", node)
+	}
+	for _, m := range matches {
+		if err := mergeYgotMatch(schema, pruned, node, m); err != nil {
+			return nil, err
+		}
+	}
+	return pruned, nil
+}
+
+// ygotMatch is a node found below a ygot struct, at a path relative to it with
+// every key concrete.
+type ygotMatch struct {
+	elems []*gnmi.PathElem
+	data  interface{}
+}
+
+// collectYgotMatches returns the nodes that rest names below node, which sits
+// at the relative path at. Wildcards are expanded one list at a time, so that
+// an instance missing a node below it drops out instead of failing the lookup
+// for its siblings.
+func collectYgotMatches(schema *yang.Entry, node interface{}, at, rest []*gnmi.PathElem) []ygotMatch {
+	if len(rest) == 0 {
+		if util.IsValueNil(node) {
+			return nil
+		}
+		return []ygotMatch{{elems: at, data: node}}
+	}
+
+	step := len(rest)
+	for i := range rest {
+		if path.HasWildcardAtKey(&gnmi.Path{Elem: rest}, i) {
+			step = i + 1
+			break
+		}
+	}
+
+	nodes, err := ytypes.GetNode(schema, node, &gnmi.Path{Elem: rest[:step]}, &ytypes.GetHandleWildcards{})
+	if err != nil {
+		return nil
+	}
+
+	var matches []ygotMatch
+	for _, n := range nodes {
+		next := make([]*gnmi.PathElem, 0, len(at)+len(n.Path.GetElem()))
+		next = append(next, at...)
+		next = append(next, n.Path.GetElem()...)
+		matches = append(matches, collectYgotMatches(n.Schema, n.Data, next, rest[step:])...)
+	}
+	return matches
+}
+
+// mergeYgotMatch copies the node m names in src into dst, a struct of the same
+// type. A leaf is copied alone, without the other leaves of its parent.
+func mergeYgotMatch(schema *yang.Entry, dst, src ygot.ValidatedGoStruct, m ygotMatch) error {
+	if s, ok := m.data.(ygot.ValidatedGoStruct); ok {
+		d, err := getOrCreateYgot(schema, dst, m.elems)
+		if err != nil {
+			return err
+		}
+		return ygot.MergeStructInto(d, s)
+	}
+
+	n := len(m.elems)
+	if n == 0 {
+		return fmt.Errorf("leaf match in %T has no path", src)
+	}
+	srcNodes, err := ytypes.GetNode(schema, src, &gnmi.Path{Elem: m.elems[:n-1]})
+	if err != nil {
+		return err
+	}
+	d, err := getOrCreateYgot(schema, dst, m.elems[:n-1])
+	if err != nil {
+		return err
+	}
+	return copyYgotField(d, srcNodes[0].Data, m.elems[n-1].Name)
+}
+
+func getOrCreateYgot(schema *yang.Entry, root ygot.ValidatedGoStruct, elems []*gnmi.PathElem) (ygot.ValidatedGoStruct, error) {
+	node, _, err := ytypes.GetOrCreateNode(schema, root, &gnmi.Path{Elem: elems})
+	if err != nil {
+		return nil, err
+	}
+	y, ok := node.(ygot.ValidatedGoStruct)
+	if !ok {
+		return nil, fmt.Errorf("GetOrCreateNode returned %T; is not a ValidatedGoStruct", node)
+	}
+	return y, nil
+}
+
+// copyYgotField sets the field of dst that holds the leaf or leaf-list
+// leafName to the value src holds there. dst and src have the same type.
+func copyYgotField(dst ygot.ValidatedGoStruct, src interface{}, leafName string) error {
+	dv := reflect.ValueOf(dst).Elem()
+	sv := reflect.ValueOf(src)
+	if sv.Kind() != reflect.Ptr || sv.Elem().Type() != dv.Type() {
+		return fmt.Errorf("cannot copy %s from %T into %T", leafName, src, dst)
+	}
+	sv = sv.Elem()
+	dt := dv.Type()
+	for i := 0; i < dt.NumField(); i++ {
+		tag := dt.Field(i).Tag.Get("path")
+		if k := strings.IndexByte(tag, ':'); k != -1 {
+			tag = tag[k+1:]
+		}
+		if tag == leafName {
+			dv.Field(i).Set(sv.Field(i))
+			return nil
+		}
+	}
+	return fmt.Errorf("%T has no field for %s", dst, leafName)
 }
 
 // isEmptyYgotStruct returns true if none of the fields of ygot struct y are set.
