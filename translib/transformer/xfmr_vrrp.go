@@ -33,40 +33,50 @@ import (
 )
 
 const (
-	VRRP_TBL                      = "VRRP"
-	VRRP6_TBL                     = "VRRP6"
-	VRRP_TRACK_TBL                = "VRRP_TRACK"
-	VRRP6_TRACK_TBL               = "VRRP6_TRACK"
-	VRRP_STATE_TBL                = "VRRP_STATE_TABLE"
-	VRRP6_STATE_TBL               = "VRRP6_STATE_TABLE"
-	VRRP_FIELD_VRID               = "vrid"
-	VRRP_FIELD_VIP                = "vip@"
-	VRRP_FIELD_PRIORITY           = "priority"
-	VRRP_FIELD_PREEMPT            = "preempt"
-	VRRP_FIELD_PREEMPT_DELAY      = "preempt_delay"
-	VRRP_FIELD_ACCEPT_MODE        = "accept_mode"
-	VRRP_FIELD_ADV_INTERVAL       = "adv_interval"
-	VRRP_FIELD_VIRTUAL_LLA        = "virtual_link_local"
-	VRRP_FIELD_TRACK_PRIO_INCR    = "priority_increment"
-	VRRP_STATE_FIELD_EFF_PRIORITY = "effective_priority"
-	VRRP_STATE_FIELD_STATE        = "state"
+	VRRP_TBL                                    = "VRRP"
+	VRRP6_TBL                                   = "VRRP6"
+	VRRP_TRACK_TBL                              = "VRRP_TRACK"
+	VRRP6_TRACK_TBL                             = "VRRP6_TRACK"
+	VRRP_STATE_TBL                              = "VRRP_STATE_TABLE"
+	VRRP6_STATE_TBL                             = "VRRP6_STATE_TABLE"
+	VRRP_FIELD_VRID                             = "vrid"
+	VRRP_FIELD_VIP                              = "vip@"
+	VRRP_FIELD_PRIORITY                         = "priority"
+	VRRP_FIELD_PREEMPT                          = "preempt"
+	VRRP_FIELD_PREEMPT_DELAY                    = "preempt_delay"
+	VRRP_FIELD_ACCEPT_MODE                      = "accept_mode"
+	VRRP_FIELD_ADV_INTERVAL                     = "adv_interval"
+	VRRP_FIELD_VIRTUAL_LLA                      = "virtual_link_local"
+	VRRP_FIELD_TRACK_PRIO_INCR                  = "priority_increment"
+	VRRP_STATE_FIELD_EFF_PRIORITY               = "effective_priority"
+	VRRP_STATE_FIELD_STATE                      = "state"
+	VRRP_STATE_FIELD_ADVERTISEMENTS_TX          = "advertisements_tx"
+	VRRP_STATE_FIELD_ADVERTISEMENTS_RX          = "advertisements_rx"
+	VRRP_STATE_FIELD_GRATUITOUS_ARP_TX          = "gratuitous_arp_tx"
+	VRRP_STATE_FIELD_NEIGHBOR_ADVERTISEMENTS_TX = "neighbor_advertisements_tx"
+	VRRP_STATE_FIELD_TRANSITIONS                = "state_transitions"
 )
 
 type vrrpGroupData struct {
-	vrid               uint8
-	virtualAddresses   []string
-	priority           uint8
-	preempt            bool
-	preemptDelay       uint16
-	acceptMode         bool
-	advertisementCenti uint16
-	virtualLinkLocal   string
-	trackInterfaces    []string
-	priorityDecrement  uint8
-	currentPriority    uint8
-	hasCurrentPriority bool
-	vrrpState          ocbinds.E_OpenconfigIfIpVrrpExt_VrrpStateType
-	hasVrrpState       bool
+	vrid                       uint8
+	virtualAddresses           []string
+	priority                   uint8
+	preempt                    bool
+	preemptDelay               uint16
+	acceptMode                 bool
+	advertisementCenti         uint16
+	virtualLinkLocal           string
+	trackInterfaces            []string
+	priorityDecrement          uint8
+	currentPriority            uint8
+	hasCurrentPriority         bool
+	vrrpState                  ocbinds.E_OpenconfigIfIpVrrpExt_VrrpStateType
+	hasVrrpState               bool
+	advertisementsSent         *uint64
+	advertisementsReceived     *uint64
+	gratuitousArpSent          *uint64
+	neighborAdvertisementsSent *uint64
+	stateTransitions           *uint64
 }
 
 func parseVrrpState(value string) (ocbinds.E_OpenconfigIfIpVrrpExt_VrrpStateType, bool) {
@@ -80,6 +90,20 @@ func parseVrrpState(value string) (ocbinds.E_OpenconfigIfIpVrrpExt_VrrpStateType
 	default:
 		return ocbinds.OpenconfigIfIpVrrpExt_VrrpStateType_UNSET, false
 	}
+}
+
+func parseVrrpCounter(entry db.Value, field, stateTbl string, keyComp []string) *uint64 {
+	value := strings.TrimSpace(entry.Get(field))
+	if value == "" {
+		return nil
+	}
+	counter, err := strconv.ParseUint(value, 10, 64)
+	if err != nil {
+		log.Warningf("VRRP state table=%s key=%v has unusable %s=%q",
+			stateTbl, keyComp, field, value)
+		return nil
+	}
+	return &counter
 }
 
 func init() {
@@ -1983,6 +2007,10 @@ func populateRoutedVlanVrrpGroup(grpObj *ocbinds.OpenconfigInterfaces_Interfaces
 	if grp.hasVrrpState {
 		grpObj.State.VrrpState = grp.vrrpState
 	}
+	grpObj.State.Counters.AdvertisementsSent = grp.advertisementsSent
+	grpObj.State.Counters.AdvertisementsReceived = grp.advertisementsReceived
+	grpObj.State.Counters.GratuitousArpSent = grp.gratuitousArpSent
+	grpObj.State.Counters.StateTransitions = grp.stateTransitions
 	grpObj.State.VirtualAddress = append(grpObj.State.VirtualAddress[:0], grp.virtualAddresses...)
 
 	grpObj.Config.PreemptDelay = &grp.preemptDelay
@@ -2024,6 +2052,10 @@ func populateRoutedVlanIPv6VrrpGroup(grpObj *ocbinds.OpenconfigInterfaces_Interf
 	if grp.hasVrrpState {
 		grpObj.State.VrrpState = grp.vrrpState
 	}
+	grpObj.State.Counters.AdvertisementsSent = grp.advertisementsSent
+	grpObj.State.Counters.AdvertisementsReceived = grp.advertisementsReceived
+	grpObj.State.Counters.NeighborAdvertisementsSent = grp.neighborAdvertisementsSent
+	grpObj.State.Counters.StateTransitions = grp.stateTransitions
 	grpObj.State.VirtualAddress = append(grpObj.State.VirtualAddress[:0], grp.virtualAddresses...)
 
 	if grp.virtualLinkLocal != "" {
@@ -2065,6 +2097,10 @@ func populateSubIntfIPv4VrrpGroup(grpObj *ocbinds.OpenconfigInterfaces_Interface
 	if grp.hasVrrpState {
 		grpObj.State.VrrpState = grp.vrrpState
 	}
+	grpObj.State.Counters.AdvertisementsSent = grp.advertisementsSent
+	grpObj.State.Counters.AdvertisementsReceived = grp.advertisementsReceived
+	grpObj.State.Counters.GratuitousArpSent = grp.gratuitousArpSent
+	grpObj.State.Counters.StateTransitions = grp.stateTransitions
 	grpObj.State.VirtualAddress = append(grpObj.State.VirtualAddress[:0], grp.virtualAddresses...)
 
 	grpObj.Config.PreemptDelay = &grp.preemptDelay
@@ -2106,6 +2142,10 @@ func populateSubIntfIPv6VrrpGroup(grpObj *ocbinds.OpenconfigInterfaces_Interface
 	if grp.hasVrrpState {
 		grpObj.State.VrrpState = grp.vrrpState
 	}
+	grpObj.State.Counters.AdvertisementsSent = grp.advertisementsSent
+	grpObj.State.Counters.AdvertisementsReceived = grp.advertisementsReceived
+	grpObj.State.Counters.NeighborAdvertisementsSent = grp.neighborAdvertisementsSent
+	grpObj.State.Counters.StateTransitions = grp.stateTransitions
 	grpObj.State.VirtualAddress = append(grpObj.State.VirtualAddress[:0], grp.virtualAddresses...)
 
 	if grp.virtualLinkLocal != "" {
@@ -2277,6 +2317,20 @@ func mergeIntfVrrpStateData(stateDb *db.DB, ifName string, targetVrid string, st
 			log.Warningf(
 				"VRRP state table=%s key=%v has unusable %s=%q",
 				stateTbl, keyComp, VRRP_STATE_FIELD_STATE, stateStr)
+		}
+
+		grp.advertisementsSent = parseVrrpCounter(
+			entry, VRRP_STATE_FIELD_ADVERTISEMENTS_TX, stateTbl, keyComp)
+		grp.advertisementsReceived = parseVrrpCounter(
+			entry, VRRP_STATE_FIELD_ADVERTISEMENTS_RX, stateTbl, keyComp)
+		grp.stateTransitions = parseVrrpCounter(
+			entry, VRRP_STATE_FIELD_TRANSITIONS, stateTbl, keyComp)
+		if stateTbl == VRRP_STATE_TBL {
+			grp.gratuitousArpSent = parseVrrpCounter(
+				entry, VRRP_STATE_FIELD_GRATUITOUS_ARP_TX, stateTbl, keyComp)
+		} else {
+			grp.neighborAdvertisementsSent = parseVrrpCounter(
+				entry, VRRP_STATE_FIELD_NEIGHBOR_ADVERTISEMENTS_TX, stateTbl, keyComp)
 		}
 
 		vrrpData[uint8(vrid)] = grp
