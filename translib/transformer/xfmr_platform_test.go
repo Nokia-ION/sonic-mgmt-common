@@ -2661,3 +2661,186 @@ func TestDbToYangPath_pfm_components_virtual(t *testing.T) {
 		}
 	}
 }
+
+// A get of lookup-block, which translib creates without its state container,
+// serves no-route.
+func TestFillICInfoLookupBlock(t *testing.T) {
+	var dbs [db.MaxDB]*db.DB
+	for _, n := range []db.DBNum{db.ConfigDB, db.CountersDB, db.AsicDB} {
+		d, err := db.NewDB(getDBOptions(n))
+		if err != nil {
+			t.Fatalf("NewDB(%v) failed: %v", n, err)
+		}
+		defer d.DeleteDB()
+		dbs[n] = d
+	}
+	comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+	ygot.BuildEmptyTree(comp)
+	comp.IntegratedCircuit.PipelineCounters.Drop.LookupBlock.State = nil
+
+	if err := fillICInfo(comp, IC_COMP_NAME, COMP_IC_PLC+"/drop/lookup-block", dbs, nil); err != nil {
+		t.Fatalf("fillICInfo() unexpected error: %v", err)
+	}
+	st := comp.IntegratedCircuit.PipelineCounters.Drop.LookupBlock.State
+	if st == nil || st.NoRoute == nil {
+		t.Fatalf("lookup-block/state/no-route is unset")
+	}
+}
+
+// A request naming one route resource is served that resource alone.
+func TestFillICUtilizationNamedResource(t *testing.T) {
+	stats := db.Value{Field: map[string]string{
+		"crm_stats_ipv4_route_used":      "66",
+		"crm_stats_ipv4_route_available": "1048510",
+		"crm_stats_ipv6_route_used":      "3",
+		"crm_stats_ipv6_route_available": "1048573",
+	}}
+
+	util := &ocbinds.OpenconfigPlatform_Components_Component_IntegratedCircuit_Utilization{}
+	ygot.BuildEmptyTree(util)
+	if _, err := util.Resources.NewResource("V4Routes"); err != nil {
+		t.Fatalf("NewResource() failed: %v", err)
+	}
+	if err := fillICUtilization(util, stats); err != nil {
+		t.Fatalf("fillICUtilization() unexpected error: %v", err)
+	}
+	if len(util.Resources.Resource) != 1 {
+		t.Fatalf("resources = %d, want 1", len(util.Resources.Resource))
+	}
+	res := util.Resources.Resource["V4Routes"]
+	assertUint64Leaf(t, res.State.Used, 66, "V4Routes state/used")
+	assertUint64Leaf(t, res.State.Free, 1048510, "V4Routes state/free")
+	assertUint64Leaf(t, res.State.MaxLimit, 1048576, "V4Routes state/max-limit")
+}
+
+// A request naming a resource CRM does not count is not found.
+func TestFillICUtilizationUnknownResource(t *testing.T) {
+	stats := db.Value{Field: map[string]string{
+		"crm_stats_ipv4_route_used":      "66",
+		"crm_stats_ipv4_route_available": "1048510",
+		"crm_stats_ipv6_route_used":      "3",
+		"crm_stats_ipv6_route_available": "1048573",
+	}}
+
+	util := &ocbinds.OpenconfigPlatform_Components_Component_IntegratedCircuit_Utilization{}
+	ygot.BuildEmptyTree(util)
+	if _, err := util.Resources.NewResource("MplsRoutes"); err != nil {
+		t.Fatalf("NewResource() failed: %v", err)
+	}
+	if err := fillICUtilization(util, stats); !isNotFound(err) {
+		t.Fatalf("fillICUtilization() returned %T (%v), want tlerr.NotFoundError", err, err)
+	}
+}
+
+// The healthz state container and status leaf carry the component's healthz
+// status.
+func TestGetSysComponentsHealthzState(t *testing.T) {
+	d, err := db.NewDB(getDBOptions(db.StateDB))
+	if err != nil {
+		t.Fatal("NewDB failed")
+	}
+	defer d.DeleteDB()
+	seedPsuInfoEntry(t, d, "PSU21", map[string]string{"presence": "true", "status": "false"})
+	seedFanInfoEntry(t, d, "Fan21", map[string]string{"presence": "True", "status": "True"})
+	defer d.DeleteEntry(&db.TableSpec{Name: PSU_TBL}, db.Key{Comp: []string{"PSU21"}})
+	defer d.DeleteEntry(&db.TableSpec{Name: FAN_TBL}, db.Key{Comp: []string{"Fan21"}})
+
+	cases := []struct {
+		name string
+		want ocbinds.E_OpenconfigPlatform_Components_Component_Healthz_State_Status
+	}{
+		{"PSU21", ocbinds.OpenconfigPlatform_Components_Component_Healthz_State_Status_UNHEALTHY},
+		{"Fan21", ocbinds.OpenconfigPlatform_Components_Component_Healthz_State_Status_HEALTHY},
+	}
+	for _, c := range cases {
+		for _, uri := range []string{COMP_HEALTHZ, COMP_HEALTHZ_ST, COMP_HEALTHZ_ST_STATUS} {
+			t.Run(c.name+uri, func(t *testing.T) {
+				device := &ocbinds.Device{}
+				ygot.BuildEmptyTree(device)
+				comp, err := device.Components.NewComponent(c.name)
+				if err != nil {
+					t.Fatalf("creating the component failed: %v", err)
+				}
+				ygot.BuildEmptyTree(comp)
+
+				var inParams XfmrParams
+				inParams.dbs[db.StateDB] = d
+				if err := getSysComponents(device.Components, uri, inParams, c.name, ""); err != nil {
+					t.Fatalf("getSysComponents(%q) unexpected error: %v", uri, err)
+				}
+				if got := comp.Healthz.State.Status; got != c.want {
+					t.Errorf("healthz/state/status = %v, want %v", got, c.want)
+				}
+			})
+		}
+	}
+}
+
+// A PSU's oper-status is DISABLED when absent, INACTIVE when present without
+// power and ACTIVE when powered, on the targeted leaf and the whole component.
+func TestFillPsuOperStatus(t *testing.T) {
+	d, err := db.NewDB(getDBOptions(db.StateDB))
+	if err != nil {
+		t.Fatal("NewDB failed")
+	}
+	defer d.DeleteDB()
+
+	cases := []struct {
+		name, presence, status string
+		want                   ocbinds.E_OpenconfigPlatformTypes_COMPONENT_OPER_STATUS
+	}{
+		{"PSU22", "false", "false", ocbinds.OpenconfigPlatformTypes_COMPONENT_OPER_STATUS_DISABLED},
+		{"PSU23", "true", "false", ocbinds.OpenconfigPlatformTypes_COMPONENT_OPER_STATUS_INACTIVE},
+		{"PSU24", "true", "true", ocbinds.OpenconfigPlatformTypes_COMPONENT_OPER_STATUS_ACTIVE},
+	}
+	for _, c := range cases {
+		seedPsuInfoEntry(t, d, c.name, map[string]string{"presence": c.presence, "status": c.status})
+		defer d.DeleteEntry(&db.TableSpec{Name: PSU_TBL}, db.Key{Comp: []string{c.name}})
+		for _, all := range []bool{true, false} {
+			uri := COMP_STATE_OPER_STATUS
+			if all {
+				uri = COMP
+			}
+			t.Run(c.name+uri, func(t *testing.T) {
+				comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+				ygot.BuildEmptyTree(comp)
+				if err := fillPsuInfo(comp, c.name, all, false, uri, d); err != nil {
+					t.Fatalf("fillPsuInfo() unexpected error: %v", err)
+				}
+				if got := comp.State.OperStatus; got != c.want {
+					t.Errorf("state/oper-status = %v, want %v", got, c.want)
+				}
+			})
+		}
+	}
+}
+
+// A sensor's state/name is its component name on the targeted leaf and the
+// whole component, even when TEMPERATURE_INFO carries a name field.
+func TestFillTempSensorStateName(t *testing.T) {
+	stdb, err := db.NewDB(getDBOptions(db.StateDB))
+	if err != nil {
+		t.Fatal("NewDB failed")
+	}
+	defer stdb.DeleteDB()
+
+	name := "inlet_sensor_21"
+	seedTempInfoEntry(t, stdb, name, map[string]string{"temperature": "30.0", "name": "Inlet 21"})
+
+	for _, c := range []struct {
+		pType PathType
+		uri   string
+	}{
+		{AllPaths, COMP},
+		{SingularPath, COMP_STATE_NAME},
+	} {
+		t.Run(c.uri, func(t *testing.T) {
+			comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+			ygot.BuildEmptyTree(comp)
+			if err := fillTempSensorInfo(comp, name, c.pType, c.uri, stdb); err != nil {
+				t.Fatalf("fillTempSensorInfo() unexpected error: %v", err)
+			}
+			assertStrLeaf(t, comp.State.Name, name, "state/name")
+		})
+	}
+}

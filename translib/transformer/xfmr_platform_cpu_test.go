@@ -156,3 +156,27 @@ func TestFillPropertiesChassisHasNoHostCpu(t *testing.T) {
 		}
 	}
 }
+
+// The host CPU component created for a whole-tree get carries healthz.
+func TestCreateCpuCompHealthz(t *testing.T) {
+	setCpuModel(t, "")
+	d, err := db.NewDB(getDBOptions(db.StateDB))
+	if err != nil {
+		t.Fatal("NewDB failed")
+	}
+	defer d.DeleteDB()
+
+	device := &ocbinds.Device{}
+	ygot.BuildEmptyTree(device)
+	var inParams XfmrParams
+	inParams.dbs[db.StateDB] = d
+	createCpuComp(device.Components, COMP, inParams)
+
+	comp := device.Components.Component[CPU_COMP_NAME]
+	if comp == nil || comp.Healthz == nil || comp.Healthz.State == nil {
+		t.Fatal("host-cpu healthz/state is unset")
+	}
+	if got := comp.Healthz.State.Status; got != ocbinds.OpenconfigPlatform_Components_Component_Healthz_State_Status_HEALTHY {
+		t.Errorf("healthz/state/status = %v, want HEALTHY", got)
+	}
+}

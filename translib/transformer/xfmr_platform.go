@@ -267,8 +267,10 @@ const (
 	COMP_PINS_OCS_PORT_ST_COUNTERS_TOTAL_ERRORS                  = "/openconfig-platform:components/component/openconfig-pins-platform-ocs-port:pins-ocs-port/state/counters/total-error-count"
 
 	/** Supported Healthz URIs **/
-	COMP_HEALTHZ = "/openconfig-platform:components/component/openconfig-platform-healthz:healthz"
-	COMP_FAULTS  = "/openconfig-platform:components/component/openconfig-platform-healthz:healthz/openconfig-platform-healthz-fault:faults"
+	COMP_HEALTHZ           = "/openconfig-platform:components/component/openconfig-platform-healthz:healthz"
+	COMP_HEALTHZ_ST        = COMP_HEALTHZ + "/state"
+	COMP_HEALTHZ_ST_STATUS = COMP_HEALTHZ_ST + "/status"
+	COMP_FAULTS            = "/openconfig-platform:components/component/openconfig-platform-healthz:healthz/openconfig-platform-healthz-fault:faults"
 
 	/** XCVR Config Values **/
 	FORCE_LOW_POWER = "force_low_power"
@@ -1880,9 +1882,7 @@ func getSysComponents(pf_cpts *ocbinds.OpenconfigPlatform_Components, targetUriP
 			}
 			break
 		}
-	case COMP_HEALTHZ:
-		fallthrough
-	case COMP_FAULTS:
+	case COMP_HEALTHZ, COMP_HEALTHZ_ST, COMP_HEALTHZ_ST_STATUS, COMP_FAULTS:
 		pf_comp, ok := pf_cpts.Component[compName]
 		if !ok || pf_comp == nil {
 			return fmt.Errorf("invalid input component name: %s", compName)
@@ -2379,9 +2379,12 @@ func fillPsuInfo(psuCom *ocbinds.OpenconfigPlatform_Components_Component,
 	case COMP_STATE_EMPTY:
 		psuEepromState.Empty = &empty
 	case COMP_STATE_OPER_STATUS:
-		psuEepromState.OperStatus = ocbinds.OpenconfigPlatformTypes_COMPONENT_OPER_STATUS_INACTIVE
-		if psuInfo.Status {
-			psuEepromState.OperStatus = ocbinds.OpenconfigPlatformTypes_COMPONENT_OPER_STATUS_ACTIVE
+		psuEepromState.OperStatus = ocbinds.OpenconfigPlatformTypes_COMPONENT_OPER_STATUS_DISABLED
+		if psuInfo.Presence {
+			psuEepromState.OperStatus = ocbinds.OpenconfigPlatformTypes_COMPONENT_OPER_STATUS_INACTIVE
+			if psuInfo.Status {
+				psuEepromState.OperStatus = ocbinds.OpenconfigPlatformTypes_COMPONENT_OPER_STATUS_ACTIVE
+			}
 		}
 	case COMP_STATE_SERIAL_NO:
 		if psuInfo.Serial_Number == "" {
@@ -3618,9 +3621,6 @@ func fillTempSensorInfo(temp *ocbinds.OpenconfigPlatform_Components_Component,
 		temp.Config.Name = &name
 	case COMP_STATE_NAME:
 		tempState.Name = &name
-		if tempInfo.Name != "" {
-			tempState.Name = &tempInfo.Name
-		}
 	case COMP_STATE_DESCR:
 		if tempInfo.Description == "" {
 			return tlerr.NotFound("%s has no description", name)
@@ -3804,7 +3804,7 @@ func fillICInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 		if all || allIc || icPlc {
 			ygot.BuildEmptyTree(comp.IntegratedCircuit.PipelineCounters)
 			ygot.BuildEmptyTree(comp.IntegratedCircuit.PipelineCounters.Drop)
-			ygot.BuildEmptyTree(comp.IntegratedCircuit.PipelineCounters.Drop.LookupBlock.State)
+			ygot.BuildEmptyTree(comp.IntegratedCircuit.PipelineCounters.Drop.LookupBlock)
 		}
 		if all || allIc || icMem {
 			ygot.BuildEmptyTree(comp.IntegratedCircuit.Memory)
@@ -3936,7 +3936,18 @@ func getCrmCount(stats *db.Value, field string) (uint64, error) {
  * what is left, never the size of the table. */
 func fillICUtilization(util *ocbinds.OpenconfigPlatform_Components_Component_IntegratedCircuit_Utilization, stats db.Value) error {
 	ygot.BuildEmptyTree(util)
+	/* A request naming resources arrives with their entries created, and only
+	 * those are filled. */
+	requested := make([]string, 0, len(util.Resources.Resource))
+	for name := range util.Resources.Resource {
+		requested = append(requested, name)
+	}
+	filled := 0
 	for _, r := range crmRouteResources {
+		if len(requested) > 0 && !slices.Contains(requested, r.name) {
+			continue
+		}
+		filled++
 		used, err := getCrmCount(&stats, r.used)
 		if err != nil {
 			return err
@@ -3958,6 +3969,9 @@ func fillICUtilization(util *ocbinds.OpenconfigPlatform_Components_Component_Int
 		res.State.Used = &used
 		res.State.Free = &free
 		res.State.MaxLimit = &maxLimit
+	}
+	if filled == 0 {
+		return tlerr.NotFound("no utilization resource %v", requested)
 	}
 	return nil
 }
