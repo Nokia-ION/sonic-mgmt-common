@@ -594,6 +594,10 @@ func Test_openconfig_routed_vlan_ipv4_vrrp_fsm_state_get(t *testing.T) {
 				"effective_priority": "90",
 				"state":              "Master",
 				"last_changed":       "1791180000",
+				"advertisements_tx":  "171",
+				"advertisements_rx":  "0",
+				"gratuitous_arp_tx":  "1",
+				"state_transitions":  "2",
 			},
 		},
 	}
@@ -608,6 +612,9 @@ func Test_openconfig_routed_vlan_ipv4_vrrp_fsm_state_get(t *testing.T) {
 		"\"virtual-address\":[\"50.0.0.254\"]," +
 		"\"priority\":100,\"preempt\":true," +
 		"\"advertisement-interval\":100,\"current-priority\":90," +
+		"\"openconfig-if-ip-vrrp-ext:counters\":{" +
+		"\"advertisements-received\":\"0\",\"advertisements-sent\":\"171\"," +
+		"\"gratuitous-arp-sent\":\"1\",\"state-transitions\":\"2\"}," +
 		"\"openconfig-if-ip-vrrp-ext:vrrp-state\":\"MASTER\"}}"
 	t.Run("GET VRRP FSM state from existing STATE_DB field",
 		processGetRequest(url, nil, expected, false))
@@ -616,6 +623,56 @@ func Test_openconfig_routed_vlan_ipv4_vrrp_fsm_state_get(t *testing.T) {
 	leafExpected := "{\"openconfig-if-ip-vrrp-ext:vrrp-state\":\"MASTER\"}"
 	t.Run("GET VRRP FSM extension leaf",
 		processGetRequest(leafURL, nil, leafExpected, false))
+
+	countersURL := url + "/openconfig-if-ip-vrrp-ext:counters"
+	countersExpected := "{\"openconfig-if-ip-vrrp-ext:counters\":{" +
+		"\"advertisements-received\":\"0\",\"advertisements-sent\":\"171\"," +
+		"\"gratuitous-arp-sent\":\"1\",\"state-transitions\":\"2\"}}"
+	t.Run("GET IPv4 VRRP counters",
+		processGetRequest(countersURL, nil, countersExpected, false))
+
+	unloadDB(db.StateDB, state)
+	unloadDB(db.ConfigDB, config)
+}
+
+func Test_openconfig_routed_vlan_ipv6_vrrp_counters_get(t *testing.T) {
+	config := map[string]interface{}{
+		"VLAN_INTERFACE": map[string]interface{}{
+			"Vlan100|2001:db8::1/64": map[string]interface{}{},
+		},
+		"VRRP6": map[string]interface{}{
+			"Vlan100|25": map[string]interface{}{
+				"vid": "25", "vip@": "2001:db8::ff",
+				"priority": "100", "preempt": "true",
+				"adv_interval": "1",
+			},
+		},
+	}
+	state := map[string]interface{}{
+		"VRRP6_STATE_TABLE": map[string]interface{}{
+			"Vlan100|25": map[string]interface{}{
+				"effective_priority":         "90",
+				"state":                      "Backup",
+				"last_changed":               "1791180000",
+				"advertisements_tx":          "1806",
+				"advertisements_rx":          "1",
+				"neighbor_advertisements_tx": "1",
+				"state_transitions":          "2",
+			},
+		},
+	}
+	loadDB(db.ConfigDB, config)
+	loadDB(db.StateDB, state)
+
+	url := "/openconfig-interfaces:interfaces/interface[name=Vlan100]/" +
+		"openconfig-vlan:routed-vlan/openconfig-if-ip:ipv6/addresses/" +
+		"address[ip=2001:db8::1]/vrrp/vrrp-group[virtual-router-id=25]/state/" +
+		"openconfig-if-ip-vrrp-ext:counters"
+	expected := "{\"openconfig-if-ip-vrrp-ext:counters\":{" +
+		"\"advertisements-received\":\"1\",\"advertisements-sent\":\"1806\"," +
+		"\"neighbor-advertisements-sent\":\"1\",\"state-transitions\":\"2\"}}"
+	t.Run("GET IPv6 VRRP counters",
+		processGetRequest(url, nil, expected, false))
 
 	unloadDB(db.StateDB, state)
 	unloadDB(db.ConfigDB, config)
