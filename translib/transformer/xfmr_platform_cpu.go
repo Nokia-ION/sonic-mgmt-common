@@ -110,6 +110,7 @@ func createCpuComp(pfCpts *ocbinds.OpenconfigPlatform_Components, targetUriPath 
 	if err := compTypeToFuncCall(CompTypeCpu, CPU_COMP_NAME, "", comp, targetUriPath, inParams.dbs, AllPaths, inParams.ygRoot); err != nil {
 		log.V(lvl.DEBUG).Info(err)
 	}
+	fillHealthzInfo(CPU_COMP_NAME, "", targetUriPath, inParams.dbs[db.StateDB], comp)
 }
 
 /* Fills the host CPU component.  The host has no source for its oper-status;
