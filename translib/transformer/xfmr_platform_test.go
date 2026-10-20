@@ -2660,6 +2660,8 @@ func TestSubscribe_pfm_components_field_maps(t *testing.T) {
 		{comp("PSU 1") + "/state/parent", "PHYSICAL_ENTITY_INFO", "PSU 1", "", "parent_name", ""},
 		{comp("Ethernet0"), "TRANSCEIVER_STATUS_SW", "Ethernet0", "/state", "status", "empty,oper-status"},
 		{comp("Ethernet0"), "TRANSCEIVER_INFO", "Ethernet0", "/state", "manufacturer", "mfg-name"},
+		{comp("Ethernet0"), "TRANSCEIVER_INFO", "Ethernet0", "/state", "type", "description,type"},
+		{comp("Ethernet0") + "/state", "TRANSCEIVER_INFO", "Ethernet0", "", "type", "description,type"},
 		{comp("Ethernet0"), "TRANSCEIVER_FIRMWARE_INFO", "Ethernet0", "/state", "active_firmware", "firmware-version"},
 		{comp("Ethernet0"), "TRANSCEIVER_DOM_SENSOR", "Ethernet0", "/state/temperature", "temperature", "instant"},
 		{chan1 + "/state/input-power/instant", "TRANSCEIVER_DOM_SENSOR", "Ethernet0", "", "rx2power", ""},
