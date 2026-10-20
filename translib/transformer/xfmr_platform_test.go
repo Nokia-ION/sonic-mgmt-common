@@ -2644,6 +2644,7 @@ func TestSubscribe_pfm_components_field_maps(t *testing.T) {
 		"TRANSCEIVER_INFO|Ethernet0":          {"manufacturer": "x"},
 		"TRANSCEIVER_DOM_SENSOR|Ethernet0":    {"temperature": "30"},
 		"TRANSCEIVER_FIRMWARE_INFO|Ethernet0": {"active_firmware": "1"},
+		"TRANSCEIVER_DOM_THRESHOLD|Ethernet0": {"temphighalarm": "80"},
 	})
 	comp := func(name string) string {
 		return "/openconfig-platform:components/component[name=" + name + "]"
@@ -2665,6 +2666,7 @@ func TestSubscribe_pfm_components_field_maps(t *testing.T) {
 		{chan1 + "/state/laser-bias-current", "TRANSCEIVER_DOM_SENSOR", "Ethernet0", "", "tx2bias", "instant"},
 		{comp("*"), "PSU_INFO", "PSU*", "/state", "mfr_id", "mfg-name"},
 		{comp("Fan1"), "FAN_INFO", "Fan1", "/properties/property[name=*]/state", "speed", "value"},
+		{comp("Ethernet0"), "TRANSCEIVER_DOM_THRESHOLD", "Ethernet0", "/properties/property[name=*]/state", "temphighalarm", "value"},
 	}
 	for _, c := range cases {
 		t.Run(c.path+"|"+c.tbl+"|"+c.field, func(t *testing.T) {
