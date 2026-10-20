@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/Azure/sonic-mgmt-common/translib/db"
@@ -2585,6 +2586,126 @@ func TestSubscribe_pfm_components_ic_cpu_rows(t *testing.T) {
 			if _, ok := out.dbDataMap[c.dbNum][c.tbl][c.key]; !ok {
 				t.Errorf("Subscribe_pfm_components_xfmr(%s, %v) does not map %s|%s: %v", c.name, in.subscProc, c.tbl, c.key, out.dbDataMap)
 			}
+		}
+	}
+}
+
+// Writes the given STATE_DB rows, keyed "TABLE|key", for the duration of the test.
+func seedStateRows(t *testing.T, d *db.DB, rows map[string]map[string]string) {
+	t.Helper()
+	for row, fields := range rows {
+		tbl, key, _ := strings.Cut(row, "|")
+		ts, dk := &db.TableSpec{Name: tbl}, db.Key{Comp: []string{key}}
+		if err := d.SetEntry(ts, dk, db.Value{Field: fields}); err != nil {
+			t.Fatalf("seeding %s failed: %v", row, err)
+		}
+		t.Cleanup(func() { d.DeleteEntry(ts, dk) })
+	}
+}
+
+// Returns the tables, keys and field maps an on-change subscribe to path watches.
+func subscribeTargets(t *testing.T, dbs [db.MaxDB]*db.DB, path string) []*dbTableKeyInfo {
+	t.Helper()
+	x, err := NewSubscribeReqXlator(t.Name(), path, OnChange, dbs, new(sync.Map))
+	if err != nil {
+		t.Fatalf("NewSubscribeReqXlator(%s) failed: %v", path, err)
+	}
+	if err := x.Translate(false); err != nil {
+		t.Fatalf("Translate(%s) failed: %v", path, err)
+	}
+	info, err := x.GetSubscribeReqXlateInfo()
+	if err != nil {
+		t.Fatalf("GetSubscribeReqXlateInfo(%s) failed: %v", path, err)
+	}
+	return info.TrgtPathInfo.DbKeyXlateInfo
+}
+
+func tableKeyString(ti *dbTableKeyInfo) string {
+	s := "<nil>"
+	if ti.Table != nil {
+		s = ti.Table.Name
+	}
+	if ti.Key != nil {
+		s += "|" + strings.Join(ti.Key.Comp, "|")
+	}
+	return s
+}
+
+// An on-change subscribe to a component maps each DB field to the leaves it
+// feeds, and a named component also watches the other tables it is read from.
+func TestSubscribe_pfm_components_field_maps(t *testing.T) {
+	dbs := subscribeTestDbs(t, db.StateDB, db.ConfigDB, db.CountersDB, db.ApplDB)
+	seedStateRows(t, dbs[db.StateDB], map[string]map[string]string{
+		"PSU_INFO|PSU 1":                      {"presence": "true"},
+		"PHYSICAL_ENTITY_INFO|PSU 1":          {"parent_name": "chassis 1"},
+		"TRANSCEIVER_STATUS|Ethernet0":        {"status": "1"},
+		"TRANSCEIVER_STATUS_SW|Ethernet0":     {"status": "1"},
+		"TRANSCEIVER_INFO|Ethernet0":          {"manufacturer": "x"},
+		"TRANSCEIVER_DOM_SENSOR|Ethernet0":    {"temperature": "30"},
+		"TRANSCEIVER_FIRMWARE_INFO|Ethernet0": {"active_firmware": "1"},
+	})
+	comp := func(name string) string {
+		return "/openconfig-platform:components/component[name=" + name + "]"
+	}
+	chan1 := comp("Ethernet0") + "/openconfig-platform-transceiver:transceiver/physical-channels/channel[index=1]"
+	cases := []struct {
+		path, tbl, key, rltvPath, field, leaves string
+	}{
+		{comp("PSU 1"), "PSU_INFO", "PSU 1", "/state", "presence", "empty,oper-status"},
+		{comp("PSU 1"), "PSU_INFO", "PSU 1", "/state", "mfr_id", "mfg-name"},
+		{comp("PSU 1"), "PSU_INFO", "PSU 1", "/power-supply/state", "max_power", "openconfig-platform-psu:capacity"},
+		{comp("PSU 1"), "PHYSICAL_ENTITY_INFO", "PSU 1", "/state", "parent_name", "parent"},
+		{comp("PSU 1") + "/state/parent", "PHYSICAL_ENTITY_INFO", "PSU 1", "", "parent_name", ""},
+		{comp("Ethernet0"), "TRANSCEIVER_STATUS_SW", "Ethernet0", "/state", "status", "empty,oper-status"},
+		{comp("Ethernet0"), "TRANSCEIVER_INFO", "Ethernet0", "/state", "manufacturer", "mfg-name"},
+		{comp("Ethernet0"), "TRANSCEIVER_FIRMWARE_INFO", "Ethernet0", "/state", "active_firmware", "firmware-version"},
+		{comp("Ethernet0"), "TRANSCEIVER_DOM_SENSOR", "Ethernet0", "/state/temperature", "temperature", "instant"},
+		{chan1 + "/state/input-power/instant", "TRANSCEIVER_DOM_SENSOR", "Ethernet0", "", "rx2power", ""},
+		{chan1 + "/state/laser-bias-current", "TRANSCEIVER_DOM_SENSOR", "Ethernet0", "", "tx2bias", "instant"},
+		{comp("*"), "PSU_INFO", "PSU*", "/state", "mfr_id", "mfg-name"},
+	}
+	for _, c := range cases {
+		t.Run(c.path+"|"+c.tbl+"|"+c.field, func(t *testing.T) {
+			var seen []string
+			var matched []map[string]string
+			for _, ti := range subscribeTargets(t, dbs, c.path) {
+				if ti.Table == nil || ti.Table.Name != c.tbl || ti.Key == nil || !ti.Key.Equals(db.Key{Comp: []string{c.key}}) {
+					seen = append(seen, tableKeyString(ti))
+					continue
+				}
+				fields := map[string]string{}
+				for _, m := range ti.DbFldYgMapList {
+					if m.RltvPath == c.rltvPath {
+						for f, leaves := range m.DbFldYgPathMap {
+							fields[f] = leaves
+						}
+					}
+				}
+				if got, ok := fields[c.field]; ok && got == c.leaves {
+					return
+				}
+				matched = append(matched, fields)
+			}
+			if len(matched) != 0 {
+				t.Errorf("%s fields at %q = %v, want %s:%q", c.tbl, c.rltvPath, matched, c.field, c.leaves)
+				return
+			}
+			t.Errorf("%s|%s not watched; watched: %v", c.tbl, c.key, seen)
+		})
+	}
+}
+
+// A wildcard subscribe does not watch the tables a named component reads besides
+// its own.
+func TestSubscribe_pfm_components_wildcard_own_tables(t *testing.T) {
+	dbs := subscribeTestDbs(t, db.StateDB, db.ConfigDB, db.CountersDB, db.ApplDB)
+	for _, ti := range subscribeTargets(t, dbs, "/openconfig-platform:components/component[name=*]") {
+		if ti.Table == nil {
+			continue
+		}
+		switch ti.Table.Name {
+		case "PHYSICAL_ENTITY_INFO", "TRANSCEIVER_STATUS_SW", "TRANSCEIVER_INFO", "TRANSCEIVER_DOM_SENSOR", "TRANSCEIVER_FIRMWARE_INFO":
+			t.Errorf("wildcard watches %s", tableKeyString(ti))
 		}
 	}
 }
