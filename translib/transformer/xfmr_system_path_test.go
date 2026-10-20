@@ -24,6 +24,8 @@ import (
 	"testing"
 
 	"github.com/Azure/sonic-mgmt-common/translib/db"
+	"github.com/Azure/sonic-mgmt-common/translib/ocbinds"
+	"github.com/openconfig/ygot/ygot"
 )
 
 func TestDbToYangPathGrpcServerPathXfmr(t *testing.T) {
@@ -200,6 +202,52 @@ func TestGrpcServerNameFromUri(t *testing.T) {
 			}
 			if !tt.wantErr && got != tt.want {
 				t.Errorf("grpcServerNameFromUri() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestYangToDbGrpcServerEnable(t *testing.T) {
+	port := uint16(50052)
+	tests := []struct {
+		name    string
+		enable  bool
+		want    map[string]map[string]db.Value
+		wantErr bool
+	}{{
+		name:   "enabling the running server is accepted",
+		enable: true,
+		want: map[string]map[string]db.Value{
+			GNMI_CFG_TBL: {GNMI_CFG_KEY: {Field: map[string]string{"port": "50052"}}},
+		},
+	}, {
+		name:    "disabling the server is rejected",
+		enable:  false,
+		wantErr: true,
+	}}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			enable := tt.enable
+			d := &ocbinds.Device{System: &ocbinds.OpenconfigSystem_System{
+				GrpcServers: &ocbinds.OpenconfigSystem_System_GrpcServers{},
+			}}
+			srv, err := d.System.GrpcServers.NewGrpcServer(GNXI_ID)
+			if err != nil {
+				t.Fatalf("NewGrpcServer() error = %v", err)
+			}
+			srv.Config = &ocbinds.OpenconfigSystem_System_GrpcServers_GrpcServer_Config{Enable: &enable, Port: &port}
+			ygRoot := ygot.GoStruct(d)
+			got, err := YangToDb_grpc_server_xfmr(XfmrParams{
+				ygRoot: &ygRoot,
+				oper:   UPDATE,
+				uri:    GRPC_OC_SERVERS + "/grpc-server[name=gnxi]/config",
+			})
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("YangToDb_grpc_server_xfmr() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if !tt.wantErr && !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("YangToDb_grpc_server_xfmr() = %v, want %v", got, tt.want)
 			}
 		})
 	}
