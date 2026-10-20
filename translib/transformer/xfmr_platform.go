@@ -1497,6 +1497,15 @@ func subscribeFields(cType componentType, tbl, uri string) map[string]string {
 			}
 		}
 	}
+	if propWildcard(NewPathInfo(uri).Var("name#2")) && propOnChangeSupported(removeBracketedContentNoRegex(uri)) {
+		for name := range propTbl {
+			if t, propFields, ok := propSubscribeInfo(name, cType); ok && t == tbl {
+				for f, leaf := range propFields {
+					fields[f] = leaf
+				}
+			}
+		}
+	}
 	if cType != CompTypeXcvr || tbl != TRANSCEIVER_DOM {
 		return fields
 	}
@@ -1645,7 +1654,10 @@ func translateSubscribe(inParams XfmrSubscInParams, key, targetUriPath string) (
 				/* A wildcard leaves out types not carrying the property. */
 				continue
 			}
-			if !ok || !propOnChangeSupported(targetUriPath) {
+			if propWildcard(propName) && propOnChangeSupported(targetUriPath) {
+				/* Every property is watched on the rows below, through
+				 * subscribeFields. */
+			} else if !ok || !propOnChangeSupported(targetUriPath) {
 				/* No single field to watch.  A wildcard watches the component
 				 * row instead; otherwise refuse on-change and leave SAMPLE to
 				 * the default handling below. */
