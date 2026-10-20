@@ -1456,7 +1456,7 @@ var subscribeFieldMaps = map[componentType]map[string]map[string]map[string]stri
 		},
 		TRANSCEIVER_TBL: {
 			COMP_ST: {"manufacturer": "mfg-name", "vendor_date": "mfg-date", "model": "part-no", "serial": "serial-no",
-				"hardware_rev": "hardware-version", "type": "description"},
+				"hardware_rev": "hardware-version", "type": "description,type"},
 			XCVR_BASE_STATE: {"vendor_rev": "vendor-rev", "type": "form-factor"},
 		},
 		TRANSCEIVER_FIRMWARE: {
