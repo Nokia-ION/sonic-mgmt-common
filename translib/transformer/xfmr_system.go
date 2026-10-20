@@ -1019,6 +1019,9 @@ var YangToDb_grpc_server_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (m
 			continue
 		}
 		cfg := serverObj.Config
+		if cfg.Enable != nil && !*cfg.Enable {
+			return nil, tlerr.NotSupported("grpc-server %q cannot be disabled", serverName)
+		}
 		if cfg.Port != nil {
 			fields["port"] = strconv.FormatUint(uint64(*cfg.Port), 10)
 		}
@@ -1184,6 +1187,12 @@ var DbToYang_grpc_server_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) er
 		stCertId := cfgCertId
 		serverObj.Config.CertificateId = &cfgCertId
 		serverObj.State.CertificateId = &stCertId
+
+		// The gnxi listener cannot be disabled (it serves this very request),
+		// so it is always enabled.
+		cfgEnable, stEnable := true, true
+		serverObj.Config.Enable = &cfgEnable
+		serverObj.State.Enable = &stEnable
 
 		// Authz counter
 		authzTables, err := stateDb.GetTable(&db.TableSpec{Name: AUTHZ_TBL})
