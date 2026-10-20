@@ -1376,6 +1376,148 @@ func icServedFromCrmStats(dbs [db.MaxDB]*db.DB) bool {
 	return err != nil || len(keys) == 0
 }
 
+/* STATE_DB tables a named component reads besides its compTblMap table. */
+var subscribeExtraTables = map[componentType][]string{
+	CompTypePsu:     {PHYS_ENTITY_TBL},
+	CompTypeFan:     {PHYS_ENTITY_TBL},
+	CompTypeFanTray: {PHYS_ENTITY_TBL},
+	CompTypeStorage: {PHYS_ENTITY_TBL},
+	CompTypeTemp:    {PHYS_ENTITY_TBL},
+	CompTypeXcvr:    {TRANSCEIVER_STATUS_SW, TRANSCEIVER_TBL, TRANSCEIVER_DOM, TRANSCEIVER_FIRMWARE},
+}
+
+/* For each component type, table and container, the DB fields that feed a leaf
+ * of another name, as field -> comma separated leaves.  The framework maps a
+ * field named like a leaf on its own unless another field feeds that leaf, so
+ * such a field is listed too. */
+var subscribeFieldMaps = map[componentType]map[string]map[string]map[string]string{
+	CompTypePsu: {
+		PSU_TBL: {
+			COMP_ST: {"presence": "empty,oper-status", "status": "oper-status", "model": "model-name,description,part-no",
+				"part-no": "part-no", "revision": "hardware-version", "mfr_id": "mfg-name", "serial": "serial-no"},
+			COMP_PS_STATE: {"voltage": "output-voltage", "output_voltage": "output-voltage", "current": "output-current",
+				"output_current": "output-current", "power": "output-power", "output_power": "output-power",
+				"input_current": "input-current", "input_voltage": "input-voltage", "max_power": "capacity"},
+			COMP_HEALTHZ_ST: {"presence": "status", "status": "status"},
+		},
+		PHYS_ENTITY_TBL: {
+			COMP_ST: {"parent_name": "parent", "position_in_parent": "location"},
+		},
+	},
+	CompTypeFan: {
+		FAN_TBL: {
+			COMP_ST:         fanStateFields,
+			COMP_HEALTHZ_ST: {"presence": "status", "status": "status"},
+		},
+		PHYS_ENTITY_TBL: {
+			COMP_ST: {"parent_name": "parent"},
+		},
+	},
+	CompTypeFanTray: {
+		FAN_TRAY_TBL: {
+			COMP_ST: fanStateFields,
+		},
+		PHYS_ENTITY_TBL: {
+			COMP_ST: {"parent_name": "parent"},
+		},
+	},
+	CompTypeStorage: {
+		STORAGE_INFO: {
+			COMP_ST:             {"serial": "serial-no", "device_model": "model-name", "firmware": "firmware-version"},
+			COMP_STATE_TEMP_CTR: {"temperature": "instant"},
+			COMP_STORAGE_CTRS:   {"health": "life-left"},
+		},
+		PHYS_ENTITY_TBL: {
+			COMP_ST: {"parent_name": "parent"},
+		},
+	},
+	CompTypeTemp: {
+		TEMP_TBL: {
+			COMP_STATE_TEMP_CTR: {"temperature": "instant"},
+		},
+		PHYS_ENTITY_TBL: {
+			COMP_ST: {"parent_name": "parent,install-component", "position_in_parent": "install-position",
+				"install_component": "install-component"},
+		},
+	},
+	CompTypeChassis: {
+		CHASSIS_TBL: {
+			COMP_ST: {"model": "description,part-no,model-name", "description": "description", "part-no": "part-no",
+				"product_name": "model-name", "revision": "hardware-version", "hardware-version": "hardware-version",
+				"manufacture_date": "mfg-date", "serial": "serial-no"},
+		},
+	},
+	CompTypeXcvr: {
+		TRANSCEIVER_STATUS: {
+			COMP_ST: {"status": "empty,oper-status"},
+		},
+		TRANSCEIVER_STATUS_SW: {
+			COMP_ST: {"status": "empty,oper-status"},
+		},
+		TRANSCEIVER_TBL: {
+			COMP_ST: {"manufacturer": "mfg-name", "vendor_date": "mfg-date", "model": "part-no", "serial": "serial-no",
+				"hardware_rev": "hardware-version", "type": "description"},
+			XCVR_BASE_STATE: {"vendor_rev": "vendor-rev", "type": "form-factor"},
+		},
+		TRANSCEIVER_FIRMWARE: {
+			COMP_ST: {"active_firmware": "firmware-version"},
+		},
+		TRANSCEIVER_DOM: {
+			COMP_STATE_TEMP_CTR: {"temperature": "instant"},
+			XCVR_INPUT_POWER:    laneFields("rx%dpower"),
+			XCVR_OUTPUT_POWER:   laneFields("tx%dpower"),
+			XCVR_LASER_BIAS:     laneFields("tx%dbias"),
+		},
+	},
+}
+
+var fanStateFields = map[string]string{"presence": "empty,oper-status", "status": "oper-status",
+	"hardware_revision": "hardware-version", "is_replaceable": "removable", "mfg_date": "mfg-date",
+	"drawer_name": "parent", "part_no": "part-no", "model": "part-no,model-name,description", "serial": "serial-no"}
+
+/* Maps the field of every lane, named by format, to instant. */
+func laneFields(format string) map[string]string {
+	fields := make(map[string]string, XCVR_LANE_LIMIT)
+	for i := 1; i <= XCVR_LANE_LIMIT; i++ {
+		fields[fmt.Sprintf(format, i)] = "instant"
+	}
+	return fields
+}
+
+/* Returns a new map of the fields of tbl that feed the leaves of the container
+ * at uri, for a component of type cType.  A transceiver channel maps its own
+ * lane's fields only when the uri names its index. */
+func subscribeFields(cType componentType, tbl, uri string) map[string]string {
+	node := stripAugmentedModuleNames(removeBracketedContentNoRegex(uri))
+	fields := map[string]string{}
+	for n, m := range subscribeFieldMaps[cType][tbl] {
+		if stripAugmentedModuleNames(n) == node {
+			for f, leaves := range m {
+				fields[f] = leaves
+			}
+		}
+	}
+	if cType != CompTypeXcvr || tbl != TRANSCEIVER_DOM {
+		return fields
+	}
+	idx, err := strconv.Atoi(NewPathInfo(uri).Var("index"))
+	if err != nil || idx < 0 || idx >= XCVR_LANE_LIMIT {
+		return fields
+	}
+	lane := idx + 1
+	switch node {
+	case stripAugmentedModuleNames(XCVR_BASE_CHANNEL + "/state"):
+		fields[fmt.Sprintf("tx%ddisable", lane)] = "tx-laser"
+	case stripAugmentedModuleNames(XCVR_BASE_CHANNEL + "/state/input-power"):
+		fields[fmt.Sprintf("rx%dpower", lane)] = "instant"
+	case stripAugmentedModuleNames(XCVR_BASE_CHANNEL + "/state/output-power"):
+		fields[fmt.Sprintf("tx%dpower", lane)] = "instant"
+	case stripAugmentedModuleNames(XCVR_BASE_CHANNEL + "/state/laser-bias-current"):
+		fields[fmt.Sprintf("tx%dbias", lane)] = "instant"
+	}
+	return fields
+}
+
 /* Helper for the main subscribe transformer handling the TRANSLATE_SUBSCRIBE case. */
 func translateSubscribe(inParams XfmrSubscInParams, key, targetUriPath string) (XfmrSubscOutParams, error) {
 	var result XfmrSubscOutParams
@@ -1581,7 +1723,20 @@ func translateSubscribe(inParams XfmrSubscInParams, key, targetUriPath string) (
 			}
 		} else {
 			if result.dbDataMap[tblDb][tblName][tblKey] == nil {
-				result.dbDataMap[tblDb][tblName][tblKey] = map[string]string{}
+				result.dbDataMap[tblDb][tblName][tblKey] = subscribeFields(cType, tblName, inParams.uri)
+			}
+			/* A named component also watches the other rows its values are read
+			 * from.  A wildcard does not, since each of its tables would send
+			 * the initial update of every component again.  The parent table
+			 * check passes no requestURI and requires every returned row to
+			 * exist, so it gets the component's own row only. */
+			if key != "*" && inParams.requestURI != "" {
+				for _, t := range subscribeExtraTables[cType] {
+					if result.dbDataMap[tblDb][t] == nil {
+						result.dbDataMap[tblDb][t] = make(map[string]map[string]string)
+					}
+					result.dbDataMap[tblDb][t][tblKey] = subscribeFields(cType, t, inParams.uri)
+				}
 			}
 		}
 	}
