@@ -39,8 +39,8 @@ import (
 // not about global config.
 //
 // A GET here answers with everything this module maps under a network
-// instance: the BGP protocol instance, the static routes, the table
-// connections and the AFTs. A SET is served by the handler that owns each
+// instance: the BGP protocol instance, the static routes, the local
+// aggregates, the table connections and the AFTs. A SET is served by the handler that owns each
 // subtree, which translib calls for its own node; this level refuses a payload
 // naming anything with no mapping. A DELETE is still refused.
 const (
@@ -559,6 +559,12 @@ func populateNiContainerProtocolsFromDb(inParams XfmrParams, ygRoot *ygot.GoStru
 			return err
 		}
 	}
+	if len(niLocalAggrRows(cfgDb, niName, "")) > 0 {
+		uri := niContainerProtoUri(niName, "LOCAL_AGGREGATE", niLocalAggrProtoNameLower)
+		if err := niContainerReplay(inParams, ygRoot, uri, DbToYang_ni_local_aggr_cfg_xfmr); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -566,7 +572,7 @@ func populateNiContainerProtocolsFromDb(inParams XfmrParams, ygRoot *ygot.GoStru
 // beside its protocols: the table connections, and the AFTs of the instance
 // that has them.
 func populateNiContainerNonProtocolFromDb(inParams XfmrParams, ygRoot *ygot.GoStruct, cfgDb *db.DB, niName string) error {
-	if rows, err := niTableConnDbRowsForNi(cfgDb, niName); err == nil && len(rows) > 0 {
+	if rows, err := niTableConnDbRowsForNi(cfgDb, niName); (err == nil && len(rows) > 0) || len(niLocalAggrRows(cfgDb, niName, "")) > 0 {
 		uri := niContainerNiUri(niName) + "/table-connections"
 		if err := niContainerReplay(inParams, ygRoot, uri, DbToYang_ni_table_conn_cfg_xfmr); err != nil {
 			return err
@@ -681,6 +687,10 @@ func niContainerDeleteInstance(inParams XfmrParams, cfgDb *db.DB, niName, kind s
 		if err := niContainerReplayDelete(inParams, uri, YangToDb_ni_static_route_cfg_xfmr, res); err != nil {
 			return err
 		}
+	}
+
+	if err := niContainerMergeResMap(res, niLocalAggrDeleteAllForNi(cfgDb, niName), "local-aggregates"); err != nil {
+		return err
 	}
 
 	if kind == niContainerTargetProtocols {

@@ -226,6 +226,8 @@ func niTableConnProtocolToEnum(proto string) (ocbinds.E_OpenconfigPolicyTypes_IN
 		return ocbinds.OpenconfigPolicyTypes_INSTALL_PROTOCOL_TYPE_OSPF, nil
 	case "ISIS":
 		return ocbinds.OpenconfigPolicyTypes_INSTALL_PROTOCOL_TYPE_ISIS, nil
+	case "LOCAL_AGGREGATE":
+		return ocbinds.OpenconfigPolicyTypes_INSTALL_PROTOCOL_TYPE_LOCAL_AGGREGATE, nil
 	default:
 		return ocbinds.OpenconfigPolicyTypes_INSTALL_PROTOCOL_TYPE_UNSET, tlerr.InvalidArgsError{Format: fmt.Sprintf("unsupported table-connection protocol: %s", proto)}
 	}
@@ -499,6 +501,8 @@ func niTableConnProtocolEnumToOcName(proto ocbinds.E_OpenconfigPolicyTypes_INSTA
 		return "OSPF"
 	case ocbinds.OpenconfigPolicyTypes_INSTALL_PROTOCOL_TYPE_ISIS:
 		return "ISIS"
+	case ocbinds.OpenconfigPolicyTypes_INSTALL_PROTOCOL_TYPE_LOCAL_AGGREGATE:
+		return "LOCAL_AGGREGATE"
 	default:
 		return fmt.Sprintf("%v", int64(proto))
 	}
@@ -725,7 +729,7 @@ func buildNiTableConnHierResMap(s *ygot.GoStruct, niName string) (map[string]map
 
 	rows := make(map[string]db.Value)
 	for key, tcObj := range tcsObj.TableConnection {
-		if tcObj == nil {
+		if tcObj == nil || key.SrcProtocol == ocbinds.OpenconfigPolicyTypes_INSTALL_PROTOCOL_TYPE_LOCAL_AGGREGATE {
 			continue
 		}
 		srcDb, err := niTableConnProtocolEnumToDb(key.SrcProtocol)
@@ -798,6 +802,14 @@ var YangToDb_ni_table_conn_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPara
 		}
 	}
 
+	if reqInfo.targetPath != niTableConnTargetRoot && niTableConnIsLocalAggr(reqInfo.srcProtocol) {
+		root, wrapErr := wrapNiTableConnRootAsDevice(inParams.ygRoot, reqInfo)
+		if wrapErr != nil {
+			root = inParams.ygRoot
+		}
+		return niLocalAggrTableConnYangToDb(inParams, reqInfo, root)
+	}
+
 	if inParams.oper == DELETE {
 		switch reqInfo.targetPath {
 		case niTableConnTargetRoot:
@@ -850,7 +862,14 @@ var YangToDb_ni_table_conn_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPara
 		if err != nil {
 			return make(map[string]map[string]db.Value), err
 		}
-		if len(res) == 0 {
+		aggrRes, aggrErr := niLocalAggrTableConnHierRows(inParams.dbs[db.ConfigDB], wrappedRoot, reqInfo.niName)
+		if aggrErr != nil {
+			return make(map[string]map[string]db.Value), aggrErr
+		}
+		for tbl, rows := range aggrRes {
+			res[tbl] = rows
+		}
+		if len(res) == 0 && !niLocalAggrTableConnInPayload(wrappedRoot, reqInfo.niName) {
 			return res, tlerr.InvalidArgsError{Format: "table-connections container payload does not include any table-connection"}
 		}
 		if inParams.invokeCRUSubtreeOnce != nil {
@@ -995,7 +1014,50 @@ func readNiTableConnAll(inParams XfmrParams, reqInfo *niTableConnReqInfo, cfgDb 
 		niTableConnSetImportPolicy(tcObj.Config, entry)
 		niTableConnSetStateImportPolicy(tcObj.State, entry)
 	}
+	for af, entry := range niLocalAggrTableConnEntries(cfgDb, reqInfo.niName) {
+		key := ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_TableConnections_TableConnection_Key{
+			SrcProtocol:   ocbinds.OpenconfigPolicyTypes_INSTALL_PROTOCOL_TYPE_LOCAL_AGGREGATE,
+			DstProtocol:   ocbinds.OpenconfigPolicyTypes_INSTALL_PROTOCOL_TYPE_BGP,
+			AddressFamily: af,
+		}
+		tcObj := getNiTableConnInstObjByKey(wrappedRoot, reqInfo.niName, key, true)
+		if tcObj == nil {
+			return tlerr.InvalidArgsError{Format: "Unable to locate network-instance table-connection object in YANG tree"}
+		}
+		niTableConnSetInstanceKeys(tcObj, key)
+		niTableConnSetImportPolicy(tcObj.Config, entry)
+		niTableConnSetStateImportPolicy(tcObj.State, entry)
+	}
 	return nil
+}
+
+// niTableConnEntryFor reads the row behind one table-connection instance. The
+// LOCAL_AGGREGATE one has none and is derived from the aggregates instead.
+func niTableConnEntryFor(cfgDb *db.DB, reqInfo *niTableConnReqInfo) (db.Value, error) {
+	if niTableConnIsLocalAggr(reqInfo.srcProtocol) {
+		afiSafi, err := niLocalAggrTableConnFamily(reqInfo.dstProtocol, reqInfo.addressFamily)
+		if err != nil {
+			return db.Value{}, err
+		}
+		entry, ok := niLocalAggrTableConnEntry(cfgDb, reqInfo.niName, afiSafi)
+		if !ok {
+			return db.Value{}, tlerr.NotFoundError{Format: "table-connection not found"}
+		}
+		return entry, nil
+	}
+	srcDb, err := niTableConnProtocolToDb(reqInfo.srcProtocol)
+	if err != nil {
+		return db.Value{}, err
+	}
+	dstDb, err := niTableConnProtocolToDb(reqInfo.dstProtocol)
+	if err != nil {
+		return db.Value{}, err
+	}
+	afDb, err := niTableConnAddressFamilyToDb(reqInfo.addressFamily)
+	if err != nil {
+		return db.Value{}, err
+	}
+	return cfgDb.GetEntry(&db.TableSpec{Name: niTableConnTbl}, db.Key{Comp: []string{reqInfo.niName, srcDb, dstDb, afDb}})
 }
 
 var DbToYang_ni_table_conn_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) error {
@@ -1013,20 +1075,7 @@ var DbToYang_ni_table_conn_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrPara
 		return readNiTableConnAll(inParams, reqInfo, cfgDb)
 	}
 
-	srcDb, err := niTableConnProtocolToDb(reqInfo.srcProtocol)
-	if err != nil {
-		return err
-	}
-	dstDb, err := niTableConnProtocolToDb(reqInfo.dstProtocol)
-	if err != nil {
-		return err
-	}
-	afDb, err := niTableConnAddressFamilyToDb(reqInfo.addressFamily)
-	if err != nil {
-		return err
-	}
-
-	entry, err := cfgDb.GetEntry(&db.TableSpec{Name: niTableConnTbl}, db.Key{Comp: []string{reqInfo.niName, srcDb, dstDb, afDb}})
+	entry, err := niTableConnEntryFor(cfgDb, reqInfo)
 	if err != nil {
 		return err
 	}

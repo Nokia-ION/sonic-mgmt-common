@@ -1269,6 +1269,76 @@ module openconfig-network-instance-annot {
       }
     }
 
+    // The local aggregates of the LOCAL_AGGREGATE protocol instance are the BGP
+    // aggregate addresses in CONFIG_DB:BGP_GLOBALS_AF_AGGREGATE_ADDR, and their
+    // state what FRR holds, published by bgpmon. The protocol list hands these
+    // requests over from the BGP transformer, as it does the static routes.
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:local-aggregates {
+      deviate add {
+          sonic-ext:virtual-table "true";
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "ni_local_aggr_cfg_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:local-aggregates/oc-netinst:aggregate {
+      deviate add {
+          sonic-ext:virtual-table "true";
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "ni_local_aggr_cfg_xfmr";
+          sonic-ext:path-transformer "ni_local_aggr_path_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:local-aggregates/oc-netinst:aggregate/oc-netinst:prefix {
+      deviate add {
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "ni_local_aggr_cfg_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:local-aggregates/oc-netinst:aggregate/oc-netinst:config {
+      deviate add {
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "ni_local_aggr_cfg_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:local-aggregates/oc-netinst:aggregate/oc-netinst:config/oc-netinst:prefix {
+      deviate add {
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "ni_local_aggr_cfg_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:local-aggregates/oc-netinst:aggregate/oc-netinst:config/oc-netinst:discard {
+      deviate add {
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "ni_local_aggr_cfg_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:local-aggregates/oc-netinst:aggregate/oc-netinst:state {
+      deviate add {
+          sonic-ext:db-name "STATE_DB";
+          sonic-ext:subtree-transformer "ni_local_aggr_cfg_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:local-aggregates/oc-netinst:aggregate/oc-netinst:state/oc-netinst:prefix {
+      deviate add {
+          sonic-ext:db-name "STATE_DB";
+          sonic-ext:subtree-transformer "ni_local_aggr_cfg_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:local-aggregates/oc-netinst:aggregate/oc-netinst:state/oc-netinst:discard {
+      deviate add {
+          sonic-ext:db-name "STATE_DB";
+          sonic-ext:subtree-transformer "ni_local_aggr_cfg_xfmr";
+      }
+    }
+
     // The AFT container reports the forwarding state fpmsyncd publishes to
     // APPL_DB. Each list below it is mapped by its own transformer; this one
     // answers a request on the container itself by fanning out to them, since

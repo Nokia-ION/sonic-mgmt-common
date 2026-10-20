@@ -2144,13 +2144,19 @@ var YangToDb_ni_bgp_global_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPara
 	}
 
 	// The protocol list carries this transformer for every protocol instance,
-	// so requests for the STATIC instance are handed to the static route
-	// mapping instead of being failed as unsupported BGP paths.
+	// so requests for the STATIC and LOCAL_AGGREGATE instances are handed to
+	// their own mappings instead of being failed as unsupported BGP paths.
 	if handled, staticRes, staticErr := niStaticRouteYangToDbDispatch(inParams); handled {
 		if staticRes == nil {
 			staticRes = make(map[string]map[string]db.Value)
 		}
 		return staticRes, staticErr
+	}
+	if handled, aggrRes, aggrErr := niLocalAggrYangToDbDispatch(inParams); handled {
+		if aggrRes == nil {
+			aggrRes = make(map[string]map[string]db.Value)
+		}
+		return aggrRes, aggrErr
 	}
 
 	reqInfo, err := parseNiBgpRequestUri(niHandlerReqUri(inParams))
@@ -2429,6 +2435,9 @@ var DbToYang_ni_bgp_global_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrPara
 
 	if handled, staticErr := niStaticRouteDbToYangDispatch(inParams); handled {
 		return staticErr
+	}
+	if handled, aggrErr := niLocalAggrDbToYangDispatch(inParams); handled {
+		return aggrErr
 	}
 
 	reqInfo, err := parseNiBgpRequestUri(inParams.requestUri)
