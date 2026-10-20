@@ -384,6 +384,11 @@ func propNameFromSubscribeUri(uri, requestUri string) string {
 	return NewPathInfo(requestUri).Var("name#2")
 }
 
+/* True when a subscribe request covers every property rather than naming one. */
+func propWildcard(propName string) bool {
+	return propName == "" || propName == "*"
+}
+
 /* Table and field map a subscription on one property must watch.  ok is false
  * when the property has no database behind it, this component type does not
  * carry it, or propName is empty. */

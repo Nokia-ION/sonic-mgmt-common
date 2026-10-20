@@ -2637,6 +2637,7 @@ func TestSubscribe_pfm_components_field_maps(t *testing.T) {
 	dbs := subscribeTestDbs(t, db.StateDB, db.ConfigDB, db.CountersDB, db.ApplDB)
 	seedStateRows(t, dbs[db.StateDB], map[string]map[string]string{
 		"PSU_INFO|PSU 1":                      {"presence": "true"},
+		"FAN_INFO|Fan1":                       {"presence": "true", "speed": "50"},
 		"PHYSICAL_ENTITY_INFO|PSU 1":          {"parent_name": "chassis 1"},
 		"TRANSCEIVER_STATUS|Ethernet0":        {"status": "1"},
 		"TRANSCEIVER_STATUS_SW|Ethernet0":     {"status": "1"},
@@ -2663,6 +2664,7 @@ func TestSubscribe_pfm_components_field_maps(t *testing.T) {
 		{chan1 + "/state/input-power/instant", "TRANSCEIVER_DOM_SENSOR", "Ethernet0", "", "rx2power", ""},
 		{chan1 + "/state/laser-bias-current", "TRANSCEIVER_DOM_SENSOR", "Ethernet0", "", "tx2bias", "instant"},
 		{comp("*"), "PSU_INFO", "PSU*", "/state", "mfr_id", "mfg-name"},
+		{comp("Fan1"), "FAN_INFO", "Fan1", "/properties/property[name=*]/state", "speed", "value"},
 	}
 	for _, c := range cases {
 		t.Run(c.path+"|"+c.tbl+"|"+c.field, func(t *testing.T) {
