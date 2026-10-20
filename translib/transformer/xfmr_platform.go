@@ -1383,7 +1383,7 @@ var subscribeExtraTables = map[componentType][]string{
 	CompTypeFanTray: {PHYS_ENTITY_TBL},
 	CompTypeStorage: {PHYS_ENTITY_TBL},
 	CompTypeTemp:    {PHYS_ENTITY_TBL},
-	CompTypeXcvr:    {TRANSCEIVER_STATUS_SW, TRANSCEIVER_TBL, TRANSCEIVER_DOM, TRANSCEIVER_FIRMWARE},
+	CompTypeXcvr:    {TRANSCEIVER_STATUS_SW, TRANSCEIVER_TBL, TRANSCEIVER_DOM, TRANSCEIVER_FIRMWARE, TRANSCEIVER_DOM_THRESHOLD},
 }
 
 /* For each component type, table and container, the DB fields that feed a leaf
