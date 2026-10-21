@@ -710,6 +710,13 @@ func (pathXltr *subscribePathXlator) handleSubtreeNodeXlate() error {
 	}
 
 	if !isLeafTblFound {
+		// addDbFldYgPathMap looks tables up by name in dbTblFldYgPathMap whenever it is
+		// non-empty, so a lone table in one db must not go to dbFldYgPathMap while another
+		// db contributes several.
+		totalTbls := 0
+		for _, tblKeyInfo := range subOutPram.dbDataMap {
+			totalTbls += len(tblKeyInfo)
+		}
 		for dbNum, tblKeyInfo := range subOutPram.dbDataMap {
 			if log.V(dbLgLvl) {
 				log.Info(pathXltr.subReq.reqLogId, "handleSubtreeNodeXlate:  dbNum: ", dbNum)
@@ -843,7 +850,7 @@ func (pathXltr *subscribePathXlator) handleSubtreeNodeXlate() error {
 						}
 						if pathXltr.xpathYgNode != nil {
 							// only one db key entry per table for the given subscribe path, so dbTblFldYgPathMap or dbFldYgPathMap won't get overridden
-							if len(tblKeyInfo) > 1 {
+							if totalTbls > 1 {
 								pathXltr.xpathYgNode.dbTblFldYgPathMap[tblName] = dbYgPath.DbFldYgPathMap
 							} else {
 								pathXltr.xpathYgNode.dbFldYgPathMap = dbYgPath.DbFldYgPathMap
@@ -1556,6 +1563,9 @@ func (pathXlateInfo *XfmrSubscribePathXlateInfo) addDbFldYgPathMap(relPath strin
 	}
 	if len(ygXpNode.dbTblFldYgPathMap) > 0 {
 		// multi table field mapped to same yang node
+		// DbKeyXlateInfo is in map iteration order, so an unmapped table must not stop the
+		// tables after it from getting their mapping.
+		var err error
 		for _, dbKeyInfo := range pathXlateInfo.DbKeyXlateInfo {
 			if dbFldYgMap, ok := ygXpNode.dbTblFldYgPathMap[dbKeyInfo.Table.Name]; ok {
 				dbFldInfo := DbFldYgPathInfo{relPath, make(map[string]string)}
@@ -1566,8 +1576,11 @@ func (pathXlateInfo *XfmrSubscribePathXlateInfo) addDbFldYgPathMap(relPath strin
 				}
 			} else {
 				log.Warningf("%v addDbFldYgPathMap: Not able to find the db field mapping of the node: %v for the table %v", pathXlateInfo.reqLogId, ygXpNode.ygPath, dbKeyInfo.Table.Name)
-				return tlerr.InternalError{Format: "Not able to find the db field mapping for the path ", Path: ygXpNode.ygPath}
+				err = tlerr.InternalError{Format: "Not able to find the db field mapping for the path ", Path: ygXpNode.ygPath}
 			}
+		}
+		if err != nil {
+			return err
 		}
 	} else if len(ygXpNode.dbFldYgPathMap) > 0 {
 		if log.V(dbLgLvl) {
