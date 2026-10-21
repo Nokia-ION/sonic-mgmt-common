@@ -2038,17 +2038,18 @@ func getSysComponents(pf_cpts *ocbinds.OpenconfigPlatform_Components, targetUriP
 		if compType == CompTypeInvalid {
 			return nil
 		}
+		pf_comp, ok := pf_cpts.Component[compName]
+		if !ok || pf_comp == nil {
+			return fmt.Errorf("Invalid component name: %s", compName)
+		}
+		ygot.BuildEmptyTree(pf_comp)
 		if compType == CompTypeIC || compType == CompTypeChassis || compType == CompTypeXcvr || compType == CompTypePort || compType == CompTypePowerSupplyPH {
-			pf_comp, ok := pf_cpts.Component[compName]
-			if !ok || pf_comp == nil {
-				return fmt.Errorf("Invalid component name: %s", compName)
-			}
-			ygot.BuildEmptyTree(pf_comp)
 			if err = compTypeToFuncCall(compType, compName, subKey, pf_comp, targetUriPath, dbs, ConfigPaths, ygRoot); err != nil {
 				log.V(lvl.DEBUG).Info(err)
 			}
 			break
 		}
+		pf_comp.Config.Name = &compName
 	case COMP_HEALTHZ, COMP_HEALTHZ_ST, COMP_HEALTHZ_ST_STATUS, COMP_FAULTS:
 		pf_comp, ok := pf_cpts.Component[compName]
 		if !ok || pf_comp == nil {
@@ -2081,6 +2082,10 @@ func getSysComponents(pf_cpts *ocbinds.OpenconfigPlatform_Components, targetUriP
 		 * Filesystem components serve their own. */
 		if isPropertiesPath(targetUriPath) && compType != CompTypeFilesystem {
 			return fillProperties(pf_comp, compName, compType, subKey, dbs)
+		}
+		if targetUriPath == COMP_CONFIG_NAME {
+			pf_comp.Config.Name = &compName
+			return nil
 		}
 		/* The cpu anchor is served on the host CPU alone. */
 		if strings.HasPrefix(targetUriPath, COMP_CPU) {
@@ -2274,11 +2279,17 @@ func createCompAndFuncCall(pfCpts *ocbinds.OpenconfigPlatform_Components, target
  *   /components/component[name=<compName>]/config
  *   /components/component[name=<compName>]/state
  */
-func compTypeToFuncCall(cType componentType, compName, subKey string, pfComp *ocbinds.OpenconfigPlatform_Components_Component, targetUriPath string, dbs [db.MaxDB]*db.DB, pType PathType, ygRoot *ygot.GoStruct) error {
+func compTypeToFuncCall(cType componentType, compName, subKey string, pfComp *ocbinds.OpenconfigPlatform_Components_Component, targetUriPath string, dbs [db.MaxDB]*db.DB, pType PathType, ygRoot *ygot.GoStruct) (err error) {
 	log.V(lvl.DEBUG).Infof("compTypeToFuncCall with name=%s type=%v pType=%v", compName, cType, pType)
 	d := dbs[db.StateDB]
 	cfgdb := dbs[db.ConfigDB]
 	ygot.BuildEmptyTree(pfComp)
+	/* A filled component carries its name in config. */
+	defer func() {
+		if err == nil && pType == AllPaths && pfComp.Config.Name == nil {
+			pfComp.Config.Name = &compName
+		}
+	}()
 	/* A whole-component GET includes properties.  Having none is normal, so the
 	 * error is not fatal. */
 	if pType == AllPaths && cType != CompTypeFilesystem {
@@ -4339,7 +4350,7 @@ func fillSysEepromInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 
 func fillFirmwareInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 	name string, pType PathType, targetUriPath string, stdb *db.DB, cfgdb *db.DB) error {
-	statePresent, cfgPresent := true, true
+	statePresent := true
 	firmwareInfo, err := getFirmwareInfoFromDb(name, stdb, CHASSIS_TBL)
 	if err != nil {
 		log.V(lvl.DEBUG).Info("Error Getting Chassis info from State DB: ", err.Error())
@@ -4348,16 +4359,8 @@ func fillFirmwareInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 			return err
 		}
 	}
-	firmwareCfg, err := getFirmwareInfoFromDb(name, cfgdb, CHASSIS_CFG)
-	if err != nil {
-		log.V(lvl.DEBUG).Info("Error Getting Chassis info from Config DB: ", err.Error())
-		cfgPresent = false
-		if pType == ConfigPaths {
-			return err
-		}
-	}
-	if (pType == AllPaths || pType == AllCompPaths) && !statePresent && !cfgPresent {
-		return fmt.Errorf("Config and State DB entries not found for all paths; Error: %w", err)
+	if (pType == AllPaths || pType == AllCompPaths) && !statePresent {
+		return fmt.Errorf("State DB entry not found for all paths; Error: %w", err)
 	}
 	/* The chassis manufacture date is in the system EEPROM when CHASSIS_INFO
 	 * does not carry it. The manufacturer is only in the system EEPROM. */
@@ -4430,13 +4433,10 @@ func fillFirmwareInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 		}
 	}
 
-	if ((pType == AllPaths || pType == AllCompPaths) && cfgPresent) || pType == ConfigPaths {
+	if pType == AllPaths || pType == AllCompPaths || pType == ConfigPaths {
 		// Filling in config values
 		// Config Name
 		compCfg.Name = &name
-		if firmwareCfg.Name != "" {
-			compCfg.Name = &firmwareCfg.Name
-		}
 	}
 
 	if pType != SingularPath {
@@ -4509,9 +4509,6 @@ func fillFirmwareInfo(comp *ocbinds.OpenconfigPlatform_Components_Component,
 		compState.ModelName = &firmwareInfo.ModelName
 	case COMP_CONFIG_NAME:
 		compCfg.Name = &name
-		if firmwareCfg.Name != "" {
-			compCfg.Name = &firmwareCfg.Name
-		}
 	default:
 		if strings.HasPrefix(targetUriPath, COMP_ST+"/") {
 			return tlerr.NotFound("unsupported leaf path for Chassis component: %v", targetUriPath)
