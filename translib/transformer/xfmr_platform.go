@@ -1381,7 +1381,6 @@ var subscribeExtraTables = map[componentType][]string{
 	CompTypePsu:     {PHYS_ENTITY_TBL},
 	CompTypeFan:     {PHYS_ENTITY_TBL},
 	CompTypeFanTray: {PHYS_ENTITY_TBL},
-	CompTypeStorage: {PHYS_ENTITY_TBL},
 	CompTypeTemp:    {PHYS_ENTITY_TBL},
 	CompTypeXcvr:    {TRANSCEIVER_STATUS_SW, TRANSCEIVER_TBL, TRANSCEIVER_DOM, TRANSCEIVER_FIRMWARE, TRANSCEIVER_DOM_THRESHOLD},
 }
@@ -1427,9 +1426,6 @@ var subscribeFieldMaps = map[componentType]map[string]map[string]map[string]stri
 			COMP_STATE_TEMP_CTR: {"temperature": "instant"},
 			COMP_STORAGE_CTRS:   {"health": "life-left"},
 		},
-		PHYS_ENTITY_TBL: {
-			COMP_ST: {"parent_name": "parent"},
-		},
 	},
 	CompTypeTemp: {
 		TEMP_TBL: {
@@ -1448,9 +1444,6 @@ var subscribeFieldMaps = map[componentType]map[string]map[string]map[string]stri
 		},
 	},
 	CompTypeXcvr: {
-		TRANSCEIVER_STATUS: {
-			COMP_ST: {"status": "empty,oper-status"},
-		},
 		TRANSCEIVER_STATUS_SW: {
 			COMP_ST: {"status": "empty,oper-status"},
 		},
@@ -1473,7 +1466,7 @@ var subscribeFieldMaps = map[componentType]map[string]map[string]map[string]stri
 
 var fanStateFields = map[string]string{"presence": "empty,oper-status", "status": "oper-status",
 	"hardware_revision": "hardware-version", "is_replaceable": "removable", "mfg_date": "mfg-date",
-	"drawer_name": "parent", "part_no": "part-no", "model": "part-no,model-name,description", "serial": "serial-no"}
+	"part_no": "part-no", "model": "part-no,model-name,description", "serial": "serial-no"}
 
 /* Maps the field of every lane, named by format, to instant. */
 func laneFields(format string) map[string]string {
@@ -1525,6 +1518,28 @@ func subscribeFields(cType componentType, tbl, uri string) map[string]string {
 		fields[fmt.Sprintf("tx%dbias", lane)] = "instant"
 	}
 	return fields
+}
+
+/* Reports whether a field of tbl feeds the leaf named by uri, for a component
+ * of type cType. */
+func feedsLeaf(cType componentType, tbl, uri string) bool {
+	node := stripAugmentedModuleNames(removeBracketedContentNoRegex(uri))
+	i := strings.LastIndex(node, "/")
+	if i < 0 {
+		return false
+	}
+	parent, leaf := node[:i], node[i+1:]
+	for n, m := range subscribeFieldMaps[cType][tbl] {
+		if stripAugmentedModuleNames(n) != parent {
+			continue
+		}
+		for _, leaves := range m {
+			if slices.Contains(strings.Split(leaves, ","), leaf) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 /* Helper for the main subscribe transformer handling the TRANSLATE_SUBSCRIBE case. */
@@ -1734,22 +1749,53 @@ func translateSubscribe(inParams XfmrSubscInParams, key, targetUriPath string) (
 				result.dbDataMap[tblDb][tblName][powerKey] = map[string]string{}
 			}
 		} else {
-			if result.dbDataMap[tblDb][tblName][tblKey] == nil {
+			/* A wildcard on a leaf held only in the component's other tables
+			 * does not watch its own table, which would send the initial
+			 * update of every component again. */
+			skipOwn := false
+			if key == "*" && inParams.requestURI != "" && !feedsLeaf(cType, tblName, inParams.requestURI) {
+				for _, t := range subscribeExtraTables[cType] {
+					skipOwn = skipOwn || feedsLeaf(cType, t, inParams.requestURI)
+				}
+			}
+			if skipOwn {
+				if len(result.dbDataMap[tblDb][tblName]) == 0 {
+					delete(result.dbDataMap[tblDb], tblName)
+				}
+			} else if result.dbDataMap[tblDb][tblName][tblKey] == nil {
 				result.dbDataMap[tblDb][tblName][tblKey] = subscribeFields(cType, tblName, inParams.uri)
 			}
 			/* A named component also watches the other rows its values are read
-			 * from.  A wildcard does not, since each of its tables would send
-			 * the initial update of every component again.  The parent table
-			 * check passes no requestURI and requires every returned row to
-			 * exist, so it gets the component's own row only. */
-			if key != "*" && inParams.requestURI != "" {
+			 * from.  A wildcard watches only the other tables feeding the leaf
+			 * it names, since each of its tables would send the initial update
+			 * of every component again.  The parent table check passes no
+			 * requestURI and requires every returned row to exist, so it gets
+			 * the component's own row only. */
+			if inParams.requestURI != "" {
 				for _, t := range subscribeExtraTables[cType] {
+					if key == "*" && !feedsLeaf(cType, t, inParams.requestURI) {
+						continue
+					}
 					if result.dbDataMap[tblDb][t] == nil {
 						result.dbDataMap[tblDb][t] = make(map[string]map[string]string)
 					}
 					result.dbDataMap[tblDb][t][tblKey] = subscribeFields(cType, t, inParams.uri)
 				}
 			}
+		}
+	}
+
+	/* The "*" row of a table shared by several component types covers their
+	 * narrower patterns, each of which would notify a change to a row again. */
+	if rows := result.dbDataMap[db.StateDB][PHYS_ENTITY_TBL]; key == "*" && rows["*"] != nil {
+		for k, fields := range rows {
+			if k == "*" {
+				continue
+			}
+			for f, leaves := range fields {
+				rows["*"][f] = leaves
+			}
+			delete(rows, k)
 		}
 	}
 
@@ -2716,7 +2762,7 @@ func getFanInfoFromDb(name string, d *db.DB) (FanInfo, error) {
 	}
 	fanInfo.location = index
 	fanInfo.mfgDate = dbEntry.Get("mfg_date")
-	fanInfo.parent = entityParent(name, dbEntry.Get("drawer_name"), d)
+	fanInfo.parent = entityParent(name, "", d)
 	fanInfo.partNo = dbEntry.Get("part_no")
 	fanInfo.model = dbEntry.Get("model")
 	fanInfo.presence = false
@@ -3123,23 +3169,15 @@ func validXcvrName(name *string) bool {
 }
 
 /*
-resolveTransceiverPresence determines module presence from SW/HW status fields.
-xcvrd writes insert/remove status to TRANSCEIVER_STATUS_SW; TRANSCEIVER_STATUS
-holds hardware flags (e.g. tx disable) and may omit status on newer platforms.
-When both status fields are empty, infoPresent reflects TRANSCEIVER_INFO presence.
+resolveTransceiverPresence determines module presence from the insert/remove
+status xcvrd writes to TRANSCEIVER_STATUS_SW.
 */
-func resolveTransceiverPresence(swStatus, hwStatus string, infoPresent bool) (bool, error) {
-	status := swStatus
-	if status == "" {
-		status = hwStatus
-	}
+func resolveTransceiverPresence(status string) (bool, error) {
 	switch status {
 	case SFP_STATUS_INSERTED:
 		return true, nil
-	case SFP_STATUS_REMOVED:
+	case SFP_STATUS_REMOVED, "":
 		return false, nil
-	case "":
-		return infoPresent, nil
 	default:
 		return false, fmt.Errorf("unknown transceiver status: %s", status)
 	}
@@ -3147,17 +3185,16 @@ func resolveTransceiverPresence(swStatus, hwStatus string, infoPresent bool) (bo
 
 func getXcvrStatusInfoFromDb(name string, d *db.DB) (XcvrInfo, error) {
 	var xcvrStatus XcvrInfo
-	var swStatus, hwStatus string
+	var status string
 	hasStatusRow := false
 
 	if hwEntry, err := d.GetEntry(&db.TableSpec{Name: TRANSCEIVER_STATUS}, db.Key{Comp: []string{name}}); err == nil {
 		hasStatusRow = true
 		xcvrStatus.ForceLowPower = hwEntry.Get(FORCE_LOW_POWER)
-		hwStatus = hwEntry.Get("status")
 	}
 	if swEntry, err := d.GetEntry(&db.TableSpec{Name: TRANSCEIVER_STATUS_SW}, db.Key{Comp: []string{name}}); err == nil {
 		hasStatusRow = true
-		swStatus = swEntry.Get("status")
+		status = swEntry.Get("status")
 	}
 
 	infoPresent := false
@@ -3169,7 +3206,7 @@ func getXcvrStatusInfoFromDb(name string, d *db.DB) (XcvrInfo, error) {
 		return XcvrInfo{}, fmt.Errorf("transceiver status not found for %s", name)
 	}
 
-	presence, err := resolveTransceiverPresence(swStatus, hwStatus, infoPresent)
+	presence, err := resolveTransceiverPresence(status)
 	if err != nil {
 		return XcvrInfo{}, fmt.Errorf("transceiver %s: %w", name, err)
 	}

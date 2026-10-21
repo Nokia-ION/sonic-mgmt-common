@@ -466,25 +466,19 @@ func TestFillXcvrAggregatePower(t *testing.T) {
 
 func TestResolveTransceiverPresence(t *testing.T) {
 	cases := []struct {
-		name        string
-		swStatus    string
-		hwStatus    string
-		infoPresent bool
-		want        bool
-		wantErr     bool
+		name    string
+		status  string
+		want    bool
+		wantErr bool
 	}{
-		{name: "sw inserted", swStatus: SFP_STATUS_INSERTED, want: true},
-		{name: "sw removed", swStatus: SFP_STATUS_REMOVED, want: false},
-		{name: "legacy hw inserted", hwStatus: SFP_STATUS_INSERTED, want: true},
-		{name: "legacy hw removed", hwStatus: SFP_STATUS_REMOVED, want: false},
-		{name: "sw wins over legacy hw", swStatus: SFP_STATUS_INSERTED, hwStatus: SFP_STATUS_REMOVED, want: true},
-		{name: "hw-only row with info present", infoPresent: true, want: true},
-		{name: "hw-only row without info", want: false},
-		{name: "unknown status", swStatus: "bad", wantErr: true},
+		{name: "inserted", status: SFP_STATUS_INSERTED, want: true},
+		{name: "removed", status: SFP_STATUS_REMOVED, want: false},
+		{name: "no status", want: false},
+		{name: "unknown status", status: "bad", wantErr: true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got, err := resolveTransceiverPresence(c.swStatus, c.hwStatus, c.infoPresent)
+			got, err := resolveTransceiverPresence(c.status)
 			if c.wantErr {
 				if err == nil {
 					t.Fatalf("resolveTransceiverPresence() expected error")
@@ -871,11 +865,18 @@ func seedChassisInfoEntry(t *testing.T, d *db.DB, name string, fields map[string
 	}
 }
 
+// Seeds an inserted module: its TRANSCEIVER_INFO row and the status xcvrd
+// writes to TRANSCEIVER_STATUS_SW.
 func seedXcvrInfoEntry(t *testing.T, d *db.DB, name string, fields map[string]string) {
 	t.Helper()
 	if err := d.SetEntry(&db.TableSpec{Name: TRANSCEIVER_TBL}, db.Key{Comp: []string{name}}, db.Value{Field: fields}); err != nil {
 		t.Fatalf("failed to seed TRANSCEIVER_INFO for %s: %v", name, err)
 	}
+	sw := &db.TableSpec{Name: TRANSCEIVER_STATUS_SW}
+	if err := d.SetEntry(sw, db.Key{Comp: []string{name}}, db.Value{Field: map[string]string{"status": SFP_STATUS_INSERTED}}); err != nil {
+		t.Fatalf("failed to seed TRANSCEIVER_STATUS_SW for %s: %v", name, err)
+	}
+	t.Cleanup(func() { d.DeleteEntry(sw, db.Key{Comp: []string{name}}) })
 }
 
 func seedXcvrFirmwareEntry(t *testing.T, d *db.DB, name string, fields map[string]string) {
@@ -1407,6 +1408,7 @@ func TestXcvrOperStatus(t *testing.T) {
 		t.Cleanup(func() { d.DeleteEntry(&db.TableSpec{Name: table}, db.Key{Comp: []string{name}}) })
 	}
 	seed(TRANSCEIVER_TBL, "Ethernet900", map[string]string{"type": "QSFP-DD"})
+	seed(TRANSCEIVER_STATUS_SW, "Ethernet900", map[string]string{"status": SFP_STATUS_INSERTED})
 	seed(TRANSCEIVER_DOM, "Ethernet900", map[string]string{"temperature": "25.5"})
 	seed(TRANSCEIVER_STATUS, "Ethernet904", map[string]string{"tx1disable": "False"})
 	seed(TRANSCEIVER_STATUS_SW, "Ethernet904", map[string]string{"cmis_state": "REMOVED", "status": SFP_STATUS_REMOVED})
@@ -2701,18 +2703,74 @@ func TestSubscribe_pfm_components_field_maps(t *testing.T) {
 	}
 }
 
-// A wildcard subscribe does not watch the tables a named component reads besides
-// its own.
+// A wildcard subscribe watches, of the tables a named component reads besides
+// its own, only those feeding the leaf it names, and skips a component's own
+// table when only those hold the leaf.
 func TestSubscribe_pfm_components_wildcard_own_tables(t *testing.T) {
 	dbs := subscribeTestDbs(t, db.StateDB, db.ConfigDB, db.CountersDB, db.ApplDB)
-	for _, ti := range subscribeTargets(t, dbs, "/openconfig-platform:components/component[name=*]") {
-		if ti.Table == nil {
-			continue
+	other := []string{"PHYSICAL_ENTITY_INFO", "TRANSCEIVER_STATUS_SW", "TRANSCEIVER_INFO",
+		"TRANSCEIVER_DOM_SENSOR", "TRANSCEIVER_FIRMWARE_INFO", "TRANSCEIVER_DOM_THRESHOLD"}
+	comp := "/openconfig-platform:components/component[name=*]"
+	cases := []struct {
+		path      string
+		want      []string
+		own, skip []string
+	}{
+		{comp, nil, []string{"TRANSCEIVER_STATUS", "PSU_INFO", "FAN_INFO", "STORAGE_INFO"}, nil},
+		{comp + "/state", nil, []string{"TRANSCEIVER_STATUS", "PSU_INFO", "FAN_INFO", "STORAGE_INFO"}, nil},
+		{comp + "/state/oper-status", []string{"TRANSCEIVER_STATUS_SW"}, []string{"PSU_INFO", "FAN_INFO"}, []string{"TRANSCEIVER_STATUS"}},
+		{comp + "/state/firmware-version", []string{"TRANSCEIVER_FIRMWARE_INFO"}, []string{"STORAGE_INFO"}, []string{"TRANSCEIVER_STATUS"}},
+		{comp + "/state/mfg-name", []string{"TRANSCEIVER_INFO"}, []string{"PSU_INFO"}, []string{"TRANSCEIVER_STATUS"}},
+		{comp + "/state/parent", []string{"PHYSICAL_ENTITY_INFO"}, []string{"STORAGE_INFO"},
+			[]string{"PSU_INFO", "FAN_INFO", "FAN_DRAWER_INFO", "TEMPERATURE_INFO"}},
+	}
+	for _, c := range cases {
+		t.Run(c.path, func(t *testing.T) {
+			got, all := map[string]bool{}, map[string]bool{}
+			for _, ti := range subscribeTargets(t, dbs, c.path) {
+				if ti.Table == nil {
+					continue
+				}
+				all[ti.Table.Name] = true
+				if slices.Contains(other, ti.Table.Name) {
+					got[ti.Table.Name] = true
+				}
+			}
+			for _, w := range c.want {
+				if !got[w] {
+					t.Errorf("does not watch %s; watches %v", w, got)
+				}
+				delete(got, w)
+			}
+			if len(got) != 0 {
+				t.Errorf("also watches %v", got)
+			}
+			for _, o := range c.own {
+				if !all[o] {
+					t.Errorf("does not watch %s", o)
+				}
+			}
+			for _, s := range c.skip {
+				if all[s] {
+					t.Errorf("watches %s", s)
+				}
+			}
+		})
+	}
+}
+
+// A wildcard subscribe watches a table shared by several component types
+// through its "*" row only.
+func TestSubscribe_pfm_components_wildcard_shared_table(t *testing.T) {
+	dbs := subscribeTestDbs(t, db.StateDB, db.ConfigDB, db.CountersDB, db.ApplDB)
+	var keys []string
+	for _, ti := range subscribeTargets(t, dbs, "/openconfig-platform:components/component[name=*]/state/parent") {
+		if ti.Table != nil && ti.Table.Name == PHYS_ENTITY_TBL {
+			keys = append(keys, tableKeyString(ti))
 		}
-		switch ti.Table.Name {
-		case "PHYSICAL_ENTITY_INFO", "TRANSCEIVER_STATUS_SW", "TRANSCEIVER_INFO", "TRANSCEIVER_DOM_SENSOR", "TRANSCEIVER_FIRMWARE_INFO":
-			t.Errorf("wildcard watches %s", tableKeyString(ti))
-		}
+	}
+	if len(keys) != 1 || keys[0] != PHYS_ENTITY_TBL+"|*" {
+		t.Errorf("%s watched as %v, want only %s|*", PHYS_ENTITY_TBL, keys, PHYS_ENTITY_TBL)
 	}
 }
 
