@@ -4880,6 +4880,13 @@ func fillPcieInfo(pcieComp *ocbinds.OpenconfigPlatform_Components_Component,
 		return err
 	}
 
+	/* A PCIe device serves only its name, parent and pcie counters under state. */
+	if strings.HasPrefix(targetUriPath, COMP_ST+"/") && targetUriPath != COMP_STATE_NAME &&
+		targetUriPath != COMP_STATE_PARENT && targetUriPath != COMP_STATE_PCIE &&
+		!strings.HasPrefix(targetUriPath, COMP_STATE_PCIE+"/") {
+		return tlerr.NotFound("unsupported leaf path for PCIe component: %v", targetUriPath)
+	}
+
 	if targetUriPath == COMP || targetUriPath == COMP_ST || targetUriPath == COMP_STATE_PARENT {
 		pcieComp.State.Parent = &pcieParent
 	}

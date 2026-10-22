@@ -2155,6 +2155,52 @@ func TestFillPcieName(t *testing.T) {
 	}
 }
 
+// A PCIe state leaf with no value is NotFound; name, parent and the pcie
+// counters are served.
+func TestFillPcieStateLeaves(t *testing.T) {
+	d, err := db.NewDB(getDBOptions(db.StateDB))
+	if err != nil {
+		t.Fatal("NewDB failed")
+	}
+	defer d.DeleteDB()
+
+	name := "ff:1f.7"
+	seedPcieDeviceEntry(t, d, name, map[string]string{"fatal|TOTAL_ERR_FATAL": "3"})
+
+	for _, uri := range []string{COMP_STATE_MFG_NAME, COMP_STATE_PART_NO, COMP_STATE_SERIAL_NO,
+		COMP_STATE_DESCR, COMP_STATE_HW_VER, COMP_STATE_FIRM_VER, COMP_STATE_MFG_DATE,
+		COMP_STATE_TYPE, COMP_STATE_OPER_STATUS, COMP_STATE_EMPTY, COMP_STATE_TEMP} {
+		t.Run(uri, func(t *testing.T) {
+			comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+			ygot.BuildEmptyTree(comp)
+			if err := fillPcieInfo(comp, name, SingularPath, uri, d); !isNotFound(err) {
+				t.Fatalf("fillPcieInfo(%s) returned %T (%v), want tlerr.NotFoundError", uri, err, err)
+			}
+		})
+	}
+
+	t.Run(COMP_STATE_PARENT, func(t *testing.T) {
+		comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+		ygot.BuildEmptyTree(comp)
+		if err := fillPcieInfo(comp, name, SingularPath, COMP_STATE_PARENT, d); err != nil {
+			t.Fatalf("fillPcieInfo() unexpected error: %v", err)
+		}
+		assertStrLeaf(t, comp.State.Parent, CHASSIS_PREFIX, "state/parent")
+	})
+
+	uri := COMP_STATE_PCIE + "/fatal-errors/total-errors"
+	t.Run(uri, func(t *testing.T) {
+		comp := &ocbinds.OpenconfigPlatform_Components_Component{}
+		ygot.BuildEmptyTree(comp)
+		ygot.BuildEmptyTree(comp.State)
+		ygot.BuildEmptyTree(comp.State.Pcie)
+		if err := fillPcieInfo(comp, name, SingularPath, uri, d); err != nil {
+			t.Fatalf("fillPcieInfo() unexpected error: %v", err)
+		}
+		assertUint64Leaf(t, comp.State.Pcie.FatalErrors.TotalErrors, 3, "fatal-errors/total-errors")
+	})
+}
+
 func seedStorageInfoEntry(t *testing.T, d *db.DB, name string, fields map[string]string) {
 	t.Helper()
 	if err := d.SetEntry(&db.TableSpec{Name: STORAGE_INFO}, db.Key{Comp: []string{name}}, db.Value{Field: fields}); err != nil {
