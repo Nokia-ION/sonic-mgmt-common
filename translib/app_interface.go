@@ -132,10 +132,20 @@ func register(path string, info *appInfo) error {
 	return err
 }
 
-// Adds the model information to the supported models array
+// Adds the model information to the supported models array. A module an app
+// registers and the transformer loads too is listed once, with whichever
+// registration carries its version.
 func addModel(model *ModelData) error {
 	var err error
 
+	for i := range models {
+		if models[i].Name == model.Name {
+			if models[i].Ver == "" {
+				models[i] = *model
+			}
+			return err
+		}
+	}
 	models = append(models, *model)
 
 	//log.Info("Models = ", models)

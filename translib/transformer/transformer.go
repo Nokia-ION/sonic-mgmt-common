@@ -110,6 +110,46 @@ func initYangModelsPath() {
 
 type ModProfile map[string]interface{}
 
+// xMdlCpbltServedThrough names, for an annotated module, the modules whose
+// nodes it serves without an annotation file of their own: groupings it uses,
+// such as BGP under the network instance, and modules augmenting it. Each is
+// advertised in the model capabilities beside the module serving it.
+var xMdlCpbltServedThrough = map[string][]string{
+	"openconfig-network-instance": {"openconfig-bgp", "openconfig-local-routing", "openconfig-aft"},
+	"openconfig-routing-policy":   {"openconfig-bgp-policy"},
+}
+
+// mdlCpbltVersionOrg reads the version and organization a module advertises
+// from its own YANG file. An OpenConfig module carries its version in the
+// oc-ext:openconfig-version extension; any other, or one without it, uses its
+// latest revision date as RFC 7895 does.
+func mdlCpbltVersionOrg(ms *yang.Modules, yngMdlNm string) (string, string) {
+	if ms.Modules[yngMdlNm] == nil {
+		if err := ms.Read(yngMdlNm); err != nil {
+			xfmrLogInfo("Couldn't read yang module %v for model capabilities: %v", yngMdlNm, err)
+			return "", ""
+		}
+	}
+	m := ms.Modules[yngMdlNm]
+	if m == nil {
+		return "", ""
+	}
+	org := ""
+	if m.Organization != nil {
+		org = m.Organization.Name
+	}
+	for _, ext := range m.Extensions {
+		keyword := ext.Keyword
+		if i := strings.LastIndex(keyword, ":"); i >= 0 {
+			keyword = keyword[i+1:]
+		}
+		if keyword == "openconfig-version" && strings.TrimSpace(ext.Argument) != "" {
+			return strings.TrimSpace(ext.Argument), org
+		}
+	}
+	return m.Current(), org
+}
+
 func loadYangModules(files ...string) error {
 	var err error
 
@@ -185,38 +225,16 @@ func loadYangModules(files ...string) error {
 	}
 
 	// populate model capabilities data
+	for yngMdlNm, served := range xMdlCpbltServedThrough {
+		if _, found := xMdlCpbltMap[yngMdlNm]; found {
+			for _, mdlNm := range served {
+				addMdlCpbltEntry(mdlNm)
+			}
+		}
+	}
+	mdlMs := yang.NewModules()
 	for yngMdlNm := range xMdlCpbltMap {
-		org := ""
-		ver := ""
-		ocVerSet := false
-		yngEntry := oc_entries[yngMdlNm]
-		if yngEntry != nil {
-			// OC yang has version in standard extension oc-ext:openconfig-version
-			if strings.HasPrefix(yngMdlNm, "openconfig-") {
-				for _, ext := range yngEntry.Exts {
-					dataTagArr := strings.Split(ext.Keyword, ":")
-					tagType := dataTagArr[len(dataTagArr)-1]
-					if tagType == "openconfig-version" {
-						ver = ext.NName()
-						xfmrLogDebug("Found version %v for yang module %v", ver, yngMdlNm)
-						if len(strings.TrimSpace(ver)) > 0 {
-							ocVerSet = true
-						}
-						break
-					}
-
-				}
-			}
-		}
-		if (strings.HasPrefix(yngMdlNm, "ietf-")) || (!ocVerSet) {
-			// as per RFC7895 revision date to be used as version
-			if value, found := modProfiles[yngMdlNm]["revison"]; found {
-				ver = value.(string)
-			}
-		}
-		if value, found := modProfiles[yngMdlNm]["organization"]; found {
-			org = value.(string)
-		}
+		ver, org := mdlCpbltVersionOrg(mdlMs, yngMdlNm)
 		addMdlCpbltData(yngMdlNm, ver, org)
 	}
 
