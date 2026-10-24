@@ -417,6 +417,16 @@ func (app *CommonApp) processGet(dbs [db.MaxDB]*db.DB, fmtType TranslibFmtType) 
 	txCache := new(sync.Map)
 	isSonicUri := strings.HasPrefix(app.pathInfo.Path, "/sonic")
 
+	// The request binder creates the target leaf of a GET with its zero value.
+	// It is cleared, so that a leaf no transformer fills is reported as not
+	// found rather than as false, 0 or "".
+	leafGet := !isSonicUri && transformer.IsLeafNode(app.pathInfo.Path)
+	if leafGet {
+		if fld, ok := app.targetLeafField(); ok {
+			fld.Set(reflect.Zero(fld.Type()))
+		}
+	}
+
 	for {
 		origXfmrYgotRoot, _ := ygot.DeepCopy((*app.ygotRoot).(ygot.GoStruct))
 		isEmptyPayload := false
@@ -514,6 +524,14 @@ func (app *CommonApp) processGet(dbs [db.MaxDB]*db.DB, fmtType TranslibFmtType) 
 					}
 				}
 			}
+			if leafGet {
+				if fld, ok := app.targetLeafField(); ok && fld.IsNil() {
+					resp.Payload = payload
+					log.Info("No data found for leaf.")
+					err = tlerr.NotFound("Resource not found")
+					break
+				}
+			}
 			if resYgot != nil {
 				resp, err = generateGetResponse(app.pathInfo.Path, &resYgot, fmtType)
 				if err != nil {
@@ -531,6 +549,46 @@ func (app *CommonApp) processGet(dbs [db.MaxDB]*db.DB, fmtType TranslibFmtType) 
 		}
 	}
 	return resp, err
+}
+
+// targetLeafField returns the field of a GET's target leaf in the struct of
+// its parent node, when the leaf is held by a pointer or an interface: the
+// kinds a value can be absent from. The parent is looked up afresh, since a
+// transformer may have replaced the containers above the leaf.
+func (app *CommonApp) targetLeafField() (reflect.Value, bool) {
+	devObj, ok := (*app.ygotRoot).(*ocbinds.Device)
+	if !ok || devObj == nil {
+		return reflect.Value{}, false
+	}
+	uri := app.pathInfo.Path
+	gpath, err := ygot.StringToPath(uri, ygot.StructuredPath, ygot.StringSlicePath)
+	if err != nil || len(gpath.Elem) == 0 {
+		return reflect.Value{}, false
+	}
+	leafName := gpath.Elem[len(gpath.Elem)-1].Name
+	if i := strings.LastIndex(leafName, ":"); i >= 0 {
+		leafName = leafName[i+1:]
+	}
+	parent, _, err := getParentNode(&uri, devObj)
+	if err != nil || parent == nil || *parent == nil {
+		return reflect.Value{}, false
+	}
+	pv := reflect.ValueOf(*parent)
+	if pv.Kind() != reflect.Ptr || pv.IsNil() || pv.Elem().Kind() != reflect.Struct {
+		return reflect.Value{}, false
+	}
+	pv = pv.Elem()
+	for i := 0; i < pv.NumField(); i++ {
+		if pv.Type().Field(i).Tag.Get("path") != leafName {
+			continue
+		}
+		fld := pv.Field(i)
+		if (fld.Kind() == reflect.Ptr || fld.Kind() == reflect.Interface) && fld.CanSet() {
+			return fld, true
+		}
+		return reflect.Value{}, false
+	}
+	return reflect.Value{}, false
 }
 
 func (app *CommonApp) processAction(dbs [db.MaxDB]*db.DB) (ActionResponse, error) {
