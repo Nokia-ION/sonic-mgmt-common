@@ -82,7 +82,7 @@ const (
 // repeats. The levels above the config containers are matched against it.
 const niBgpNbrUriPfx = niBgpProtoUriPfx + `/bgp/neighbors/neighbor\[neighbor-address=([^\]]+)\]`
 
-var niBgpNbrReqUriRe = regexp.MustCompile(niBgpNbrUriPfx + `/config(?:/(peer-group|enabled|peer-as|send-community|auth-password))?$`)
+var niBgpNbrReqUriRe = regexp.MustCompile(niBgpNbrUriPfx + `/config(?:/(neighbor-address|peer-group|enabled|peer-as|send-community|auth-password))?$`)
 var niBgpNbrTimersReqUriRe = regexp.MustCompile(niBgpNbrUriPfx + `/timers/config(?:/(connect-retry|hold-time|keepalive-interval))?$`)
 var niBgpNbrTransportCfgReqUriRe = regexp.MustCompile(niBgpNbrUriPfx + `/transport/config(?:/(local-address|passive-mode))?$`)
 var niBgpNbrAsPathOptReqUriRe = regexp.MustCompile(niBgpNbrUriPfx + `/as-path-options/config(?:/(allow-own-as))?$`)
@@ -1975,6 +1975,11 @@ var YangToDb_ni_bgp_nbr_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 			return res, niBgpNbrSendCommunityDeprecated(inParams.requestUri)
 		case "auth-password":
 			return makeNiBgpNbrResMap(reqInfo.niName, reqInfo.neighborAddr, map[string]string{niBgpNbrAuthPwdFld: ""}), nil
+		case niBgpNbrNbrAddrLeaf:
+			return res, tlerr.NotSupportedError{
+				Format: "DELETE is not supported for the neighbor-address key; delete the neighbor instead",
+				Path:   inParams.requestUri,
+			}
 		default:
 			return res, tlerr.NotSupportedError{Format: "DELETE supported only for /neighbors/neighbor/config, /neighbors/neighbor/config/peer-group, /neighbors/neighbor/config/peer-as, /neighbors/neighbor/config/enabled, /neighbors/neighbor/config/send-community, or /neighbors/neighbor/config/auth-password", Path: inParams.requestUri}
 		}
@@ -2107,7 +2112,17 @@ var YangToDb_ni_bgp_nbr_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 	}
 
 	fields := make(map[string]string)
+	// The address is the row identity, so config/neighbor-address can only
+	// restate the key: a SET of it alone creates the neighbor the path names.
+	if cfgObj := getNiBgpNbrCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.protoName, reqInfo.neighborAddr, false); cfgObj != nil &&
+		cfgObj.NeighborAddress != nil && *cfgObj.NeighborAddress != reqInfo.neighborAddr {
+		return res, tlerr.InvalidArgsError{
+			Format: fmt.Sprintf("BGP neighbor neighbor-address payload (%s) does not match key (%s)", *cfgObj.NeighborAddress, reqInfo.neighborAddr),
+		}
+	}
 	switch reqInfo.targetLeaf {
+	case niBgpNbrNbrAddrLeaf:
+		return niBgpNbrParentRowIfMissing(inParams, res, reqInfo.niName, reqInfo.neighborAddr), nil
 	case "peer-group":
 		pg, err := parseNiBgpNbrPeerGroup(inParams)
 		if err != nil {
@@ -2339,6 +2354,10 @@ var DbToYang_ni_bgp_nbr_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams)
 		return tlerr.InvalidArgsError{Format: "Unable to locate BGP neighbor config object in YANG tree"}
 	}
 
+	if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == niBgpNbrNbrAddrLeaf {
+		addr := reqInfo.neighborAddr
+		cfgObj.NeighborAddress = &addr
+	}
 	if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == "peer-group" {
 		pg, ok := entry.Field[niBgpNbrPeerGroupFld]
 		if ok && strings.TrimSpace(pg) != "" {

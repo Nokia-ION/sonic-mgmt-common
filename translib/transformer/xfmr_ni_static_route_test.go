@@ -1067,7 +1067,8 @@ func Test_openconfig_network_instance_static_route_next_hop_preference(t *testin
 		processGetRequest(staticUrl+"/next-hops/next-hop[index=40.0.0.1]/config", nil, expectedGetJSON, false))
 	time.Sleep(1 * time.Second)
 
-	t.Run("GET the leaf itself once deleted", processGetRequest(firstUrl, nil, emptyJson, false))
+	t.Run("GET the leaf itself once deleted",
+		processGetRequest(firstUrl, nil, "", true, tlerr.NotFoundError{Format: "Resource not found"}))
 	time.Sleep(1 * time.Second)
 
 	unloadDB(db.ConfigDB, cleanupTbl)
