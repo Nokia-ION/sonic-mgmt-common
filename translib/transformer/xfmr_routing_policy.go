@@ -33,6 +33,7 @@ import (
 	"github.com/Azure/sonic-mgmt-common/translib/tlerr"
 	log "github.com/golang/glog"
 	"github.com/openconfig/ygot/ygot"
+	"github.com/openconfig/ygot/ytypes"
 )
 
 const (
@@ -181,6 +182,12 @@ var rpolExtCommunitySetInstanceReqUriRe = regexp.MustCompile(`^/openconfig-routi
 var rpolPrefixSetInstanceReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/defined-sets/(?:[A-Za-z0-9_.-]+:)?prefix-sets/(?:[A-Za-z0-9_.-]+:)?prefix-set\[(?:[A-Za-z0-9_.-]+:)?name=([^\]]+)\]$`)
 var rpolPrefixEntryInstanceReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routing-policy/defined-sets/(?:[A-Za-z0-9_.-]+:)?prefix-sets/(?:[A-Za-z0-9_.-]+:)?prefix-set\[(?:[A-Za-z0-9_.-]+:)?name=([^\]]+)\]/(?:[A-Za-z0-9_.-]+:)?prefixes/(?:[A-Za-z0-9_.-]+:)?prefix\[(?:[A-Za-z0-9_.-]+:)?ip-prefix=([^\]]+)\]\[(?:[A-Za-z0-9_.-]+:)?masklength-range=([^\]]+)\]$`)
 
+// The state container of a policy definition, a statement, a defined set or a
+// prefix, with an optional leaf below it in the second group. These objects have
+// no operational source of their own, so their state reports what is configured
+// and is served as its config twin.
+var rpolMirroredStateReqUriRe = regexp.MustCompile(`^(/openconfig-routing-policy:routing-policy/(?:policy-definitions/policy-definition\[name=[^\]]+\](?:/statements/statement\[name=[^\]]+\])?|defined-sets/(?:[A-Za-z0-9_.-]+:)?(?:bgp-defined-sets/(?:[A-Za-z0-9_.-]+:)?(?:ext-)?community-sets/(?:[A-Za-z0-9_.-]+:)?(?:ext-)?community-set\[[^\]]+\]|prefix-sets/(?:[A-Za-z0-9_.-]+:)?prefix-set\[[^\]]+\](?:/(?:[A-Za-z0-9_.-]+:)?prefixes/(?:[A-Za-z0-9_.-]+:)?prefix\[[^\]]+\]\[[^\]]+\])?)))/(?:[A-Za-z0-9_.-]+:)?state(/(?:[A-Za-z0-9_.-]+:)?[A-Za-z0-9_.-]+)?$`)
+
 type rpolReqInfo struct {
 	policyName       string
 	stmtName         string
@@ -200,6 +207,9 @@ func init() {
 }
 
 func parseRpolRequestUri(uri string) (*rpolReqInfo, error) {
+	if m := rpolMirroredStateReqUriRe.FindStringSubmatch(uri); len(m) == 3 {
+		return parseRpolRequestUri(m[1] + "/config" + m[2])
+	}
 	m := rpolPolicyDefCfgReqUriRe.FindStringSubmatch(uri)
 	if len(m) >= 2 {
 		leaf := ""
@@ -479,6 +489,51 @@ func parseRpolRequestUri(uri string) (*rpolReqInfo, error) {
 	return nil, tlerr.InvalidArgsError{
 		Format: "unsupported path for routing-policy mapping: " + uri,
 	}
+}
+
+// rpolMirrorConfigToState fills the state container of obj, a list instance
+// holding config and state twins, with what its config container holds. The
+// copy goes through JSON because the twins are distinct Go types, down to the
+// union wrappers of the community members.
+func rpolMirrorConfigToState(obj interface{}) {
+	v := reflect.ValueOf(obj)
+	if v.Kind() != reflect.Ptr || v.IsNil() {
+		return
+	}
+	cfg, st := v.Elem().FieldByName("Config"), v.Elem().FieldByName("State")
+	if !cfg.IsValid() || !st.IsValid() || cfg.IsNil() {
+		return
+	}
+	cfgObj, ok := cfg.Interface().(ygot.ValidatedGoStruct)
+	if !ok {
+		return
+	}
+	js, err := ygot.EmitJSON(cfgObj, &ygot.EmitJSONConfig{Format: ygot.RFC7951, SkipValidation: true})
+	if err != nil {
+		log.Warningf("routing-policy state mirror: config emit failed: %v", err)
+		return
+	}
+	if st.IsNil() {
+		st.Set(reflect.New(st.Type().Elem()))
+	}
+	stObj, ok := st.Interface().(ygot.GoStruct)
+	if !ok {
+		return
+	}
+	if err := ocbinds.Unmarshal([]byte(js), stObj, &ytypes.IgnoreExtraFields{}); err != nil {
+		log.Warningf("routing-policy state mirror: state unmarshal failed: %v", err)
+	}
+}
+
+func getRpolPolicyDefObj(s *ygot.GoStruct, policyName string) *ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition {
+	if s == nil || *s == nil {
+		return nil
+	}
+	deviceObj, ok := (*s).(*ocbinds.Device)
+	if !ok || deviceObj == nil || deviceObj.RoutingPolicy == nil || deviceObj.RoutingPolicy.PolicyDefinitions == nil {
+		return nil
+	}
+	return deviceObj.RoutingPolicy.PolicyDefinitions.PolicyDefinition[policyName]
 }
 
 func getRpolPolicyDefCfgObj(s *ygot.GoStruct, policyName string, createIfMissing bool) *ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Config {
@@ -4062,6 +4117,7 @@ func rpolDbToYangXfmr(inParams XfmrParams) (err error) {
 			name := reqInfo.policyName
 			cfgObj.Name = &name
 		}
+		rpolMirrorConfigToState(getRpolPolicyDefObj(inParams.ygRoot, reqInfo.policyName))
 		return nil
 	}
 	if reqInfo.targetPath == rpolTargetStmtName {
@@ -4084,10 +4140,15 @@ func rpolDbToYangXfmr(inParams XfmrParams) (err error) {
 		if stmtObj.Config != nil {
 			stmtObj.Config.Name = &name
 		}
+		rpolMirrorConfigToState(stmtObj)
 		return nil
 	}
 	if reqInfo.targetPath == rpolTargetPrefixSet {
-		return rpolReadPrefixSet(inParams, reqInfo)
+		if err := rpolReadPrefixSet(inParams, reqInfo); err != nil {
+			return err
+		}
+		rpolMirrorConfigToState(getRpolPrefixSetObj(inParams.ygRoot, reqInfo.prefixSetName, false))
+		return nil
 	}
 	if reqInfo.targetPath == rpolTargetPrefixEntry {
 		return rpolReadPrefixEntry(inParams, reqInfo)
@@ -4125,6 +4186,7 @@ func rpolDbToYangXfmr(inParams XfmrParams) (err error) {
 		if matchOpts, ok := rpolMatchActionToMatchSetOptions(entry.Field[rpolMatchActionFld]); ok {
 			csObj.Config.MatchSetOptions = matchOpts
 		}
+		rpolMirrorConfigToState(csObj)
 		return nil
 	}
 	if reqInfo.targetPath == rpolTargetExtCommunitySetName {
@@ -4148,6 +4210,7 @@ func rpolDbToYangXfmr(inParams XfmrParams) (err error) {
 		if matchOpts, ok := rpolMatchActionToMatchSetOptions(entry.Field[rpolMatchActionFld]); ok {
 			ecObj.Config.MatchSetOptions = matchOpts
 		}
+		rpolMirrorConfigToState(ecObj)
 		return nil
 	}
 

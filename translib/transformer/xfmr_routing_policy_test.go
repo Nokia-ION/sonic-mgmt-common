@@ -1584,10 +1584,11 @@ func Test_openconfig_routing_policy_container_get(t *testing.T) {
 	time.Sleep(1 * time.Second)
 
 	statementEntryJSON := `{"actions":{"openconfig-bgp-policy:bgp-actions":{"config":{"set-local-pref":200}},` +
-		`"config":{"policy-result":"ACCEPT_ROUTE"}},"config":{"name":"10"},"name":"10"}`
-	policyEntryJSON := `{"config":{"name":"POL1"},"name":"POL1","statements":{"statement":[` + statementEntryJSON + `]}}`
+		`"config":{"policy-result":"ACCEPT_ROUTE"}},"config":{"name":"10"},"name":"10","state":{"name":"10"}}`
+	policyEntryJSON := `{"config":{"name":"POL1"},"name":"POL1","state":{"name":"POL1"},` +
+		`"statements":{"statement":[` + statementEntryJSON + `]}}`
 	definedSetsJSON := `{"openconfig-bgp-policy:bgp-defined-sets":{"community-sets":{"community-set":[` +
-		`{"community-set-name":"COMM1","config":{"community-set-name":"COMM1"}}]}}}`
+		`{"community-set-name":"COMM1","config":{"community-set-name":"COMM1"},"state":{"community-set-name":"COMM1"}}]}}}`
 
 	expectedGetJSON := `{"openconfig-routing-policy:routing-policy":{"defined-sets":` + definedSetsJSON +
 		`,"policy-definitions":{"policy-definition":[` + policyEntryJSON + `]}}}`
@@ -1668,12 +1669,12 @@ func Test_openconfig_routing_policy_container_get_list_instance(t *testing.T) {
 	time.Sleep(1 * time.Second)
 
 	stmt10JSON := `{"actions":{"openconfig-bgp-policy:bgp-actions":{"config":{"set-med":110}},` +
-		`"config":{"policy-result":"ACCEPT_ROUTE"}},"config":{"name":"10"},"name":"10"}`
-	stmt20JSON := `{"actions":{"config":{"policy-result":"REJECT_ROUTE"}},"config":{"name":"20"},"name":"20"}`
-	pol1JSON := `{"config":{"name":"POL1"},"name":"POL1","statements":{"statement":[` +
+		`"config":{"policy-result":"ACCEPT_ROUTE"}},"config":{"name":"10"},"name":"10","state":{"name":"10"}}`
+	stmt20JSON := `{"actions":{"config":{"policy-result":"REJECT_ROUTE"}},"config":{"name":"20"},"name":"20","state":{"name":"20"}}`
+	pol1JSON := `{"config":{"name":"POL1"},"name":"POL1","state":{"name":"POL1"},"statements":{"statement":[` +
 		stmt10JSON + `,` + stmt20JSON + `]}}`
-	pol2Stmt := `{"actions":{"config":{"policy-result":"ACCEPT_ROUTE"}},"config":{"name":"10"},"name":"10"}`
-	pol2JSON := `{"config":{"name":"POL2"},"name":"POL2","statements":{"statement":[` + pol2Stmt + `]}}`
+	pol2Stmt := `{"actions":{"config":{"policy-result":"ACCEPT_ROUTE"}},"config":{"name":"10"},"name":"10","state":{"name":"10"}}`
+	pol2JSON := `{"config":{"name":"POL2"},"name":"POL2","state":{"name":"POL2"},"statements":{"statement":[` + pol2Stmt + `]}}`
 
 	pol1Url := rpolContainerUrl + "/policy-definitions/policy-definition[name=POL1]"
 
@@ -1704,7 +1705,7 @@ func Test_openconfig_routing_policy_container_get_list_instance(t *testing.T) {
 	time.Sleep(1 * time.Second)
 
 	expectedGetJSON = `{"openconfig-bgp-policy:community-set":[` +
-		`{"community-set-name":"COMM2","config":{"community-set-name":"COMM2"}}]}`
+		`{"community-set-name":"COMM2","config":{"community-set-name":"COMM2"},"state":{"community-set-name":"COMM2"}}]}`
 	t.Run("GET community-set list instance returns only that set",
 		processGetRequest(rpolContainerUrl+"/defined-sets/bgp-defined-sets/community-sets/community-set[community-set-name=COMM2]",
 			nil, expectedGetJSON, false))
@@ -1718,8 +1719,8 @@ func Test_openconfig_routing_policy_container_get_list_instance(t *testing.T) {
 
 	// Filtering must not prune a request that asks for the whole subtree.
 	definedSetsJSON := `{"openconfig-bgp-policy:bgp-defined-sets":{"community-sets":{"community-set":[` +
-		`{"community-set-name":"COMM1","config":{"community-set-name":"COMM1"}},` +
-		`{"community-set-name":"COMM2","config":{"community-set-name":"COMM2"}}]}}}`
+		`{"community-set-name":"COMM1","config":{"community-set-name":"COMM1"},"state":{"community-set-name":"COMM1"}},` +
+		`{"community-set-name":"COMM2","config":{"community-set-name":"COMM2"},"state":{"community-set-name":"COMM2"}}]}}}`
 	expectedGetJSON = `{"openconfig-routing-policy:routing-policy":{"defined-sets":` + definedSetsJSON +
 		`,"policy-definitions":{"policy-definition":[` + pol1JSON + `,` + pol2JSON + `]}}}`
 	t.Run("GET routing-policy container still reports everything",
@@ -1766,12 +1767,15 @@ func Test_openconfig_routing_policy_prefix_set_get_levels(t *testing.T) {
 
 	ps1PrefixesJSON := `{"prefix":[` +
 		`{"config":{"ip-prefix":"10.11.0.0/16","masklength-range":"exact"},` +
-		`"ip-prefix":"10.11.0.0/16","masklength-range":"exact"},` +
+		`"ip-prefix":"10.11.0.0/16","masklength-range":"exact",` +
+		`"state":{"ip-prefix":"10.11.0.0/16","masklength-range":"exact"}},` +
 		`{"config":{"ip-prefix":"10.12.0.0/16","masklength-range":"17..24"},` +
-		`"ip-prefix":"10.12.0.0/16","masklength-range":"17..24"}]}`
+		`"ip-prefix":"10.12.0.0/16","masklength-range":"17..24",` +
+		`"state":{"ip-prefix":"10.12.0.0/16","masklength-range":"17..24"}}]}`
 	ps2PrefixesJSON := `{"prefix":[` +
 		`{"config":{"ip-prefix":"10.21.0.0/16","masklength-range":"exact"},` +
-		`"ip-prefix":"10.21.0.0/16","masklength-range":"exact"}]}`
+		`"ip-prefix":"10.21.0.0/16","masklength-range":"exact",` +
+		`"state":{"ip-prefix":"10.21.0.0/16","masklength-range":"exact"}}]}`
 
 	t.Run("GET the prefixes container under a named prefix-set",
 		processGetRequest(ps1Url+"/prefixes", nil,
@@ -1786,7 +1790,7 @@ func Test_openconfig_routing_policy_prefix_set_get_levels(t *testing.T) {
 	t.Run("GET the prefix-set list instance carries its own prefixes",
 		processGetRequest(ps1Url, nil,
 			`{"openconfig-routing-policy:prefix-set":[{"config":{"mode":"IPV4","name":"PS1"},`+
-				`"name":"PS1","prefixes":`+ps1PrefixesJSON+`}]}`, false))
+				`"name":"PS1","prefixes":`+ps1PrefixesJSON+`,"state":{"mode":"IPV4","name":"PS1"}}]}`, false))
 	time.Sleep(1 * time.Second)
 
 	unloadDB(db.ConfigDB, cleanupTbl)
@@ -3158,7 +3162,7 @@ func Test_openconfig_routing_policy_policy_definition_statement_actions_state(t 
 	// matches it, so it answers empty at HEAD too and is left for the
 	// container-level work.
 	expectedGetJSON = `{"openconfig-routing-policy:statement":[{"actions":{"config":{"policy-result":"REJECT_ROUTE"},` +
-		`"state":{"policy-result":"REJECT_ROUTE"}},"config":{"name":"10"},"name":"10"}]}`
+		`"state":{"policy-result":"REJECT_ROUTE"}},"config":{"name":"10"},"name":"10","state":{"name":"10"}}]}`
 	t.Run("GET the statement reports config and state",
 		processGetRequest(stmtUrl, nil, expectedGetJSON, false))
 	time.Sleep(1 * time.Second)
@@ -3476,6 +3480,99 @@ func Test_openconfig_routing_policy_bgp_actions_set_next_hop_families(t *testing
 	t.Run("Verify both next-hop fields cleared", verifyDbResult(rclient, "ROUTE_MAP|POLNH|10",
 		map[string]interface{}{"ROUTE_MAP": map[string]interface{}{"POLNH|10": map[string]interface{}{
 			"route_operation": "permit", "set_local_pref": "200"}}}, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+// Policy definitions, statements and the defined sets have no operational source
+// of their own, so their state containers report what is configured.
+func Test_openconfig_routing_policy_state_mirrors_config(t *testing.T) {
+	preReqMap := map[string]interface{}{
+		"ROUTE_MAP_SET": map[string]interface{}{
+			"POL1": map[string]interface{}{"NULL": "NULL"},
+		},
+		"ROUTE_MAP": map[string]interface{}{
+			"POL1|10": map[string]interface{}{"route_operation": "permit"},
+		},
+		"PREFIX_SET": map[string]interface{}{
+			"PS1": map[string]interface{}{"mode": "IPv4"},
+		},
+		"PREFIX": map[string]interface{}{
+			"PS1|5|10.11.0.0/16|exact": map[string]interface{}{"action": "permit"},
+		},
+		"COMMUNITY_SET": map[string]interface{}{
+			"COMM1": map[string]interface{}{
+				"set_type":          "STANDARD",
+				"match_action":      "ALL",
+				"community_member@": "65100:100,no-export",
+			},
+		},
+		"EXTENDED_COMMUNITY_SET": map[string]interface{}{
+			"EXTCOMM1": map[string]interface{}{
+				"set_type":          "STANDARD",
+				"match_action":      "ANY",
+				"community_member@": "route-target:65100:100",
+			},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"ROUTE_MAP":              map[string]interface{}{"POL1|10": ""},
+		"ROUTE_MAP_SET":          map[string]interface{}{"POL1": ""},
+		"PREFIX":                 map[string]interface{}{"PS1|5|10.11.0.0/16|exact": ""},
+		"PREFIX_SET":             map[string]interface{}{"PS1": ""},
+		"COMMUNITY_SET":          map[string]interface{}{"COMM1": ""},
+		"EXTENDED_COMMUNITY_SET": map[string]interface{}{"EXTCOMM1": ""},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	pdUrl := "/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition[name=POL1]"
+	stmtUrl := pdUrl + "/statements/statement[name=10]"
+	psUrl := "/openconfig-routing-policy:routing-policy/defined-sets/prefix-sets/prefix-set[name=PS1]"
+	pfxUrl := psUrl + "/prefixes/prefix[ip-prefix=10.11.0.0/16][masklength-range=exact]"
+	bgpSetsUrl := "/openconfig-routing-policy:routing-policy/defined-sets/bgp-defined-sets"
+	csUrl := bgpSetsUrl + "/community-sets/community-set[community-set-name=COMM1]"
+	ecsUrl := bgpSetsUrl + "/ext-community-sets/ext-community-set[ext-community-set-name=EXTCOMM1]"
+
+	t.Run("GET routing-policy policy-definition state name",
+		processGetRequest(pdUrl+"/state/name", nil, `{"openconfig-routing-policy:name":"POL1"}`, false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET routing-policy policy-definition state container",
+		processGetRequest(pdUrl+"/state", nil, `{"openconfig-routing-policy:state":{"name":"POL1"}}`, false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET routing-policy statement state name",
+		processGetRequest(stmtUrl+"/state/name", nil, `{"openconfig-routing-policy:name":"10"}`, false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET routing-policy prefix-set state container",
+		processGetRequest(psUrl+"/state", nil, `{"openconfig-routing-policy:state":{"mode":"IPV4","name":"PS1"}}`, false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET routing-policy prefix state container",
+		processGetRequest(pfxUrl+"/state", nil,
+			`{"openconfig-routing-policy:state":{"ip-prefix":"10.11.0.0/16","masklength-range":"exact"}}`, false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET routing-policy community-set state container",
+		processGetRequest(csUrl+"/state", nil,
+			`{"openconfig-bgp-policy:state":{"community-member":["65100:100","openconfig-bgp-types:NO_EXPORT"],`+
+				`"community-set-name":"COMM1","match-set-options":"ALL"}}`, false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET routing-policy ext-community-set state ext-community-member",
+		processGetRequest(ecsUrl+"/state/ext-community-member", nil,
+			`{"openconfig-bgp-policy:ext-community-member":["route-target:65100:100"]}`, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET routing-policy prefix-set list instance carries state at every level",
+		processGetRequest(psUrl, nil,
+			`{"openconfig-routing-policy:prefix-set":[{"config":{"mode":"IPV4","name":"PS1"},"name":"PS1",`+
+				`"prefixes":{"prefix":[{"config":{"ip-prefix":"10.11.0.0/16","masklength-range":"exact"},`+
+				`"ip-prefix":"10.11.0.0/16","masklength-range":"exact",`+
+				`"state":{"ip-prefix":"10.11.0.0/16","masklength-range":"exact"}}]},`+
+				`"state":{"mode":"IPV4","name":"PS1"}}]}`, false))
+	time.Sleep(1 * time.Second)
+
+	// A state leaf with no CONFIG_DB mapping is not found rather than empty.
+	t.Run("GET routing-policy statement conditions state call-policy is not found",
+		processGetRequest(stmtUrl+"/conditions/state/call-policy", nil, "", true, tlerr.NotFoundError{Format: "Resource not found"}))
 	time.Sleep(1 * time.Second)
 
 	unloadDB(db.ConfigDB, cleanupTbl)

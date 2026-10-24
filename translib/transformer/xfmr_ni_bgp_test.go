@@ -5666,3 +5666,115 @@ func Test_openconfig_network_instance_bgp_neighbor_afi_safi_prefix_limit_hierarc
 
 	unloadDB(db.ConfigDB, cleanupTbl)
 }
+
+// A GET of a leaf no transformer fills used to answer with the zero value the
+// request binder put there, so an unmapped boolean read false and an unmapped
+// number read 0. It is reported as not found instead.
+func Test_openconfig_network_instance_bgp_unmapped_leaf_get_not_found(t *testing.T) {
+	preReqMap := map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": map[string]interface{}{
+				"local_asn": "65100",
+			},
+		},
+		"BGP_NEIGHBOR": map[string]interface{}{
+			"default|20.0.0.1": map[string]interface{}{
+				"asn": "65200",
+			},
+		},
+		"BGP_PEER_GROUP": map[string]interface{}{
+			"default|PG1": map[string]interface{}{
+				"asn": "65300",
+			},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"BGP_NEIGHBOR":   map[string]interface{}{"default|20.0.0.1": ""},
+		"BGP_PEER_GROUP": map[string]interface{}{"default|PG1": ""},
+		"BGP_GLOBALS":    map[string]interface{}{"default": ""},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	bgpUrl := "/openconfig-network-instance:network-instances/network-instance[name=default]/protocols/protocol[identifier=BGP][name=bgp]"
+	expectedErr := tlerr.NotFoundError{Format: "Resource not found"}
+	for _, leaf := range []string{
+		"/bgp/global/graceful-restart/config/enabled",
+		"/bgp/global/confederation/config/identifier",
+		"/bgp/neighbors/neighbor[neighbor-address=20.0.0.1]/enable-bfd/config/enabled",
+		"/bgp/peer-groups/peer-group[peer-group-name=PG1]/transport/config/tcp-mss",
+		"/config/enabled",
+	} {
+		t.Run("GET unmapped leaf "+leaf+" is not found", processGetRequest(bgpUrl+leaf, nil, "", true, expectedErr))
+		time.Sleep(1 * time.Second)
+	}
+
+	// A mapped leaf whose field is absent from the row is not found either.
+	t.Run("GET network-instance BGP neighbor transport local-address with no field set",
+		processGetRequest(bgpUrl+"/bgp/neighbors/neighbor[neighbor-address=20.0.0.1]/transport/config/local-address", nil, "", true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_network_instance_bgp_neighbor_config_neighbor_address(t *testing.T) {
+	preReqMap := map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": map[string]interface{}{
+				"local_asn": "65100",
+			},
+		},
+		"BGP_NEIGHBOR": map[string]interface{}{
+			"default|20.0.0.1": map[string]interface{}{
+				"asn": "65200",
+			},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"BGP_NEIGHBOR": map[string]interface{}{"default|20.0.0.1": ""},
+		"BGP_GLOBALS":  map[string]interface{}{"default": ""},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	cfgUrl := "/openconfig-network-instance:network-instances/network-instance[name=default]/protocols/protocol[identifier=BGP][name=bgp]/bgp/neighbors/neighbor[neighbor-address=20.0.0.1]/config"
+	url := cfgUrl + "/neighbor-address"
+
+	t.Run("GET network-instance BGP neighbor config neighbor-address",
+		processGetRequest(url, nil, `{"openconfig-network-instance:neighbor-address":"20.0.0.1"}`, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET network-instance BGP neighbor config container carries neighbor-address",
+		processGetRequest(cfgUrl, nil, `{"openconfig-network-instance:config":{"neighbor-address":"20.0.0.1","peer-as":65200}}`, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("PATCH network-instance BGP neighbor config neighbor-address restating the key",
+		processSetRequest(url, `{"openconfig-network-instance:neighbor-address":"20.0.0.1"}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"BGP_NEIGHBOR": map[string]interface{}{
+			"default|20.0.0.1": map[string]interface{}{
+				"asn": "65200",
+			},
+		},
+	}
+	t.Run("Verify BGP_NEIGHBOR unchanged by a neighbor-address restating the key",
+		verifyDbResult(rclient, "BGP_NEIGHBOR|default|20.0.0.1", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	expectedErr := tlerr.InvalidArgsError{Format: "BGP neighbor neighbor-address payload (20.0.0.2) does not match key (20.0.0.1)"}
+	t.Run("PATCH network-instance BGP neighbor config container with a different neighbor-address",
+		processSetRequest(cfgUrl, `{"neighbor-address":"20.0.0.2","peer-as":65201}`, "PATCH", true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify BGP_NEIGHBOR unchanged by a rejected neighbor-address",
+		verifyDbResult(rclient, "BGP_NEIGHBOR|default|20.0.0.1", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	deleteErr := tlerr.NotSupportedError{Format: "DELETE is not supported for the neighbor-address key; delete the neighbor instead"}
+	t.Run("DELETE network-instance BGP neighbor config neighbor-address", processDeleteRequest(url, true, deleteErr))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
