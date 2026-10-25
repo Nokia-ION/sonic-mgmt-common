@@ -569,6 +569,13 @@ func (app *CommonApp) targetLeafField() (reflect.Value, bool) {
 	if i := strings.LastIndex(leafName, ":"); i >= 0 {
 		leafName = leafName[i+1:]
 	}
+	// A key leaf of the list instance above holds the key the request names,
+	// not a zero value, so it is left as the binder set it.
+	if len(gpath.Elem) >= 2 {
+		if _, isKey := gpath.Elem[len(gpath.Elem)-2].Key[leafName]; isKey {
+			return reflect.Value{}, false
+		}
+	}
 	parent, _, err := getParentNode(&uri, devObj)
 	if err != nil || parent == nil || *parent == nil {
 		return reflect.Value{}, false
