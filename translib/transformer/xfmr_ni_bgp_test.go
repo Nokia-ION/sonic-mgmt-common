@@ -19,6 +19,7 @@
 package transformer_test
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -5742,6 +5743,16 @@ func Test_openconfig_network_instance_bgp_neighbor_config_neighbor_address(t *te
 
 	t.Run("GET network-instance BGP neighbor config neighbor-address",
 		processGetRequest(url, nil, `{"openconfig-network-instance:neighbor-address":"20.0.0.1"}`, false))
+	time.Sleep(1 * time.Second)
+
+	// A list key leaf answers with the key the request names.
+	nbrUrl := strings.TrimSuffix(cfgUrl, "/config")
+	t.Run("GET network-instance BGP neighbor list key neighbor-address",
+		processGetRequest(nbrUrl+"/neighbor-address", nil, `{"openconfig-network-instance:neighbor-address":"20.0.0.1"}`, false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET network-instance BGP protocol list key name",
+		processGetRequest("/openconfig-network-instance:network-instances/network-instance[name=default]/protocols/protocol[identifier=BGP][name=bgp]/name",
+			nil, `{"openconfig-network-instance:name":"bgp"}`, false))
 	time.Sleep(1 * time.Second)
 
 	t.Run("GET network-instance BGP neighbor config container carries neighbor-address",
