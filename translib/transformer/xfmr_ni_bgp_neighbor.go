@@ -597,6 +597,13 @@ func niBgpNbrAfInstFields(afObj *ocbinds.OpenconfigNetworkInstance_NetworkInstan
 	for f, v := range niBgpNbrPfxWithMode(pfxFields, received) {
 		fields[f] = v
 	}
+	afFields, err := niBgpNbrAfFields(afObj, afiSafi)
+	if err != nil {
+		return nil, err
+	}
+	for f, v := range afFields {
+		fields[f] = v
+	}
 	return fields, nil
 }
 
@@ -620,7 +627,19 @@ var niBgpNbrAfInstOwnedFlds = map[string]bool{
 // what that container held beyond the payload.
 func niBgpNbrAfInstWrite(inParams XfmrParams, reqInfo *niBgpNbrReqInfo, afiSafi string, fields map[string]string) (map[string]string, error) {
 	existing := niBgpCfgDbEntry(inParams, niBgpNbrAfTbl, reqInfo.niName, reqInfo.neighborAddr, afiSafi)
+	fields, clear := niBgpSplitClearFlds(fields)
 	if inParams.oper != REPLACE {
+		stale := map[string]string{}
+		for f := range clear {
+			if _, ok := existing.Field[f]; ok {
+				stale[f] = ""
+			}
+		}
+		if len(stale) > 0 {
+			if err := niBgpStageSubOp(inParams, DELETE, makeNiBgpNbrAfSingleResMap(reqInfo.niName, reqInfo.neighborAddr, afiSafi, stale)); err != nil {
+				return nil, err
+			}
+		}
 		if _, ok := fields[niBgpNbrMaxPfxForceFld]; ok {
 			if clear := niBgpNbrPfxClear(existing, fields, fields[niBgpNbrMaxPfxForceFld] == "true", false); len(clear) > 0 {
 				if err := niBgpStageSubOp(inParams, DELETE, makeNiBgpNbrAfSingleResMap(reqInfo.niName, reqInfo.neighborAddr, afiSafi, clear)); err != nil {
@@ -762,6 +781,9 @@ func populateNiBgpNbrAfFromDb(cfgDb *db.DB, ygRoot *ygot.GoStruct, niName, proto
 		if policy := strings.TrimSpace(entry.Field[niBgpNbrRouteMapOutFld]); policy != "" {
 			afObj.ApplyPolicy.Config.ExportPolicy = []string{policy}
 		}
+	}
+	if err := niBgpNbrAfLeavesToYang(ygRoot, niName, protoName, neighborAddr, afiSafi, "", "", entry); err != nil {
+		return err
 	}
 	for _, received := range []bool{false, true} {
 		if err := populateNiBgpNbrPfxFromEntry(afObj, afiSafi, entry, received, ""); err != nil {
@@ -1842,7 +1864,9 @@ func parseNiBgpNbrAllowOwnAs(inParams XfmrParams) (*uint8, error) {
 	return asPathCfgObj.AllowOwnAs, nil
 }
 
-var YangToDb_ni_bgp_nbr_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (map[string]map[string]db.Value, error) {
+// yangToDbNiBgpNbrCfgBase maps the neighbor config containers apart from the
+// niBgpNbrLeafFlds leaves, which YangToDb_ni_bgp_nbr_cfg_xfmr adds.
+var yangToDbNiBgpNbrCfgBase SubTreeXfmrYangToDb = func(inParams XfmrParams) (map[string]map[string]db.Value, error) {
 	res := make(map[string]map[string]db.Value)
 
 	reqInfo, err := parseNiBgpNbrRequestUri(niHandlerReqUri(inParams))
@@ -2066,7 +2090,7 @@ var YangToDb_ni_bgp_nbr_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 					fields[niBgpNbrKeepaliveFld] = strconv.FormatUint(uint64(*tmObj.KeepaliveInterval), 10)
 				}
 			}
-			if len(fields) == 0 {
+			if len(fields) == 0 && !niBgpNbrPayloadHasLeaves(inParams, reqInfo.niName, reqInfo.protoName, reqInfo.neighborAddr, "timers/config") {
 				return res, tlerr.InvalidArgsError{Format: "BGP neighbor timers config payload carries none of connect-retry, hold-time or keepalive-interval"}
 			}
 			return makeNiBgpNbrResMap(reqInfo.niName, reqInfo.neighborAddr, fields), nil
@@ -2183,14 +2207,16 @@ var YangToDb_ni_bgp_nbr_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams)
 				}
 			}
 		}
-		if len(fields) == 0 {
+		if len(fields) == 0 && !niBgpNbrPayloadHasLeaves(inParams, reqInfo.niName, reqInfo.protoName, reqInfo.neighborAddr, "config") {
 			return res, tlerr.InvalidArgsError{Format: "BGP neighbor config payload missing supported fields (peer-group/peer-as/enabled/auth-password)"}
 		}
 	}
 	return makeNiBgpNbrResMap(reqInfo.niName, reqInfo.neighborAddr, fields), nil
 }
 
-var DbToYang_ni_bgp_nbr_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) error {
+// dbToYangNiBgpNbrCfgBase reads the neighbor config containers apart from the
+// niBgpNbrLeafFlds leaves, which DbToYang_ni_bgp_nbr_cfg_xfmr adds.
+var dbToYangNiBgpNbrCfgBase SubTreeXfmrDbToYang = func(inParams XfmrParams) error {
 	reqInfo, err := parseNiBgpNbrRequestUri(inParams.requestUri)
 	if err != nil {
 		fallback, nameErr := niBgpContainerLevelFallback(inParams.requestUri)
