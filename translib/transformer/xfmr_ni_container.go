@@ -109,6 +109,9 @@ func parseNiContainerRequestUri(uri string) (string, string) {
 	if m := niContainerProtocolsReqUriRe.FindStringSubmatch(uri); len(m) == 2 {
 		return niContainerTargetProtocols, m[1]
 	}
+	if m := niTablesReqUriRe.FindStringSubmatch(uri); len(m) >= 2 {
+		return niContainerTargetTables, m[1]
+	}
 	if m := niContainerAnyNiReqUriRe.FindStringSubmatch(uri); len(m) == 2 {
 		return niContainerTargetUnmapped, m[1]
 	}
@@ -181,6 +184,13 @@ var YangToDb_ni_container_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (
 	if kind == niContainerTargetUnmapped {
 		return res, tlerr.NotSupportedError{
 			Format: "unsupported network-instance path: " + inParams.requestUri,
+			Path:   inParams.requestUri,
+		}
+	}
+
+	if kind == niContainerTargetTables {
+		return res, tlerr.NotSupportedError{
+			Format: "network-instance tables are derived from the protocol instances and cannot be written",
 			Path:   inParams.requestUri,
 		}
 	}
@@ -375,6 +385,9 @@ var DbToYang_ni_container_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) e
 
 	if kind == niContainerTargetProtocols {
 		return populateNiContainerProtocolsFromDb(inParams, wrappedRoot, cfgDb, niName)
+	}
+	if kind == niContainerTargetTables {
+		return niTablesToYang(wrappedRoot, cfgDb, niName, inParams.requestUri)
 	}
 
 	switch kind {
@@ -577,6 +590,9 @@ func populateNiContainerNonProtocolFromDb(inParams XfmrParams, ygRoot *ygot.GoSt
 		if err := niContainerReplay(inParams, ygRoot, uri, DbToYang_ni_table_conn_cfg_xfmr); err != nil {
 			return err
 		}
+	}
+	if err := niTablesToYang(ygRoot, cfgDb, niName, niContainerNiUri(niName)+"/tables"); err != nil {
+		return err
 	}
 	if niAftsServesNi(niName) && inParams.dbs[db.ApplDB] != nil {
 		uri := niContainerNiUri(niName) + "/afts"

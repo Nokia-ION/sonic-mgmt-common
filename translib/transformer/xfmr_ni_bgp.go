@@ -50,9 +50,6 @@ const (
 	niBgpDefaultIpv4UnicastFld         = "default_ipv4_unicast"
 	niBgpDefaultIpv6UnicastFld         = "default_ipv6_unicast"
 	niBgpTargetGlobalCfg               = "global-config"
-	niBgpTargetRouteSelectConfig       = "route-selection-options-config"
-	niBgpTargetUseMpEbgpConfig         = "use-multiple-paths-ebgp-config"
-	niBgpTargetUseMpIbgpConfig         = "use-multiple-paths-ibgp-config"
 	niBgpTargetGlobalAfUseMpEbgpConfig = "global-afi-use-multiple-paths-ebgp-config"
 	niBgpTargetGlobalAfUseMpIbgpConfig = "global-afi-use-multiple-paths-ibgp-config"
 	niBgpTargetGlobalAfCfgEnabled      = "global-afi-config-enabled"
@@ -79,12 +76,9 @@ var niBgpProtocolRootReqUriRe = regexp.MustCompile(niBgpProtoUriPfx + `$`)
 var niBgpRootReqUriRe = regexp.MustCompile(niBgpProtoUriPfx + `/bgp$`)
 var niBgpProtoInstanceReqUriRe = regexp.MustCompile(niBgpProtoUriPfx + `(?:/.*)?$`)
 var niBgpGlobalCfgReqUriRe = regexp.MustCompile(niBgpProtoUriPfx + `/bgp/global/config(?:/(as|router-id))?$`)
-var niBgpGlobalRouteSelectReqUriRe = regexp.MustCompile(niBgpProtoUriPfx + `/bgp/global/route-selection-options/config(?:/(always-compare-med))?$`)
-var niBgpGlobalUseMpEbgpReqUriRe = regexp.MustCompile(niBgpProtoUriPfx + `/bgp/global/use-multiple-paths/ebgp/config(?:/(maximum-paths))?$`)
-var niBgpGlobalUseMpIbgpReqUriRe = regexp.MustCompile(niBgpProtoUriPfx + `/bgp/global/use-multiple-paths/ibgp/config(?:/(maximum-paths))?$`)
-var niBgpGlobalAfUseMpEbgpReqUriRe = regexp.MustCompile(niBgpProtoUriPfx + `/bgp/global/afi-safis/afi-safi\[afi-safi-name=([^\]]+)\]/use-multiple-paths/ebgp/config(?:/(maximum-paths))?$`)
-var niBgpGlobalAfUseMpIbgpReqUriRe = regexp.MustCompile(niBgpProtoUriPfx + `/bgp/global/afi-safis/afi-safi\[afi-safi-name=([^\]]+)\]/use-multiple-paths/ibgp/config(?:/(maximum-paths))?$`)
-var niBgpGlobalAfCfgEnabledReqUriRe = regexp.MustCompile(niBgpProtoUriPfx + `/bgp/global/afi-safis/afi-safi\[afi-safi-name=([^\]]+)\]/config(?:/(enabled))?$`)
+var niBgpGlobalAfUseMpEbgpReqUriRe = regexp.MustCompile(niBgpProtoUriPfx + `/bgp/global/afi-safis/afi-safi\[afi-safi-name=([^\]]+)\]/use-multiple-paths/ebgp/(?:config|state)(?:/(maximum-paths))?$`)
+var niBgpGlobalAfUseMpIbgpReqUriRe = regexp.MustCompile(niBgpProtoUriPfx + `/bgp/global/afi-safis/afi-safi\[afi-safi-name=([^\]]+)\]/use-multiple-paths/ibgp/(?:config|state)(?:/(maximum-paths))?$`)
+var niBgpGlobalAfCfgEnabledReqUriRe = regexp.MustCompile(niBgpProtoUriPfx + `/bgp/global/afi-safis/afi-safi\[afi-safi-name=([^\]]+)\]/(?:config|state)(?:/(enabled|afi-safi-name))?$`)
 
 // niBgpProtoNames lists the protocol instance names served for identifier=BGP.
 // Every name would otherwise address the same BGP_GLOBALS row, so the two
@@ -125,7 +119,9 @@ type niBgpReqInfo struct {
 	niName         string
 	protoName      string
 	afiSafi        string // CONFIG_DB afi_safi for global/afi-safis paths
-	targetLeaf     string // "", "as", "router-id", "always-compare-med", "maximum-paths"
+	container      string // the niBgpGlobalLeafFlds container, below bgp/global
+	listenPrefix   string // the dynamic-neighbor-prefix key
+	targetLeaf     string // "", "as", "router-id", "maximum-paths", "enabled", or a leaf of container
 	targetPathKind string
 	// wholeInstance marks the two uris that name the instance itself: the
 	// protocol list entry and the bgp container it holds. The catch-all below
@@ -172,6 +168,19 @@ func matchNiBgpRequestUri(uri string) (*niBgpReqInfo, error) {
 		}, nil
 	}
 
+	if m = niBgpProtoCfgReqUriRe.FindStringSubmatch(uri); len(m) >= 3 {
+		leaf := ""
+		if len(m) >= 4 {
+			leaf = m[3]
+		}
+		return &niBgpReqInfo{
+			niName:         m[1],
+			protoName:      m[2],
+			targetLeaf:     leaf,
+			targetPathKind: niBgpTargetProtoCfg,
+		}, nil
+	}
+
 	m = niBgpGlobalCfgReqUriRe.FindStringSubmatch(uri)
 	if len(m) >= 3 {
 		leaf := ""
@@ -186,43 +195,17 @@ func matchNiBgpRequestUri(uri string) (*niBgpReqInfo, error) {
 		}, nil
 	}
 
-	m = niBgpGlobalRouteSelectReqUriRe.FindStringSubmatch(uri)
-	if len(m) >= 3 {
+	if m = niBgpGlobalLeafReqUriRe.FindStringSubmatch(uri); len(m) >= 5 {
 		leaf := ""
-		if len(m) >= 4 {
-			leaf = m[3]
+		if len(m) >= 6 {
+			leaf = m[5]
 		}
 		return &niBgpReqInfo{
 			niName:         m[1],
 			protoName:      m[2],
+			container:      m[3],
 			targetLeaf:     leaf,
-			targetPathKind: niBgpTargetRouteSelectConfig,
-		}, nil
-	}
-	m = niBgpGlobalUseMpEbgpReqUriRe.FindStringSubmatch(uri)
-	if len(m) >= 3 {
-		leaf := ""
-		if len(m) >= 4 {
-			leaf = m[3]
-		}
-		return &niBgpReqInfo{
-			niName:         m[1],
-			protoName:      m[2],
-			targetLeaf:     leaf,
-			targetPathKind: niBgpTargetUseMpEbgpConfig,
-		}, nil
-	}
-	m = niBgpGlobalUseMpIbgpReqUriRe.FindStringSubmatch(uri)
-	if len(m) >= 3 {
-		leaf := ""
-		if len(m) >= 4 {
-			leaf = m[3]
-		}
-		return &niBgpReqInfo{
-			niName:         m[1],
-			protoName:      m[2],
-			targetLeaf:     leaf,
-			targetPathKind: niBgpTargetUseMpIbgpConfig,
+			targetPathKind: niBgpTargetGlobalLeaves,
 		}, nil
 	}
 	if m = niBgpGlobalAfUseMpEbgpReqUriRe.FindStringSubmatch(uri); len(m) >= 4 {
@@ -275,6 +258,9 @@ func matchNiBgpRequestUri(uri string) (*niBgpReqInfo, error) {
 			targetLeaf:     leaf,
 			targetPathKind: niBgpTargetGlobalAfCfgEnabled,
 		}, nil
+	}
+	if reqInfo, ok := matchNiBgpListenPfxUri(uri); ok {
+		return reqInfo, nil
 	}
 	// Any other node of the BGP protocol instance is served by the container
 	// dispatch, which maps or populates the whole subtree and lets translib
@@ -366,9 +352,6 @@ func niBgpAfiSafiNameFromEnum(v ocbinds.E_OpenconfigBgpTypes_AFI_SAFI_TYPE) (str
 var niBgpMappedPayloadLeaves = map[string]bool{
 	"global/config/as":        true,
 	"global/config/router-id": true,
-	"global/route-selection-options/config/always-compare-med":                                true,
-	"global/use-multiple-paths/ebgp/config/maximum-paths":                                     true,
-	"global/use-multiple-paths/ibgp/config/maximum-paths":                                     true,
 	"global/afi-safis/afi-safi/use-multiple-paths/ebgp/config/maximum-paths":                  true,
 	"global/afi-safis/afi-safi/use-multiple-paths/ibgp/config/maximum-paths":                  true,
 	"global/afi-safis/afi-safi/config/enabled":                                                true,
@@ -616,244 +599,6 @@ func getNiBgpGlobalCfgObj(s *ygot.GoStruct, niName, protoName string, createIfMi
 	}
 	buildNiBgpEmptySubtree(pObj)
 	return pObj.Bgp.Global.Config
-}
-
-func getNiBgpGlobalRouteSelectCfgObj(s *ygot.GoStruct, niName, protoName string, createIfMissing bool) *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Global_RouteSelectionOptions_Config {
-	if s == nil || *s == nil {
-		return nil
-	}
-
-	deviceObj, ok := (*s).(*ocbinds.Device)
-	if !ok || deviceObj == nil {
-		return nil
-	}
-	ygot.BuildEmptyTree(deviceObj)
-
-	if deviceObj.NetworkInstances == nil {
-		if !createIfMissing {
-			return nil
-		}
-		deviceObj.NetworkInstances = &ocbinds.OpenconfigNetworkInstance_NetworkInstances{}
-	}
-
-	niObj, ok := deviceObj.NetworkInstances.NetworkInstance[niName]
-	if !ok || niObj == nil {
-		if !createIfMissing {
-			return nil
-		}
-		var err error
-		niObj, err = deviceObj.NetworkInstances.NewNetworkInstance(niName)
-		if err != nil || niObj == nil {
-			return nil
-		}
-	}
-
-	if niObj.Protocols == nil {
-		if !createIfMissing {
-			return nil
-		}
-		niObj.Protocols = &ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols{}
-	}
-	if niObj.Protocols.Protocol == nil {
-		if !createIfMissing {
-			return nil
-		}
-		niObj.Protocols.Protocol = make(map[ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Key]*ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol)
-	}
-
-	wantKey := ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Key{
-		Identifier: ocbinds.OpenconfigPolicyTypes_INSTALL_PROTOCOL_TYPE_BGP,
-		Name:       protoName,
-	}
-	if pObj, ok := niObj.Protocols.Protocol[wantKey]; ok && pObj != nil {
-		buildNiBgpEmptySubtree(pObj)
-		return pObj.Bgp.Global.RouteSelectionOptions.Config
-	}
-
-	for pKey, pObj := range niObj.Protocols.Protocol {
-		if pObj == nil || pObj.Bgp == nil || pObj.Bgp.Global == nil {
-			continue
-		}
-		if !strings.Contains(fmt.Sprint(pKey.Identifier), "BGP") {
-			continue
-		}
-		if pKey.Name != protoName {
-			if pObj.Name == nil || *pObj.Name != protoName {
-				continue
-			}
-		}
-		buildNiBgpEmptySubtree(pObj)
-		return pObj.Bgp.Global.RouteSelectionOptions.Config
-	}
-
-	if !createIfMissing {
-		return nil
-	}
-
-	pObj, err := niObj.Protocols.NewProtocol(ocbinds.OpenconfigPolicyTypes_INSTALL_PROTOCOL_TYPE_BGP, protoName)
-	if err != nil || pObj == nil {
-		return nil
-	}
-	buildNiBgpEmptySubtree(pObj)
-	return pObj.Bgp.Global.RouteSelectionOptions.Config
-}
-
-func getNiBgpGlobalUseMpEbgpCfgObj(s *ygot.GoStruct, niName, protoName string, createIfMissing bool) *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Global_UseMultiplePaths_Ebgp_Config {
-	if s == nil || *s == nil {
-		return nil
-	}
-
-	deviceObj, ok := (*s).(*ocbinds.Device)
-	if !ok || deviceObj == nil {
-		return nil
-	}
-	ygot.BuildEmptyTree(deviceObj)
-
-	if deviceObj.NetworkInstances == nil {
-		if !createIfMissing {
-			return nil
-		}
-		deviceObj.NetworkInstances = &ocbinds.OpenconfigNetworkInstance_NetworkInstances{}
-	}
-
-	niObj, ok := deviceObj.NetworkInstances.NetworkInstance[niName]
-	if !ok || niObj == nil {
-		if !createIfMissing {
-			return nil
-		}
-		var err error
-		niObj, err = deviceObj.NetworkInstances.NewNetworkInstance(niName)
-		if err != nil || niObj == nil {
-			return nil
-		}
-	}
-
-	if niObj.Protocols == nil {
-		if !createIfMissing {
-			return nil
-		}
-		niObj.Protocols = &ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols{}
-	}
-	if niObj.Protocols.Protocol == nil {
-		if !createIfMissing {
-			return nil
-		}
-		niObj.Protocols.Protocol = make(map[ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Key]*ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol)
-	}
-
-	wantKey := ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Key{
-		Identifier: ocbinds.OpenconfigPolicyTypes_INSTALL_PROTOCOL_TYPE_BGP,
-		Name:       protoName,
-	}
-	if pObj, ok := niObj.Protocols.Protocol[wantKey]; ok && pObj != nil {
-		buildNiBgpEmptySubtree(pObj)
-		return pObj.Bgp.Global.UseMultiplePaths.Ebgp.Config
-	}
-
-	for pKey, pObj := range niObj.Protocols.Protocol {
-		if pObj == nil || pObj.Bgp == nil || pObj.Bgp.Global == nil {
-			continue
-		}
-		if !strings.Contains(fmt.Sprint(pKey.Identifier), "BGP") {
-			continue
-		}
-		if pKey.Name != protoName {
-			if pObj.Name == nil || *pObj.Name != protoName {
-				continue
-			}
-		}
-		buildNiBgpEmptySubtree(pObj)
-		return pObj.Bgp.Global.UseMultiplePaths.Ebgp.Config
-	}
-
-	if !createIfMissing {
-		return nil
-	}
-	pObj, err := niObj.Protocols.NewProtocol(ocbinds.OpenconfigPolicyTypes_INSTALL_PROTOCOL_TYPE_BGP, protoName)
-	if err != nil || pObj == nil {
-		return nil
-	}
-	buildNiBgpEmptySubtree(pObj)
-	return pObj.Bgp.Global.UseMultiplePaths.Ebgp.Config
-}
-
-func getNiBgpGlobalUseMpIbgpCfgObj(s *ygot.GoStruct, niName, protoName string, createIfMissing bool) *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Global_UseMultiplePaths_Ibgp_Config {
-	if s == nil || *s == nil {
-		return nil
-	}
-
-	deviceObj, ok := (*s).(*ocbinds.Device)
-	if !ok || deviceObj == nil {
-		return nil
-	}
-	ygot.BuildEmptyTree(deviceObj)
-
-	if deviceObj.NetworkInstances == nil {
-		if !createIfMissing {
-			return nil
-		}
-		deviceObj.NetworkInstances = &ocbinds.OpenconfigNetworkInstance_NetworkInstances{}
-	}
-
-	niObj, ok := deviceObj.NetworkInstances.NetworkInstance[niName]
-	if !ok || niObj == nil {
-		if !createIfMissing {
-			return nil
-		}
-		var err error
-		niObj, err = deviceObj.NetworkInstances.NewNetworkInstance(niName)
-		if err != nil || niObj == nil {
-			return nil
-		}
-	}
-
-	if niObj.Protocols == nil {
-		if !createIfMissing {
-			return nil
-		}
-		niObj.Protocols = &ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols{}
-	}
-	if niObj.Protocols.Protocol == nil {
-		if !createIfMissing {
-			return nil
-		}
-		niObj.Protocols.Protocol = make(map[ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Key]*ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol)
-	}
-
-	wantKey := ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Key{
-		Identifier: ocbinds.OpenconfigPolicyTypes_INSTALL_PROTOCOL_TYPE_BGP,
-		Name:       protoName,
-	}
-	if pObj, ok := niObj.Protocols.Protocol[wantKey]; ok && pObj != nil {
-		buildNiBgpEmptySubtree(pObj)
-		return pObj.Bgp.Global.UseMultiplePaths.Ibgp.Config
-	}
-
-	for pKey, pObj := range niObj.Protocols.Protocol {
-		if pObj == nil || pObj.Bgp == nil || pObj.Bgp.Global == nil {
-			continue
-		}
-		if !strings.Contains(fmt.Sprint(pKey.Identifier), "BGP") {
-			continue
-		}
-		if pKey.Name != protoName {
-			if pObj.Name == nil || *pObj.Name != protoName {
-				continue
-			}
-		}
-		buildNiBgpEmptySubtree(pObj)
-		return pObj.Bgp.Global.UseMultiplePaths.Ibgp.Config
-	}
-
-	if !createIfMissing {
-		return nil
-	}
-	pObj, err := niObj.Protocols.NewProtocol(ocbinds.OpenconfigPolicyTypes_INSTALL_PROTOCOL_TYPE_BGP, protoName)
-	if err != nil || pObj == nil {
-		return nil
-	}
-	buildNiBgpEmptySubtree(pObj)
-	return pObj.Bgp.Global.UseMultiplePaths.Ibgp.Config
 }
 
 func getNiBgpGlobalAfObj(s *ygot.GoStruct, niName, protoName, afiSafi string, createIfMissing bool) *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Global_AfiSafis_AfiSafi {
@@ -1210,93 +955,6 @@ func parseNiBgpRouterId(inParams XfmrParams) (string, error) {
 	return strings.TrimSpace(*cfgObj.RouterId), nil
 }
 
-func parseNiBgpBoolValue(v interface{}) (*bool, bool) {
-	switch val := v.(type) {
-	case bool:
-		b := val
-		return &b, true
-	case *bool:
-		if val != nil {
-			return val, true
-		}
-	case string:
-		s := strings.TrimSpace(val)
-		if b, err := strconv.ParseBool(s); err == nil {
-			return &b, true
-		}
-	case *string:
-		if val != nil {
-			s := strings.TrimSpace(*val)
-			if b, err := strconv.ParseBool(s); err == nil {
-				return &b, true
-			}
-		}
-	}
-	return nil, false
-}
-
-func parseNiBgpAlwaysCompareMedFromParam(param interface{}) (*bool, bool) {
-	if param == nil {
-		return nil, false
-	}
-	if med, ok := parseNiBgpBoolValue(param); ok {
-		return med, true
-	}
-
-	rv := reflect.ValueOf(param)
-	for rv.IsValid() && (rv.Kind() == reflect.Interface || rv.Kind() == reflect.Ptr) {
-		if rv.IsNil() {
-			return nil, false
-		}
-		rv = rv.Elem()
-	}
-	if !rv.IsValid() {
-		return nil, false
-	}
-
-	if rv.Kind() == reflect.Struct {
-		fv := rv.FieldByName("AlwaysCompareMed")
-		if fv.IsValid() && fv.CanInterface() {
-			if med, ok := parseNiBgpBoolValue(fv.Interface()); ok {
-				return med, true
-			}
-		}
-	}
-
-	if rv.Kind() == reflect.Map {
-		for _, mk := range rv.MapKeys() {
-			k := fmt.Sprint(mk.Interface())
-			if k == "always-compare-med" || strings.HasSuffix(k, ":always-compare-med") {
-				mv := rv.MapIndex(mk)
-				if mv.IsValid() && mv.CanInterface() {
-					if med, ok := parseNiBgpBoolValue(mv.Interface()); ok {
-						return med, true
-					}
-				}
-			}
-		}
-	}
-
-	return nil, false
-}
-
-func parseNiBgpAlwaysCompareMed(inParams XfmrParams) (*bool, error) {
-	reqInfo, err := parseNiBgpRequestUri(inParams.requestUri)
-	if err != nil {
-		return nil, err
-	}
-	if med, ok := parseNiBgpAlwaysCompareMedFromParam(inParams.param); ok {
-		return med, nil
-	}
-
-	cfgObj := getNiBgpGlobalRouteSelectCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.protoName, false)
-	if cfgObj == nil || cfgObj.AlwaysCompareMed == nil {
-		return nil, tlerr.InvalidArgsError{Format: "BGP global always-compare-med is missing in request payload"}
-	}
-
-	return cfgObj.AlwaysCompareMed, nil
-}
-
 func parseNiBgpMaxPathsValue(v interface{}) (*uint16, bool) {
 	switch val := v.(type) {
 	case uint16:
@@ -1371,38 +1029,6 @@ func parseNiBgpUseMpEbgpMaxPathsFromParam(param interface{}) (*uint16, bool) {
 		}
 	}
 	return nil, false
-}
-
-func parseNiBgpUseMpEbgpMaxPaths(inParams XfmrParams) (*uint16, error) {
-	reqInfo, err := parseNiBgpRequestUri(inParams.requestUri)
-	if err != nil {
-		return nil, err
-	}
-	if mp, ok := parseNiBgpUseMpEbgpMaxPathsFromParam(inParams.param); ok {
-		return mp, nil
-	}
-	cfgObj := getNiBgpGlobalUseMpEbgpCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.protoName, false)
-	if cfgObj == nil || cfgObj.MaximumPaths == nil {
-		return nil, tlerr.InvalidArgsError{Format: "BGP global use-multiple-paths eBGP maximum-paths is missing in request payload"}
-	}
-	u := uint16(*cfgObj.MaximumPaths)
-	return &u, nil
-}
-
-func parseNiBgpUseMpIbgpMaxPaths(inParams XfmrParams) (*uint16, error) {
-	reqInfo, err := parseNiBgpRequestUri(inParams.requestUri)
-	if err != nil {
-		return nil, err
-	}
-	if mp, ok := parseNiBgpUseMpEbgpMaxPathsFromParam(inParams.param); ok {
-		return mp, nil
-	}
-	cfgObj := getNiBgpGlobalUseMpIbgpCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.protoName, false)
-	if cfgObj == nil || cfgObj.MaximumPaths == nil {
-		return nil, tlerr.InvalidArgsError{Format: "BGP global use-multiple-paths iBGP maximum-paths is missing in request payload"}
-	}
-	u := uint16(*cfgObj.MaximumPaths)
-	return &u, nil
 }
 
 func parseNiBgpGlobalAfUseMpMaxPaths(inParams XfmrParams, reqInfo *niBgpReqInfo, ebgp bool) (*uint16, error) {
@@ -1592,19 +1218,18 @@ func buildNiBgpHierResMap(s *ygot.GoStruct, niName, protoName string) (map[strin
 				gFields[niBgpRouterIdFld] = strings.TrimSpace(*bgpObj.Global.Config.RouterId)
 			}
 		}
-		if bgpObj.Global.RouteSelectionOptions != nil && bgpObj.Global.RouteSelectionOptions.Config != nil && bgpObj.Global.RouteSelectionOptions.Config.AlwaysCompareMed != nil {
-			gFields[niBgpAlwaysCompareMedFld] = strconv.FormatBool(*bgpObj.Global.RouteSelectionOptions.Config.AlwaysCompareMed)
-		}
-		if bgpObj.Global.UseMultiplePaths != nil {
-			if bgpObj.Global.UseMultiplePaths.Ebgp != nil && bgpObj.Global.UseMultiplePaths.Ebgp.Config != nil && bgpObj.Global.UseMultiplePaths.Ebgp.Config.MaximumPaths != nil {
-				gFields[niBgpMaxEbgpPathsFld] = strconv.FormatUint(uint64(*bgpObj.Global.UseMultiplePaths.Ebgp.Config.MaximumPaths), 10)
-			}
-			if bgpObj.Global.UseMultiplePaths.Ibgp != nil && bgpObj.Global.UseMultiplePaths.Ibgp.Config != nil && bgpObj.Global.UseMultiplePaths.Ibgp.Config.MaximumPaths != nil {
-				gFields[niBgpMaxIbgpPathsFld] = strconv.FormatUint(uint64(*bgpObj.Global.UseMultiplePaths.Ibgp.Config.MaximumPaths), 10)
-			}
+		for fld, val := range niBgpGlobalLeavesHierResMap(s, niName, protoName) {
+			gFields[fld] = val
 		}
 		if len(gFields) > 0 {
 			res = mergeDbResMapFields(res, makeNiBgpGlobalsResMap(niName, gFields))
+		}
+		rows, err := niBgpListenPfxRows(niBgpListenPfxObjs(s, niName, protoName), niName, "", nil)
+		if err != nil {
+			return res, err
+		}
+		if len(rows) > 0 {
+			res = mergeDbResMapFields(res, map[string]map[string]db.Value{niBgpListenPfxTbl: rows})
 		}
 	}
 
@@ -1803,30 +1428,9 @@ func populateNiBgpHierToYangFromDb(cfgDb *db.DB, ygRoot *ygot.GoStruct, niName, 
 				gCfg.RouterId = &rid
 			}
 		}
-		routeCfg := getNiBgpGlobalRouteSelectCfgObj(ygRoot, niName, protoName, true)
-		if routeCfg != nil {
-			if medStr, ok := gEntry.Field[niBgpAlwaysCompareMedFld]; ok && strings.TrimSpace(medStr) != "" {
-				if med, convErr := strconv.ParseBool(strings.TrimSpace(medStr)); convErr == nil {
-					routeCfg.AlwaysCompareMed = &med
-				}
-			}
-		}
-		if mpStr, ok := gEntry.Field[niBgpMaxEbgpPathsFld]; ok && strings.TrimSpace(mpStr) != "" {
-			if mpVal, convErr := strconv.ParseUint(strings.TrimSpace(mpStr), 10, 32); convErr == nil {
-				ebgpCfg := getNiBgpGlobalUseMpEbgpCfgObj(ygRoot, niName, protoName, true)
-				if ebgpCfg != nil {
-					mp := uint32(mpVal)
-					ebgpCfg.MaximumPaths = &mp
-				}
-			}
-		}
-		if mpStr, ok := gEntry.Field[niBgpMaxIbgpPathsFld]; ok && strings.TrimSpace(mpStr) != "" {
-			if mpVal, convErr := strconv.ParseUint(strings.TrimSpace(mpStr), 10, 32); convErr == nil {
-				ibgpCfg := getNiBgpGlobalUseMpIbgpCfgObj(ygRoot, niName, protoName, true)
-				if ibgpCfg != nil {
-					mp := uint32(mpVal)
-					ibgpCfg.MaximumPaths = &mp
-				}
+		for _, container := range niBgpGlobalLeafContainers() {
+			if err := niBgpGlobalLeavesToYang(ygRoot, niName, protoName, container, "", gEntry); err != nil {
+				return err
 			}
 		}
 		for _, item := range []struct {
@@ -1877,6 +1481,12 @@ func populateNiBgpHierToYangFromDb(cfgDb *db.DB, ygRoot *ygot.GoStruct, niName, 
 				}
 			}
 		}
+	}
+	for _, afiSafi := range []string{niBgpAfiSafiIPv4, niBgpAfiSafiIPv6} {
+		niBgpGlobalAfMirror(ygRoot, niName, protoName, afiSafi)
+	}
+	if err := niBgpListenPfxToYang(cfgDb, ygRoot, niName, protoName, ""); err != nil {
+		return err
 	}
 
 	// Neighbor config from BGP_NEIGHBOR.
@@ -2104,6 +1714,7 @@ func niBgpDeleteGlobalsForNi(inParams XfmrParams, niName string) (map[string]map
 	}
 	for _, tbl := range []string{
 		niBgpGlobalsAfTbl,
+		niBgpListenPfxTbl,
 		niBgpNbrTbl,
 		niBgpNbrAfTbl,
 		niBgpPeerGroupTbl,
@@ -2136,6 +1747,15 @@ var YangToDb_ni_bgp_global_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPara
 	}()
 	res = make(map[string]map[string]db.Value)
 
+	// The identity leaves of the BGP instance are written nowhere, but a
+	// config payload can also carry enabled, which has to be checked.
+	if niBgpProtoCfgReqUriRe.MatchString(niHandlerReqUri(inParams)) {
+		reqInfo, err := parseNiBgpRequestUri(niHandlerReqUri(inParams))
+		if err != nil {
+			return res, err
+		}
+		return niBgpProtoInstanceYangToDb(inParams, reqInfo)
+	}
 	if niIsUnmappedProtocolNodeUri(niHandlerReqUri(inParams)) {
 		// The protocol list node and the identity leaves a payload repeats
 		// under an instance map nothing; translib visits the instance itself
@@ -2162,6 +1782,12 @@ var YangToDb_ni_bgp_global_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPara
 	reqInfo, err := parseNiBgpRequestUri(niHandlerReqUri(inParams))
 	if err != nil {
 		return res, err
+	}
+	if reqInfo.targetPathKind == niBgpTargetGlobalLeaves {
+		return niBgpGlobalLeafYangToDb(inParams, reqInfo)
+	}
+	if reqInfo.targetPathKind == niBgpTargetListenPfx {
+		return niBgpListenPfxYangToDb(inParams, reqInfo)
 	}
 
 	// DELETE: clear only the targeted field in BGP_GLOBALS|<ni-name>.
@@ -2203,15 +1829,7 @@ var YangToDb_ni_bgp_global_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPara
 			return makeNiBgpGlobalsResMap(reqInfo.niName, map[string]string{niBgpAsFld: ""}), nil
 		case "router-id":
 			return makeNiBgpGlobalsResMap(reqInfo.niName, map[string]string{niBgpRouterIdFld: ""}), nil
-		case "always-compare-med":
-			return makeNiBgpGlobalsResMap(reqInfo.niName, map[string]string{niBgpAlwaysCompareMedFld: ""}), nil
 		case "maximum-paths":
-			if reqInfo.targetPathKind == niBgpTargetUseMpEbgpConfig {
-				return makeNiBgpGlobalsResMap(reqInfo.niName, map[string]string{niBgpMaxEbgpPathsFld: ""}), nil
-			}
-			if reqInfo.targetPathKind == niBgpTargetUseMpIbgpConfig {
-				return makeNiBgpGlobalsResMap(reqInfo.niName, map[string]string{niBgpMaxIbgpPathsFld: ""}), nil
-			}
 			if reqInfo.targetPathKind == niBgpTargetGlobalAfUseMpEbgpConfig {
 				return makeNiBgpGlobalsAfSingleResMap(reqInfo.niName, reqInfo.afiSafi, map[string]string{niBgpMaxEbgpPathsFld: ""}), nil
 			}
@@ -2273,28 +1891,8 @@ var YangToDb_ni_bgp_global_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPara
 			return res, err
 		}
 		fields[niBgpRouterIdFld] = rid
-	case "always-compare-med":
-		med, err := parseNiBgpAlwaysCompareMed(inParams)
-		if err != nil {
-			return res, err
-		}
-		fields[niBgpAlwaysCompareMedFld] = strconv.FormatBool(*med)
 	case "maximum-paths":
 		switch reqInfo.targetPathKind {
-		case niBgpTargetUseMpEbgpConfig:
-			mp, err := parseNiBgpUseMpEbgpMaxPaths(inParams)
-			if err != nil {
-				return res, err
-			}
-			fields[niBgpMaxEbgpPathsFld] = strconv.FormatUint(uint64(*mp), 10)
-			return makeNiBgpGlobalsResMap(reqInfo.niName, fields), nil
-		case niBgpTargetUseMpIbgpConfig:
-			mp, err := parseNiBgpUseMpIbgpMaxPaths(inParams)
-			if err != nil {
-				return res, err
-			}
-			fields[niBgpMaxIbgpPathsFld] = strconv.FormatUint(uint64(*mp), 10)
-			return makeNiBgpGlobalsResMap(reqInfo.niName, fields), nil
 		case niBgpTargetGlobalAfUseMpEbgpConfig:
 			mp, err := parseNiBgpGlobalAfUseMpMaxPaths(inParams, reqInfo, true)
 			if err != nil {
@@ -2312,6 +1910,10 @@ var YangToDb_ni_bgp_global_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPara
 		default:
 			return res, tlerr.NotSupportedError{Format: "unsupported maximum-paths target path", Path: inParams.requestUri}
 		}
+	case "afi-safi-name":
+		// The name is the key of the instance the path names, so it holds
+		// nothing to write.
+		return res, nil
 	case "enabled":
 		if reqInfo.targetPathKind != niBgpTargetGlobalAfCfgEnabled {
 			return res, tlerr.NotSupportedError{Format: "unsupported enabled target path", Path: inParams.requestUri}
@@ -2350,48 +1952,6 @@ var YangToDb_ni_bgp_global_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPara
 			if len(fields) == 0 {
 				return res, tlerr.InvalidArgsError{Format: "BGP global config payload missing supported fields (as/router-id)"}
 			}
-		case niBgpTargetRouteSelectConfig:
-			// For route-selection-options config container updates, support always-compare-med.
-			if med, ok := parseNiBgpAlwaysCompareMedFromParam(inParams.param); ok {
-				fields[niBgpAlwaysCompareMedFld] = strconv.FormatBool(*med)
-			}
-			if len(fields) == 0 {
-				cfgObj := getNiBgpGlobalRouteSelectCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.protoName, false)
-				if cfgObj != nil && cfgObj.AlwaysCompareMed != nil {
-					fields[niBgpAlwaysCompareMedFld] = strconv.FormatBool(*cfgObj.AlwaysCompareMed)
-				}
-			}
-			if len(fields) == 0 {
-				return res, tlerr.InvalidArgsError{Format: "BGP route-selection-options config payload missing supported field (always-compare-med)"}
-			}
-		case niBgpTargetUseMpEbgpConfig:
-			if mp, ok := parseNiBgpUseMpEbgpMaxPathsFromParam(inParams.param); ok {
-				fields[niBgpMaxEbgpPathsFld] = strconv.FormatUint(uint64(*mp), 10)
-			}
-			if len(fields) == 0 {
-				cfgObj := getNiBgpGlobalUseMpEbgpCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.protoName, false)
-				if cfgObj != nil && cfgObj.MaximumPaths != nil {
-					fields[niBgpMaxEbgpPathsFld] = strconv.FormatUint(uint64(*cfgObj.MaximumPaths), 10)
-				}
-			}
-			if len(fields) == 0 {
-				return res, tlerr.InvalidArgsError{Format: "BGP global use-multiple-paths eBGP config payload missing supported field (maximum-paths)"}
-			}
-			return makeNiBgpGlobalsResMap(reqInfo.niName, fields), nil
-		case niBgpTargetUseMpIbgpConfig:
-			if mp, ok := parseNiBgpUseMpEbgpMaxPathsFromParam(inParams.param); ok {
-				fields[niBgpMaxIbgpPathsFld] = strconv.FormatUint(uint64(*mp), 10)
-			}
-			if len(fields) == 0 {
-				cfgObj := getNiBgpGlobalUseMpIbgpCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.protoName, false)
-				if cfgObj != nil && cfgObj.MaximumPaths != nil {
-					fields[niBgpMaxIbgpPathsFld] = strconv.FormatUint(uint64(*cfgObj.MaximumPaths), 10)
-				}
-			}
-			if len(fields) == 0 {
-				return res, tlerr.InvalidArgsError{Format: "BGP global use-multiple-paths iBGP config payload missing supported field (maximum-paths)"}
-			}
-			return makeNiBgpGlobalsResMap(reqInfo.niName, fields), nil
 		case niBgpTargetGlobalAfUseMpEbgpConfig:
 			mp, err := parseNiBgpGlobalAfUseMpMaxPaths(inParams, reqInfo, true)
 			if err != nil {
@@ -2457,7 +2017,19 @@ var DbToYang_ni_bgp_global_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrPara
 		if err := populateNiBgpHierToYangFromDb(cfgDb, wrappedRoot, reqInfo.niName, reqInfo.protoName); err != nil {
 			return err
 		}
+		if reqInfo.targetPathKind == niBgpTargetProtocolRoot {
+			if _, err := cfgDb.GetEntry(&db.TableSpec{Name: niBgpGlobalsTbl}, db.Key{Comp: []string{reqInfo.niName}}); err == nil {
+				niBgpProtoInstanceToYang(wrappedRoot, reqInfo.niName, reqInfo.protoName)
+			}
+		}
 		return populateNiBgpAggregateStateReplay(inParams, wrappedRoot, reqInfo.niName, reqInfo.protoName)
+	}
+	if reqInfo.targetPathKind == niBgpTargetProtoCfg {
+		if _, err := cfgDb.GetEntry(&db.TableSpec{Name: niBgpGlobalsTbl}, db.Key{Comp: []string{reqInfo.niName}}); err != nil {
+			return err
+		}
+		niBgpProtoInstanceToYang(inParams.ygRoot, reqInfo.niName, reqInfo.protoName)
+		return nil
 	}
 
 	if reqInfo.targetPathKind == niBgpTargetGlobalCfg {
@@ -2490,67 +2062,15 @@ var DbToYang_ni_bgp_global_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrPara
 		}
 		return nil
 	}
-	if reqInfo.targetPathKind == niBgpTargetRouteSelectConfig {
+	if reqInfo.targetPathKind == niBgpTargetGlobalLeaves {
 		entry, err := cfgDb.GetEntry(&db.TableSpec{Name: niBgpGlobalsTbl}, db.Key{Comp: []string{reqInfo.niName}})
 		if err != nil {
 			return err
 		}
-		rsoCfgObj := getNiBgpGlobalRouteSelectCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.protoName, true)
-		if rsoCfgObj == nil {
-			return tlerr.InvalidArgsError{Format: "Unable to locate BGP global route-selection-options config object in YANG tree"}
-		}
-		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == "always-compare-med" {
-			medStr, ok := entry.Field[niBgpAlwaysCompareMedFld]
-			if ok && strings.TrimSpace(medStr) != "" {
-				med, err := strconv.ParseBool(strings.TrimSpace(medStr))
-				if err != nil {
-					return err
-				}
-				rsoCfgObj.AlwaysCompareMed = &med
-			}
-		}
-		return nil
+		return niBgpGlobalLeavesToYang(inParams.ygRoot, reqInfo.niName, reqInfo.protoName, reqInfo.container, reqInfo.targetLeaf, entry)
 	}
-
-	if reqInfo.targetPathKind == niBgpTargetUseMpEbgpConfig {
-		entry, err := cfgDb.GetEntry(&db.TableSpec{Name: niBgpGlobalsTbl}, db.Key{Comp: []string{reqInfo.niName}})
-		if err != nil {
-			return err
-		}
-		ebgpCfgObj := getNiBgpGlobalUseMpEbgpCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.protoName, true)
-		if ebgpCfgObj == nil {
-			return tlerr.InvalidArgsError{Format: "Unable to locate BGP global use-multiple-paths eBGP config object in YANG tree"}
-		}
-		mpStr, ok := entry.Field[niBgpMaxEbgpPathsFld]
-		if ok && strings.TrimSpace(mpStr) != "" {
-			mpVal, err := strconv.ParseUint(strings.TrimSpace(mpStr), 10, 32)
-			if err != nil {
-				return err
-			}
-			mp := uint32(mpVal)
-			ebgpCfgObj.MaximumPaths = &mp
-		}
-		return nil
-	}
-	if reqInfo.targetPathKind == niBgpTargetUseMpIbgpConfig {
-		entry, err := cfgDb.GetEntry(&db.TableSpec{Name: niBgpGlobalsTbl}, db.Key{Comp: []string{reqInfo.niName}})
-		if err != nil {
-			return err
-		}
-		ibgpCfgObj := getNiBgpGlobalUseMpIbgpCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.protoName, true)
-		if ibgpCfgObj == nil {
-			return tlerr.InvalidArgsError{Format: "Unable to locate BGP global use-multiple-paths iBGP config object in YANG tree"}
-		}
-		mpStr, ok := entry.Field[niBgpMaxIbgpPathsFld]
-		if ok && strings.TrimSpace(mpStr) != "" {
-			mpVal, err := strconv.ParseUint(strings.TrimSpace(mpStr), 10, 32)
-			if err != nil {
-				return err
-			}
-			mp := uint32(mpVal)
-			ibgpCfgObj.MaximumPaths = &mp
-		}
-		return nil
+	if reqInfo.targetPathKind == niBgpTargetListenPfx {
+		return niBgpListenPfxToYang(cfgDb, inParams.ygRoot, reqInfo.niName, reqInfo.protoName, reqInfo.listenPrefix)
 	}
 	if reqInfo.targetPathKind == niBgpTargetGlobalAfUseMpEbgpConfig || reqInfo.targetPathKind == niBgpTargetGlobalAfUseMpIbgpConfig {
 		entry, err := cfgDb.GetEntry(&db.TableSpec{Name: niBgpGlobalsAfTbl}, db.Key{Comp: []string{reqInfo.niName, reqInfo.afiSafi}})
@@ -2571,6 +2091,7 @@ var DbToYang_ni_bgp_global_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrPara
 				mp := uint32(mpVal)
 				ebgpCfgObj.MaximumPaths = &mp
 			}
+			niBgpGlobalAfMirror(inParams.ygRoot, reqInfo.niName, reqInfo.protoName, reqInfo.afiSafi)
 			return nil
 		}
 		ibgpCfgObj := getNiBgpGlobalAfUseMpIbgpCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.protoName, reqInfo.afiSafi, true)
@@ -2586,6 +2107,7 @@ var DbToYang_ni_bgp_global_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrPara
 			mp := uint32(mpVal)
 			ibgpCfgObj.MaximumPaths = &mp
 		}
+		niBgpGlobalAfMirror(inParams.ygRoot, reqInfo.niName, reqInfo.protoName, reqInfo.afiSafi)
 		return nil
 	}
 	if reqInfo.targetPathKind == niBgpTargetGlobalAfCfgEnabled {
@@ -2611,6 +2133,12 @@ var DbToYang_ni_bgp_global_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrPara
 				afCfg.Enabled = &en
 			}
 		}
+		if strings.TrimSpace(entry.Field[fld]) == "" {
+			if _, afErr := cfgDb.GetEntry(&db.TableSpec{Name: niBgpGlobalsAfTbl}, db.Key{Comp: []string{reqInfo.niName, reqInfo.afiSafi}}); afErr != nil {
+				return nil
+			}
+		}
+		niBgpGlobalAfMirror(inParams.ygRoot, reqInfo.niName, reqInfo.protoName, reqInfo.afiSafi)
 		return nil
 	}
 	return nil

@@ -491,11 +491,11 @@ func parseRpolRequestUri(uri string) (*rpolReqInfo, error) {
 	}
 }
 
-// rpolMirrorConfigToState fills the state container of obj, a list instance
-// holding config and state twins, with what its config container holds. The
+// ocMirrorConfigToState fills the state container of obj, a node holding
+// config and state twins, with what its config container holds. The
 // copy goes through JSON because the twins are distinct Go types, down to the
 // union wrappers of the community members.
-func rpolMirrorConfigToState(obj interface{}) {
+func ocMirrorConfigToState(obj interface{}) {
 	v := reflect.ValueOf(obj)
 	if v.Kind() != reflect.Ptr || v.IsNil() {
 		return
@@ -510,7 +510,7 @@ func rpolMirrorConfigToState(obj interface{}) {
 	}
 	js, err := ygot.EmitJSON(cfgObj, &ygot.EmitJSONConfig{Format: ygot.RFC7951, SkipValidation: true})
 	if err != nil {
-		log.Warningf("routing-policy state mirror: config emit failed: %v", err)
+		log.Warningf("state mirror: config emit failed: %v", err)
 		return
 	}
 	if st.IsNil() {
@@ -521,7 +521,7 @@ func rpolMirrorConfigToState(obj interface{}) {
 		return
 	}
 	if err := ocbinds.Unmarshal([]byte(js), stObj, &ytypes.IgnoreExtraFields{}); err != nil {
-		log.Warningf("routing-policy state mirror: state unmarshal failed: %v", err)
+		log.Warningf("state mirror: state unmarshal failed: %v", err)
 	}
 }
 
@@ -4117,7 +4117,7 @@ func rpolDbToYangXfmr(inParams XfmrParams) (err error) {
 			name := reqInfo.policyName
 			cfgObj.Name = &name
 		}
-		rpolMirrorConfigToState(getRpolPolicyDefObj(inParams.ygRoot, reqInfo.policyName))
+		ocMirrorConfigToState(getRpolPolicyDefObj(inParams.ygRoot, reqInfo.policyName))
 		return nil
 	}
 	if reqInfo.targetPath == rpolTargetStmtName {
@@ -4140,14 +4140,14 @@ func rpolDbToYangXfmr(inParams XfmrParams) (err error) {
 		if stmtObj.Config != nil {
 			stmtObj.Config.Name = &name
 		}
-		rpolMirrorConfigToState(stmtObj)
+		ocMirrorConfigToState(stmtObj)
 		return nil
 	}
 	if reqInfo.targetPath == rpolTargetPrefixSet {
 		if err := rpolReadPrefixSet(inParams, reqInfo); err != nil {
 			return err
 		}
-		rpolMirrorConfigToState(getRpolPrefixSetObj(inParams.ygRoot, reqInfo.prefixSetName, false))
+		ocMirrorConfigToState(getRpolPrefixSetObj(inParams.ygRoot, reqInfo.prefixSetName, false))
 		return nil
 	}
 	if reqInfo.targetPath == rpolTargetPrefixEntry {
@@ -4186,7 +4186,7 @@ func rpolDbToYangXfmr(inParams XfmrParams) (err error) {
 		if matchOpts, ok := rpolMatchActionToMatchSetOptions(entry.Field[rpolMatchActionFld]); ok {
 			csObj.Config.MatchSetOptions = matchOpts
 		}
-		rpolMirrorConfigToState(csObj)
+		ocMirrorConfigToState(csObj)
 		return nil
 	}
 	if reqInfo.targetPath == rpolTargetExtCommunitySetName {
@@ -4210,7 +4210,7 @@ func rpolDbToYangXfmr(inParams XfmrParams) (err error) {
 		if matchOpts, ok := rpolMatchActionToMatchSetOptions(entry.Field[rpolMatchActionFld]); ok {
 			ecObj.Config.MatchSetOptions = matchOpts
 		}
-		rpolMirrorConfigToState(ecObj)
+		ocMirrorConfigToState(ecObj)
 		return nil
 	}
 

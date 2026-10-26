@@ -131,6 +131,25 @@ module openconfig-network-instance-annot {
       }
     }
 
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:bgp/oc-netinst:global/oc-netinst:dynamic-neighbor-prefixes/oc-netinst:dynamic-neighbor-prefix {
+      deviate add {
+          sonic-ext:virtual-table "true";
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "ni_bgp_global_cfg_xfmr";
+          sonic-ext:path-transformer "ni_bgp_list_path_xfmr";
+      }
+    }
+
+    // The tables are derived from the protocol instances and have no row of
+    // their own, so translib must not look for one before the dispatch runs.
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:tables/oc-netinst:table {
+      deviate add {
+          sonic-ext:virtual-table "true";
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "ni_container_xfmr";
+      }
+    }
+
     deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:table-connections {
       deviate add {
           sonic-ext:virtual-table "true";

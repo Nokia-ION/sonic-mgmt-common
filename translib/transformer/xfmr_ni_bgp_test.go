@@ -5700,11 +5700,11 @@ func Test_openconfig_network_instance_bgp_unmapped_leaf_get_not_found(t *testing
 	bgpUrl := "/openconfig-network-instance:network-instances/network-instance[name=default]/protocols/protocol[identifier=BGP][name=bgp]"
 	expectedErr := tlerr.NotFoundError{Format: "Resource not found"}
 	for _, leaf := range []string{
-		"/bgp/global/graceful-restart/config/enabled",
-		"/bgp/global/confederation/config/identifier",
+		"/bgp/global/graceful-restart/config/helper-only",
+		"/bgp/global/route-selection-options/config/advertise-inactive-routes",
 		"/bgp/neighbors/neighbor[neighbor-address=20.0.0.1]/enable-bfd/config/enabled",
 		"/bgp/peer-groups/peer-group[peer-group-name=PG1]/transport/config/tcp-mss",
-		"/config/enabled",
+		"/config/default-metric",
 	} {
 		t.Run("GET unmapped leaf "+leaf+" is not found", processGetRequest(bgpUrl+leaf, nil, "", true, expectedErr))
 		time.Sleep(1 * time.Second)
@@ -5785,6 +5785,408 @@ func Test_openconfig_network_instance_bgp_neighbor_config_neighbor_address(t *te
 
 	deleteErr := tlerr.NotSupportedError{Format: "DELETE is not supported for the neighbor-address key; delete the neighbor instead"}
 	t.Run("DELETE network-instance BGP neighbor config neighbor-address", processDeleteRequest(url, true, deleteErr))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_network_instance_bgp_global_graceful_restart(t *testing.T) {
+	preReqMap := map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": map[string]interface{}{
+				"local_asn": "65100",
+			},
+		},
+	}
+	cleanupTbl := map[string]interface{}{"BGP_GLOBALS": map[string]interface{}{"default": ""}}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	grUrl := "/openconfig-network-instance:network-instances/network-instance[name=default]/protocols/protocol[identifier=BGP][name=bgp]/bgp/global/graceful-restart"
+	t.Run("PATCH network-instance BGP graceful-restart config container",
+		processSetRequest(grUrl+"/config", `{"enabled":true,"restart-time":120,"stale-routes-time":360}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": map[string]interface{}{
+				"local_asn":               "65100",
+				"graceful_restart_enable": "true",
+				"gr_restart_time":         "120",
+				"gr_stale_routes_time":    "360",
+			},
+		},
+	}
+	t.Run("Verify BGP_GLOBALS graceful-restart mapping", verifyDbResult(rclient, "BGP_GLOBALS|default", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET network-instance BGP graceful-restart config container",
+		processGetRequest(grUrl+"/config", nil,
+			`{"openconfig-network-instance:config":{"enabled":true,"restart-time":120,"stale-routes-time":360}}`, false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET network-instance BGP graceful-restart state container",
+		processGetRequest(grUrl+"/state", nil,
+			`{"openconfig-network-instance:state":{"enabled":true,"restart-time":120,"stale-routes-time":360}}`, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("PATCH network-instance BGP graceful-restart restart-time",
+		processSetRequest(grUrl+"/config/restart-time", `{"openconfig-network-instance:restart-time":200}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("GET network-instance BGP graceful-restart state restart-time",
+		processGetRequest(grUrl+"/state/restart-time", nil, `{"openconfig-network-instance:restart-time":200}`, false))
+	time.Sleep(1 * time.Second)
+
+	expectedErr := tlerr.NotSupportedError{Format: "BGP global payload carries leaves that have no CONFIG_DB mapping: global/graceful-restart/config/helper-only"}
+	t.Run("PATCH network-instance BGP graceful-restart helper-only is refused",
+		processSetRequest(grUrl+"/config", `{"helper-only":true}`, "PATCH", true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	t.Run("DELETE network-instance BGP graceful-restart stale-routes-time", processDeleteRequest(grUrl+"/config/stale-routes-time", false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET network-instance BGP graceful-restart state stale-routes-time once deleted",
+		processGetRequest(grUrl+"/state/stale-routes-time", nil, "", true, tlerr.NotFoundError{Format: "Resource not found"}))
+	time.Sleep(1 * time.Second)
+
+	t.Run("DELETE network-instance BGP graceful-restart config container", processDeleteRequest(grUrl+"/config", false))
+	time.Sleep(1 * time.Second)
+	expectedMap = map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": map[string]interface{}{
+				"local_asn": "65100",
+			},
+		},
+	}
+	t.Run("Verify BGP_GLOBALS graceful-restart cleared", verifyDbResult(rclient, "BGP_GLOBALS|default", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_network_instance_bgp_global_confederation(t *testing.T) {
+	preReqMap := map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": map[string]interface{}{
+				"local_asn": "65100",
+			},
+		},
+	}
+	cleanupTbl := map[string]interface{}{"BGP_GLOBALS": map[string]interface{}{"default": ""}}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	confUrl := "/openconfig-network-instance:network-instances/network-instance[name=default]/protocols/protocol[identifier=BGP][name=bgp]/bgp/global/confederation"
+	t.Run("PATCH network-instance BGP confederation config container",
+		processSetRequest(confUrl+"/config", `{"identifier":65000,"member-as":[65001,65002]}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": map[string]interface{}{
+				"local_asn":     "65100",
+				"confed_id":     "65000",
+				"confed_peers@": "65001,65002",
+			},
+		},
+	}
+	t.Run("Verify BGP_GLOBALS confederation mapping", verifyDbResult(rclient, "BGP_GLOBALS|default", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET network-instance BGP confederation config container",
+		processGetRequest(confUrl+"/config", nil, `{"openconfig-network-instance:config":{"identifier":65000,"member-as":[65001,65002]}}`, false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET network-instance BGP confederation state member-as",
+		processGetRequest(confUrl+"/state/member-as", nil, `{"openconfig-network-instance:member-as":[65001,65002]}`, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("DELETE network-instance BGP confederation member-as", processDeleteRequest(confUrl+"/config/member-as", false))
+	time.Sleep(1 * time.Second)
+	expectedMap = map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": map[string]interface{}{
+				"local_asn": "65100",
+				"confed_id": "65000",
+			},
+		},
+	}
+	t.Run("Verify BGP_GLOBALS confed_peers cleared", verifyDbResult(rclient, "BGP_GLOBALS|default", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_network_instance_bgp_global_route_selection_and_multipath(t *testing.T) {
+	preReqMap := map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": map[string]interface{}{
+				"local_asn": "65100",
+			},
+		},
+	}
+	cleanupTbl := map[string]interface{}{"BGP_GLOBALS": map[string]interface{}{"default": ""}}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	gUrl := "/openconfig-network-instance:network-instances/network-instance[name=default]/protocols/protocol[identifier=BGP][name=bgp]/bgp/global"
+	t.Run("PATCH network-instance BGP route-selection-options config container",
+		processSetRequest(gUrl+"/route-selection-options/config",
+			`{"always-compare-med":true,"ignore-as-path-length":true,"external-compare-router-id":false}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("PATCH network-instance BGP use-multiple-paths ebgp config container",
+		processSetRequest(gUrl+"/use-multiple-paths/ebgp/config", `{"maximum-paths":4,"allow-multiple-as":true}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": map[string]interface{}{
+				"local_asn":                  "65100",
+				"always_compare_med":         "true",
+				"ignore_as_path_length":      "true",
+				"external_compare_router_id": "false",
+				"max_ebgp_paths":             "4",
+				"load_balance_mp_relax":      "true",
+			},
+		},
+	}
+	t.Run("Verify BGP_GLOBALS route-selection and multipath mapping", verifyDbResult(rclient, "BGP_GLOBALS|default", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET network-instance BGP route-selection-options state container",
+		processGetRequest(gUrl+"/route-selection-options/state", nil,
+			`{"openconfig-network-instance:state":{"always-compare-med":true,"external-compare-router-id":false,"ignore-as-path-length":true}}`, false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET network-instance BGP use-multiple-paths ebgp state allow-multiple-as",
+		processGetRequest(gUrl+"/use-multiple-paths/ebgp/state/allow-multiple-as", nil, `{"openconfig-network-instance:allow-multiple-as":true}`, false))
+	time.Sleep(1 * time.Second)
+
+	// The containers are served at the hierarchy too, config and state alike.
+	t.Run("PATCH network-instance BGP container with graceful-restart",
+		processSetRequest(gUrl, `{"graceful-restart":{"config":{"enabled":true}}}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("GET network-instance BGP global use-multiple-paths",
+		processGetRequest(gUrl+"/use-multiple-paths", nil,
+			`{"openconfig-network-instance:use-multiple-paths":{"ebgp":{"config":{"allow-multiple-as":true,"maximum-paths":4},`+
+				`"state":{"allow-multiple-as":true,"maximum-paths":4}}}}`, false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET network-instance BGP global graceful-restart",
+		processGetRequest(gUrl+"/graceful-restart", nil,
+			`{"openconfig-network-instance:graceful-restart":{"config":{"enabled":true},"state":{"enabled":true}}}`, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_network_instance_bgp_global_afi_safi_state(t *testing.T) {
+	preReqMap := map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": map[string]interface{}{
+				"local_asn":            "65100",
+				"default_ipv4_unicast": "true",
+			},
+		},
+		"BGP_GLOBALS_AF": map[string]interface{}{
+			"default|ipv4_unicast": map[string]interface{}{
+				"max_ebgp_paths": "8",
+			},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"BGP_GLOBALS_AF": map[string]interface{}{"default|ipv4_unicast": ""},
+		"BGP_GLOBALS":    map[string]interface{}{"default": ""},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	afUrl := "/openconfig-network-instance:network-instances/network-instance[name=default]/protocols/protocol[identifier=BGP][name=bgp]/bgp/global/afi-safis/afi-safi[afi-safi-name=IPV4_UNICAST]"
+	t.Run("GET network-instance BGP global afi-safi state enabled",
+		processGetRequest(afUrl+"/state/enabled", nil, `{"openconfig-network-instance:enabled":true}`, false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET network-instance BGP global afi-safi state afi-safi-name",
+		processGetRequest(afUrl+"/state/afi-safi-name", nil, `{"openconfig-network-instance:afi-safi-name":"openconfig-bgp-types:IPV4_UNICAST"}`, false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET network-instance BGP global afi-safi config afi-safi-name",
+		processGetRequest(afUrl+"/config/afi-safi-name", nil, `{"openconfig-network-instance:afi-safi-name":"openconfig-bgp-types:IPV4_UNICAST"}`, false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET network-instance BGP global afi-safi use-multiple-paths ebgp state maximum-paths",
+		processGetRequest(afUrl+"/use-multiple-paths/ebgp/state/maximum-paths", nil, `{"openconfig-network-instance:maximum-paths":8}`, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("PATCH network-instance BGP global afi-safi config afi-safi-name restating the key",
+		processSetRequest(afUrl+"/config/afi-safi-name", `{"openconfig-network-instance:afi-safi-name":"IPV4_UNICAST"}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	expectedMap := map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": map[string]interface{}{
+				"local_asn":            "65100",
+				"default_ipv4_unicast": "true",
+			},
+		},
+	}
+	t.Run("Verify BGP_GLOBALS unchanged by afi-safi-name", verifyDbResult(rclient, "BGP_GLOBALS|default", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_network_instance_bgp_global_dynamic_neighbor_prefixes(t *testing.T) {
+	preReqMap := map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": map[string]interface{}{
+				"local_asn": "65100",
+			},
+		},
+		"BGP_PEER_GROUP": map[string]interface{}{
+			"default|PG1": map[string]interface{}{
+				"asn": "65300",
+			},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"BGP_GLOBALS_LISTEN_PREFIX": map[string]interface{}{"default|10.70.0.0/16": ""},
+		"BGP_PEER_GROUP":            map[string]interface{}{"default|PG1": ""},
+		"BGP_GLOBALS":               map[string]interface{}{"default": ""},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	dnpUrl := "/openconfig-network-instance:network-instances/network-instance[name=default]/protocols/protocol[identifier=BGP][name=bgp]/bgp/global/dynamic-neighbor-prefixes"
+	pfxUrl := dnpUrl + "/dynamic-neighbor-prefix[prefix=10.70.0.0/16]"
+	t.Run("PATCH network-instance BGP dynamic-neighbor-prefixes container",
+		processSetRequest(dnpUrl, `{"dynamic-neighbor-prefix":[{"prefix":"10.70.0.0/16","config":{"prefix":"10.70.0.0/16","peer-group":"PG1"}}]}`,
+			"PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"BGP_GLOBALS_LISTEN_PREFIX": map[string]interface{}{
+			"default|10.70.0.0/16": map[string]interface{}{
+				"peer_group": "PG1",
+			},
+		},
+	}
+	t.Run("Verify BGP_GLOBALS_LISTEN_PREFIX row", verifyDbResult(rclient, "BGP_GLOBALS_LISTEN_PREFIX|default|10.70.0.0/16", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET network-instance BGP dynamic-neighbor-prefix config",
+		processGetRequest(pfxUrl+"/config", nil, `{"openconfig-network-instance:config":{"peer-group":"PG1","prefix":"10.70.0.0/16"}}`, false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET network-instance BGP dynamic-neighbor-prefix state peer-group",
+		processGetRequest(pfxUrl+"/state/peer-group", nil, `{"openconfig-network-instance:peer-group":"PG1"}`, false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET network-instance BGP dynamic-neighbor-prefixes container",
+		processGetRequest(dnpUrl, nil, `{"openconfig-network-instance:dynamic-neighbor-prefixes":{"dynamic-neighbor-prefix":[{"prefix":"10.70.0.0/16",`+
+			`"config":{"peer-group":"PG1","prefix":"10.70.0.0/16"},"state":{"peer-group":"PG1","prefix":"10.70.0.0/16"}}]}}`, false))
+	time.Sleep(1 * time.Second)
+
+	noPgErr := tlerr.InvalidArgsError{Format: "BGP dynamic-neighbor-prefix 10.71.0.0/16 needs a peer-group: FRR listens on a range only for a peer-group"}
+	t.Run("PATCH network-instance BGP dynamic-neighbor-prefix without a peer-group is refused",
+		processSetRequest(dnpUrl+"/dynamic-neighbor-prefix[prefix=10.71.0.0/16]/config", `{"prefix":"10.71.0.0/16"}`, "PATCH", true, noPgErr))
+	time.Sleep(1 * time.Second)
+	notNormErr := tlerr.InvalidArgsError{Format: `BGP dynamic-neighbor-prefix "10.70.1.1/16" is not a normalized IPv4 or IPv6 prefix`}
+	t.Run("PATCH network-instance BGP dynamic-neighbor-prefix with host bits is refused",
+		processSetRequest(dnpUrl+"/dynamic-neighbor-prefix[prefix=10.70.1.1/16]/config", `{"prefix":"10.70.1.1/16","peer-group":"PG1"}`, "PATCH", true, notNormErr))
+	time.Sleep(1 * time.Second)
+	t.Run("DELETE network-instance BGP dynamic-neighbor-prefix peer-group is refused",
+		processDeleteRequest(pfxUrl+"/config/peer-group", true))
+	time.Sleep(1 * time.Second)
+
+	t.Run("DELETE network-instance BGP dynamic-neighbor-prefix instance", processDeleteRequest(pfxUrl, false))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify BGP_GLOBALS_LISTEN_PREFIX row removed",
+		verifyDbResult(rclient, "BGP_GLOBALS_LISTEN_PREFIX|default|10.70.0.0/16", map[string]interface{}{}, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+// The BGP protocol instance reports its identity from the key and enabled
+// true, since it exists only while its BGP_GLOBALS row does.
+func Test_openconfig_network_instance_bgp_protocol_config_state(t *testing.T) {
+	preReqMap := map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": map[string]interface{}{
+				"local_asn": "65100",
+			},
+		},
+	}
+	cleanupTbl := map[string]interface{}{"BGP_GLOBALS": map[string]interface{}{"default": ""}}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	protoUrl := "/openconfig-network-instance:network-instances/network-instance[name=default]/protocols/protocol[identifier=BGP][name=bgp]"
+	t.Run("GET network-instance BGP protocol config",
+		processGetRequest(protoUrl+"/config", nil,
+			`{"openconfig-network-instance:config":{"enabled":true,"identifier":"openconfig-policy-types:BGP","name":"bgp"}}`, false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET network-instance BGP protocol state enabled",
+		processGetRequest(protoUrl+"/state/enabled", nil, `{"openconfig-network-instance:enabled":true}`, false))
+	time.Sleep(1 * time.Second)
+
+	expectedErr := tlerr.NotSupportedError{Format: "BGP protocol instance config enabled false is not supported; delete the protocol instance instead"}
+	t.Run("PATCH network-instance BGP protocol config enabled false is refused",
+		processSetRequest(protoUrl+"/config/enabled", `{"openconfig-network-instance:enabled":false}`, "PATCH", true, expectedErr))
+	time.Sleep(1 * time.Second)
+	t.Run("PATCH network-instance BGP protocol config enabled true",
+		processSetRequest(protoUrl+"/config/enabled", `{"openconfig-network-instance:enabled":true}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	expectedMap := map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": map[string]interface{}{
+				"local_asn": "65100",
+			},
+		},
+	}
+	t.Run("Verify BGP_GLOBALS unchanged by protocol config", verifyDbResult(rclient, "BGP_GLOBALS|default", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+// The tables of a network instance follow from its protocol instances: both
+// families for BGP, and the families of the static routes it holds.
+func Test_openconfig_network_instance_tables(t *testing.T) {
+	preReqMap := map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{
+			"default": map[string]interface{}{
+				"local_asn": "65100",
+			},
+		},
+		"STATIC_ROUTE": map[string]interface{}{
+			"default|10.80.0.0/16": map[string]interface{}{
+				"nexthop": "10.0.0.1",
+			},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"STATIC_ROUTE": map[string]interface{}{"default|10.80.0.0/16": ""},
+		"BGP_GLOBALS":  map[string]interface{}{"default": ""},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	tablesUrl := "/openconfig-network-instance:network-instances/network-instance[name=default]/tables"
+	table := func(protocol, af string) string {
+		cfg := `{"address-family":"openconfig-types:` + af + `","protocol":"openconfig-policy-types:` + protocol + `"}`
+		return `{"address-family":"openconfig-types:` + af + `","config":` + cfg + `,"protocol":"openconfig-policy-types:` + protocol + `","state":` + cfg + `}`
+	}
+	t.Run("GET network-instance tables",
+		processGetRequest(tablesUrl, nil, `{"openconfig-network-instance:tables":{"table":[`+
+			table("BGP", "IPV4")+`,`+table("BGP", "IPV6")+`,`+table("STATIC", "IPV4")+`]}}`, false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET network-instance table state",
+		processGetRequest(tablesUrl+"/table[protocol=STATIC][address-family=IPV4]/state", nil,
+			`{"openconfig-network-instance:state":{"address-family":"openconfig-types:IPV4","protocol":"openconfig-policy-types:STATIC"}}`, false))
+	time.Sleep(1 * time.Second)
+
+	// translib sorts the keys of a gNMI path by name, so they also arrive
+	// address-family first.
+	t.Run("GET network-instance table state with the keys in name order",
+		processGetRequest(tablesUrl+"/table[address-family=IPV4][protocol=BGP]/state", nil,
+			`{"openconfig-network-instance:state":{"address-family":"openconfig-types:IPV4","protocol":"openconfig-policy-types:BGP"}}`, false))
+	time.Sleep(1 * time.Second)
+
+	expectedErr := tlerr.NotSupportedError{Format: "network-instance tables are derived from the protocol instances and cannot be written"}
+	t.Run("PATCH network-instance tables is refused",
+		processSetRequest(tablesUrl+"/table[protocol=BGP][address-family=IPV4]/config",
+			`{"protocol":"BGP","address-family":"IPV4"}`, "PATCH", true, expectedErr))
 	time.Sleep(1 * time.Second)
 
 	unloadDB(db.ConfigDB, cleanupTbl)
