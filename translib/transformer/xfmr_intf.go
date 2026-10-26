@@ -106,6 +106,8 @@ func init() {
 	XlateFuncBind("DbToYang_subintf_ipv6_tbl_key_xfmr", DbToYang_subintf_ipv6_tbl_key_xfmr)
 	XlateFuncBind("YangToDb_ipv6_enabled_xfmr", YangToDb_ipv6_enabled_xfmr)
 	XlateFuncBind("DbToYang_ipv6_enabled_xfmr", DbToYang_ipv6_enabled_xfmr)
+	XlateFuncBind("YangToDb_ipv6_address_type_xfmr", YangToDb_ipv6_address_type_xfmr)
+	XlateFuncBind("DbToYang_ipv6_address_type_xfmr", DbToYang_ipv6_address_type_xfmr)
 	XlateFuncBind("YangToDb_ipv4_enabled_xfmr", YangToDb_ipv4_enabled_xfmr)
 	XlateFuncBind("DbToYang_ipv4_enabled_xfmr", DbToYang_ipv4_enabled_xfmr)
 
@@ -2693,6 +2695,39 @@ var DbToYang_subif_index_xfmr FieldXfmrDbtoYang = func(inParams XfmrParams) (map
 	return res_map, nil
 }
 
+func ocIpv6AddressTypeFromScopeAndIP(scope string, ip netaddr.IP) ocbinds.E_OpenconfigIfIp_Ipv6AddressType {
+	switch strings.ToLower(strings.TrimSpace(scope)) {
+	case "link-local", "local":
+		return ocbinds.OpenconfigIfIp_Ipv6AddressType_LINK_LOCAL_UNICAST
+	case "global":
+		return ocbinds.OpenconfigIfIp_Ipv6AddressType_GLOBAL_UNICAST
+	}
+	if ip.Is6() && ip.IsLinkLocalUnicast() {
+		return ocbinds.OpenconfigIfIp_Ipv6AddressType_LINK_LOCAL_UNICAST
+	}
+	return ocbinds.OpenconfigIfIp_Ipv6AddressType_GLOBAL_UNICAST
+}
+
+func ocIpv6AddressTypeEnumName(t ocbinds.E_OpenconfigIfIp_Ipv6AddressType) string {
+	return ocbinds.E_OpenconfigIfIp_Ipv6AddressType.ΛMap(t)["E_OpenconfigIfIp_Ipv6AddressType"][int64(t)].Name
+}
+
+func errIpv6AddressTypeNotConfigurable() error {
+	return tlerr.NotSupported(
+		"IPv6 address type cannot be configured; on SONiC it is derived from the " +
+			"address prefix (link-local for fe80::/10, global otherwise) and is " +
+			"reported operationally from address scope")
+}
+
+// rejectIpv6AddressTypeConfig rejects SET when config/type is present in a container
+// update. Per-leaf field xfmrs are not invoked for intf_ip_addr_xfmr subtree updates.
+func rejectIpv6AddressTypeConfig(t ocbinds.E_OpenconfigIfIp_Ipv6AddressType) error {
+	if t != ocbinds.OpenconfigIfIp_Ipv6AddressType_UNSET {
+		return errIpv6AddressTypeNotConfigurable()
+	}
+	return nil
+}
+
 /* Get interface to IP mapping for all interfaces in the given table */
 func getCachedAllIntfIpMap(dbCl *db.DB, tblName string, ipv4 bool, ipv6 bool, ip string, tblPattern *db.Table) (map[string]map[string]db.Value, error) {
 	var err error
@@ -3031,7 +3066,7 @@ func convertIpMapToOC(intfIpMap map[string]db.Value, ifInfo *ocbinds.OpenconfigI
 	ygot.BuildEmptyTree(subIntf.Ipv4)
 	ygot.BuildEmptyTree(subIntf.Ipv6)
 
-	for ipKey, _ := range intfIpMap {
+	for ipKey, ipVal := range intfIpMap {
 		log.Info("IP address = ", ipKey)
 		ipB, ipNetB, _ := parseCIDR(ipKey)
 		v4Flag := false
@@ -3084,9 +3119,11 @@ func convertIpMapToOC(intfIpMap map[string]db.Value, ifInfo *ocbinds.OpenconfigI
 			if isState {
 				v6Address.State.Ip = ipStr
 				v6Address.State.PrefixLength = prfxLen
+				v6Address.State.Type = ocIpv6AddressTypeFromScopeAndIP(ipVal.Field["scope"], ipB)
 			} else {
 				v6Address.Config.Ip = ipStr
 				v6Address.Config.PrefixLength = prfxLen
+				v6Address.Config.Type = ocIpv6AddressTypeFromScopeAndIP("", ipB)
 			}
 		}
 	}
@@ -3103,7 +3140,7 @@ func convertRoutedVlanIpMapToOC(intfIpMap map[string]db.Value, ifInfo *ocbinds.O
 	ygot.BuildEmptyTree(routedVlan.Ipv6)
 
 	uriIpStr, _ := getNormalizedIpStr(uriIp)
-	for ipKey, _ := range intfIpMap {
+	for ipKey, ipVal := range intfIpMap {
 		log.Info("IP address = ", ipKey)
 		ipB, ipNetB, _ := parseCIDR(ipKey)
 		v4Flag := false
@@ -3162,9 +3199,11 @@ func convertRoutedVlanIpMapToOC(intfIpMap map[string]db.Value, ifInfo *ocbinds.O
 			if isState {
 				v6Address.State.Ip = ipStr
 				v6Address.State.PrefixLength = prfxLen
+				v6Address.State.Type = ocIpv6AddressTypeFromScopeAndIP(ipVal.Field["scope"], ipB)
 			} else {
 				v6Address.Config.Ip = ipStr
 				v6Address.Config.PrefixLength = prfxLen
+				v6Address.Config.Type = ocIpv6AddressTypeFromScopeAndIP("", ipB)
 			}
 		}
 	}
@@ -3401,6 +3440,9 @@ var YangToDb_intf_ip_addr_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (
 					*addr.Config.Ip = ip
 				}
 				log.Info("Ipv6 IP:=", *addr.Config.Ip)
+				if err := rejectIpv6AddressTypeConfig(addr.Config.Type); err != nil {
+					return subIntfmap, err
+				}
 				if addr.Config.PrefixLength == nil {
 					log.Error("Prefix Length empty!")
 					errStr := "Prefix Length not present"
@@ -4513,6 +4555,9 @@ var YangToDb_routed_vlan_ip_addr_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPa
 					*addr.Config.Ip = ip
 				}
 				log.Info("Ipv6 IP:=", *addr.Config.Ip)
+				if err := rejectIpv6AddressTypeConfig(addr.Config.Type); err != nil {
+					return vlanIntfmap, err
+				}
 				if addr.Config.PrefixLength == nil {
 					log.Warning("Prefix Length empty!")
 					errStr := "Prefix Length not present"
@@ -4743,6 +4788,55 @@ var DbToYang_subintf_ipv6_tbl_key_xfmr KeyXfmrDbToYang = func(inParams XfmrParam
 
 	rmap := make(map[string]interface{})
 	return rmap, nil
+}
+
+// YangToDb_ipv6_address_type_xfmr rejects config/type; scope is derived from prefix/APPL_DB.
+var YangToDb_ipv6_address_type_xfmr FieldXfmrYangToDb = func(inParams XfmrParams) (map[string]string, error) {
+	res_map := make(map[string]string)
+	if inParams.oper == DELETE {
+		return res_map, nil
+	}
+	if inParams.param != nil {
+		return res_map, errIpv6AddressTypeNotConfigurable()
+	}
+	return nil, nil
+}
+
+// DbToYang_ipv6_address_type_xfmr supports leaf GET on .../ipv6/addresses/address/state|config/type.
+var DbToYang_ipv6_address_type_xfmr FieldXfmrDbtoYang = func(inParams XfmrParams) (map[string]interface{}, error) {
+	res_map := make(map[string]interface{})
+	pathInfo := NewPathInfo(inParams.uri)
+	ifName := pathInfo.Var("name")
+	ipKey := pathInfo.Var("ip")
+	scope := ""
+	isState := strings.Contains(pathInfo.YangPath, "/state/type")
+
+	if isState && inParams.d != nil && ifName != "" && ipKey != "" {
+		ipMap, err := getIntfIpByName(inParams.d, INTF_TABLE_TN, ifName, false, true, ipKey)
+		if err == nil {
+			ipNorm, _ := getNormalizedIpStr(ipKey)
+			for k, v := range ipMap {
+				kIp, _, _ := parseCIDR(k)
+				kNorm, _ := getNormalizedIpStr(kIp.String())
+				if kNorm == ipNorm || k == ipKey {
+					scope = v.Field["scope"]
+					break
+				}
+			}
+		}
+	}
+
+	ipB, _, _ := parseCIDR(ipKey)
+	if !ipB.IsValid() {
+		ipNorm, _ := getNormalizedIpStr(ipKey)
+		ipB, _ = netaddr.ParseIP(ipNorm)
+	}
+	t := ocIpv6AddressTypeFromScopeAndIP(scope, ipB)
+	if !isState {
+		t = ocIpv6AddressTypeFromScopeAndIP("", ipB)
+	}
+	res_map["type"] = ocIpv6AddressTypeEnumName(t)
+	return res_map, nil
 }
 
 // YangToDb_ipv6_enabled_xfmr handles IPv6 config "enabled". IPv6 cannot be disabled on SONiC.
