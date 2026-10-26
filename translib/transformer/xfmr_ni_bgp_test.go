@@ -3172,9 +3172,9 @@ func Test_openconfig_network_instance_bgp_container_unmapped_payload_rejected(t 
 
 	urlInputBodyJSON := `{"openconfig-network-instance:bgp":{"neighbors":{"neighbor":[` +
 		`{"neighbor-address":"20.0.0.1","config":{"peer-group":"PG1"},` +
-		`"timers":{"config":{"minimum-advertisement-interval":30}}}]}}}`
+		`"timers":{"config":{"restart-time":30}}}]}}}`
 	expectedErr := tlerr.NotSupportedError{
-		Format: "BGP container payload carries leaves that have no CONFIG_DB mapping: bgp/neighbors/neighbor[20.0.0.1]/timers/config/minimum-advertisement-interval",
+		Format: "BGP container payload carries leaves that have no CONFIG_DB mapping: bgp/neighbors/neighbor[20.0.0.1]/timers/config/restart-time",
 	}
 	t.Run("PATCH network-instance BGP container rejects unmapped leaf",
 		processSetRequest(niBgpProtoUrl, urlInputBodyJSON, "PATCH", true, expectedErr))
@@ -6187,6 +6187,253 @@ func Test_openconfig_network_instance_tables(t *testing.T) {
 	t.Run("PATCH network-instance tables is refused",
 		processSetRequest(tablesUrl+"/table[protocol=BGP][address-family=IPV4]/config",
 			`{"protocol":"BGP","address-family":"IPV4"}`, "PATCH", true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_network_instance_bgp_neighbor_config_leaves(t *testing.T) {
+	preReqMap := map[string]interface{}{
+		"BGP_GLOBALS":  map[string]interface{}{"default": map[string]interface{}{"local_asn": "65100"}},
+		"BGP_NEIGHBOR": map[string]interface{}{"default|20.0.0.1": map[string]interface{}{"asn": "65200"}},
+	}
+	cleanupTbl := map[string]interface{}{
+		"BGP_NEIGHBOR": map[string]interface{}{"default|20.0.0.1": ""},
+		"BGP_GLOBALS":  map[string]interface{}{"default": ""},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	nbrUrl := "/openconfig-network-instance:network-instances/network-instance[name=default]/protocols/protocol[identifier=BGP][name=bgp]/bgp/neighbors/neighbor[neighbor-address=20.0.0.1]"
+	t.Run("PATCH network-instance BGP neighbor config container with the new leaves",
+		processSetRequest(nbrUrl+"/config", `{"local-as":65111,"description":"core-1","neighbor-port":1790}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("PATCH network-instance BGP neighbor timers minimum-advertisement-interval",
+		processSetRequest(nbrUrl+"/timers/config/minimum-advertisement-interval", `{"openconfig-network-instance:minimum-advertisement-interval":10}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("PATCH network-instance BGP neighbor transport tcp-mss",
+		processSetRequest(nbrUrl+"/transport/config/tcp-mss", `{"openconfig-network-instance:tcp-mss":1400}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("PATCH network-instance BGP neighbor ebgp-multihop config",
+		processSetRequest(nbrUrl+"/ebgp-multihop/config", `{"enabled":true,"multihop-ttl":5}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("PATCH network-instance BGP neighbor enable-bfd enabled",
+		processSetRequest(nbrUrl+"/enable-bfd/config/enabled", `{"openconfig-network-instance:enabled":true}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"BGP_NEIGHBOR": map[string]interface{}{
+			"default|20.0.0.1": map[string]interface{}{
+				"asn":               "65200",
+				"local_asn":         "65111",
+				"name":              "core-1",
+				"peer_port":         "1790",
+				"min_adv_interval":  "10",
+				"tcp_mss":           "1400",
+				"ebgp_multihop":     "true",
+				"ebgp_multihop_ttl": "5",
+				"bfd":               "true",
+			},
+		},
+	}
+	t.Run("Verify BGP_NEIGHBOR new fields", verifyDbResult(rclient, "BGP_NEIGHBOR|default|20.0.0.1", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET network-instance BGP neighbor config container",
+		processGetRequest(nbrUrl+"/config", nil, `{"openconfig-network-instance:config":{"description":"core-1","local-as":65111,`+
+			`"neighbor-address":"20.0.0.1","neighbor-port":1790,"peer-as":65200}}`, false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET network-instance BGP neighbor timers minimum-advertisement-interval",
+		processGetRequest(nbrUrl+"/timers/config/minimum-advertisement-interval", nil, `{"openconfig-network-instance:minimum-advertisement-interval":10}`, false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET network-instance BGP neighbor transport config container",
+		processGetRequest(nbrUrl+"/transport/config", nil, `{"openconfig-network-instance:config":{"tcp-mss":1400}}`, false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET network-instance BGP neighbor ebgp-multihop config",
+		processGetRequest(nbrUrl+"/ebgp-multihop/config", nil, `{"openconfig-network-instance:config":{"enabled":true,"multihop-ttl":5}}`, false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET network-instance BGP neighbor enable-bfd",
+		processGetRequest(nbrUrl+"/enable-bfd", nil, `{"openconfig-network-instance:enable-bfd":{"config":{"enabled":true}}}`, false))
+	time.Sleep(1 * time.Second)
+
+	expectedErr := tlerr.InvalidArgsError{Format: "BGP neighbor peer-as and peer-type are alternatives: FRR takes one of them as remote-as; delete one before setting the other"}
+	t.Run("PATCH network-instance BGP neighbor peer-type beside peer-as is refused",
+		processSetRequest(nbrUrl+"/config/peer-type", `{"openconfig-network-instance:peer-type":"EXTERNAL"}`, "PATCH", true, expectedErr))
+	time.Sleep(1 * time.Second)
+
+	t.Run("DELETE network-instance BGP neighbor config local-as", processDeleteRequest(nbrUrl+"/config/local-as", false))
+	time.Sleep(1 * time.Second)
+	t.Run("DELETE network-instance BGP neighbor ebgp-multihop config", processDeleteRequest(nbrUrl+"/ebgp-multihop/config", false))
+	time.Sleep(1 * time.Second)
+	t.Run("DELETE network-instance BGP neighbor config container", processDeleteRequest(nbrUrl+"/config", false))
+	time.Sleep(1 * time.Second)
+	expectedMap = map[string]interface{}{
+		"BGP_NEIGHBOR": map[string]interface{}{
+			"default|20.0.0.1": map[string]interface{}{
+				"min_adv_interval": "10",
+				"tcp_mss":          "1400",
+				"bfd":              "true",
+			},
+		},
+	}
+	t.Run("Verify BGP_NEIGHBOR after the deletes", verifyDbResult(rclient, "BGP_NEIGHBOR|default|20.0.0.1", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+// peer-type is the other form of FRR's remote-as, so a neighbor holds either.
+func Test_openconfig_network_instance_bgp_neighbor_peer_type(t *testing.T) {
+	preReqMap := map[string]interface{}{
+		"BGP_GLOBALS":  map[string]interface{}{"default": map[string]interface{}{"local_asn": "65100"}},
+		"BGP_NEIGHBOR": map[string]interface{}{"default|20.0.0.2": map[string]interface{}{"admin_status": "up"}},
+	}
+	cleanupTbl := map[string]interface{}{
+		"BGP_NEIGHBOR": map[string]interface{}{"default|20.0.0.2": ""},
+		"BGP_GLOBALS":  map[string]interface{}{"default": ""},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	cfgUrl := "/openconfig-network-instance:network-instances/network-instance[name=default]/protocols/protocol[identifier=BGP][name=bgp]/bgp/neighbors/neighbor[neighbor-address=20.0.0.2]/config"
+	t.Run("PATCH network-instance BGP neighbor peer-type",
+		processSetRequest(cfgUrl+"/peer-type", `{"openconfig-network-instance:peer-type":"INTERNAL"}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	expectedMap := map[string]interface{}{
+		"BGP_NEIGHBOR": map[string]interface{}{"default|20.0.0.2": map[string]interface{}{"admin_status": "up", "peer_type": "internal"}},
+	}
+	t.Run("Verify BGP_NEIGHBOR peer_type", verifyDbResult(rclient, "BGP_NEIGHBOR|default|20.0.0.2", expectedMap, false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET network-instance BGP neighbor peer-type",
+		processGetRequest(cfgUrl+"/peer-type", nil, `{"openconfig-network-instance:peer-type":"INTERNAL"}`, false))
+	time.Sleep(1 * time.Second)
+
+	expectedErr := tlerr.InvalidArgsError{Format: "BGP neighbor peer-as and peer-type are alternatives: FRR takes one of them as remote-as; delete one before setting the other"}
+	t.Run("PATCH network-instance BGP neighbor peer-as beside peer-type is refused",
+		processSetRequest(cfgUrl+"/peer-as", `{"openconfig-network-instance:peer-as":65201}`, "PATCH", true, expectedErr))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify BGP_NEIGHBOR unchanged by the refusal", verifyDbResult(rclient, "BGP_NEIGHBOR|default|20.0.0.2", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_network_instance_bgp_neighbor_afi_safi_leaves(t *testing.T) {
+	preReqMap := map[string]interface{}{
+		"BGP_GLOBALS":     map[string]interface{}{"default": map[string]interface{}{"local_asn": "65100"}},
+		"BGP_NEIGHBOR":    map[string]interface{}{"default|20.0.0.1": map[string]interface{}{"asn": "65200"}},
+		"BGP_NEIGHBOR_AF": map[string]interface{}{"default|20.0.0.1|ipv4_unicast": map[string]interface{}{"admin_status": "up"}},
+	}
+	cleanupTbl := map[string]interface{}{
+		"BGP_NEIGHBOR_AF": map[string]interface{}{"default|20.0.0.1|ipv4_unicast": ""},
+		"BGP_NEIGHBOR":    map[string]interface{}{"default|20.0.0.1": ""},
+		"BGP_GLOBALS":     map[string]interface{}{"default": ""},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	afUrl := "/openconfig-network-instance:network-instances/network-instance[name=default]/protocols/protocol[identifier=BGP][name=bgp]/bgp/neighbors/neighbor[neighbor-address=20.0.0.1]/afi-safis/afi-safi[afi-safi-name=IPV4_UNICAST]"
+	afRow := func(fields map[string]interface{}) map[string]interface{} {
+		return map[string]interface{}{"BGP_NEIGHBOR_AF": map[string]interface{}{"default|20.0.0.1|ipv4_unicast": fields}}
+	}
+
+	t.Run("PATCH network-instance BGP neighbor ipv4-unicast send-default-route",
+		processSetRequest(afUrl+"/ipv4-unicast/config/send-default-route", `{"openconfig-network-instance:send-default-route":true}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("GET network-instance BGP neighbor ipv4-unicast config",
+		processGetRequest(afUrl+"/ipv4-unicast/config", nil, `{"openconfig-network-instance:config":{"send-default-route":true}}`, false))
+	time.Sleep(1 * time.Second)
+	familyErr := tlerr.InvalidArgsError{Format: "BGP neighbor ipv6-unicast does not belong to afi-safi ipv4_unicast"}
+	t.Run("PATCH network-instance BGP neighbor ipv6-unicast under IPV4_UNICAST is refused",
+		processSetRequest(afUrl+"/ipv6-unicast/config/send-default-route", `{"openconfig-network-instance:send-default-route":true}`, "PATCH", true, familyErr))
+	time.Sleep(1 * time.Second)
+
+	t.Run("PATCH network-instance BGP neighbor add-paths send",
+		processSetRequest(afUrl+"/add-paths/config", `{"send":true}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify BGP_NEIGHBOR_AF advertises all paths",
+		verifyDbResult(rclient, "BGP_NEIGHBOR_AF|default|20.0.0.1|ipv4_unicast",
+			afRow(map[string]interface{}{"admin_status": "up", "send_default_route": "true", "tx_add_paths": "tx_all_paths"}), false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET network-instance BGP neighbor add-paths config",
+		processGetRequest(afUrl+"/add-paths/config", nil, `{"openconfig-network-instance:config":{"send":true}}`, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("PATCH network-instance BGP neighbor add-paths send-max",
+		processSetRequest(afUrl+"/add-paths/config", `{"send":true,"send-max":3}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify BGP_NEIGHBOR_AF advertises the 3 best paths",
+		verifyDbResult(rclient, "BGP_NEIGHBOR_AF|default|20.0.0.1|ipv4_unicast",
+			afRow(map[string]interface{}{"admin_status": "up", "send_default_route": "true", "tx_add_best_path_count": "3"}), false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET network-instance BGP neighbor add-paths config with send-max",
+		processGetRequest(afUrl+"/add-paths/config", nil, `{"openconfig-network-instance:config":{"send":true,"send-max":3}}`, false))
+	time.Sleep(1 * time.Second)
+
+	// The instance level maps the same leaves.
+	t.Run("PATCH network-instance BGP neighbor afi-safi instance with add-paths send",
+		processSetRequest(afUrl, `{"afi-safi-name":"IPV4_UNICAST","add-paths":{"config":{"send":true}}}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify BGP_NEIGHBOR_AF back to all paths",
+		verifyDbResult(rclient, "BGP_NEIGHBOR_AF|default|20.0.0.1|ipv4_unicast",
+			afRow(map[string]interface{}{"admin_status": "up", "send_default_route": "true", "tx_add_paths": "tx_all_paths"}), false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("PATCH network-instance BGP neighbor add-paths send false",
+		processSetRequest(afUrl+"/add-paths/config/send", `{"openconfig-network-instance:send":false}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify BGP_NEIGHBOR_AF advertises the best path only",
+		verifyDbResult(rclient, "BGP_NEIGHBOR_AF|default|20.0.0.1|ipv4_unicast",
+			afRow(map[string]interface{}{"admin_status": "up", "send_default_route": "true"}), false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_network_instance_bgp_neighbor_leaves_hierarchy(t *testing.T) {
+	preReqMap := map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{"default": map[string]interface{}{"local_asn": "65100"}},
+	}
+	cleanupTbl := map[string]interface{}{
+		"BGP_NEIGHBOR_AF": map[string]interface{}{"default|20.0.0.3|ipv4_unicast": ""},
+		"BGP_NEIGHBOR":    map[string]interface{}{"default|20.0.0.3": ""},
+		"BGP_GLOBALS":     map[string]interface{}{"default": ""},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	bgpUrl := "/openconfig-network-instance:network-instances/network-instance[name=default]/protocols/protocol[identifier=BGP][name=bgp]/bgp"
+	nbrBody := func(addPaths string) string {
+		return `{"neighbors":{"neighbor":[{"neighbor-address":"20.0.0.3","config":{"neighbor-address":"20.0.0.3","peer-as":65203,"description":"edge"},` +
+			`"enable-bfd":{"config":{"enabled":true}},"afi-safis":{"afi-safi":[{"afi-safi-name":"IPV4_UNICAST",` +
+			`"config":{"afi-safi-name":"IPV4_UNICAST"},"add-paths":{"config":` + addPaths + `}}]}}]}}`
+	}
+	t.Run("PATCH BGP container with neighbor leaves and add-paths send-max",
+		processSetRequest(bgpUrl, nbrBody(`{"send":true,"send-max":2}`), "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	expectedMap := map[string]interface{}{
+		"BGP_NEIGHBOR": map[string]interface{}{"default|20.0.0.3": map[string]interface{}{"asn": "65203", "name": "edge", "bfd": "true"}},
+	}
+	t.Run("Verify BGP_NEIGHBOR from the container payload", verifyDbResult(rclient, "BGP_NEIGHBOR|default|20.0.0.3", expectedMap, false))
+	time.Sleep(1 * time.Second)
+	expectedMap = map[string]interface{}{
+		"BGP_NEIGHBOR_AF": map[string]interface{}{"default|20.0.0.3|ipv4_unicast": map[string]interface{}{"admin_status": "up", "tx_add_best_path_count": "2"}},
+	}
+	t.Run("Verify BGP_NEIGHBOR_AF from the container payload", verifyDbResult(rclient, "BGP_NEIGHBOR_AF|default|20.0.0.3|ipv4_unicast", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET the neighbor instance carries the new leaves",
+		processGetRequest(bgpUrl+"/neighbors/neighbor[neighbor-address=20.0.0.3]/enable-bfd", nil,
+			`{"openconfig-network-instance:enable-bfd":{"config":{"enabled":true}}}`, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("PATCH BGP container moving add-paths to all paths",
+		processSetRequest(bgpUrl, nbrBody(`{"send":true}`), "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	expectedMap = map[string]interface{}{
+		"BGP_NEIGHBOR_AF": map[string]interface{}{"default|20.0.0.3|ipv4_unicast": map[string]interface{}{"admin_status": "up", "tx_add_paths": "tx_all_paths"}},
+	}
+	t.Run("Verify the container payload cleared the count", verifyDbResult(rclient, "BGP_NEIGHBOR_AF|default|20.0.0.3|ipv4_unicast", expectedMap, false))
 	time.Sleep(1 * time.Second)
 
 	unloadDB(db.ConfigDB, cleanupTbl)

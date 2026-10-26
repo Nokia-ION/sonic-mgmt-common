@@ -1201,11 +1201,14 @@ func wrapNiBgpRootAsDevice(s *ygot.GoStruct, niName, protoName string) (*ygot.Go
 	return &wrappedRoot, nil
 }
 
-func buildNiBgpHierResMap(s *ygot.GoStruct, niName, protoName string) (map[string]map[string]db.Value, error) {
+// buildNiBgpHierResMap maps a container-level payload. It also returns the
+// fields the payload asks to remove, which the caller stages as a delete.
+func buildNiBgpHierResMap(s *ygot.GoStruct, niName, protoName string) (map[string]map[string]db.Value, map[string]map[string]db.Value, error) {
 	res := make(map[string]map[string]db.Value)
+	clears := make(map[string]map[string]db.Value)
 	bgpObj := getNiBgpProtoObj(s, niName, protoName, false)
 	if bgpObj == nil {
-		return res, nil
+		return res, clears, nil
 	}
 
 	if bgpObj.Global != nil {
@@ -1226,7 +1229,7 @@ func buildNiBgpHierResMap(s *ygot.GoStruct, niName, protoName string) (map[strin
 		}
 		rows, err := niBgpListenPfxRows(niBgpListenPfxObjs(s, niName, protoName), niName, "", nil)
 		if err != nil {
-			return res, err
+			return res, nil, err
 		}
 		if len(rows) > 0 {
 			res = mergeDbResMapFields(res, map[string]map[string]db.Value{niBgpListenPfxTbl: rows})
@@ -1266,6 +1269,13 @@ func buildNiBgpHierResMap(s *ygot.GoStruct, niName, protoName string) (map[strin
 					nbrFields[niBgpNbrKeepaliveFld] = strconv.FormatUint(uint64(*nbrObj.Timers.Config.KeepaliveInterval), 10)
 				}
 			}
+			leafFields, _ := niBgpNbrNeighborFields(reflect.ValueOf(nbrObj))
+			for f, v := range leafFields {
+				nbrFields[f] = v
+			}
+			if err := niBgpNbrRemoteAsErr(nbrFields, db.Value{}); err != nil {
+				return res, nil, err
+			}
 			// A payload may name a list instance while setting no mapped leaf
 			// under it; that still asks for the row itself to exist.
 			res = mergeDbResMapFields(res, makeNiBgpNbrResMap(niName, nbrAddr, nbrFields))
@@ -1303,25 +1313,36 @@ func buildNiBgpHierResMap(s *ygot.GoStruct, niName, protoName string) (map[strin
 					if afiObj.Config != nil && len(afiObj.Config.SendCommunityType) > 0 {
 						comm, err := niBgpSendCommunityTypeToField(nil, afiObj.Config.SendCommunityType, "neighbor")
 						if err != nil {
-							return res, err
+							return res, nil, err
 						}
 						afFields[niBgpNbrSendCommFld] = comm
 					}
 					if afiObj.ApplyPolicy != nil && afiObj.ApplyPolicy.Config != nil {
 						importPolicy, ok, err := niBgpSinglePolicyName(afiObj.ApplyPolicy.Config.ImportPolicy, "neighbor", "import-policy")
 						if err != nil {
-							return res, err
+							return res, nil, err
 						}
 						if ok {
 							afFields[niBgpNbrRouteMapInFld] = importPolicy
 						}
 						exportPolicy, ok, err := niBgpSinglePolicyName(afiObj.ApplyPolicy.Config.ExportPolicy, "neighbor", "export-policy")
 						if err != nil {
-							return res, err
+							return res, nil, err
 						}
 						if ok {
 							afFields[niBgpNbrRouteMapOutFld] = exportPolicy
 						}
+					}
+					leafFields, err := niBgpNbrAfFields(afiObj, afiSafi)
+					if err != nil {
+						return res, nil, err
+					}
+					set, clear := niBgpSplitClearFlds(leafFields)
+					for f, v := range set {
+						afFields[f] = v
+					}
+					if len(clear) > 0 {
+						clears = mergeDbResMapFields(clears, makeNiBgpNbrAfSingleResMap(niName, nbrAddr, afiSafi, clear))
 					}
 					res = mergeDbResMapFields(res, ensureNiBgpNbrParentRow(makeNiBgpNbrAfSingleResMap(niName, nbrAddr, afiSafi, afFields), niName, nbrAddr))
 				}
@@ -1369,7 +1390,7 @@ func buildNiBgpHierResMap(s *ygot.GoStruct, niName, protoName string) (map[strin
 					if afiObj.Config != nil && len(afiObj.Config.SendCommunityType) > 0 {
 						comm, err := niBgpSendCommunityTypeToField(nil, afiObj.Config.SendCommunityType, "peer-group")
 						if err != nil {
-							return res, err
+							return res, nil, err
 						}
 						pgAfFields[niBgpPgSendCommFld] = comm
 					}
@@ -1388,14 +1409,14 @@ func buildNiBgpHierResMap(s *ygot.GoStruct, niName, protoName string) (map[strin
 						applyFields := map[string]string{}
 						exportPolicy, ok, err := niBgpSinglePolicyName(afiObj.ApplyPolicy.Config.ExportPolicy, "peer-group", niBgpPgExportPolicyLeaf)
 						if err != nil {
-							return res, err
+							return res, nil, err
 						}
 						if ok {
 							applyFields[niBgpPgRouteMapOutFld] = exportPolicy
 						}
 						importPolicy, ok, err := niBgpSinglePolicyName(afiObj.ApplyPolicy.Config.ImportPolicy, "peer-group", niBgpPgImportPolicyLeaf)
 						if err != nil {
-							return res, err
+							return res, nil, err
 						}
 						if ok {
 							applyFields[niBgpPgRouteMapInFld] = importPolicy
@@ -1409,7 +1430,7 @@ func buildNiBgpHierResMap(s *ygot.GoStruct, niName, protoName string) (map[strin
 		}
 	}
 
-	return res, nil
+	return res, clears, nil
 }
 
 func populateNiBgpHierToYangFromDb(cfgDb *db.DB, ygRoot *ygot.GoStruct, niName, protoName string) error {
@@ -1545,6 +1566,9 @@ func populateNiBgpHierToYangFromDb(cfgDb *db.DB, ygRoot *ygot.GoStruct, niName, 
 					}
 				}
 			}
+			if err := niBgpNbrLeavesToYang(ygRoot, niName, protoName, nbrAddr, "", "", nbrEntry); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -1594,6 +1618,9 @@ func populateNiBgpHierToYangFromDb(cfgDb *db.DB, ygRoot *ygot.GoStruct, niName, 
 				if comm, ok := niBgpSendCommunityTypeFromDb(nbrAfEntry.Field[niBgpNbrSendCommFld]); ok {
 					afCfg.SendCommunityType = comm
 				}
+			}
+			if err := niBgpNbrAfLeavesToYang(ygRoot, niName, protoName, nbrAddr, afi, "", "", nbrAfEntry); err != nil {
+				return err
 			}
 		}
 	}
@@ -1861,9 +1888,14 @@ var YangToDb_ni_bgp_global_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPara
 				Path:   inParams.requestUri,
 			}
 		}
-		hierRes, hierErr := buildNiBgpHierResMap(wrappedRoot, reqInfo.niName, reqInfo.protoName)
+		hierRes, hierClears, hierErr := buildNiBgpHierResMap(wrappedRoot, reqInfo.niName, reqInfo.protoName)
 		if hierErr != nil {
 			return res, hierErr
+		}
+		if held := niBgpHeldFields(inParams, hierClears); inParams.oper != REPLACE && len(held) > 0 {
+			if err := niBgpStageSubOp(inParams, DELETE, held); err != nil {
+				return res, err
+			}
 		}
 		res = hierRes
 		if len(res) == 0 {
