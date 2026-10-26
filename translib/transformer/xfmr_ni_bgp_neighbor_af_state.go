@@ -305,15 +305,21 @@ func niBgpNbrAfStatsFamilies(stateDb *db.DB, niName string) map[string][]string 
 	return families
 }
 
-// niBgpNbrAfStateUris names the two subtrees this transformer serves below one
+// niBgpNbrAfStateUris names the subtrees this transformer serves below one
 // afi-safi instance.
 func niBgpNbrAfStateUris(niName, protoName, neighborAddr, afiSafi string) []string {
 	afUri := niContainerProtoUri(niName, "BGP", protoName) +
 		"/bgp/neighbors/neighbor[neighbor-address=" + neighborAddr + "]" +
 		"/afi-safis/afi-safi[afi-safi-name=" + strings.ToUpper(afiSafi) + "]"
+	family := "ipv4-unicast"
+	if afiSafi == niBgpNbrAfiSafiIPv6 {
+		family = "ipv6-unicast"
+	}
 	return []string{
 		afUri + "/" + niBgpNbrAfStateSubtree,
 		afUri + "/" + niBgpNbrAfApplyPolicySubtree + "/" + niBgpNbrAfStateSubtree,
+		afUri + "/" + family + "/prefix-limit/state",
+		afUri + "/" + family + "/prefix-limit-received/state",
 	}
 }
 
@@ -336,7 +342,9 @@ func populateNiBgpNbrAfStateReplay(inParams XfmrParams, ygRoot *ygot.GoStruct, n
 	return nil
 }
 
-var DbToYang_ni_bgp_nbr_af_state_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) error {
+// dbToYangNiBgpNbrAfStateBase reads the neighbor afi-safi state apart from the
+// leaves DbToYang_ni_bgp_nbr_af_state_xfmr adds.
+var dbToYangNiBgpNbrAfStateBase SubTreeXfmrDbToYang = func(inParams XfmrParams) error {
 	reqInfo, err := parseNiBgpNbrAfStateRequestUri(inParams.requestUri)
 	if err != nil {
 		// A read at the afi-safi instance or the apply-policy container reaches
@@ -465,7 +473,7 @@ func populateNiBgpNbrAfPrefixesFromDb(inParams XfmrParams, stateDb *db.DB, reqIn
 	return nil
 }
 
-var Subscribe_ni_bgp_nbr_af_state_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSubscInParams) (XfmrSubscOutParams, error) {
+var subscribeNiBgpNbrAfStateBase SubTreeXfmrSubscribe = func(inParams XfmrSubscInParams) (XfmrSubscOutParams, error) {
 	var result XfmrSubscOutParams
 
 	if inParams.subscProc != TRANSLATE_SUBSCRIBE {

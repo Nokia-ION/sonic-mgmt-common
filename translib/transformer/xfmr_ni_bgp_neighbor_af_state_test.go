@@ -72,7 +72,7 @@ func Test_openconfig_network_instance_bgp_neighbor_af_prefix_counters(t *testing
 		{"/prefixes/received", `{"openconfig-network-instance:received":7}`},
 		{"/prefixes/sent", `{"openconfig-network-instance:sent":4}`},
 		{"/prefixes", `{"openconfig-network-instance:prefixes":{"received":7,"sent":4}}`},
-		{"", `{"openconfig-network-instance:state":{"prefixes":{"received":7,"sent":4}}}`},
+		{"", `{"openconfig-network-instance:state":{"afi-safi-name":"openconfig-bgp-types:IPV4_UNICAST","enabled":true,"prefixes":{"received":7,"sent":4}}}`},
 	}
 	for _, tc := range cases {
 		t.Run("GET BGP neighbor IPv4 unicast"+tc.path,
@@ -332,7 +332,7 @@ func Test_openconfig_network_instance_bgp_neighbor_af_apply_policy_state(t *test
 	// the afi-safi state container the counters are served under.
 	t.Run("GET BGP neighbor IPv4 unicast state carries no policy",
 		processGetRequest(niBgpNbrAfStateUrl("IPV4_UNICAST"), nil,
-			`{"openconfig-network-instance:state":{"prefixes":{"received":7,"sent":4}}}`, false))
+			`{"openconfig-network-instance:state":{"afi-safi-name":"openconfig-bgp-types:IPV4_UNICAST","enabled":true,"prefixes":{"received":7,"sent":4}}}`, false))
 	time.Sleep(1 * time.Second)
 
 	unloadNiBgpNbrAfStats("11.0.0.155", niBgpNbrAfIPv4)
@@ -474,7 +474,8 @@ func Test_openconfig_network_instance_bgp_neighbor_af_apply_policy_state_hierarc
 		`"state":{"export-policy":["RM-FRR-OUT"],"import-policy":["RM-FRR-IN"]}}`
 	v4EntryJSON := `{"afi-safi-name":"openconfig-bgp-types:IPV4_UNICAST",` +
 		`"apply-policy":` + applyJSON + `,` +
-		`"config":{"afi-safi-name":"openconfig-bgp-types:IPV4_UNICAST","enabled":true}}`
+		`"config":{"afi-safi-name":"openconfig-bgp-types:IPV4_UNICAST","enabled":true},` +
+		`"state":{"afi-safi-name":"openconfig-bgp-types:IPV4_UNICAST","enabled":true}}`
 
 	t.Run("GET BGP neighbor apply-policy container with config and state",
 		processGetRequest(v4Url+"/apply-policy", nil,
@@ -568,13 +569,13 @@ func Test_openconfig_network_instance_bgp_neighbor_af_state_hierarchy(t *testing
 		`"apply-policy":{"config":{"import-policy":["RM-CFG-IN"]},` +
 		`"state":{"export-policy":["RM-FRR-OUT"],"import-policy":["RM-FRR-IN"]}},` +
 		`"config":{"afi-safi-name":"openconfig-bgp-types:IPV4_UNICAST","enabled":true},` +
-		`"state":{"prefixes":{"received":7,"sent":4}}}`
+		`"state":{"afi-safi-name":"openconfig-bgp-types:IPV4_UNICAST","enabled":true,"prefixes":{"received":7,"sent":4}}}`
 	v6JSON := `{"afi-safi-name":"openconfig-bgp-types:IPV6_UNICAST",` +
 		`"apply-policy":{"state":{"import-policy":["RM-PG-IN"]}},` +
-		`"state":{"prefixes":{"received":2}}}`
+		`"state":{"afi-safi-name":"openconfig-bgp-types:IPV6_UNICAST","enabled":true,"prefixes":{"received":2}}}`
 	afisJSON := `{"afi-safi":[` + v4JSON + `,` + v6JSON + `]}`
 	nbrJSON := `{"afi-safis":` + afisJSON + `,"config":{"peer-as":65200},"neighbor-address":"20.0.0.1",` +
-		`"state":{"neighbor-address":"20.0.0.1","peer-as":65200},` +
+		`"state":{"neighbor-address":"20.0.0.1","neighbor-port":179,"peer-as":65200},` +
 		`"transport":{"state":{"local-address":"20.0.0.2","local-port":40001,"remote-address":"20.0.0.1","remote-port":179}}}`
 
 	cases := []struct {
