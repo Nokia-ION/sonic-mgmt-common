@@ -20,6 +20,7 @@ package transformer_test
 
 import (
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -210,7 +211,7 @@ func Test_openconfig_network_instance_bgp_neighbor_applied_state_leaves(t *testi
 	// The state container is filled from two tables at once: session-state from
 	// NEIGH_STATE_TABLE and the applied leaves from BGP_NEIGH_APPLIED.
 	expectedGetJSON := `{"openconfig-network-instance:state":{"session-state":"ESTABLISHED",` +
-		`"enabled":true,"neighbor-address":"11.0.0.155","peer-as":65300,"peer-group":"PG1"}}`
+		`"enabled":true,"neighbor-address":"11.0.0.155","neighbor-port":179,"peer-as":65300,"peer-group":"PG1"}}`
 	t.Run("GET BGP neighbor state container across both tables",
 		processGetRequest(niBgpNbrStateUrl, nil, expectedGetJSON, false))
 	time.Sleep(1 * time.Second)
@@ -317,7 +318,7 @@ func Test_openconfig_network_instance_bgp_neighbor_applied_without_session_state
 	time.Sleep(1 * time.Second)
 
 	expectedGetJSON := `{"openconfig-network-instance:state":{"enabled":true,` +
-		`"neighbor-address":"11.0.0.155","peer-as":65300,"peer-group":"PG1"}}`
+		`"neighbor-address":"11.0.0.155","neighbor-port":179,"peer-as":65300,"peer-group":"PG1"}}`
 	t.Run("GET BGP neighbor state container with no session state published",
 		processGetRequest(niBgpNbrStateUrl, nil, expectedGetJSON, false))
 	time.Sleep(1 * time.Second)
@@ -556,7 +557,7 @@ func Test_openconfig_network_instance_bgp_neighbor_state_container_with_counters
 	loadNiBgpNbrStats("11.0.0.155", niBgpNbrStatsRow())
 
 	expectedGetJSON := `{"openconfig-network-instance:state":{"session-state":"ESTABLISHED",` +
-		`"enabled":true,"neighbor-address":"11.0.0.155","peer-as":65300,"peer-group":"PG1",` +
+		`"enabled":true,"neighbor-address":"11.0.0.155","neighbor-port":179,"peer-as":65300,"peer-group":"PG1",` +
 		`"established-transitions":"3","last-established":"1756400000000000000",` +
 		`"messages":{"sent":{"UPDATE":"120"},"received":{"UPDATE":"87"}}}}`
 	t.Run("GET BGP neighbor state container across all three tables",
@@ -729,4 +730,110 @@ func Test_openconfig_network_instance_bgp_neighbor_state_supported_capabilities_
 
 	unloadNiBgpNbrApplied("11.0.0.155")
 	unloadNiBgpNbrState("11.0.0.155")
+}
+
+// The neighbor state leaves read FRR's view of the session where bgpmon
+// publishes it, and the configuration for the password and passive mode,
+// which FRR does not report.
+func Test_openconfig_network_instance_bgp_neighbor_state_leaves_from_frr(t *testing.T) {
+	row := niBgpNbrAppliedRow()
+	for k, v := range map[string]interface{}{
+		"local_as": "65200", "peer_type": "external", "description": "core-1", "hold_time": "90",
+		"keepalive_interval": "30", "connect_retry": "10", "min_adv_interval": "0", "tcp_mss": "1448",
+		"ebgp_multihop_ttl": "5", "bfd": "true",
+	} {
+		row[k] = v
+	}
+	loadNiBgpNbrApplied("11.0.0.155", row)
+	loadDB(db.ConfigDB, map[string]interface{}{
+		"BGP_NEIGHBOR": map[string]interface{}{
+			"default|11.0.0.155": map[string]interface{}{"asn": "65300", "auth_password": "s3cret", "passive_mode": "true"},
+		},
+	})
+	time.Sleep(1 * time.Second)
+
+	nbrUrl := niBgpProtoUrl + "/bgp/neighbors/neighbor[neighbor-address=11.0.0.155]"
+	for _, tc := range []struct{ path, expected string }{
+		{"/state/local-as", `{"openconfig-network-instance:local-as":65200}`},
+		{"/state/peer-type", `{"openconfig-network-instance:peer-type":"EXTERNAL"}`},
+		{"/state/description", `{"openconfig-network-instance:description":"core-1"}`},
+		{"/state/neighbor-port", `{"openconfig-network-instance:neighbor-port":179}`},
+		{"/state/auth-password", `{"openconfig-network-instance:auth-password":"s3cret"}`},
+		{"/timers/state", `{"openconfig-network-instance:state":{"connect-retry":10,"hold-time":90,"keepalive-interval":30,"minimum-advertisement-interval":0}}`},
+		{"/transport/state/tcp-mss", `{"openconfig-network-instance:tcp-mss":1448}`},
+		{"/transport/state/passive-mode", `{"openconfig-network-instance:passive-mode":true}`},
+		{"/ebgp-multihop/state", `{"openconfig-network-instance:state":{"enabled":true,"multihop-ttl":5}}`},
+		{"/enable-bfd/state/enabled", `{"openconfig-network-instance:enabled":true}`},
+	} {
+		t.Run("GET BGP neighbor "+tc.path, processGetRequest(nbrUrl+tc.path, nil, tc.expected, false))
+		time.Sleep(1 * time.Second)
+	}
+
+	unloadDB(db.ConfigDB, map[string]interface{}{"BGP_NEIGHBOR": map[string]interface{}{"default|11.0.0.155": ""}})
+	unloadNiBgpNbrApplied("11.0.0.155")
+}
+
+// FRR keeps the NOTIFICATION behind the last reset, so only the direction it
+// went in reports it.
+func Test_openconfig_network_instance_bgp_neighbor_last_notification(t *testing.T) {
+	unloadNiBgpNbrState("11.0.0.155")
+	loadNiBgpNbrStats("11.0.0.155", map[string]interface{}{
+		"updates_sent":                    "120",
+		"last_notification_error_code":    "6",
+		"last_notification_error_subcode": "2",
+		"last_notification_direction":     "sent",
+		"last_notification_time":          "1756400000",
+	})
+
+	msgUrl := niBgpNbrStateUrl + "/messages"
+	t.Run("GET BGP neighbor sent last-notification-error-subcode",
+		processGetRequest(msgUrl+"/sent/last-notification-error-subcode", nil,
+			`{"openconfig-network-instance:last-notification-error-subcode":"openconfig-bgp-types:ADMINISTRATIVE_SHUTDOWN"}`, false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET BGP neighbor sent messages",
+		processGetRequest(msgUrl+"/sent", nil, `{"openconfig-network-instance:sent":{"UPDATE":"120",`+
+			`"last-notification-error-code":"openconfig-bgp-types:CEASE","last-notification-error-subcode":"openconfig-bgp-types:ADMINISTRATIVE_SHUTDOWN",`+
+			`"last-notification-time":"1756400000000000000"}}`, false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET BGP neighbor received last-notification-error-code is not found",
+		processGetRequest(msgUrl+"/received/last-notification-error-code", nil, "", true, tlerr.NotFoundError{Format: "Resource not found"}))
+	time.Sleep(1 * time.Second)
+
+	unloadNiBgpNbrStats("11.0.0.155")
+}
+
+// An address family bgpmon reports is one FRR runs, with the community types
+// it sends and the prefix limit it enforces.
+func Test_openconfig_network_instance_bgp_neighbor_af_state_leaves(t *testing.T) {
+	loadNiBgpNbrAfStats("11.0.0.155", niBgpNbrAfIPv4, map[string]interface{}{
+		"prefixes_received": "7", "send_community": "standard,extended",
+		"max_prefixes": "100", "prevent_teardown": "true", "warning_threshold_pct": "80",
+	})
+	afUrl := strings.TrimSuffix(niBgpNbrAfStateUrl("IPV4_UNICAST"), "/state")
+	t.Run("GET BGP neighbor afi-safi state enabled",
+		processGetRequest(afUrl+"/state/enabled", nil, `{"openconfig-network-instance:enabled":true}`, false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET BGP neighbor afi-safi state send-community-type",
+		processGetRequest(afUrl+"/state/send-community-type", nil, `{"openconfig-network-instance:send-community-type":["STANDARD","EXTENDED"]}`, false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET BGP neighbor ipv4-unicast prefix-limit state",
+		processGetRequest(afUrl+"/ipv4-unicast/prefix-limit/state", nil,
+			`{"openconfig-network-instance:state":{"max-prefixes":100,"prevent-teardown":true,"warning-threshold-pct":80}}`, false))
+	time.Sleep(1 * time.Second)
+
+	// A limit configured to count every prefix received is reported under
+	// prefix-limit-received, where it is configured.
+	loadDB(db.ConfigDB, map[string]interface{}{
+		"BGP_NEIGHBOR_AF": map[string]interface{}{"default|11.0.0.155|ipv4_unicast": map[string]interface{}{"max_prefix_force": "true"}},
+	})
+	time.Sleep(1 * time.Second)
+	t.Run("GET BGP neighbor ipv4-unicast prefix-limit-received state max-prefixes",
+		processGetRequest(afUrl+"/ipv4-unicast/prefix-limit-received/state/max-prefixes", nil, `{"openconfig-network-instance:max-prefixes":100}`, false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET BGP neighbor ipv4-unicast prefix-limit state max-prefixes is not found",
+		processGetRequest(afUrl+"/ipv4-unicast/prefix-limit/state/max-prefixes", nil, "", true, tlerr.NotFoundError{Format: "Resource not found"}))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, map[string]interface{}{"BGP_NEIGHBOR_AF": map[string]interface{}{"default|11.0.0.155|ipv4_unicast": ""}})
+	unloadNiBgpNbrAfStats("11.0.0.155", niBgpNbrAfIPv4)
 }
