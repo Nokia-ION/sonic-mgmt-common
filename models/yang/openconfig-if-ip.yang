@@ -508,6 +508,16 @@ module openconfig-if-ip {
       description
         "The length of the subnet prefix.";
     }
+
+    leaf type {
+      type oc-inet:ipv6-address-type;
+      default GLOBAL_UNICAST;
+      description
+        "Specifies the explicit type of the IPv6 address being assigned
+        to the interface. By default, addresses are assumed to be
+        global unicast. Where a link-local address is to be explicitly
+        configured, this leaf should be set to LINK_LOCAL_UNICAST.";
+    }
   }
 
   grouping ipv6-address-state {
