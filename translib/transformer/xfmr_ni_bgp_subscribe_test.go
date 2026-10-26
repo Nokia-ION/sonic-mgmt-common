@@ -131,7 +131,12 @@ func TestSubscribe_ni_bgp_global_cfg_containers(t *testing.T) {
 		{"config", global + "/config", global + "/config", db.ConfigDB, "BGP_GLOBALS", "default",
 			map[string]string{"local_asn": "as", "router_id": "router-id"}, OnChange},
 		{"route-selection-options config", global + "/route-selection-options/config", global + "/route-selection-options/config",
-			db.ConfigDB, "BGP_GLOBALS", "default", map[string]string{"always_compare_med": "always-compare-med"}, OnChange},
+			db.ConfigDB, "BGP_GLOBALS", "default", map[string]string{"always_compare_med": "always-compare-med",
+				"ignore_as_path_length": "ignore-as-path-length", "external_compare_router_id": "external-compare-router-id"}, OnChange},
+		{"graceful-restart state", global + "/graceful-restart/state", global + "/graceful-restart/state/restart-time",
+			db.ConfigDB, "BGP_GLOBALS", "default", map[string]string{"gr_restart_time": "restart-time"}, OnChange},
+		{"confederation config", global + "/confederation/config", global + "/confederation/config",
+			db.ConfigDB, "BGP_GLOBALS", "default", map[string]string{"confed_id": "identifier", "confed_peers@": "member-as"}, OnChange},
 		{"ebgp maximum-paths", global + "/use-multiple-paths/ebgp/config", global + "/use-multiple-paths/ebgp/config/maximum-paths",
 			db.ConfigDB, "BGP_GLOBALS", "default", map[string]string{"max_ebgp_paths": "maximum-paths"}, OnChange},
 		// Activating a family is its default unicast flag on the BGP_GLOBALS

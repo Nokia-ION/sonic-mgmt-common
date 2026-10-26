@@ -848,6 +848,6 @@ func rpolPopulatePrefixEntry(ygRoot *ygot.GoStruct, prefixSetName, ipPrefix, mas
 	if targetLeaf == "" || targetLeaf == rpolMasklengthRangeLeaf {
 		pfxObj.Config.MasklengthRange = &rng
 	}
-	rpolMirrorConfigToState(pfxObj)
+	ocMirrorConfigToState(pfxObj)
 	return nil
 }

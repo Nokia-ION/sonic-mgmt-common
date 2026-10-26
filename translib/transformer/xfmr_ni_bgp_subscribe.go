@@ -50,6 +50,7 @@ const (
 	niBgpSubscKeyNiPgIPv4
 	niBgpSubscKeyNiPgIPv6
 	niBgpSubscKeyNiAf
+	niBgpSubscKeyNiListenPfx
 )
 
 // niBgpSubscMap describes one node a BGP transformer owns: the table and row
@@ -98,6 +99,8 @@ func (k niBgpSubscKey) build(pathInfo *PathInfo) string {
 		return ni + "|" + niBgpSubscVar(pathInfo, "peer-group-name") + "|" + niBgpPgAfiSafiIPv6
 	case niBgpSubscKeyNiAf:
 		return ni + "|" + niBgpSubscAf(pathInfo)
+	case niBgpSubscKeyNiListenPfx:
+		return ni + "|" + niBgpSubscVar(pathInfo, "prefix")
 	}
 	return ni
 }
@@ -193,41 +196,30 @@ const niBgpProtoSubscAnchor = "/protocols/protocol"
 
 // The nodes the global transformer owns that hold no field of their own:
 // containers and lists whose content is all children with mappings of their
-// own, here or in the neighbor, peer-group and state transformers.
+// own, here or in the neighbor, peer-group and state transformers. The
+// niBgpGlobalLeafFlds containers and their twins are added from that table.
 var niBgpGlobalSubscVirtual = map[string]bool{
-	"/bgp":                                                   true,
-	"/bgp/global":                                            true,
-	"/bgp/global/route-selection-options":                    true,
-	"/bgp/global/use-multiple-paths":                         true,
-	"/bgp/global/use-multiple-paths/ebgp":                    true,
-	"/bgp/global/use-multiple-paths/ibgp":                    true,
-	"/bgp/global/afi-safis":                                  true,
-	"/bgp/global/afi-safis/afi-safi":                         true,
+	"/bgp":                           true,
+	"/bgp/global":                    true,
+	"/bgp/global/use-multiple-paths": true,
+	"/bgp/global/afi-safis":          true,
+	"/bgp/global/afi-safis/afi-safi": true,
 	"/bgp/global/afi-safis/afi-safi/use-multiple-paths":      true,
 	"/bgp/global/afi-safis/afi-safi/use-multiple-paths/ebgp": true,
 	"/bgp/global/afi-safis/afi-safi/use-multiple-paths/ibgp": true,
-	"/bgp/neighbors":                                         true,
-	"/bgp/neighbors/neighbor":                                true,
-	"/bgp/neighbors/neighbor/timers":                         true,
-	"/bgp/neighbors/neighbor/as-path-options":                true,
-	"/bgp/peer-groups":                                       true,
-	"/bgp/peer-groups/peer-group":                            true,
-	"/bgp/peer-groups/peer-group/timers":                     true,
+	"/bgp/neighbors":                          true,
+	"/bgp/neighbors/neighbor":                 true,
+	"/bgp/neighbors/neighbor/timers":          true,
+	"/bgp/neighbors/neighbor/as-path-options": true,
+	"/bgp/peer-groups":                        true,
+	"/bgp/peer-groups/peer-group":             true,
+	"/bgp/peer-groups/peer-group/timers":      true,
 }
 
 var niBgpGlobalSubscMaps = map[string]niBgpSubscMap{
 	"/bgp/global/config": {dbNum: db.ConfigDB, table: niBgpGlobalsTbl, key: niBgpSubscKeyNi, fields: map[string][]string{
 		"as":        {niBgpAsFld},
 		"router-id": {niBgpRouterIdFld},
-	}},
-	"/bgp/global/route-selection-options/config": {dbNum: db.ConfigDB, table: niBgpGlobalsTbl, key: niBgpSubscKeyNi, fields: map[string][]string{
-		"always-compare-med": {niBgpAlwaysCompareMedFld},
-	}},
-	"/bgp/global/use-multiple-paths/ebgp/config": {dbNum: db.ConfigDB, table: niBgpGlobalsTbl, key: niBgpSubscKeyNi, fields: map[string][]string{
-		"maximum-paths": {niBgpMaxEbgpPathsFld},
-	}},
-	"/bgp/global/use-multiple-paths/ibgp/config": {dbNum: db.ConfigDB, table: niBgpGlobalsTbl, key: niBgpSubscKeyNi, fields: map[string][]string{
-		"maximum-paths": {niBgpMaxIbgpPathsFld},
 	}},
 	// Activating a family is the default unicast flag on the BGP_GLOBALS row,
 	// one field per family, rather than a row of its own.
