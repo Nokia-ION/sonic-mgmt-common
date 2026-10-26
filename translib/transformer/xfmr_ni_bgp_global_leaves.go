@@ -116,6 +116,8 @@ func niBgpGlobalLeafToDb(f reflect.Value) (string, bool) {
 			return strconv.FormatBool(e.Bool()), true
 		case reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 			return strconv.FormatUint(e.Uint(), 10), true
+		case reflect.String:
+			return e.String(), e.String() != ""
 		}
 	case reflect.Slice:
 		if f.Len() == 0 {
@@ -132,10 +134,17 @@ func niBgpGlobalLeafToDb(f reflect.Value) (string, bool) {
 
 // niBgpGlobalLeafFromDb sets one leaf from its CONFIG_DB field value.
 func niBgpGlobalLeafFromDb(f reflect.Value, raw string) error {
-	raw = strings.TrimSpace(raw)
-	if raw == "" || !f.CanSet() {
+	if !f.CanSet() || strings.TrimSpace(raw) == "" {
 		return nil
 	}
+	if f.Kind() == reflect.Ptr && f.Type().Elem().Kind() == reflect.String {
+		// A string is kept as stored: a description may carry spaces.
+		nv := reflect.New(f.Type().Elem())
+		nv.Elem().SetString(raw)
+		f.Set(nv)
+		return nil
+	}
+	raw = strings.TrimSpace(raw)
 	switch f.Kind() {
 	case reflect.Ptr:
 		t := f.Type().Elem()
