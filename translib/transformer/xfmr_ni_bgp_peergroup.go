@@ -817,7 +817,11 @@ func populateNiBgpPgAfFromDb(cfgDb *db.DB, ygRoot *ygot.GoStruct, niName, protoN
 			afObj.ApplyPolicy.Config.ExportPolicy = []string{policy}
 		}
 	}
-	return niBgpPeerAfLeavesToYang(niBgpPgKind, ygRoot, niName, protoName, pgName, afiSafi, "", "", entry)
+	if err := niBgpPeerAfLeavesToYang(niBgpPgKind, ygRoot, niName, protoName, pgName, afiSafi, "", "", entry); err != nil {
+		return err
+	}
+	niBgpPgMirrorAfStateInTree(reflect.ValueOf(afObj))
+	return nil
 }
 
 func parseNiBgpPgNameFromParam(param interface{}) (string, bool) {
