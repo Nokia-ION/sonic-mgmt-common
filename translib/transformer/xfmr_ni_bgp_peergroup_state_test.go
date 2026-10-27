@@ -161,3 +161,53 @@ func Test_openconfig_network_instance_bgp_peer_group_state_stale_marker_suppress
 	unloadNiBgpPgApplied()
 	unloadDB(db.ConfigDB, cleanup)
 }
+
+// FRR reports a peer-group's remote AS, type and families alone, so its
+// other state reads what is configured: each mirrored container and leaf
+// reports its config twin, the leaves FRR reports stay FRR's, and a read
+// above the state containers carries both.
+func Test_openconfig_network_instance_bgp_peer_group_state_mirrors_config(t *testing.T) {
+	preReqMap := map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{"default": map[string]interface{}{"local_asn": "65100"}},
+		"BGP_PEER_GROUP": map[string]interface{}{"default|PGS1": map[string]interface{}{
+			"asn": "65300", "local_asn": "65111", "name": "pg-m", "conn_retry": "15", "keepalive": "30", "holdtime": "90",
+			"tcp_mss": "1400", "passive_mode": "true", "graceful_restart_enable": "true"}},
+		"BGP_PEER_GROUP_AF": map[string]interface{}{"default|PGS1|ipv4_unicast": map[string]interface{}{
+			"admin_status": "up", "send_community": "standard", "route_map_in@": "RM_IN", "max_prefix_limit": "500",
+			"max_prefix_warning_threshold": "80", "send_default_route": "true", "tx_add_paths": "tx_all_paths"}},
+	}
+	cleanupTbl := map[string]interface{}{
+		"BGP_PEER_GROUP_AF": map[string]interface{}{"default|PGS1|ipv4_unicast": ""},
+		"BGP_PEER_GROUP":    map[string]interface{}{"default|PGS1": ""},
+		"BGP_GLOBALS":       map[string]interface{}{"default": ""},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	v4 := niBgpPgStateUrl + "/afi-safis/afi-safi[afi-safi-name=IPV4_UNICAST]"
+	for _, c := range []struct{ name, url, want string }{
+		{"timers state", niBgpPgStateUrl + "/timers/state",
+			`{"openconfig-network-instance:state":{"connect-retry":15,"hold-time":90,"keepalive-interval":30}}`},
+		{"transport state tcp-mss", niBgpPgStateUrl + "/transport/state/tcp-mss", `{"openconfig-network-instance:tcp-mss":1400}`},
+		{"graceful-restart state", niBgpPgStateUrl + "/graceful-restart/state", `{"openconfig-network-instance:state":{"enabled":true}}`},
+		{"state local-as", niBgpPgStateUrl + "/state/local-as", `{"openconfig-network-instance:local-as":65111}`},
+		{"state description", niBgpPgStateUrl + "/state/description", `{"openconfig-network-instance:description":"pg-m"}`},
+		{"afi-safi state send-community-type", v4 + "/state/send-community-type",
+			`{"openconfig-network-instance:send-community-type":["STANDARD"]}`},
+		{"apply-policy state", v4 + "/apply-policy/state", `{"openconfig-network-instance:state":{"import-policy":["RM_IN"]}}`},
+		{"ipv4-unicast state", v4 + "/ipv4-unicast/state", `{"openconfig-network-instance:state":{"send-default-route":true}}`},
+		{"prefix-limit state", v4 + "/ipv4-unicast/prefix-limit/state",
+			`{"openconfig-network-instance:state":{"max-prefixes":500,"warning-threshold-pct":80}}`},
+		{"add-paths state", v4 + "/add-paths/state", `{"openconfig-network-instance:state":{"send":true}}`},
+		{"transport container", niBgpPgStateUrl + "/transport",
+			`{"openconfig-network-instance:transport":{"config":{"passive-mode":true,"tcp-mss":1400},"state":{"passive-mode":true,"tcp-mss":1400}}}`},
+	} {
+		t.Run("GET BGP peer-group "+c.name, processGetRequest(c.url, nil, c.want, false))
+		time.Sleep(1 * time.Second)
+	}
+	t.Run("GET BGP peer-group state peer-as without FRR is not found",
+		processGetRequest(niBgpPgStateUrl+"/state/peer-as", nil, "", true, tlerr.NotFoundError{Format: "Resource not found"}))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}

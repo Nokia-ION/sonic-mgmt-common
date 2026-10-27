@@ -3109,7 +3109,7 @@ func Test_openconfig_network_instance_bgp_container_get(t *testing.T) {
 	globalJSON := `{"config":{"as":65200,"router-id":"2.2.2.2"}}`
 	neighborEntryJSON := `{"config":{"enabled":true,"peer-group":"PG1"},"neighbor-address":"20.0.0.1"}`
 	peerGroupEntryJSON := `{"config":{"peer-as":65300},"peer-group-name":"PG1",` +
-		`"timers":{"config":{"hold-time":90,"keepalive-interval":15}}}`
+		`"timers":{"config":{"hold-time":90,"keepalive-interval":15},"state":{"hold-time":90,"keepalive-interval":15}}}`
 
 	expectedGetJSON := `{"openconfig-network-instance:bgp":{"global":` + globalJSON +
 		`,"neighbors":{"neighbor":[` + neighborEntryJSON + `]}` +
@@ -4305,9 +4305,9 @@ func Test_openconfig_network_instance_bgp_peer_group_afi_safi_instance_read(t *t
 	v4Url := afisUrl + "/afi-safi[afi-safi-name=IPV4_UNICAST]"
 
 	v4EntryJSON := `{"afi-safi-name":"openconfig-bgp-types:IPV4_UNICAST",` +
-		`"apply-policy":{"config":{"export-policy":["RM_OUT"],"import-policy":["RM_IN"]}},` +
+		`"apply-policy":{"config":{"export-policy":["RM_OUT"],"import-policy":["RM_IN"]},"state":{"export-policy":["RM_OUT"],"import-policy":["RM_IN"]}},` +
 		`"config":{"afi-safi-name":"openconfig-bgp-types:IPV4_UNICAST","enabled":false},` +
-		`"ipv4-unicast":{"prefix-limit":{"config":{"max-prefixes":500}}}}`
+		`"ipv4-unicast":{"prefix-limit":{"config":{"max-prefixes":500},"state":{"max-prefixes":500}}}}`
 	t.Run("GET network-instance BGP peer-group afi-safi instance with every mapped field",
 		processGetRequest(v4Url, nil,
 			`{"openconfig-network-instance:afi-safi":[`+v4EntryJSON+`]}`, false))
@@ -5264,7 +5264,7 @@ func Test_openconfig_network_instance_bgp_peer_group_afi_safi_apply_policy_repla
 		verifyDbResult(rclient, "BGP_PEER_GROUP_AF|default|PG1|ipv4_unicast", expectedMap, false))
 	time.Sleep(1 * time.Second)
 
-	expectedGetJSON := "{\"openconfig-network-instance:apply-policy\":{\"config\":{\"export-policy\":[\"RM-NEW\"]}}}"
+	expectedGetJSON := "{\"openconfig-network-instance:apply-policy\":{\"config\":{\"export-policy\":[\"RM-NEW\"]},\"state\":{\"export-policy\":[\"RM-NEW\"]}}}"
 	t.Run("GET peer-group apply-policy container",
 		processGetRequest(url, nil, expectedGetJSON, false))
 	time.Sleep(1 * time.Second)
@@ -6592,8 +6592,9 @@ func Test_openconfig_network_instance_bgp_peer_group_config_leaves(t *testing.T)
 			`{"openconfig-network-instance:config":{"max-prefixes":500,"prevent-teardown":true,"warning-threshold-pct":80}}`, false))
 	time.Sleep(1 * time.Second)
 	t.Run("GET network-instance BGP peer-group ipv4-unicast container",
-		processGetRequest(v4Url+"/ipv4-unicast", nil, `{"openconfig-network-instance:ipv4-unicast":{"config":{"send-default-route":true},`+
-			`"prefix-limit":{"config":{"max-prefixes":500,"prevent-teardown":true,"warning-threshold-pct":80}}}}`, false))
+		processGetRequest(v4Url+"/ipv4-unicast", nil, `{"openconfig-network-instance:ipv4-unicast":{"config":{"send-default-route":true},"state":{"send-default-route":true},`+
+			`"prefix-limit":{"config":{"max-prefixes":500,"prevent-teardown":true,"warning-threshold-pct":80},`+
+			`"state":{"max-prefixes":500,"prevent-teardown":true,"warning-threshold-pct":80}}}}`, false))
 	time.Sleep(1 * time.Second)
 	t.Run("GET network-instance BGP peer-group add-paths config container",
 		processGetRequest(v4Url+"/add-paths/config", nil, `{"openconfig-network-instance:config":{"send":true,"send-max":3}}`, false))
@@ -6700,14 +6701,14 @@ func Test_openconfig_network_instance_bgp_peer_group_leaves_hierarchy(t *testing
 
 	pgUrl := bgpUrl + "/peer-groups/peer-group[peer-group-name=PG2]"
 	t.Run("GET network-instance BGP peer-group transport",
-		processGetRequest(pgUrl+"/transport", nil, `{"openconfig-network-instance:transport":{"config":{"tcp-mss":1300}}}`, false))
+		processGetRequest(pgUrl+"/transport", nil, `{"openconfig-network-instance:transport":{"config":{"tcp-mss":1300},"state":{"tcp-mss":1300}}}`, false))
 	time.Sleep(1 * time.Second)
 	t.Run("GET network-instance BGP peer-group graceful-restart",
-		processGetRequest(pgUrl+"/graceful-restart", nil, `{"openconfig-network-instance:graceful-restart":{"config":{"enabled":true}}}`, false))
+		processGetRequest(pgUrl+"/graceful-restart", nil, `{"openconfig-network-instance:graceful-restart":{"config":{"enabled":true},"state":{"enabled":true}}}`, false))
 	time.Sleep(1 * time.Second)
 	t.Run("GET network-instance BGP peer-group ipv4 prefix-limit at the afi-safi instance",
 		processGetRequest(pgUrl+"/afi-safis/afi-safi[afi-safi-name=IPV4_UNICAST]/ipv4-unicast/prefix-limit", nil,
-			`{"openconfig-network-instance:prefix-limit":{"config":{"max-prefixes":100,"warning-threshold-pct":75}}}`, false))
+			`{"openconfig-network-instance:prefix-limit":{"config":{"max-prefixes":100,"warning-threshold-pct":75},"state":{"max-prefixes":100,"warning-threshold-pct":75}}}`, false))
 	time.Sleep(1 * time.Second)
 
 	unloadDB(db.ConfigDB, cleanupTbl)
