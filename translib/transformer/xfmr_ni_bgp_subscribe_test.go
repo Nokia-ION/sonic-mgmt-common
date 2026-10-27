@@ -118,16 +118,21 @@ func TestSubscribe_ni_bgp_pg_cfg_containers(t *testing.T) {
 	af := pg + "/afi-safis/afi-safi[afi-safi-name=IPV4_UNICAST]"
 	runNiBgpSubscCases(t, Subscribe_ni_bgp_pg_cfg_xfmr, []niBgpSubscCase{
 		{"config", pg + "/config", pg + "/config", db.ConfigDB, "BGP_PEER_GROUP", "default|PG1",
-			map[string]string{"asn": "peer-as"}, OnChange},
+			map[string]string{"asn": "peer-as", "local_asn": "local-as", "peer_type": "peer-type", "auth_password": "auth-password", "name": "description"}, OnChange},
 		{"timers config", pg + "/timers/config", pg + "/timers/config", db.ConfigDB, "BGP_PEER_GROUP", "default|PG1",
-			map[string]string{"keepalive": "keepalive-interval", "holdtime": "hold-time"}, OnChange},
+			map[string]string{"keepalive": "keepalive-interval", "holdtime": "hold-time", "conn_retry": "connect-retry", "min_adv_interval": "minimum-advertisement-interval"}, OnChange},
+		{"transport config", pg + "/transport/config", pg + "/transport/config", db.ConfigDB, "BGP_PEER_GROUP", "default|PG1",
+			map[string]string{"tcp_mss": "tcp-mss", "passive_mode": "passive-mode", "local_addr": "local-address"}, OnChange},
+		{"graceful-restart enabled", pg + "/graceful-restart/config", pg + "/graceful-restart/config/enabled", db.ConfigDB, "BGP_PEER_GROUP", "default|PG1",
+			map[string]string{"graceful_restart_enable": "enabled"}, OnChange},
 		{"afi-safi config", af + "/config", af + "/config", db.ConfigDB, "BGP_PEER_GROUP_AF", "default|PG1|ipv4_unicast",
 			map[string]string{"admin_status": "enabled", "send_community": "send-community-type"}, OnChange},
 		{"apply-policy config", af + "/apply-policy/config", af + "/apply-policy/config", db.ConfigDB, "BGP_PEER_GROUP_AF", "default|PG1|ipv4_unicast",
 			map[string]string{"route_map_in@": "import-policy", "route_map_out@": "export-policy"}, OnChange},
 		{"ipv6 prefix-limit config", pg + "/afi-safis/afi-safi[afi-safi-name=IPV6_UNICAST]/ipv6-unicast/prefix-limit/config",
 			pg + "/afi-safis/afi-safi[afi-safi-name=IPV6_UNICAST]/ipv6-unicast/prefix-limit/config",
-			db.ConfigDB, "BGP_PEER_GROUP_AF", "default|PG1|ipv6_unicast", map[string]string{"max_prefix_limit": "max-prefixes"}, OnChange},
+			db.ConfigDB, "BGP_PEER_GROUP_AF", "default|PG1|ipv6_unicast", map[string]string{"max_prefix_limit": "max-prefixes",
+				"max_prefix_warning_only": "prevent-teardown", "max_prefix_warning_threshold": "warning-threshold-pct"}, OnChange},
 	})
 }
 

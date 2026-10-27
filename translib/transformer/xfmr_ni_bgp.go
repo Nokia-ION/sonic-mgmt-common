@@ -1269,11 +1269,11 @@ func buildNiBgpHierResMap(s *ygot.GoStruct, niName, protoName string) (map[strin
 					nbrFields[niBgpNbrKeepaliveFld] = strconv.FormatUint(uint64(*nbrObj.Timers.Config.KeepaliveInterval), 10)
 				}
 			}
-			leafFields, _ := niBgpNbrNeighborFields(reflect.ValueOf(nbrObj))
+			leafFields, _ := niBgpPeerFields(niBgpNbrKind, reflect.ValueOf(nbrObj))
 			for f, v := range leafFields {
 				nbrFields[f] = v
 			}
-			if err := niBgpNbrRemoteAsErr(nbrFields, db.Value{}); err != nil {
+			if err := niBgpPeerRemoteAsErr(niBgpNbrKind.scope, nbrFields, db.Value{}); err != nil {
 				return res, nil, err
 			}
 			// A payload may name a list instance while setting no mapped leaf
@@ -1333,7 +1333,7 @@ func buildNiBgpHierResMap(s *ygot.GoStruct, niName, protoName string) (map[strin
 							afFields[niBgpNbrRouteMapOutFld] = exportPolicy
 						}
 					}
-					leafFields, err := niBgpNbrAfFields(afiObj, afiSafi)
+					leafFields, err := niBgpPeerAfFields(niBgpNbrKind, reflect.ValueOf(afiObj), afiSafi)
 					if err != nil {
 						return res, nil, err
 					}
@@ -1367,6 +1367,13 @@ func buildNiBgpHierResMap(s *ygot.GoStruct, niName, protoName string) (map[strin
 					pgFields[niBgpPgHoldTimeFld] = strconv.FormatUint(uint64(*pgObj.Timers.Config.HoldTime), 10)
 				}
 			}
+			leafFields, _ := niBgpPeerFields(niBgpPgKind, reflect.ValueOf(pgObj))
+			for f, v := range leafFields {
+				pgFields[f] = v
+			}
+			if err := niBgpPeerRemoteAsErr(niBgpPgKind.scope, pgFields, db.Value{}); err != nil {
+				return res, nil, err
+			}
 			res = mergeDbResMapFields(res, makeNiBgpPgResMap(niName, pgName, pgFields))
 			if pgObj.AfiSafis != nil {
 				for afiEnum, afiObj := range pgObj.AfiSafis.AfiSafi {
@@ -1394,17 +1401,18 @@ func buildNiBgpHierResMap(s *ygot.GoStruct, niName, protoName string) (map[strin
 						}
 						pgAfFields[niBgpPgSendCommFld] = comm
 					}
+					leafFields, err := niBgpPeerAfFields(niBgpPgKind, reflect.ValueOf(afiObj), afiSafi)
+					if err != nil {
+						return res, nil, err
+					}
+					set, clear := niBgpSplitClearFlds(leafFields)
+					for f, v := range set {
+						pgAfFields[f] = v
+					}
+					if len(clear) > 0 {
+						clears = mergeDbResMapFields(clears, makeNiBgpPgAfResMap(niName, pgName, afiSafi, clear))
+					}
 					res = mergeDbResMapFields(res, makeNiBgpPgAfResMap(niName, pgName, afiSafi, pgAfFields))
-					if afiObj.Ipv4Unicast != nil && afiObj.Ipv4Unicast.PrefixLimit != nil && afiObj.Ipv4Unicast.PrefixLimit.Config != nil && afiObj.Ipv4Unicast.PrefixLimit.Config.MaxPrefixes != nil {
-						res = mergeDbResMapFields(res, makeNiBgpPgAfResMap(niName, pgName, niBgpPgAfiSafiIPv4, map[string]string{
-							niBgpPgMaxPfxLimitFld: strconv.FormatUint(uint64(*afiObj.Ipv4Unicast.PrefixLimit.Config.MaxPrefixes), 10),
-						}))
-					}
-					if afiObj.Ipv6Unicast != nil && afiObj.Ipv6Unicast.PrefixLimit != nil && afiObj.Ipv6Unicast.PrefixLimit.Config != nil && afiObj.Ipv6Unicast.PrefixLimit.Config.MaxPrefixes != nil {
-						res = mergeDbResMapFields(res, makeNiBgpPgAfResMap(niName, pgName, niBgpPgAfiSafiIPv6, map[string]string{
-							niBgpPgMaxPfxLimitFld: strconv.FormatUint(uint64(*afiObj.Ipv6Unicast.PrefixLimit.Config.MaxPrefixes), 10),
-						}))
-					}
 					if afiObj.ApplyPolicy != nil && afiObj.ApplyPolicy.Config != nil {
 						applyFields := map[string]string{}
 						exportPolicy, ok, err := niBgpSinglePolicyName(afiObj.ApplyPolicy.Config.ExportPolicy, "peer-group", niBgpPgExportPolicyLeaf)
@@ -1566,7 +1574,7 @@ func populateNiBgpHierToYangFromDb(cfgDb *db.DB, ygRoot *ygot.GoStruct, niName, 
 					}
 				}
 			}
-			if err := niBgpNbrLeavesToYang(ygRoot, niName, protoName, nbrAddr, "", "", nbrEntry); err != nil {
+			if err := niBgpPeerLeavesToYang(niBgpNbrKind, ygRoot, niName, protoName, nbrAddr, "", "", nbrEntry); err != nil {
 				return err
 			}
 		}
@@ -1619,7 +1627,7 @@ func populateNiBgpHierToYangFromDb(cfgDb *db.DB, ygRoot *ygot.GoStruct, niName, 
 					afCfg.SendCommunityType = comm
 				}
 			}
-			if err := niBgpNbrAfLeavesToYang(ygRoot, niName, protoName, nbrAddr, afi, "", "", nbrAfEntry); err != nil {
+			if err := niBgpPeerAfLeavesToYang(niBgpNbrKind, ygRoot, niName, protoName, nbrAddr, afi, "", "", nbrAfEntry); err != nil {
 				return err
 			}
 		}
@@ -1661,6 +1669,9 @@ func populateNiBgpHierToYangFromDb(cfgDb *db.DB, ygRoot *ygot.GoStruct, niName, 
 					}
 				}
 			}
+			if err := niBgpPeerLeavesToYang(niBgpPgKind, ygRoot, niName, protoName, pgName, "", "", pgEntry); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -1688,17 +1699,8 @@ func populateNiBgpHierToYangFromDb(cfgDb *db.DB, ygRoot *ygot.GoStruct, niName, 
 					afCfg.SendCommunityType = comm
 				}
 			}
-			if maxStr, ok := pgAfEntry.Field[niBgpPgMaxPfxLimitFld]; ok && strings.TrimSpace(maxStr) != "" {
-				if maxVal, convErr := strconv.ParseUint(strings.TrimSpace(maxStr), 10, 32); convErr == nil {
-					v := uint32(maxVal)
-					if afi == niBgpPgAfiSafiIPv6 {
-						if pfxCfg := getNiBgpPeerGroupAfV6PrefixLimitCfgObj(ygRoot, niName, protoName, pgName, true); pfxCfg != nil {
-							pfxCfg.MaxPrefixes = &v
-						}
-					} else if pfxCfg := getNiBgpPeerGroupAfV4PrefixLimitCfgObj(ygRoot, niName, protoName, pgName, true); pfxCfg != nil {
-						pfxCfg.MaxPrefixes = &v
-					}
-				}
+			if err := niBgpPeerAfLeavesToYang(niBgpPgKind, ygRoot, niName, protoName, pgName, afi, "", "", pgAfEntry); err != nil {
+				return err
 			}
 			if exp, ok := pgAfEntry.Field[niBgpPgRouteMapOutFld]; ok && strings.TrimSpace(exp) != "" {
 				applyCfg := getNiBgpPeerGroupAfApplyPolicyCfgObj(ygRoot, niName, protoName, pgName, afi, true)

@@ -47,8 +47,6 @@ const (
 	niBgpSubscKeyNiNbrAllAfs
 	niBgpSubscKeyNiPg
 	niBgpSubscKeyNiPgAf
-	niBgpSubscKeyNiPgIPv4
-	niBgpSubscKeyNiPgIPv6
 	niBgpSubscKeyNiAf
 	niBgpSubscKeyNiListenPfx
 )
@@ -93,10 +91,6 @@ func (k niBgpSubscKey) build(pathInfo *PathInfo) string {
 		return ni + "|" + niBgpSubscVar(pathInfo, "peer-group-name")
 	case niBgpSubscKeyNiPgAf:
 		return ni + "|" + niBgpSubscVar(pathInfo, "peer-group-name") + "|" + niBgpSubscAf(pathInfo)
-	case niBgpSubscKeyNiPgIPv4:
-		return ni + "|" + niBgpSubscVar(pathInfo, "peer-group-name") + "|" + niBgpPgAfiSafiIPv4
-	case niBgpSubscKeyNiPgIPv6:
-		return ni + "|" + niBgpSubscVar(pathInfo, "peer-group-name") + "|" + niBgpPgAfiSafiIPv6
 	case niBgpSubscKeyNiAf:
 		return ni + "|" + niBgpSubscAf(pathInfo)
 	case niBgpSubscKeyNiListenPfx:
@@ -306,12 +300,6 @@ var niBgpPgSubscMaps = map[string]niBgpSubscMap{
 	"/afi-safis/afi-safi/apply-policy/config": {dbNum: db.ConfigDB, table: niBgpPeerGroupAfTbl, key: niBgpSubscKeyNiPgAf, fields: map[string][]string{
 		niBgpPgImportPolicyLeaf: {niBgpPgRouteMapInFld},
 		niBgpPgExportPolicyLeaf: {niBgpPgRouteMapOutFld},
-	}},
-	"/afi-safis/afi-safi/ipv4-unicast/prefix-limit/config": {dbNum: db.ConfigDB, table: niBgpPeerGroupAfTbl, key: niBgpSubscKeyNiPgIPv4, fields: map[string][]string{
-		niBgpPgMaxPrefixesLeaf: {niBgpPgMaxPfxLimitFld},
-	}},
-	"/afi-safis/afi-safi/ipv6-unicast/prefix-limit/config": {dbNum: db.ConfigDB, table: niBgpPeerGroupAfTbl, key: niBgpSubscKeyNiPgIPv6, fields: map[string][]string{
-		niBgpPgMaxPrefixesLeaf: {niBgpPgMaxPfxLimitFld},
 	}},
 }
 

@@ -5703,7 +5703,7 @@ func Test_openconfig_network_instance_bgp_unmapped_leaf_get_not_found(t *testing
 		"/bgp/global/graceful-restart/config/helper-only",
 		"/bgp/global/route-selection-options/config/advertise-inactive-routes",
 		"/bgp/neighbors/neighbor[neighbor-address=20.0.0.1]/enable-bfd/config/enabled",
-		"/bgp/peer-groups/peer-group[peer-group-name=PG1]/transport/config/tcp-mss",
+		"/bgp/peer-groups/peer-group[peer-group-name=PG1]/transport/config/mtu-discovery",
 		"/config/default-metric",
 	} {
 		t.Run("GET unmapped leaf "+leaf+" is not found", processGetRequest(bgpUrl+leaf, nil, "", true, expectedErr))
@@ -6434,6 +6434,280 @@ func Test_openconfig_network_instance_bgp_neighbor_leaves_hierarchy(t *testing.T
 		"BGP_NEIGHBOR_AF": map[string]interface{}{"default|20.0.0.3|ipv4_unicast": map[string]interface{}{"admin_status": "up", "tx_add_paths": "tx_all_paths"}},
 	}
 	t.Run("Verify the container payload cleared the count", verifyDbResult(rclient, "BGP_NEIGHBOR_AF|default|20.0.0.3|ipv4_unicast", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_network_instance_bgp_neighbor_graceful_restart(t *testing.T) {
+	preReqMap := map[string]interface{}{
+		"BGP_GLOBALS":  map[string]interface{}{"default": map[string]interface{}{"local_asn": "65100"}},
+		"BGP_NEIGHBOR": map[string]interface{}{"default|20.0.0.1": map[string]interface{}{"asn": "65200"}},
+	}
+	cleanupTbl := map[string]interface{}{
+		"BGP_NEIGHBOR": map[string]interface{}{"default|20.0.0.1": ""},
+		"BGP_GLOBALS":  map[string]interface{}{"default": ""},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	nbrUrl := "/openconfig-network-instance:network-instances/network-instance[name=default]/protocols/protocol[identifier=BGP][name=bgp]/bgp/neighbors/neighbor[neighbor-address=20.0.0.1]"
+	t.Run("PATCH network-instance BGP neighbor graceful-restart enabled",
+		processSetRequest(nbrUrl+"/graceful-restart/config/enabled", `{"openconfig-network-instance:enabled":true}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	expectedMap := map[string]interface{}{
+		"BGP_NEIGHBOR": map[string]interface{}{
+			"default|20.0.0.1": map[string]interface{}{"asn": "65200", "graceful_restart_enable": "true"},
+		},
+	}
+	t.Run("Verify BGP_NEIGHBOR graceful_restart_enable", verifyDbResult(rclient, "BGP_NEIGHBOR|default|20.0.0.1", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET network-instance BGP neighbor graceful-restart",
+		processGetRequest(nbrUrl+"/graceful-restart", nil,
+			`{"openconfig-network-instance:graceful-restart":{"config":{"enabled":true},"state":{"enabled":true}}}`, false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET network-instance BGP neighbor graceful-restart state enabled",
+		processGetRequest(nbrUrl+"/graceful-restart/state/enabled", nil, `{"openconfig-network-instance:enabled":true}`, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("PATCH network-instance BGP neighbor graceful-restart helper-only is refused",
+		processSetRequest(nbrUrl+"/graceful-restart/config", `{"enabled":true,"helper-only":true}`, "PATCH", true))
+	time.Sleep(1 * time.Second)
+	t.Run("PATCH network-instance BGP neighbor graceful-restart disabled",
+		processSetRequest(nbrUrl+"/graceful-restart/config", `{"enabled":false}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("GET network-instance BGP neighbor graceful-restart config enabled false",
+		processGetRequest(nbrUrl+"/graceful-restart/config/enabled", nil, `{"openconfig-network-instance:enabled":false}`, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("DELETE network-instance BGP neighbor graceful-restart config", processDeleteRequest(nbrUrl+"/graceful-restart/config", false))
+	time.Sleep(1 * time.Second)
+	expectedMap = map[string]interface{}{
+		"BGP_NEIGHBOR": map[string]interface{}{"default|20.0.0.1": map[string]interface{}{"asn": "65200"}},
+	}
+	t.Run("Verify BGP_NEIGHBOR graceful_restart_enable removed", verifyDbResult(rclient, "BGP_NEIGHBOR|default|20.0.0.1", expectedMap, false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET network-instance BGP neighbor graceful-restart state enabled after delete is not found",
+		processGetRequest(nbrUrl+"/graceful-restart/state/enabled", nil, "", true, tlerr.NotFoundError{Format: "Resource not found"}))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_network_instance_bgp_peer_group_config_leaves(t *testing.T) {
+	preReqMap := map[string]interface{}{
+		"BGP_GLOBALS":       map[string]interface{}{"default": map[string]interface{}{"local_asn": "65100"}},
+		"BGP_PEER_GROUP":    map[string]interface{}{"default|PG1": map[string]interface{}{"asn": "65200"}},
+		"BGP_PEER_GROUP_AF": map[string]interface{}{"default|PG1|ipv4_unicast": map[string]interface{}{"admin_status": "up"}},
+	}
+	cleanupTbl := map[string]interface{}{
+		"BGP_PEER_GROUP_AF": map[string]interface{}{"default|PG1|ipv4_unicast": ""},
+		"BGP_PEER_GROUP":    map[string]interface{}{"default|PG1": ""},
+		"BGP_GLOBALS":       map[string]interface{}{"default": ""},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	v4Url := niBgpPgUrl + "/afi-safis/afi-safi[afi-safi-name=IPV4_UNICAST]"
+	t.Run("PATCH network-instance BGP peer-group config container with the new leaves",
+		processSetRequest(niBgpPgUrl+"/config", `{"local-as":65111,"description":"spine group","auth-password":"s3cret"}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("PATCH network-instance BGP peer-group timers config container with the new leaves",
+		processSetRequest(niBgpPgUrl+"/timers/config", `{"connect-retry":15,"minimum-advertisement-interval":5}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("PATCH network-instance BGP peer-group transport config",
+		processSetRequest(niBgpPgUrl+"/transport/config", `{"tcp-mss":1400,"passive-mode":true,"local-address":"10.0.0.1"}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("PATCH network-instance BGP peer-group ebgp-multihop config",
+		processSetRequest(niBgpPgUrl+"/ebgp-multihop/config", `{"enabled":true,"multihop-ttl":3}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("PATCH network-instance BGP peer-group enable-bfd enabled",
+		processSetRequest(niBgpPgUrl+"/enable-bfd/config/enabled", `{"openconfig-network-instance:enabled":true}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("PATCH network-instance BGP peer-group graceful-restart enabled",
+		processSetRequest(niBgpPgUrl+"/graceful-restart/config/enabled", `{"openconfig-network-instance:enabled":true}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("PATCH network-instance BGP peer-group ipv4 prefix-limit config",
+		processSetRequest(v4Url+"/ipv4-unicast/prefix-limit/config", `{"max-prefixes":500,"prevent-teardown":true,"warning-threshold-pct":80}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("PATCH network-instance BGP peer-group ipv4 send-default-route",
+		processSetRequest(v4Url+"/ipv4-unicast/config/send-default-route", `{"openconfig-network-instance:send-default-route":true}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("PATCH network-instance BGP peer-group add-paths send-max",
+		processSetRequest(v4Url+"/add-paths/config", `{"send":true,"send-max":3}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"BGP_PEER_GROUP": map[string]interface{}{
+			"default|PG1": map[string]interface{}{
+				"asn":                     "65200",
+				"local_asn":               "65111",
+				"name":                    "spine group",
+				"auth_password":           "s3cret",
+				"conn_retry":              "15",
+				"min_adv_interval":        "5",
+				"tcp_mss":                 "1400",
+				"passive_mode":            "true",
+				"local_addr":              "10.0.0.1",
+				"ebgp_multihop":           "true",
+				"ebgp_multihop_ttl":       "3",
+				"bfd":                     "true",
+				"graceful_restart_enable": "true",
+			},
+		},
+	}
+	t.Run("Verify BGP_PEER_GROUP new fields", verifyDbResult(rclient, "BGP_PEER_GROUP|default|PG1", expectedMap, false))
+	time.Sleep(1 * time.Second)
+	expectedMap = map[string]interface{}{
+		"BGP_PEER_GROUP_AF": map[string]interface{}{
+			"default|PG1|ipv4_unicast": map[string]interface{}{
+				"admin_status":                 "up",
+				"max_prefix_limit":             "500",
+				"max_prefix_warning_only":      "true",
+				"max_prefix_warning_threshold": "80",
+				"send_default_route":           "true",
+				"tx_add_best_path_count":       "3",
+			},
+		},
+	}
+	t.Run("Verify BGP_PEER_GROUP_AF new fields", verifyDbResult(rclient, "BGP_PEER_GROUP_AF|default|PG1|ipv4_unicast", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET network-instance BGP peer-group config container",
+		processGetRequest(niBgpPgUrl+"/config", nil, `{"openconfig-network-instance:config":{"auth-password":"s3cret","description":"spine group",`+
+			`"local-as":65111,"peer-as":65200,"peer-group-name":"PG1"}}`, false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET network-instance BGP peer-group timers config container",
+		processGetRequest(niBgpPgUrl+"/timers/config", nil, `{"openconfig-network-instance:config":{"connect-retry":15,"minimum-advertisement-interval":5}}`, false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET network-instance BGP peer-group transport config container",
+		processGetRequest(niBgpPgUrl+"/transport/config", nil, `{"openconfig-network-instance:config":{"local-address":"10.0.0.1","passive-mode":true,"tcp-mss":1400}}`, false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET network-instance BGP peer-group graceful-restart enabled",
+		processGetRequest(niBgpPgUrl+"/graceful-restart/config/enabled", nil, `{"openconfig-network-instance:enabled":true}`, false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET network-instance BGP peer-group ipv4 prefix-limit config container",
+		processGetRequest(v4Url+"/ipv4-unicast/prefix-limit/config", nil,
+			`{"openconfig-network-instance:config":{"max-prefixes":500,"prevent-teardown":true,"warning-threshold-pct":80}}`, false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET network-instance BGP peer-group ipv4-unicast container",
+		processGetRequest(v4Url+"/ipv4-unicast", nil, `{"openconfig-network-instance:ipv4-unicast":{"config":{"send-default-route":true},`+
+			`"prefix-limit":{"config":{"max-prefixes":500,"prevent-teardown":true,"warning-threshold-pct":80}}}}`, false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET network-instance BGP peer-group add-paths config container",
+		processGetRequest(v4Url+"/add-paths/config", nil, `{"openconfig-network-instance:config":{"send":true,"send-max":3}}`, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("PATCH network-instance BGP peer-group peer-type beside peer-as is refused",
+		processSetRequest(niBgpPgUrl+"/config/peer-type", `{"openconfig-network-instance:peer-type":"EXTERNAL"}`, "PATCH", true,
+			tlerr.InvalidArgsError{Format: "BGP peer-group peer-as and peer-type are alternatives: FRR takes one of them as remote-as; delete one before setting the other"}))
+	time.Sleep(1 * time.Second)
+	t.Run("PATCH network-instance BGP peer-group transport mtu-discovery is refused",
+		processSetRequest(niBgpPgUrl+"/transport/config", `{"mtu-discovery":true}`, "PATCH", true))
+	time.Sleep(1 * time.Second)
+	t.Run("PATCH network-instance BGP peer-group ipv6-unicast under ipv4 afi-safi is refused",
+		processSetRequest(v4Url+"/ipv6-unicast/config/send-default-route", `{"openconfig-network-instance:send-default-route":true}`, "PATCH", true))
+	time.Sleep(1 * time.Second)
+
+	t.Run("DELETE network-instance BGP peer-group transport config", processDeleteRequest(niBgpPgUrl+"/transport/config", false))
+	time.Sleep(1 * time.Second)
+	t.Run("DELETE network-instance BGP peer-group config local-as", processDeleteRequest(niBgpPgUrl+"/config/local-as", false))
+	time.Sleep(1 * time.Second)
+	t.Run("DELETE network-instance BGP peer-group timers config container", processDeleteRequest(niBgpPgUrl+"/timers/config", false))
+	time.Sleep(1 * time.Second)
+	t.Run("DELETE network-instance BGP peer-group prevent-teardown", processDeleteRequest(v4Url+"/ipv4-unicast/prefix-limit/config/prevent-teardown", false))
+	time.Sleep(1 * time.Second)
+	t.Run("DELETE network-instance BGP peer-group add-paths send", processDeleteRequest(v4Url+"/add-paths/config/send", false))
+	time.Sleep(1 * time.Second)
+	expectedMap = map[string]interface{}{
+		"BGP_PEER_GROUP": map[string]interface{}{
+			"default|PG1": map[string]interface{}{
+				"asn":                     "65200",
+				"name":                    "spine group",
+				"auth_password":           "s3cret",
+				"ebgp_multihop":           "true",
+				"ebgp_multihop_ttl":       "3",
+				"bfd":                     "true",
+				"graceful_restart_enable": "true",
+			},
+		},
+	}
+	t.Run("Verify BGP_PEER_GROUP after the deletes", verifyDbResult(rclient, "BGP_PEER_GROUP|default|PG1", expectedMap, false))
+	time.Sleep(1 * time.Second)
+	expectedMap = map[string]interface{}{
+		"BGP_PEER_GROUP_AF": map[string]interface{}{
+			"default|PG1|ipv4_unicast": map[string]interface{}{
+				"admin_status":                 "up",
+				"max_prefix_limit":             "500",
+				"max_prefix_warning_threshold": "80",
+				"send_default_route":           "true",
+			},
+		},
+	}
+	t.Run("Verify BGP_PEER_GROUP_AF after the deletes", verifyDbResult(rclient, "BGP_PEER_GROUP_AF|default|PG1|ipv4_unicast", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_network_instance_bgp_peer_group_leaves_hierarchy(t *testing.T) {
+	preReqMap := map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{"default": map[string]interface{}{"local_asn": "65100"}},
+	}
+	cleanupTbl := map[string]interface{}{
+		"BGP_PEER_GROUP_AF": map[string]interface{}{"default|PG2|ipv4_unicast": ""},
+		"BGP_PEER_GROUP":    map[string]interface{}{"default|PG2": ""},
+		"BGP_GLOBALS":       map[string]interface{}{"default": ""},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	bgpUrl := "/openconfig-network-instance:network-instances/network-instance[name=default]/protocols/protocol[identifier=BGP][name=bgp]/bgp"
+	payload := `{"peer-groups":{"peer-group":[{"peer-group-name":"PG2",` +
+		`"config":{"peer-group-name":"PG2","peer-type":"INTERNAL","description":"rr clients"},` +
+		`"transport":{"config":{"tcp-mss":1300}},"graceful-restart":{"config":{"enabled":true}},` +
+		`"afi-safis":{"afi-safi":[{"afi-safi-name":"IPV4_UNICAST","config":{"afi-safi-name":"IPV4_UNICAST"},` +
+		`"ipv4-unicast":{"prefix-limit":{"config":{"max-prefixes":100,"warning-threshold-pct":75}}},` +
+		`"add-paths":{"config":{"send":true}}}]}}]}}`
+	t.Run("PATCH BGP container with peer-group leaves", processSetRequest(bgpUrl, payload, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expectedMap := map[string]interface{}{
+		"BGP_PEER_GROUP": map[string]interface{}{
+			"default|PG2": map[string]interface{}{
+				"peer_type":               "internal",
+				"name":                    "rr clients",
+				"tcp_mss":                 "1300",
+				"graceful_restart_enable": "true",
+			},
+		},
+	}
+	t.Run("Verify BGP_PEER_GROUP from the hierarchy write", verifyDbResult(rclient, "BGP_PEER_GROUP|default|PG2", expectedMap, false))
+	time.Sleep(1 * time.Second)
+	expectedMap = map[string]interface{}{
+		"BGP_PEER_GROUP_AF": map[string]interface{}{
+			"default|PG2|ipv4_unicast": map[string]interface{}{
+				"admin_status":                 "up",
+				"max_prefix_limit":             "100",
+				"max_prefix_warning_threshold": "75",
+				"tx_add_paths":                 "tx_all_paths",
+			},
+		},
+	}
+	t.Run("Verify BGP_PEER_GROUP_AF from the hierarchy write", verifyDbResult(rclient, "BGP_PEER_GROUP_AF|default|PG2|ipv4_unicast", expectedMap, false))
+	time.Sleep(1 * time.Second)
+
+	pgUrl := bgpUrl + "/peer-groups/peer-group[peer-group-name=PG2]"
+	t.Run("GET network-instance BGP peer-group transport",
+		processGetRequest(pgUrl+"/transport", nil, `{"openconfig-network-instance:transport":{"config":{"tcp-mss":1300}}}`, false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET network-instance BGP peer-group graceful-restart",
+		processGetRequest(pgUrl+"/graceful-restart", nil, `{"openconfig-network-instance:graceful-restart":{"config":{"enabled":true}}}`, false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET network-instance BGP peer-group ipv4 prefix-limit at the afi-safi instance",
+		processGetRequest(pgUrl+"/afi-safis/afi-safi[afi-safi-name=IPV4_UNICAST]/ipv4-unicast/prefix-limit", nil,
+			`{"openconfig-network-instance:prefix-limit":{"config":{"max-prefixes":100,"warning-threshold-pct":75}}}`, false))
 	time.Sleep(1 * time.Second)
 
 	unloadDB(db.ConfigDB, cleanupTbl)
