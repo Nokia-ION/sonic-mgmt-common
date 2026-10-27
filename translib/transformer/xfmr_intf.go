@@ -146,10 +146,11 @@ const (
 	LOOPBACK_INTERFACE_TN    = "LOOPBACK_INTERFACE"
 	DEFAULT_MTU              = "9100"
 
-	INTF_TABLE_TN     = "INTF_TABLE"
-	VLAN_TN           = "VLAN"
-	VLAN_MEMBER_TN    = "VLAN_MEMBER"
-	VLAN_INTERFACE_TN = "VLAN_INTERFACE"
+	INTF_TABLE_TN      = "INTF_TABLE"
+	INTERFACE_TABLE_TN = "INTERFACE_TABLE"
+	VLAN_TN            = "VLAN"
+	VLAN_MEMBER_TN     = "VLAN_MEMBER"
+	VLAN_INTERFACE_TN  = "VLAN_INTERFACE"
 )
 
 const (
@@ -2792,11 +2793,11 @@ func handleAllVlanIntfIPGet(inParams XfmrParams) error {
 		log.Warning("handleAllVlanIntfIPGet: GetTablePattern() returns err:  ", err)
 		return nil
 	}
-	// Get all entries with keys from INTF_TABLE(AppDB) table matching specified pattern.
-	d2 := inParams.dbs[db.ApplDB]
-	tsa := db.TableSpec{Name: INTF_TABLE_TN, CompCt: 2}
+	// Operational addresses for routed VLAN SVIs in STATE_DB INTERFACE_TABLE.
+	d2 := inParams.dbs[db.StateDB]
+	tsa := db.TableSpec{Name: INTERFACE_TABLE_TN, CompCt: 2}
 	keyPattern = db.Key{Comp: []string{"Vlan*", "*"}}
-	appTblPattern, err = d2.GetTablePattern(&tsa, keyPattern) //Key Pattern: INTF_TABLE:Vlan*:*
+	appTblPattern, err = d2.GetTablePattern(&tsa, keyPattern)
 	if err != nil {
 		log.Warning("handleAllVlanIntfIPGet: GetTablePattern() returns err: ", err)
 		return nil
@@ -2812,17 +2813,16 @@ func handleAllVlanIntfIPGet(inParams XfmrParams) error {
 		log.Info("handleAllVlanIntfIPGet: all VLAN interfaces config ipMap - : ", intfIpMapCfgDB)
 	}
 
-	//Get interface to ip mapping for all vlan interfaces in appTblPattern
-	intfIpMapAppDB, err := getCachedAllIntfIpMap(inParams.dbs[db.ApplDB], INTF_TABLE_TN, true, true, "", &appTblPattern)
+	intfIpMapStateDB, err := getCachedAllIntfIpMap(inParams.dbs[db.StateDB], INTERFACE_TABLE_TN, true, true, "", &appTblPattern)
 	if err != nil {
 		log.Warning("Get interface to ip mapping returned error: ", err)
 		return nil
 	}
 	if log.V(3) {
-		log.Info("handleAllVlanIntfIPGet: all VLAN interfaces: state ipMap - : ", intfIpMapAppDB)
+		log.Info("handleAllVlanIntfIPGet: all VLAN interfaces: state ipMap - : ", intfIpMapStateDB)
 	}
 
-	if len(intfIpMapCfgDB) == 0 && len(intfIpMapAppDB) == 0 {
+	if len(intfIpMapCfgDB) == 0 && len(intfIpMapStateDB) == 0 {
 		// No IP config on any VLAN interface
 		return nil
 	}
@@ -2832,9 +2832,9 @@ func handleAllVlanIntfIPGet(inParams XfmrParams) error {
 		intfObj := getIntfRoutedVlanObject(intfsObj, vlanName)
 		convertRoutedVlanIpMapToOC(ipMapConfigDB, intfObj, false, "")
 	}
-	for vlanName, ipMapAppDB := range intfIpMapAppDB {
+	for vlanName, ipMapStateDB := range intfIpMapStateDB {
 		intfObj := getIntfRoutedVlanObject(intfsObj, vlanName)
-		convertRoutedVlanIpMapToOC(ipMapAppDB, intfObj, true, "")
+		convertRoutedVlanIpMapToOC(ipMapStateDB, intfObj, true, "")
 	}
 
 	return nil
@@ -2869,7 +2869,7 @@ func handleAllIntfIPGetForTable(inParams XfmrParams, tblName string, isAppDb boo
 
 	currDb := inParams.dbs[db.ConfigDB]
 	if isAppDb {
-		currDb = inParams.dbs[db.ApplDB]
+		currDb = inParams.dbs[db.StateDB]
 	}
 
 	dbTbl := db.TableSpec{Name: tblName, CompCt: 2}
@@ -2883,7 +2883,7 @@ func handleAllIntfIPGetForTable(inParams XfmrParams, tblName string, isAppDb boo
 
 	var intfIpMap map[string]map[string]db.Value
 	if isAppDb {
-		intfIpMap, err = getCachedAllIntfIpMap(inParams.dbs[db.ApplDB], tblName, true, true, "", &tblPattern)
+		intfIpMap, err = getCachedAllIntfIpMap(inParams.dbs[db.StateDB], tblName, true, true, "", &tblPattern)
 	} else {
 		intfIpMap, err = getCachedAllIntfIpMap(inParams.dbs[db.ConfigDB], tblName, true, true, "", &tblPattern)
 	}
@@ -2994,11 +2994,15 @@ func handleIntfIPGetByTargetURI(inParams XfmrParams, targetUriPath string, ifNam
 	intTbl := IntfTypeTblMap[intfType]
 
 	if len(ipAddr) > 0 && ipAddr != "*" {
-		// Check if the given IP is configured on interface
-		keyPattern := ifName + ":" + ipStr + "/*"
-		ipKeys, err := inParams.dbs[db.ApplDB].GetKeysByPattern(&db.TableSpec{Name: intTbl.appDb.intfTN}, keyPattern)
-		if err != nil || len(ipKeys) == 0 {
-			return tlerr.NotFound("Resource not found")
+		if strings.Contains(targetUriPath, "/state") {
+			if !intfOperationalAddrExists(inParams, intfType, ifName, ipStr) {
+				return tlerr.NotFound("Resource not found")
+			}
+		} else {
+			ipMap, _ := getIntfIpByName(inParams.dbs[db.ConfigDB], intTbl.cfgDb.intfTN, ifName, true, true, ipAddr)
+			if len(ipMap) == 0 {
+				return tlerr.NotFound("Resource not found")
+			}
 		}
 	}
 
@@ -3014,12 +3018,12 @@ func handleIntfIPGetByTargetURI(inParams XfmrParams, targetUriPath string, ifNam
 		convertIpMapToOC(ipMap, intfObj, false, i32)
 	} else if strings.HasPrefix(targetUriPath, "/openconfig-interfaces:interfaces/interface/subinterfaces/subinterface/ipv4/addresses/address/state") ||
 		strings.HasPrefix(targetUriPath, "/openconfig-interfaces:interfaces/interface/subinterfaces/subinterface/openconfig-if-ip:ipv4/addresses/address/state") {
-		ipMap, err = getIntfIpByName(inParams.dbs[db.ApplDB], intTbl.appDb.intfTN, ifName, true, false, ipAddr)
+		ipMap, err = getIntfIpOperational(inParams, intfType, ifName, true, false, ipAddr)
 		log.Info("handleIntfIPGetByTargetURI : ipv4 state ipMap - : ", ipMap)
 		convertIpMapToOC(ipMap, intfObj, true, i32)
 	} else if strings.HasPrefix(targetUriPath, "/openconfig-interfaces:interfaces/interface/subinterfaces/subinterface/openconfig-if-ip:ipv6/addresses/address/state") ||
 		strings.HasPrefix(targetUriPath, "/openconfig-interfaces:interfaces/interface/subinterfaces/subinterface/ipv6/addresses/address/state") {
-		ipMap, err = getIntfIpByName(inParams.dbs[db.ApplDB], intTbl.appDb.intfTN, ifName, false, true, ipAddr)
+		ipMap, err = getIntfIpOperational(inParams, intfType, ifName, false, true, ipAddr)
 		log.Info("handleIntfIPGetByTargetURI : ipv6 state ipMap - : ", ipMap)
 		convertIpMapToOC(ipMap, intfObj, true, i32)
 	} else if strings.HasPrefix(targetUriPath, "/openconfig-interfaces:interfaces/interface/subinterfaces/subinterface/ipv4/addresses") ||
@@ -3029,7 +3033,7 @@ func handleIntfIPGetByTargetURI(inParams XfmrParams, targetUriPath string, ifNam
 			log.Info("handleIntfIPGetByTargetURI : ipv4 config ipMap - : ", ipMap)
 			convertIpMapToOC(ipMap, intfObj, false, i32)
 		}
-		ipMap, err = getIntfIpByName(inParams.dbs[db.ApplDB], intTbl.appDb.intfTN, ifName, true, false, ipAddr)
+		ipMap, err = getIntfIpOperational(inParams, intfType, ifName, true, false, ipAddr)
 		if err == nil {
 			log.Info("handleIntfIPGetByTargetURI : ipv4 state ipMap - : ", ipMap)
 			convertIpMapToOC(ipMap, intfObj, true, i32)
@@ -3041,7 +3045,7 @@ func handleIntfIPGetByTargetURI(inParams XfmrParams, targetUriPath string, ifNam
 			log.Info("handleIntfIPGetByTargetURI : ipv6 config ipMap - : ", ipMap)
 			convertIpMapToOC(ipMap, intfObj, false, i32)
 		}
-		ipMap, err = getIntfIpByName(inParams.dbs[db.ApplDB], intTbl.appDb.intfTN, ifName, false, true, ipAddr)
+		ipMap, err = getIntfIpOperational(inParams, intfType, ifName, false, true, ipAddr)
 		if err == nil {
 			log.Info("handleIntfIPGetByTargetURI : ipv6 state ipMap - : ", ipMap)
 			convertIpMapToOC(ipMap, intfObj, true, i32)
@@ -3241,8 +3245,8 @@ var DbToYang_intf_ip_addr_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) e
 			handleAllIntfIPGetForTable(inParams, intfTbl.cfgDb.intfTN, false)
 		}
 
-		// Get IP from applDb INTF_TABLE interfaces
-		handleAllIntfIPGetForTable(inParams, "INTF_TABLE", true)
+		// Operational addresses from STATE_DB INTERFACE_TABLE
+		handleAllIntfIPGetForTable(inParams, INTERFACE_TABLE_TN, true)
 
 		inParams.txCache.Store("interface_subinterface_ip_read_once", true)
 		return nil
@@ -3504,6 +3508,9 @@ func validateIpOverlap(d *db.DB, intf string, ipPref string, tblName string, isI
 		log.Info("Failed to parse IP address: ", ipPref)
 		return "", err
 	}
+	if ipA.Is6() && ipA.IsLinkLocalUnicast() {
+		return "", nil
+	}
 
 	var allIntfKeys []db.Key
 
@@ -3624,6 +3631,21 @@ func getIntfIpByName(dbCl *db.DB, tblName string, ifName string, ipv4 bool, ipv6
 		intfIpMap[key.Get(1)] = ipInfo
 	}
 	return intfIpMap, err
+}
+
+// getIntfIpOperational reads operational addresses from STATE_DB INTERFACE_TABLE.
+func getIntfIpOperational(inParams XfmrParams, intfType E_InterfaceType, ifName string, ipv4, ipv6 bool, ip string) (map[string]db.Value, error) {
+	stateDb := inParams.dbs[db.StateDB]
+	if stateDb == nil {
+		return map[string]db.Value{}, errors.New("STATE_DB not available")
+	}
+	intTbl := IntfTypeTblMap[intfType]
+	return getIntfIpByName(stateDb, intTbl.stateDb.intfTN, ifName, ipv4, ipv6, ip)
+}
+
+func intfOperationalAddrExists(inParams XfmrParams, intfType E_InterfaceType, ifName, ipStr string) bool {
+	ipMap, err := getIntfIpOperational(inParams, intfType, ifName, true, true, ipStr)
+	return err == nil && len(ipMap) > 0
 }
 
 /* Get all IP keys for given interface */
@@ -4023,7 +4045,7 @@ var Subscribe_intf_ip_addr_xfmr = func(inParams XfmrSubscInParams) (XfmrSubscOut
 				return result, err
 			}
 			// Wildcard list key (ip=* or subscribe to whole addresses list):
-			// register CONFIG_DB + APPL_DB watches using Redis key patterns.
+			// register CONFIG_DB + STATE_DB watches using Redis key patterns.
 			result.onChange = OnchangeEnable
 			result.nOpts = &notificationOpts{pType: OnChange}
 			result.isVirtualTbl = false
@@ -4035,27 +4057,27 @@ var Subscribe_intf_ip_addr_xfmr = func(inParams XfmrSubscInParams) (XfmrSubscOut
 				return result, tlerr.NotSupported(err_str)
 			}
 			cfgKey := ifKey + "|" + ipKey
-			stateKey := ifKey + ":" + ipKey
+			stateKey := ifKey + "|" + ipKey
 			stateKeyMeta := map[string]string{KEY_COMP_CNT: "2", DEL_AS_UPDATE: "true"}
 			tableName := ""
-			appTableName := ""
+			stateTableName := ""
 			if ifKey != "" && ifKey != "*" {
 				intfType, _, _ := getIntfTypeByName(ifKey)
 				if intfType != IntfTypeUnset {
 					intTbl := IntfTypeTblMap[intfType]
 					tableName = intTbl.cfgDb.intfTN
-					appTableName = intTbl.appDb.intfTN
+					stateTableName = intTbl.stateDb.intfTN
 				}
 			}
-			if tableName != "" && appTableName != "" {
+			if tableName != "" && stateTableName != "" {
 				result.dbDataMap = RedisDbSubscribeMap{
 					db.ConfigDB: {tableName: {cfgKey: {}}},
-					db.ApplDB:   {appTableName: {stateKey: stateKeyMeta}},
+					db.StateDB:  {stateTableName: {stateKey: stateKeyMeta}},
 				}
 			} else if isRoutedVlan {
 				result.dbDataMap = RedisDbSubscribeMap{
 					db.ConfigDB: {VLAN_INTERFACE_TN: {cfgKey: {}}},
-					db.ApplDB:   {INTF_TABLE_TN: {stateKey: stateKeyMeta}},
+					db.StateDB:  {INTERFACE_TABLE_TN: {stateKey: stateKeyMeta}},
 				}
 			} else {
 				result.dbDataMap = RedisDbSubscribeMap{
@@ -4064,7 +4086,7 @@ var Subscribe_intf_ip_addr_xfmr = func(inParams XfmrSubscInParams) (XfmrSubscOut
 						PORTCHANNEL_INTERFACE_TN: {cfgKey: {}},
 						LOOPBACK_INTERFACE_TN:    {cfgKey: {}},
 					},
-					db.ApplDB: {INTF_TABLE_TN: {stateKey: stateKeyMeta}},
+					db.StateDB: {INTERFACE_TABLE_TN: {stateKey: stateKeyMeta}},
 				}
 			}
 			log.Infof("Subscribe_intf_ip_addr_xfmr:- wildcard address dbDataMap: %v", result.dbDataMap)
@@ -4091,7 +4113,7 @@ var Subscribe_intf_ip_addr_xfmr = func(inParams XfmrSubscInParams) (XfmrSubscOut
 				intfType, _, _ := getIntfTypeByName(ifKey)
 				intTbl := IntfTypeTblMap[intfType]
 				if targetUriPath == addressStatePath {
-					tableName = intTbl.appDb.intfTN
+					tableName = intTbl.stateDb.intfTN
 				} else {
 					tableName = intTbl.cfgDb.intfTN
 				}
@@ -4128,11 +4150,11 @@ var Subscribe_intf_ip_addr_xfmr = func(inParams XfmrSubscInParams) (XfmrSubscOut
 				}
 			}
 		} else if targetUriPath == addressStatePath {
-			keyName = ifKey + ":" + ipKey
+			keyName = ifKey + "|" + ipKey
 			if tableName != "" {
-				result.dbDataMap = RedisDbSubscribeMap{db.ApplDB: {tableName: {keyName: {KEY_COMP_CNT: "2", DEL_AS_UPDATE: "true"}}}}
+				result.dbDataMap = RedisDbSubscribeMap{db.StateDB: {tableName: {keyName: {KEY_COMP_CNT: "2", DEL_AS_UPDATE: "true"}}}}
 			} else {
-				result.dbDataMap = RedisDbSubscribeMap{db.ApplDB: {"INTF_TABLE": {keyName: {KEY_COMP_CNT: "2", DEL_AS_UPDATE: "true"}}}}
+				result.dbDataMap = RedisDbSubscribeMap{db.StateDB: {INTERFACE_TABLE_TN: {keyName: {KEY_COMP_CNT: "2", DEL_AS_UPDATE: "true"}}}}
 			}
 		}
 
@@ -4662,7 +4684,7 @@ func handleVlanIntfIPGetByTargetURI(inParams XfmrParams, targetUriPath string, i
 		}
 	} else if strings.HasPrefix(targetUriPath, "/openconfig-interfaces:interfaces/interface/openconfig-vlan:routed-vlan/openconfig-if-ip:ipv4/addresses/address/state") ||
 		strings.HasPrefix(targetUriPath, "/openconfig-interfaces:interfaces/interface/routed-vlan/ipv4/addresses/address/state") {
-		ipMap, err = getIntfIpByName(inParams.dbs[db.ApplDB], intTbl.appDb.intfTN, ifName, true, false, ipAddr)
+		ipMap, err = getIntfIpOperational(inParams, intfType, ifName, true, false, ipAddr)
 		if err == nil {
 			if log.V(3) {
 				log.Info("handleVlanIntfIPGetByTargetURI: ipv4 state ipMap - : ", ipMap)
@@ -4671,7 +4693,7 @@ func handleVlanIntfIPGetByTargetURI(inParams XfmrParams, targetUriPath string, i
 		}
 	} else if strings.HasPrefix(targetUriPath, "/openconfig-interfaces:interfaces/interface/openconfig-vlan:routed-vlan/openconfig-if-ip:ipv6/addresses/address/state") ||
 		strings.HasPrefix(targetUriPath, "/openconfig-interfaces:interfaces/interface/routed-vlan/ipv6/addresses/address/state") {
-		ipMap, err = getIntfIpByName(inParams.dbs[db.ApplDB], intTbl.appDb.intfTN, ifName, false, true, ipAddr)
+		ipMap, err = getIntfIpOperational(inParams, intfType, ifName, false, true, ipAddr)
 		if err == nil {
 			if log.V(3) {
 				log.Info("handleVlanIntfIPGetByTargetURI: ipv6 state ipMap - : ", ipMap)
@@ -4687,7 +4709,7 @@ func handleVlanIntfIPGetByTargetURI(inParams XfmrParams, targetUriPath string, i
 			}
 			convertRoutedVlanIpMapToOC(ipMap, intfObj, false, ipAddr)
 		}
-		ipMap, err = getIntfIpByName(inParams.dbs[db.ApplDB], intTbl.appDb.intfTN, ifName, true, false, ipAddr)
+		ipMap, err = getIntfIpOperational(inParams, intfType, ifName, true, false, ipAddr)
 		if err == nil {
 			if log.V(3) {
 				log.Info("handleVlanIntfIPGetByTargetURI: ipv4 state ipMap - : ", ipMap)
@@ -4703,7 +4725,7 @@ func handleVlanIntfIPGetByTargetURI(inParams XfmrParams, targetUriPath string, i
 			}
 			convertRoutedVlanIpMapToOC(ipMap, intfObj, false, ipAddr)
 		}
-		ipMap, err = getIntfIpByName(inParams.dbs[db.ApplDB], intTbl.appDb.intfTN, ifName, false, true, ipAddr)
+		ipMap, err = getIntfIpOperational(inParams, intfType, ifName, false, true, ipAddr)
 		if err == nil {
 			if log.V(3) {
 				log.Info("handleVlanIntfIPGetByTargetURI: ipv6 state ipMap - : ", ipMap)
@@ -4728,17 +4750,24 @@ var DbToYangPath_intf_ip_path_xfmr PathXfmrDbToYangFunc = func(params XfmrDbToYg
 	params.ygPathKeys[ifRoot+"/name"] = ifParts[0]
 
 	if params.tblName == "INTERFACE" || params.tblName == "VLAN_INTERFACE" ||
-		params.tblName == "INTF_TABLE" || params.tblName == "PORTCHANNEL_INTERFACE" {
+		params.tblName == "INTF_TABLE" || params.tblName == INTERFACE_TABLE_TN ||
+		params.tblName == "PORTCHANNEL_INTERFACE" {
 
 		addrPath := "/openconfig-if-ip:ipv4/addresses/address/ip"
 
-		/* For APPL_DB IPv6 case, addr is split [fe80  56bf 64ff feba 3bc0/64] instead of
-		   [fe80::56bf:64ff:feba:3bc0/64]
-		   Handle this case
-		*/
-		dbKey = strings.Join(params.tblKeyComp[1:], ":")
+		if params.tblName == INTERFACE_TABLE_TN {
+			dbKey = params.tblKeyComp[1]
+		} else {
+			/* For APPL_DB IPv6 case, addr is split [fe80  56bf 64ff feba 3bc0/64] instead of
+			   [fe80::56bf:64ff:feba:3bc0/64]
+			   Handle this case
+			*/
+			dbKey = strings.Join(params.tblKeyComp[1:], ":")
+		}
 
-		if len(params.tblKeyComp) > 2 || strings.Contains(dbKey, ":") {
+		if params.tblName != INTERFACE_TABLE_TN && (len(params.tblKeyComp) > 2 || strings.Contains(dbKey, ":")) {
+			addrPath = "/openconfig-if-ip:ipv6/addresses/address/ip"
+		} else if params.tblName == INTERFACE_TABLE_TN && strings.Contains(dbKey, ":") {
 			addrPath = "/openconfig-if-ip:ipv6/addresses/address/ip"
 		}
 
@@ -4790,7 +4819,7 @@ var DbToYang_subintf_ipv6_tbl_key_xfmr KeyXfmrDbToYang = func(inParams XfmrParam
 	return rmap, nil
 }
 
-// YangToDb_ipv6_address_type_xfmr rejects config/type; scope is derived from prefix/APPL_DB.
+// YangToDb_ipv6_address_type_xfmr rejects config/type; scope is derived from STATE_DB for operational type.
 var YangToDb_ipv6_address_type_xfmr FieldXfmrYangToDb = func(inParams XfmrParams) (map[string]string, error) {
 	res_map := make(map[string]string)
 	if inParams.oper == DELETE {
@@ -4811,16 +4840,19 @@ var DbToYang_ipv6_address_type_xfmr FieldXfmrDbtoYang = func(inParams XfmrParams
 	scope := ""
 	isState := strings.Contains(pathInfo.YangPath, "/state/type")
 
-	if isState && inParams.d != nil && ifName != "" && ipKey != "" {
-		ipMap, err := getIntfIpByName(inParams.d, INTF_TABLE_TN, ifName, false, true, ipKey)
-		if err == nil {
-			ipNorm, _ := getNormalizedIpStr(ipKey)
-			for k, v := range ipMap {
-				kIp, _, _ := parseCIDR(k)
-				kNorm, _ := getNormalizedIpStr(kIp.String())
-				if kNorm == ipNorm || k == ipKey {
-					scope = v.Field["scope"]
-					break
+	if isState && ifName != "" && ipKey != "" {
+		intfType, _, ierr := getIntfTypeByName(ifName)
+		if ierr == nil && intfType != IntfTypeUnset {
+			ipMap, err := getIntfIpOperational(inParams, intfType, ifName, false, true, ipKey)
+			if err == nil {
+				ipNorm, _ := getNormalizedIpStr(ipKey)
+				for k, v := range ipMap {
+					kIp, _, _ := parseCIDR(k)
+					kNorm, _ := getNormalizedIpStr(kIp.String())
+					if kNorm == ipNorm || k == ipKey {
+						scope = v.Field["scope"]
+						break
+					}
 				}
 			}
 		}
