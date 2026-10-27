@@ -27,6 +27,7 @@ import (
 	"testing"
 
 	db "github.com/Azure/sonic-mgmt-common/translib/db"
+	"github.com/Azure/sonic-mgmt-common/translib/ocbinds"
 	"github.com/Azure/sonic-mgmt-common/translib/path"
 	"github.com/Azure/sonic-mgmt-common/translib/tlerr"
 	"github.com/openconfig/ygot/ygot"
@@ -385,6 +386,50 @@ func Test_AclApp_AddNewPortBindingToAlreadyBindedAcl(t *testing.T) {
 	t.Run("Verify_One_Acl_Delete", processGetRequest(aclUrl, "", true))
 
 	t.Run("Verify_Top_Level_Delete", processGetRequest("/openconfig-acl:acl", emptyJson, false))
+}
+
+// Test_AclApp_ConvertBindingsOfSeveralAcls binds several ACLs in one request,
+// with and without an acl-set in the same payload.
+func Test_AclApp_ConvertBindingsOfSeveralAcls(t *testing.T) {
+	v4 := getAclKeyStrFromOCKey("ACL-12-IPV4", ocbinds.OpenconfigAcl_ACL_TYPE_ACL_IPV4)
+	v6 := getAclKeyStrFromOCKey("ACL-12-IPV6", ocbinds.OpenconfigAcl_ACL_TYPE_ACL_IPV6)
+	eg := getAclKeyStrFromOCKey("ACL-12-EGRESS", ocbinds.OpenconfigAcl_ACL_TYPE_ACL_IPV4)
+
+	for _, withAclSet := range []bool{false, true} {
+		t.Run(fmt.Sprintf("with_acl_set=%v", withAclSet), func(t *testing.T) {
+			acl := &ocbinds.OpenconfigAcl_Acl{}
+			ygot.BuildEmptyTree(acl)
+			if withAclSet {
+				aclSet, _ := acl.AclSets.NewAclSet("ACL-12-IPV4", ocbinds.OpenconfigAcl_ACL_TYPE_ACL_IPV4)
+				ygot.BuildEmptyTree(aclSet)
+				aclSet.Config.Type = ocbinds.OpenconfigAcl_ACL_TYPE_ACL_IPV4
+			}
+			intf, _ := acl.Interfaces.NewInterface("Ethernet1")
+			ygot.BuildEmptyTree(intf)
+			intf.IngressAclSets.NewIngressAclSet("ACL-12-IPV4", ocbinds.OpenconfigAcl_ACL_TYPE_ACL_IPV4)
+			intf.IngressAclSets.NewIngressAclSet("ACL-12-IPV6", ocbinds.OpenconfigAcl_ACL_TYPE_ACL_IPV6)
+			intf.EgressAclSets.NewEgressAclSet("ACL-12-EGRESS", ocbinds.OpenconfigAcl_ACL_TYPE_ACL_IPV4)
+
+			var root ygot.GoStruct = &ocbinds.Device{Acl: acl}
+			app := &AclApp{ygotRoot: &root}
+			app.convertOCAclsToInternal()
+			app.convertOCAclBindingsToInternal()
+
+			want := map[string]string{v4: "INGRESS", v6: "INGRESS", eg: "EGRESS"}
+			for aclKey, stage := range want {
+				val := app.aclTableMap[aclKey]
+				if got := val.Get("stage"); got != stage {
+					t.Errorf("%s: stage = %q, want %q", aclKey, got, stage)
+				}
+				if got := val.GetList("ports"); !reflect.DeepEqual(got, []string{"Ethernet1"}) {
+					t.Errorf("%s: ports = %v, want [Ethernet1]", aclKey, got)
+				}
+			}
+			if v4Val := app.aclTableMap[v4]; withAclSet && v4Val.Get(ACL_TYPE) != SONIC_ACL_TYPE_IPV4 {
+				t.Errorf("%s: acl-set type was lost: %v", v4, v4Val.Field)
+			}
+		})
+	}
 }
 
 func Test_AclApp_IPv6AclAndRule(t *testing.T) {
