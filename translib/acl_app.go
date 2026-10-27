@@ -1578,7 +1578,7 @@ func (app *AclApp) convertOCAclBindingsToInternal() {
 						} else {
 							aclInterfacesMap[aclName] = append(aclInterfacesMap[aclName], *intf.Id)
 						}
-						if len(app.aclTableMap) == 0 {
+						if _, ok := app.aclTableMap[aclName]; !ok {
 							app.aclTableMap[aclName] = db.Value{Field: map[string]string{}}
 						}
 						app.aclTableMap[aclName].Field["stage"] = "INGRESS"
@@ -1593,7 +1593,7 @@ func (app *AclApp) convertOCAclBindingsToInternal() {
 						} else {
 							aclInterfacesMap[aclName] = append(aclInterfacesMap[aclName], *intf.Id)
 						}
-						if len(app.aclTableMap) == 0 {
+						if _, ok := app.aclTableMap[aclName]; !ok {
 							app.aclTableMap[aclName] = db.Value{Field: map[string]string{}}
 						}
 						app.aclTableMap[aclName].Field["stage"] = "EGRESS"
