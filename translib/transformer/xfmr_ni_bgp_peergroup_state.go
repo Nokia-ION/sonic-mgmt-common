@@ -200,7 +200,7 @@ func populateNiBgpPgStateReplay(inParams XfmrParams, ygRoot *ygot.GoStruct, niNa
 		if !rpolNodeServesRequest(inParams.requestUri, uri) {
 			continue
 		}
-		if err := niContainerReplay(inParams, ygRoot, uri, DbToYang_ni_bgp_pg_state_xfmr); err != nil {
+		if err := niContainerReplay(inParams, ygRoot, uri, dbToYangNiBgpPgState); err != nil {
 			return err
 		}
 	}
@@ -224,7 +224,8 @@ func populateNiBgpAggregatePgStateReplay(inParams XfmrParams, ygRoot *ygot.GoStr
 	return nil
 }
 
-var DbToYang_ni_bgp_pg_state_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) error {
+// dbToYangNiBgpPgStateBase serves the peer-group state FRR reports.
+func dbToYangNiBgpPgStateBase(inParams XfmrParams) error {
 	reqInfo, err := parseNiBgpPgStateRequestUri(inParams.requestUri)
 	if err != nil {
 		// A read at the peer-group or afi-safi instance reaches this callback
@@ -344,12 +345,12 @@ func populateNiBgpPgAfStateFromDb(inParams XfmrParams, stateDb *db.DB, reqInfo *
 	return nil
 }
 
-// Subscribe_ni_bgp_pg_state_xfmr maps a subscription to peer-group state. FRR
+// subscribeNiBgpPgStateBase maps a subscription to peer-group state. FRR
 // changes these values only when the peer-group is reconfigured, and bgpmon
 // updates a changed row in place, so the paths are offered on-change; the
 // marker is not watched, being rewritten every scrape. A request leaving a key
 // open is resolved by the list path transformer.
-var Subscribe_ni_bgp_pg_state_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSubscInParams) (XfmrSubscOutParams, error) {
+func subscribeNiBgpPgStateBase(inParams XfmrSubscInParams) (XfmrSubscOutParams, error) {
 	var result XfmrSubscOutParams
 	if inParams.subscProc != TRANSLATE_SUBSCRIBE {
 		result.isVirtualTbl = true

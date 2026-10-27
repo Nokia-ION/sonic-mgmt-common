@@ -218,3 +218,18 @@ func TestSubscribe_ni_bgp_global_cfg_keeps_default(t *testing.T) {
 		}
 	}
 }
+
+// Peer-group state FRR does not report mirrors config, so it watches the
+// CONFIG_DB fields its config twin does.
+func TestSubscribe_ni_bgp_pg_state_mirrored_paths(t *testing.T) {
+	pg := niBgpSubscProtoUrl + "/bgp/peer-groups/peer-group[peer-group-name=PG1]"
+	af := pg + "/afi-safis/afi-safi[afi-safi-name=IPV4_UNICAST]"
+	runNiBgpSubscCases(t, Subscribe_ni_bgp_pg_state_xfmr, []niBgpSubscCase{
+		{"timers state", pg + "/timers/state", pg + "/timers/state", db.ConfigDB, "BGP_PEER_GROUP", "default|PG1",
+			map[string]string{"keepalive": "keepalive-interval", "holdtime": "hold-time", "conn_retry": "connect-retry", "min_adv_interval": "minimum-advertisement-interval"}, OnChange},
+		{"state local-as", pg + "/state", pg + "/state/local-as", db.ConfigDB, "BGP_PEER_GROUP", "default|PG1",
+			map[string]string{"local_asn": "local-as"}, OnChange},
+		{"prefix-limit state", af + "/ipv4-unicast/prefix-limit/state", af + "/ipv4-unicast/prefix-limit/state", db.ConfigDB, "BGP_PEER_GROUP_AF", "default|PG1|ipv4_unicast",
+			map[string]string{"max_prefix_limit": "max-prefixes", "max_prefix_warning_only": "prevent-teardown", "max_prefix_warning_threshold": "warning-threshold-pct"}, OnChange},
+	})
+}

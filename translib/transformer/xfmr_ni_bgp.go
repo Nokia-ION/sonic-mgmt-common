@@ -1717,6 +1717,11 @@ func populateNiBgpHierToYangFromDb(cfgDb *db.DB, ygRoot *ygot.GoStruct, niName, 
 		}
 	}
 
+	if bgpObj := getNiBgpProtoObj(ygRoot, niName, protoName, false); bgpObj != nil && bgpObj.PeerGroups != nil {
+		for _, pgObj := range bgpObj.PeerGroups.PeerGroup {
+			niBgpPgMirrorStateInTree(reflect.ValueOf(pgObj))
+		}
+	}
 	return nil
 }
 
