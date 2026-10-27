@@ -63,8 +63,10 @@ module sonic-system-controlplane-ext {
 
               The values populate the 'ports' field of the corresponding
               CONFIG_DB ACL_TABLE entry, which aclorch programs into the ASIC.
-              An ACL set with no bind-interfaces is not programmed into
-              hardware and filters nothing.";
+              A binding has to name at least one interface, since an ACL set
+              with none would filter nothing; a write that would leave the
+              binding without one is rejected. Deleting the acl-set entry
+              withdraws the binding.";
         }
     }
 

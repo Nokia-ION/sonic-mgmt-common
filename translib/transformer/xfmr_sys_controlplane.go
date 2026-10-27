@@ -212,8 +212,7 @@ func cpAclEffectiveBind(d *db.DB, aclKey string) []string {
 }
 
 // cpAclRequestedBind pulls the bind-interfaces of the acl-set being written out
-// of the request. The leaf-list is the payload of the binding, so a write
-// carrying none is a request to bind nothing.
+// of the request. The leaf-list is the payload of the binding.
 func cpAclRequestedBind(inParams XfmrParams, setName string, ocType string) ([]string, bool) {
 	if inParams.ygRoot == nil || *inParams.ygRoot == nil {
 		return nil, false
@@ -470,6 +469,13 @@ var YangToDb_cp_acl_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (map[st
 			withdraw = cpAclSubtract(recorded, requested)
 		} else {
 			newRecorded = cpAclUnion(recorded, requested)
+		}
+
+		// Accepting a binding left naming no interface would report success
+		// for an ACL that filters nothing. Withdrawing is done with a delete.
+		if len(newRecorded) == 0 {
+			return res_map, tlerr.InvalidArgs(
+				"Binding ACL set %s to the control plane requires config/sonic-system-controlplane-ext:bind-interfaces: the ACL is installed as an ingress ACL on the listed interfaces, so without them it filters nothing", aclKey)
 		}
 	}
 
