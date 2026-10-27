@@ -597,7 +597,7 @@ func niBgpNbrAfInstFields(afObj *ocbinds.OpenconfigNetworkInstance_NetworkInstan
 	for f, v := range niBgpNbrPfxWithMode(pfxFields, received) {
 		fields[f] = v
 	}
-	afFields, err := niBgpNbrAfFields(afObj, afiSafi)
+	afFields, err := niBgpPeerAfFields(niBgpNbrKind, reflect.ValueOf(afObj), afiSafi)
 	if err != nil {
 		return nil, err
 	}
@@ -782,7 +782,7 @@ func populateNiBgpNbrAfFromDb(cfgDb *db.DB, ygRoot *ygot.GoStruct, niName, proto
 			afObj.ApplyPolicy.Config.ExportPolicy = []string{policy}
 		}
 	}
-	if err := niBgpNbrAfLeavesToYang(ygRoot, niName, protoName, neighborAddr, afiSafi, "", "", entry); err != nil {
+	if err := niBgpPeerAfLeavesToYang(niBgpNbrKind, ygRoot, niName, protoName, neighborAddr, afiSafi, "", "", entry); err != nil {
 		return err
 	}
 	for _, received := range []bool{false, true} {
@@ -2090,7 +2090,7 @@ var yangToDbNiBgpNbrCfgBase SubTreeXfmrYangToDb = func(inParams XfmrParams) (map
 					fields[niBgpNbrKeepaliveFld] = strconv.FormatUint(uint64(*tmObj.KeepaliveInterval), 10)
 				}
 			}
-			if len(fields) == 0 && !niBgpNbrPayloadHasLeaves(inParams, reqInfo.niName, reqInfo.protoName, reqInfo.neighborAddr, "timers/config") {
+			if len(fields) == 0 && !niBgpPeerPayloadHasLeaves(niBgpNbrKind, inParams, reqInfo.niName, reqInfo.protoName, reqInfo.neighborAddr, "timers/config") {
 				return res, tlerr.InvalidArgsError{Format: "BGP neighbor timers config payload carries none of connect-retry, hold-time or keepalive-interval"}
 			}
 			return makeNiBgpNbrResMap(reqInfo.niName, reqInfo.neighborAddr, fields), nil
@@ -2207,7 +2207,7 @@ var yangToDbNiBgpNbrCfgBase SubTreeXfmrYangToDb = func(inParams XfmrParams) (map
 				}
 			}
 		}
-		if len(fields) == 0 && !niBgpNbrPayloadHasLeaves(inParams, reqInfo.niName, reqInfo.protoName, reqInfo.neighborAddr, "config") {
+		if len(fields) == 0 && !niBgpPeerPayloadHasLeaves(niBgpNbrKind, inParams, reqInfo.niName, reqInfo.protoName, reqInfo.neighborAddr, "config") {
 			return res, tlerr.InvalidArgsError{Format: "BGP neighbor config payload missing supported fields (peer-group/peer-as/enabled/auth-password)"}
 		}
 	}

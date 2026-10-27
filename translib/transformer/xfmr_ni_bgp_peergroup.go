@@ -20,6 +20,7 @@ package transformer
 
 import (
 	"fmt"
+	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
@@ -36,13 +37,11 @@ const (
 	niBgpPeerGroupAfTbl      = "BGP_PEER_GROUP_AF"
 	niBgpPgTargetCfg         = "peer-group-config"
 	niBgpPgTargetTimersCfg   = "peer-group-timers-config"
-	niBgpPgTargetAfPfxCfg    = "peer-group-af-prefix-limit-config"
 	niBgpPgTargetAfApplyCfg  = "peer-group-af-apply-policy-config"
 	niBgpPgPeerGroupNameLeaf = "peer-group-name"
 	niBgpPgPeerAsLeaf        = "peer-as"
 	niBgpPgKeepaliveLeaf     = "keepalive-interval"
 	niBgpPgHoldTimeLeaf      = "hold-time"
-	niBgpPgMaxPrefixesLeaf   = "max-prefixes"
 	niBgpPgExportPolicyLeaf  = "export-policy"
 	niBgpPgImportPolicyLeaf  = "import-policy"
 	niBgpDefExportPolicyLeaf = "default-export-policy"
@@ -75,8 +74,6 @@ const niBgpPgUriPfx = niBgpProtoUriPfx + `/bgp/peer-groups/peer-group\[peer-grou
 
 var niBgpPgCfgReqUriRe = regexp.MustCompile(niBgpPgUriPfx + `/config(?:/(peer-group-name|peer-as))?$`)
 var niBgpPgTimersReqUriRe = regexp.MustCompile(niBgpPgUriPfx + `/timers/config(?:/(keepalive-interval|hold-time))?$`)
-var niBgpPgAfV4PfxReqUriRe = regexp.MustCompile(niBgpPgUriPfx + `/afi-safis/afi-safi(?:\[afi-safi-name=(?:IPV4_UNICAST|ipv4-unicast)\])?/ipv4-unicast/prefix-limit/config(?:/(max-prefixes))?$`)
-var niBgpPgAfV6PfxReqUriRe = regexp.MustCompile(niBgpPgUriPfx + `/afi-safis/afi-safi(?:\[afi-safi-name=(?:IPV6_UNICAST|ipv6-unicast)\])?/ipv6-unicast/prefix-limit/config(?:/(max-prefixes))?$`)
 
 // The apply-policy container and its config container are one target: the
 // config container is the only writable child.
@@ -149,36 +146,6 @@ func matchNiBgpPgRequestUri(uri string) (*niBgpPgReqInfo, error) {
 			peerGroupName: m[3],
 			targetLeaf:    leaf,
 			targetPath:    niBgpPgTargetTimersCfg,
-		}, nil
-	}
-	m = niBgpPgAfV4PfxReqUriRe.FindStringSubmatch(uri)
-	if len(m) >= 4 {
-		leaf := ""
-		if len(m) >= 5 {
-			leaf = m[4]
-		}
-		return &niBgpPgReqInfo{
-			niName:        m[1],
-			protoName:     m[2],
-			peerGroupName: m[3],
-			afiSafi:       niBgpPgAfiSafiIPv4,
-			targetLeaf:    leaf,
-			targetPath:    niBgpPgTargetAfPfxCfg,
-		}, nil
-	}
-	m = niBgpPgAfV6PfxReqUriRe.FindStringSubmatch(uri)
-	if len(m) >= 4 {
-		leaf := ""
-		if len(m) >= 5 {
-			leaf = m[4]
-		}
-		return &niBgpPgReqInfo{
-			niName:        m[1],
-			protoName:     m[2],
-			peerGroupName: m[3],
-			afiSafi:       niBgpPgAfiSafiIPv6,
-			targetLeaf:    leaf,
-			targetPath:    niBgpPgTargetAfPfxCfg,
 		}, nil
 	}
 	m = niBgpPgAfApplyReqUriRe.FindStringSubmatch(uri)
@@ -414,41 +381,6 @@ func getNiBgpPeerGroupAfObj(s *ygot.GoStruct, niName, protoName, peerGroup strin
 	}
 	buildNiBgpEmptySubtree(afObj)
 	return afObj
-}
-
-func getNiBgpPeerGroupAfV4PrefixLimitCfgObj(s *ygot.GoStruct, niName, protoName, peerGroup string, createIfMissing bool) *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_PeerGroups_PeerGroup_AfiSafis_AfiSafi_Ipv4Unicast_PrefixLimit_Config {
-	afObj := getNiBgpPeerGroupAfObj(s, niName, protoName, peerGroup, ocbinds.OpenconfigBgpTypes_AFI_SAFI_TYPE_IPV4_UNICAST, createIfMissing)
-	if afObj == nil {
-		return nil
-	}
-	return afObj.Ipv4Unicast.PrefixLimit.Config
-}
-
-func getNiBgpPeerGroupAfV6PrefixLimitCfgObj(s *ygot.GoStruct, niName, protoName, peerGroup string, createIfMissing bool) *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_PeerGroups_PeerGroup_AfiSafis_AfiSafi_Ipv6Unicast_PrefixLimit_Config {
-	afObj := getNiBgpPeerGroupAfObj(s, niName, protoName, peerGroup, ocbinds.OpenconfigBgpTypes_AFI_SAFI_TYPE_IPV6_UNICAST, createIfMissing)
-	if afObj == nil {
-		return nil
-	}
-	return afObj.Ipv6Unicast.PrefixLimit.Config
-}
-
-// getNiBgpPgMaxPrefixesFromYgot reads max-prefixes out of the family specific
-// prefix-limit container the request named. The two families carry the leaf on
-// separate ygot types, so the family has to pick the object before the leaf can
-// be read.
-func getNiBgpPgMaxPrefixesFromYgot(s *ygot.GoStruct, niName, protoName, peerGroup, afiSafi string) (*uint32, bool) {
-	if afiSafi == niBgpPgAfiSafiIPv6 {
-		pfxObj := getNiBgpPeerGroupAfV6PrefixLimitCfgObj(s, niName, protoName, peerGroup, false)
-		if pfxObj != nil && pfxObj.MaxPrefixes != nil {
-			return pfxObj.MaxPrefixes, true
-		}
-		return nil, false
-	}
-	pfxObj := getNiBgpPeerGroupAfV4PrefixLimitCfgObj(s, niName, protoName, peerGroup, false)
-	if pfxObj != nil && pfxObj.MaxPrefixes != nil {
-		return pfxObj.MaxPrefixes, true
-	}
-	return nil, false
 }
 
 func getNiBgpPeerGroupAfObjByName(s *ygot.GoStruct, niName, protoName, peerGroup, afiSafi string, createIfMissing bool) *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_PeerGroups_PeerGroup_AfiSafis_AfiSafi {
@@ -748,16 +680,12 @@ func niBgpPgAfInstFields(afObj *ocbinds.OpenconfigNetworkInstance_NetworkInstanc
 			fields[niBgpPgRouteMapOutFld] = policy
 		}
 	}
-	// The two families carry max-prefixes on separate containers, so the row
-	// only takes the one belonging to the family it is keyed on.
-	if afiSafi == niBgpPgAfiSafiIPv6 {
-		if afObj.Ipv6Unicast != nil && afObj.Ipv6Unicast.PrefixLimit != nil && afObj.Ipv6Unicast.PrefixLimit.Config != nil && afObj.Ipv6Unicast.PrefixLimit.Config.MaxPrefixes != nil {
-			fields[niBgpPgMaxPfxLimitFld] = strconv.FormatUint(uint64(*afObj.Ipv6Unicast.PrefixLimit.Config.MaxPrefixes), 10)
-		}
-		return fields, nil
+	leafFields, err := niBgpPeerAfFields(niBgpPgKind, reflect.ValueOf(afObj), afiSafi)
+	if err != nil {
+		return nil, err
 	}
-	if afObj.Ipv4Unicast != nil && afObj.Ipv4Unicast.PrefixLimit != nil && afObj.Ipv4Unicast.PrefixLimit.Config != nil && afObj.Ipv4Unicast.PrefixLimit.Config.MaxPrefixes != nil {
-		fields[niBgpPgMaxPfxLimitFld] = strconv.FormatUint(uint64(*afObj.Ipv4Unicast.PrefixLimit.Config.MaxPrefixes), 10)
+	for f, v := range leafFields {
+		fields[f] = v
 	}
 	return fields, nil
 }
@@ -777,9 +705,21 @@ var niBgpPgAfInstOwnedFlds = map[string]bool{
 // nil row means the write has already been staged and nothing is to be returned
 // for it.
 func niBgpPgAfInstWrite(inParams XfmrParams, reqInfo *niBgpPgReqInfo, afiSafi string, fields map[string]string) (map[string]string, error) {
+	existing := niBgpCfgDbEntry(inParams, niBgpPeerGroupAfTbl, reqInfo.niName, reqInfo.peerGroupName, afiSafi)
+	fields, clear := niBgpSplitClearFlds(fields)
 	if inParams.oper == REPLACE {
-		existing := niBgpCfgDbEntry(inParams, niBgpPeerGroupAfTbl, reqInfo.niName, reqInfo.peerGroupName, afiSafi)
 		return niBgpReplaceRowFields(existing, fields, niBgpPgAfInstOwnedFlds), nil
+	}
+	stale := map[string]string{}
+	for f := range clear {
+		if _, ok := existing.Field[f]; ok {
+			stale[f] = ""
+		}
+	}
+	if len(stale) > 0 {
+		if err := niBgpStageSubOp(inParams, DELETE, makeNiBgpPgAfResMap(reqInfo.niName, reqInfo.peerGroupName, afiSafi, stale)); err != nil {
+			return nil, err
+		}
 	}
 	staged, err := niBgpPgStaleRouteMaps(inParams, reqInfo.niName, reqInfo.peerGroupName, afiSafi, fields)
 	if err != nil || staged {
@@ -877,25 +817,7 @@ func populateNiBgpPgAfFromDb(cfgDb *db.DB, ygRoot *ygot.GoStruct, niName, protoN
 			afObj.ApplyPolicy.Config.ExportPolicy = []string{policy}
 		}
 	}
-	maxStr := strings.TrimSpace(entry.Field[niBgpPgMaxPfxLimitFld])
-	if maxStr == "" {
-		return nil
-	}
-	maxU64, err := strconv.ParseUint(maxStr, 10, 32)
-	if err != nil {
-		return err
-	}
-	max := uint32(maxU64)
-	if afiSafi == niBgpPgAfiSafiIPv6 {
-		if afObj.Ipv6Unicast != nil && afObj.Ipv6Unicast.PrefixLimit != nil && afObj.Ipv6Unicast.PrefixLimit.Config != nil {
-			afObj.Ipv6Unicast.PrefixLimit.Config.MaxPrefixes = &max
-		}
-		return nil
-	}
-	if afObj.Ipv4Unicast != nil && afObj.Ipv4Unicast.PrefixLimit != nil && afObj.Ipv4Unicast.PrefixLimit.Config != nil {
-		afObj.Ipv4Unicast.PrefixLimit.Config.MaxPrefixes = &max
-	}
-	return nil
+	return niBgpPeerAfLeavesToYang(niBgpPgKind, ygRoot, niName, protoName, pgName, afiSafi, "", "", entry)
 }
 
 func parseNiBgpPgNameFromParam(param interface{}) (string, bool) {
@@ -971,37 +893,6 @@ func parseNiBgpPgHoldTimeFromParam(param interface{}) (*uint16, bool) {
 	}
 	if iv, ok := parseNiBgpPgIntervalValue(param); ok {
 		return iv, true
-	}
-	return nil, false
-}
-
-func parseNiBgpPgMaxPrefixesFromParam(param interface{}) (*uint32, bool) {
-	if param == nil {
-		return nil, false
-	}
-	switch val := param.(type) {
-	case uint32:
-		v := val
-		return &v, true
-	case *uint32:
-		if val != nil {
-			return val, true
-		}
-	case int:
-		if val >= 0 {
-			v := uint32(val)
-			return &v, true
-		}
-	case float64:
-		if val >= 0 && val <= float64(^uint32(0)) && val == float64(uint32(val)) {
-			v := uint32(val)
-			return &v, true
-		}
-	case string:
-		if u64, err := strconv.ParseUint(strings.TrimSpace(val), 10, 32); err == nil {
-			v := uint32(u64)
-			return &v, true
-		}
 	}
 	return nil, false
 }
@@ -1279,7 +1170,8 @@ func niBgpPgApplyPolicyWrite(inParams XfmrParams, reqInfo *niBgpPgReqInfo) (map[
 	return map[string]map[string]db.Value{}, nil
 }
 
-var YangToDb_ni_bgp_pg_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (map[string]map[string]db.Value, error) {
+// yangToDbNiBgpPgCfgBase maps the peer-group leaves niBgpPgLeafFlds leaves out.
+func yangToDbNiBgpPgCfgBase(inParams XfmrParams) (map[string]map[string]db.Value, error) {
 	res := make(map[string]map[string]db.Value)
 
 	reqInfo, err := parseNiBgpPgRequestUri(niHandlerReqUri(inParams))
@@ -1320,13 +1212,6 @@ var YangToDb_ni_bgp_pg_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) 
 				return makeNiBgpPgAfResMap(reqInfo.niName, reqInfo.peerGroupName, reqInfo.afiSafi, map[string]string{niBgpPgSendCommFld: ""}), nil
 			default:
 				return res, tlerr.NotSupportedError{Format: "DELETE supported only for /peer-groups/peer-group/afi-safis/afi-safi/config or its enabled and send-community-type leaves", Path: inParams.requestUri}
-			}
-		case niBgpPgTargetAfPfxCfg:
-			switch reqInfo.targetLeaf {
-			case "", niBgpPgMaxPrefixesLeaf:
-				return makeNiBgpPgAfResMap(reqInfo.niName, reqInfo.peerGroupName, reqInfo.afiSafi, map[string]string{niBgpPgMaxPfxLimitFld: ""}), nil
-			default:
-				return res, tlerr.NotSupportedError{Format: fmt.Sprintf("DELETE supported only for /peer-groups/peer-group/afi-safis/afi-safi/%s/prefix-limit/config or its max-prefixes leaf", niBgpPgAfiSafiUriName(reqInfo.afiSafi)), Path: inParams.requestUri}
 			}
 		case niBgpPgTargetAfApplyCfg:
 			switch reqInfo.targetLeaf {
@@ -1467,23 +1352,6 @@ var YangToDb_ni_bgp_pg_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) 
 			return res, tlerr.NotSupportedError{Format: "unsupported leaf under peer-group config", Path: inParams.requestUri}
 		}
 	}
-	if reqInfo.targetPath == niBgpPgTargetAfPfxCfg {
-		switch reqInfo.targetLeaf {
-		case "", niBgpPgMaxPrefixesLeaf:
-			max, ok := parseNiBgpPgMaxPrefixesFromParam(inParams.param)
-			if !ok {
-				max, ok = getNiBgpPgMaxPrefixesFromYgot(inParams.ygRoot, reqInfo.niName, reqInfo.protoName, reqInfo.peerGroupName, reqInfo.afiSafi)
-				if !ok {
-					return res, tlerr.InvalidArgsError{Format: fmt.Sprintf("BGP peer-group %s prefix-limit max-prefixes is missing in request payload", niBgpPgAfiSafiUriName(reqInfo.afiSafi))}
-				}
-			}
-			return makeNiBgpPgAfResMap(reqInfo.niName, reqInfo.peerGroupName, reqInfo.afiSafi, map[string]string{
-				niBgpPgMaxPfxLimitFld: strconv.FormatUint(uint64(*max), 10),
-			}), nil
-		default:
-			return res, tlerr.NotSupportedError{Format: fmt.Sprintf("unsupported leaf under peer-group %s prefix-limit config", niBgpPgAfiSafiUriName(reqInfo.afiSafi)), Path: inParams.requestUri}
-		}
-	}
 	if reqInfo.targetPath == niBgpPgTargetAfApplyCfg {
 		switch reqInfo.targetLeaf {
 		case "", niBgpPgExportPolicyLeaf, niBgpPgImportPolicyLeaf:
@@ -1507,8 +1375,8 @@ var YangToDb_ni_bgp_pg_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) 
 				fields[niBgpPgHoldTimeFld] = strconv.FormatUint(uint64(*tmObj.HoldTime), 10)
 			}
 		}
-		if len(fields) == 0 {
-			return res, tlerr.InvalidArgsError{Format: "BGP peer-group timers config payload carries neither hold-time nor keepalive-interval"}
+		if len(fields) == 0 && !niBgpPeerPayloadHasLeaves(niBgpPgKind, inParams, reqInfo.niName, reqInfo.protoName, reqInfo.peerGroupName, "timers/config") {
+			return res, tlerr.InvalidArgsError{Format: "BGP peer-group timers config payload carries none of connect-retry, hold-time, keepalive-interval or minimum-advertisement-interval"}
 		}
 		return makeNiBgpPgResMap(reqInfo.niName, reqInfo.peerGroupName, fields), nil
 	case niBgpPgKeepaliveLeaf:
@@ -1538,7 +1406,8 @@ var YangToDb_ni_bgp_pg_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) 
 	}
 }
 
-var DbToYang_ni_bgp_pg_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) error {
+// dbToYangNiBgpPgCfgBase reads the peer-group leaves niBgpPgLeafFlds leaves out.
+func dbToYangNiBgpPgCfgBase(inParams XfmrParams) error {
 	reqInfo, err := parseNiBgpPgRequestUri(inParams.requestUri)
 	if err != nil {
 		fallback, nameErr := niBgpContainerLevelFallback(inParams.requestUri)
@@ -1607,38 +1476,6 @@ var DbToYang_ni_bgp_pg_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) 
 	entry, err := cfgDb.GetEntry(&db.TableSpec{Name: niBgpPeerGroupTbl}, db.Key{Comp: []string{reqInfo.niName, reqInfo.peerGroupName}})
 	if err != nil {
 		return err
-	}
-	if reqInfo.targetPath == niBgpPgTargetAfPfxCfg {
-		afEntry, err := cfgDb.GetEntry(&db.TableSpec{Name: niBgpPeerGroupAfTbl}, db.Key{Comp: []string{reqInfo.niName, reqInfo.peerGroupName, reqInfo.afiSafi}})
-		if err != nil {
-			return err
-		}
-		var maxPrefixes *uint32
-		if reqInfo.targetLeaf == "" || reqInfo.targetLeaf == niBgpPgMaxPrefixesLeaf {
-			maxStr, ok := afEntry.Field[niBgpPgMaxPfxLimitFld]
-			if ok && strings.TrimSpace(maxStr) != "" {
-				maxU64, err := strconv.ParseUint(strings.TrimSpace(maxStr), 10, 32)
-				if err != nil {
-					return err
-				}
-				max := uint32(maxU64)
-				maxPrefixes = &max
-			}
-		}
-		if reqInfo.afiSafi == niBgpPgAfiSafiIPv6 {
-			pfxObj := getNiBgpPeerGroupAfV6PrefixLimitCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.protoName, reqInfo.peerGroupName, true)
-			if pfxObj == nil {
-				return tlerr.InvalidArgsError{Format: "Unable to locate BGP peer-group AFI-SAFI prefix-limit config object in YANG tree"}
-			}
-			pfxObj.MaxPrefixes = maxPrefixes
-			return nil
-		}
-		pfxObj := getNiBgpPeerGroupAfV4PrefixLimitCfgObj(inParams.ygRoot, reqInfo.niName, reqInfo.protoName, reqInfo.peerGroupName, true)
-		if pfxObj == nil {
-			return tlerr.InvalidArgsError{Format: "Unable to locate BGP peer-group AFI-SAFI prefix-limit config object in YANG tree"}
-		}
-		pfxObj.MaxPrefixes = maxPrefixes
-		return nil
 	}
 	if reqInfo.targetPath == niBgpPgTargetAfApplyCfg {
 		afEntry, err := cfgDb.GetEntry(&db.TableSpec{Name: niBgpPeerGroupAfTbl}, db.Key{Comp: []string{reqInfo.niName, reqInfo.peerGroupName, reqInfo.afiSafi}})

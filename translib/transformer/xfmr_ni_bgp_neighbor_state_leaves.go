@@ -58,6 +58,12 @@ var niBgpNbrStateLeafFlds = map[string]map[string]niBgpNbrStateLeaf{
 	"enable-bfd/state": {
 		"enabled": {niBgpNbrStateSrcApplied, "bfd"},
 	},
+	// FRR reports the graceful restart mode in effect, which the global
+	// setting decides unless the neighbor sets its own, so state reads the
+	// neighbor's own setting.
+	"graceful-restart/state": {
+		"enabled": {niBgpNbrStateSrcConfig, "graceful_restart_enable"},
+	},
 }
 
 // The last NOTIFICATION FRR keeps is the one behind the last reset, so the
@@ -72,10 +78,10 @@ const (
 	niBgpNbrStateMessagesContainer = "state/messages"
 )
 
-var niBgpNbrStateOwnContainers = map[string]bool{"timers/state": true, "ebgp-multihop/state": true, "enable-bfd/state": true}
+var niBgpNbrStateOwnContainers = map[string]bool{"timers/state": true, "ebgp-multihop/state": true, "enable-bfd/state": true, "graceful-restart/state": true}
 
 var niBgpNbrStateLeafReqUriRe = regexp.MustCompile(niBgpNbrStateUriPfx +
-	`/(state|timers/state|transport/state|ebgp-multihop/state|enable-bfd/state)(?:/([a-z-]+))?$`)
+	`/(state|timers/state|transport/state|ebgp-multihop/state|enable-bfd/state|graceful-restart/state)(?:/([a-z-]+))?$`)
 var niBgpNbrStateMsgReqUriRe = regexp.MustCompile(niBgpNbrStateUriPfx +
 	`/state/messages(?:/(sent|received)(?:/([A-Za-z-]+))?)?$`)
 

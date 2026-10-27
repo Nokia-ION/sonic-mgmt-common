@@ -51,7 +51,7 @@ func populateNiBgpAggregateNeighborStateReplay(inParams XfmrParams, ygRoot *ygot
 	for _, nbrAddr := range niBgpNeighborAddrsForAggregate(inParams.dbs[db.ConfigDB], stateDb, niName) {
 		nbrUri := protoUri + "/bgp/neighbors/neighbor[neighbor-address=" + nbrAddr + "]"
 		for _, uri := range []string{nbrUri + "/state", nbrUri + "/transport/state", nbrUri + "/timers/state",
-			nbrUri + "/ebgp-multihop/state", nbrUri + "/enable-bfd/state"} {
+			nbrUri + "/ebgp-multihop/state", nbrUri + "/enable-bfd/state", nbrUri + "/graceful-restart/state"} {
 			if !rpolNodeServesRequest(inParams.requestUri, uri) {
 				continue
 			}
