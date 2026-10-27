@@ -10,7 +10,8 @@ module sonic-dns {
     description
         "DNS resolver YANG module for SONiC OS.
          Minimal model used by CVL to validate translib writes to the
-         DNS_NAMESERVER table driven by the OpenConfig /system/dns/servers path.";
+         DNS_NAMESERVER and DNS_OPTIONS tables driven by the OpenConfig
+         /system/dns/servers and /system/dns/config paths.";
 
     revision 2023-02-14 {
         description
@@ -32,6 +33,45 @@ module sonic-dns {
                 leaf ip {
                     type inet:host;
                     description "IPv4 or IPv6 address of a DNS nameserver.";
+                }
+
+            }
+
+        }
+
+        container DNS_OPTIONS {
+
+            description "DNS resolver options.";
+
+            /* No defaults: resolv.conf.j2 writes an options entry for every
+               field present in the row, and a default would be filled into
+               the row when translib creates it. */
+            container GLOBAL {
+
+                leaf-list search {
+                    type inet:host;
+                    description "Ordered list of domains to search when resolving a host name.";
+                }
+
+                leaf ndots {
+                    type uint8 {
+                        range "0..15";
+                    }
+                    description "Number of dots a name must have before an initial absolute query is made.";
+                }
+
+                leaf timeout {
+                    type uint8 {
+                        range "1..30";
+                    }
+                    description "Seconds to wait for a name server before retrying with another.";
+                }
+
+                leaf attempts {
+                    type uint8 {
+                        range "1..5";
+                    }
+                    description "Number of times a query is sent to the name servers before giving up.";
                 }
 
             }
