@@ -24,11 +24,15 @@ func TestYangToDb_DNS_Config(t *testing.T) {
 	const configUri = "/openconfig-system:system/dns/config"
 	const searchUri = "/openconfig-system:system/dns/config/search"
 
+	originalDbGetEntry := dbGetEntry
+	defer func() { dbGetEntry = originalDbGetEntry }()
+
 	tests := []struct {
 		name       string
 		op         Operation
 		requestUri string
 		device     *ocbinds.Device
+		dbSearch   string // DNS_OPTIONS|GLOBAL search@; empty means no row
 		wantMap    map[string]map[string]db.Value
 		wantSubOps map[Operation]map[string]map[string]db.Value
 	}{
@@ -69,6 +73,7 @@ func TestYangToDb_DNS_Config(t *testing.T) {
 			op:         REPLACE,
 			requestUri: configUri,
 			device:     dnsConfigDevice(),
+			dbSearch:   "net.google.com",
 			wantMap:    map[string]map[string]db.Value{},
 			wantSubOps: map[Operation]map[string]map[string]db.Value{
 				DELETE: {
@@ -83,6 +88,7 @@ func TestYangToDb_DNS_Config(t *testing.T) {
 			op:         DELETE,
 			requestUri: searchUri,
 			device:     &ocbinds.Device{},
+			dbSearch:   "net.google.com",
 			wantMap: map[string]map[string]db.Value{
 				DNS_OPTIONS_TABLE_NAME: {
 					DNS_OPTIONS_GLOBAL_KEY: {Field: map[string]string{dnsSearchField: ""}},
@@ -94,18 +100,40 @@ func TestYangToDb_DNS_Config(t *testing.T) {
 			op:         DELETE,
 			requestUri: searchUri + "[search=research.example.com]",
 			device:     &ocbinds.Device{},
+			dbSearch:   "net.google.com,research.example.com",
 			wantMap: map[string]map[string]db.Value{
 				DNS_OPTIONS_TABLE_NAME: {
 					DNS_OPTIONS_GLOBAL_KEY: {Field: map[string]string{dnsSearchField: "research.example.com"}},
 				},
 			},
 		},
+		{
+			name:       "DELETE with no list configured writes nothing",
+			op:         DELETE,
+			requestUri: searchUri,
+			device:     &ocbinds.Device{},
+			wantMap:    map[string]map[string]db.Value{},
+		},
+		{
+			name:       "REPLACE without search and no list configured writes nothing",
+			op:         REPLACE,
+			requestUri: searchUri,
+			device:     dnsConfigDevice(),
+			wantMap:    map[string]map[string]db.Value{},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			dbGetEntry = func(d *db.DB, table *db.TableSpec, key db.Key) (db.Value, error) {
+				if tt.dbSearch == "" {
+					return db.Value{}, tlerr.NotFoundError{Format: "not found"}
+				}
+				return db.Value{Field: map[string]string{dnsSearchField: tt.dbSearch}}, nil
+			}
 			ygRoot := ygot.GoStruct(tt.device)
 			inParams := XfmrParams{
+				d:            &db.DB{},
 				dbs:          [db.MaxDB]*db.DB{db.ConfigDB: &db.DB{}},
 				ygRoot:       &ygRoot,
 				oper:         tt.op,

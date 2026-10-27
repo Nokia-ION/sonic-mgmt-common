@@ -36,6 +36,12 @@ var YangToDb_dns_config_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (ma
 	log.V(lvl.DEBUG).Infof("Inside YangToDb_dns_config_xfmr: op=%v, uri=%s", inParams.oper, inParams.uri)
 
 	if inParams.oper == DELETE {
+		// The common app queues nothing for a leaf-list field missing from the
+		// row, and rejects a request that queues nothing, so a delete with no
+		// list to remove has to produce no row at all.
+		if !dnsSearchConfigured(inParams) {
+			return res, nil
+		}
 		// An empty value clears the whole list; a value names the one domain
 		// a leaf-list instance delete removes.
 		val := db.Value{Field: map[string]string{
@@ -57,8 +63,10 @@ var YangToDb_dns_config_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (ma
 		// REPLACE, still swaps the leaf-list instead of merging it.
 		var subOpMap map[db.DBNum]map[string]map[string]db.Value
 		if len(search) == 0 {
-			subOpMap = dnsOptionsSubOp(db.Value{Field: map[string]string{dnsSearchField: ""}})
-			updateSubOpDataMap(subOpMap, DELETE, inParams)
+			if dnsSearchConfigured(inParams) {
+				subOpMap = dnsOptionsSubOp(db.Value{Field: map[string]string{dnsSearchField: ""}})
+				updateSubOpDataMap(subOpMap, DELETE, inParams)
+			}
 		} else {
 			val := db.Value{Field: map[string]string{}}
 			val.SetList(dnsSearchField, search)
@@ -92,15 +100,32 @@ func dnsSearchFromDb(inParams XfmrParams) ([]string, error) {
 	if cfgDb == nil {
 		return nil, errors.New("CONFIG_DB not found")
 	}
-	entry, err := dbGetEntry(cfgDb, &db.TableSpec{Name: DNS_OPTIONS_TABLE_NAME}, db.Key{Comp: []string{DNS_OPTIONS_GLOBAL_KEY}})
+	return dnsSearchInDb(cfgDb), nil
+}
+
+func dnsSearchInDb(d *db.DB) []string {
+	entry, err := dbGetEntry(d, &db.TableSpec{Name: DNS_OPTIONS_TABLE_NAME}, db.Key{Comp: []string{DNS_OPTIONS_GLOBAL_KEY}})
 	if err != nil {
-		return nil, nil
+		return nil
 	}
 	search := entry.GetList(dnsSearchField)
 	if len(search) == 0 {
-		return nil, nil
+		return nil
 	}
-	return search, nil
+	return search
+}
+
+// dnsSearchConfigured reports whether CONFIG_DB holds a search list. Without
+// a DB handle it answers true, so the caller still emits its delete.
+func dnsSearchConfigured(inParams XfmrParams) bool {
+	d := inParams.d
+	if d == nil {
+		d = inParams.dbs[db.ConfigDB]
+	}
+	if d == nil {
+		return true
+	}
+	return dnsSearchInDb(d) != nil
 }
 
 func dnsRootObject(inParams XfmrParams) *ocbinds.OpenconfigSystem_System_Dns {
