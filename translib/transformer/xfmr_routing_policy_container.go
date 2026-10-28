@@ -328,6 +328,7 @@ func rpolContainerSetTargetUris(s *ygot.GoStruct) ([]string, error) {
 				}
 				uris = append(uris, rpolStmtNameUri(policyName, stmtName))
 				uris = append(uris, rpolStmtSetTargetUris(policyName, stmtName, stmtObj)...)
+				uris = append(uris, rpolStmtLeafSetUris(policyName, stmtName, reflect.ValueOf(stmtObj))...)
 			}
 		}
 	}
@@ -395,6 +396,17 @@ func rpolContainerSetTargetUris(s *ygot.GoStruct) ([]string, error) {
 				}
 			}
 			uris = append(uris, rpolPrefixSetCfgUri(setName))
+		}
+	}
+
+	if sets := ocWalkPath(reflect.ValueOf(rpObj), "defined-sets/bgp-defined-sets/as-path-sets", false); sets.IsValid() {
+		var setNames []string
+		for setName := range sets.Interface().(*ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_DefinedSets_BgpDefinedSets_AsPathSets).AsPathSet {
+			setNames = append(setNames, setName)
+		}
+		sort.Strings(setNames)
+		for _, setName := range setNames {
+			uris = append(uris, rpolAsPathSetUri(setName))
 		}
 	}
 
@@ -497,6 +509,7 @@ func rpolContainerGetTargetUris(cfgDb *db.DB) []string {
 			}
 			uris = append(uris, rpolStmtNameUri(policyName, stmtName))
 			uris = append(uris, rpolStmtGetTargetUris(policyName, stmtName, entry)...)
+			uris = append(uris, rpolStmtLeafGetUris(policyName, stmtName, entry)...)
 		}
 	}
 
@@ -530,6 +543,10 @@ func rpolContainerGetTargetUris(cfgDb *db.DB) []string {
 
 	for _, setName := range rpolPrefixSetNamesFromDb(cfgDb) {
 		uris = append(uris, rpolPrefixSetCfgUri(setName))
+	}
+
+	for _, setName := range rpolAsPathSetNamesFromDb(cfgDb) {
+		uris = append(uris, rpolAsPathSetUri(setName))
 	}
 
 	return uris
@@ -802,6 +819,12 @@ func rpolNodeParams(inParams XfmrParams, ygRoot *ygot.GoStruct, uri string) (Xfm
 	subParams.ygRoot = ygRoot
 	subParams.param = nil
 
+	if _, ok := matchRpolStmtLeafReq(uri); ok {
+		return subParams, nil
+	}
+	if _, ok := matchRpolAsPathSetReq(uri); ok {
+		return subParams, nil
+	}
 	reqInfo, err := parseRpolRequestUri(uri)
 	if err != nil {
 		return subParams, err

@@ -1813,11 +1813,11 @@ func Test_openconfig_routing_policy_container_unmapped_payload_rejected(t *testi
 	urlInputBodyJSON := `{"policy-definitions":{"policy-definition":[` +
 		`{"name":"POL1","statements":{"statement":[{"name":"10",` +
 		`"actions":{"config":{"policy-result":"ACCEPT_ROUTE"}},` +
-		`"conditions":{"config":{"call-policy":"POL1"},` +
+		`"conditions":{"match-interface":{"config":{"interface":"Ethernet0","subinterface":1}},` +
 		`"match-prefix-set":{"config":{"prefix-set":"PFX1"}}}}]}}]}}`
 	expectedErr := tlerr.NotSupportedError{
 		Format: "routing-policy container payload carries leaves that have no CONFIG_DB mapping: " +
-			"routing-policy/policy-definitions/policy-definition[POL1]/statements/statement[10]/conditions/config/call-policy",
+			"routing-policy/policy-definitions/policy-definition[POL1]/statements/statement[10]/conditions/match-interface/config/subinterface",
 	}
 	t.Run("PATCH routing-policy container rejects unmapped leaf",
 		processSetRequest(rpolContainerUrl, urlInputBodyJSON, "PATCH", true, expectedErr))
@@ -3576,4 +3576,123 @@ func Test_openconfig_routing_policy_state_mirrors_config(t *testing.T) {
 	time.Sleep(1 * time.Second)
 
 	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+// AS path sets, the statement conditions call-policy, install-protocol-eq,
+// match-interface, match-as-path-set and the match-community-set containers,
+// and set-ext-community, each in config and in the state FRR applies.
+func Test_openconfig_routing_policy_as_path_sets_conditions_and_set_ext_community(t *testing.T) {
+	cleanupTbl := map[string]interface{}{
+		"ROUTE_MAP":              map[string]interface{}{"POLVI|10": ""},
+		"ROUTE_MAP_SET":          map[string]interface{}{"POLVI": "", "POLVIC": ""},
+		"AS_PATH_SET":            map[string]interface{}{"ASP1": ""},
+		"EXTENDED_COMMUNITY_SET": map[string]interface{}{"ECVI": ""},
+		"PORT":                   map[string]interface{}{"Ethernet120": ""},
+	}
+	appliedTbl := map[string]interface{}{"ROUTE_MAP_APPLIED": map[string]interface{}{"POLVI|10": ""}}
+	preReqMap := map[string]interface{}{
+		"ROUTE_MAP_SET":          map[string]interface{}{"POLVI": map[string]interface{}{"NULL": "NULL"}, "POLVIC": map[string]interface{}{"NULL": "NULL"}},
+		"ROUTE_MAP":              map[string]interface{}{"POLVI|10": map[string]interface{}{"route_operation": "permit"}},
+		"EXTENDED_COMMUNITY_SET": map[string]interface{}{"ECVI": map[string]interface{}{"set_type": "standard", "match_action": "any", "community_member@": "route-target:9:9"}},
+		"PORT":                   map[string]interface{}{"Ethernet120": map[string]interface{}{"admin_status": "up"}},
+	}
+	unloadDB(db.ConfigDB, cleanupTbl)
+	unloadDB(db.StateDB, appliedTbl)
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	asp := rpolContainerUrl + "/defined-sets/openconfig-bgp-policy:bgp-defined-sets/openconfig-bgp-policy:as-path-sets/openconfig-bgp-policy:as-path-set[as-path-set-name=ASP1]"
+	stmt := rpolContainerUrl + "/policy-definitions/policy-definition[name=POLVI]/statements/statement[name=10]"
+	bgpCond := stmt + "/conditions/openconfig-bgp-policy:bgp-conditions"
+	sec := stmt + "/actions/openconfig-bgp-policy:bgp-actions/openconfig-bgp-policy:set-ext-community"
+
+	t.Run("PATCH as-path-set config", processSetRequest(asp+"/config",
+		`{"as-path-set-name":"ASP1","as-path-set-member":["^65001_","_65002$"]}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify AS_PATH_SET", verifyDbResult(rclient, "AS_PATH_SET|ASP1",
+		map[string]interface{}{"AS_PATH_SET": map[string]interface{}{"ASP1": map[string]interface{}{"as_path_set_member@": "^65001_,_65002$"}}}, false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET as-path-set", processGetRequest(asp, nil, `{"openconfig-bgp-policy:as-path-set":[{"as-path-set-name":"ASP1",`+
+		`"config":{"as-path-set-member":["^65001_","_65002$"],"as-path-set-name":"ASP1"},`+
+		`"state":{"as-path-set-member":["^65001_","_65002$"],"as-path-set-name":"ASP1"}}]}`, false))
+	time.Sleep(1 * time.Second)
+
+	for _, c := range []struct{ name, url, body string }{
+		{"conditions config", stmt + "/conditions/config", `{"call-policy":"POLVIC","install-protocol-eq":"BGP"}`},
+		{"match-interface config", stmt + "/conditions/match-interface/config", `{"interface":"Ethernet120"}`},
+		{"match-as-path-set config", bgpCond + "/match-as-path-set/config", `{"as-path-set":"ASP1","match-set-options":"ANY"}`},
+		{"match-ext-community-set config", bgpCond + "/match-ext-community-set/config", `{"ext-community-set":"ECVI"}`},
+		{"set-ext-community inline", sec, `{"config":{"method":"INLINE","options":"REPLACE"},` +
+			`"inline":{"config":{"communities":["route-target:2:2","route-origin:3:3"]}}}`},
+	} {
+		t.Run("PATCH "+c.name, processSetRequest(c.url, c.body, "PATCH", false, nil))
+		time.Sleep(1 * time.Second)
+	}
+	t.Run("Verify ROUTE_MAP", verifyDbResult(rclient, "ROUTE_MAP|POLVI|10", map[string]interface{}{"ROUTE_MAP": map[string]interface{}{"POLVI|10": map[string]interface{}{
+		"route_operation": "permit", "call_route_map": "POLVIC", "match_protocol": "bgp", "match_interface": "Ethernet120",
+		"match_as_path": "ASP1", "match_ext_community": "ECVI", "set_ext_community_inline@": "route-target:2:2,route-origin:3:3"}}}, false))
+	time.Sleep(1 * time.Second)
+
+	for _, c := range []struct{ name, url, want string }{
+		{"conditions config", stmt + "/conditions/config", `{"openconfig-routing-policy:config":{"call-policy":"POLVIC","install-protocol-eq":"openconfig-policy-types:BGP"}}`},
+		{"match-interface config interface", stmt + "/conditions/match-interface/config/interface", `{"openconfig-routing-policy:interface":"Ethernet120"}`},
+		{"match-as-path-set config", bgpCond + "/match-as-path-set/config", `{"openconfig-bgp-policy:config":{"as-path-set":"ASP1"}}`},
+		{"set-ext-community config", sec + "/config", `{"openconfig-bgp-policy:config":{"method":"INLINE"}}`},
+		{"set-ext-community inline config", sec + "/inline/config", `{"openconfig-bgp-policy:config":{"communities":["route-target:2:2","route-origin:3:3"]}}`},
+	} {
+		t.Run("GET "+c.name, processGetRequest(c.url, nil, c.want, false))
+		time.Sleep(1 * time.Second)
+	}
+
+	t.Run("GET statement conditions container", processGetRequest(stmt+"/conditions", nil,
+		`{"openconfig-routing-policy:conditions":{"config":{"call-policy":"POLVIC","install-protocol-eq":"openconfig-policy-types:BGP"},`+
+			`"match-interface":{"config":{"interface":"Ethernet120"}},"openconfig-bgp-policy:bgp-conditions":{"config":{"ext-community-set":"ECVI"},`+
+			`"match-as-path-set":{"config":{"as-path-set":"ASP1"}},"match-ext-community-set":{"config":{"ext-community-set":"ECVI"}}}}}`, false))
+	time.Sleep(1 * time.Second)
+
+	for _, c := range []struct{ name, url, body string }{
+		{"match-set-options ALL", bgpCond + "/match-as-path-set/config", `{"as-path-set":"ASP1","match-set-options":"ALL"}`},
+		{"install-protocol-eq OSPF", stmt + "/conditions/config", `{"install-protocol-eq":"OSPF"}`},
+		{"match-interface subinterface", stmt + "/conditions/match-interface/config", `{"interface":"Ethernet120","subinterface":1}`},
+		{"set-ext-community options ADD", sec + "/config", `{"options":"ADD"}`},
+	} {
+		t.Run("PATCH "+c.name+" is refused", processSetRequest(c.url, c.body, "PATCH", true))
+		time.Sleep(1 * time.Second)
+	}
+
+	t.Run("PATCH set-ext-community reference", processSetRequest(sec+"/reference/config",
+		`{"ext-community-set-refs":["ECVI"]}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("GET set-ext-community config after the switch", processGetRequest(sec+"/config", nil, `{"openconfig-bgp-policy:config":{"method":"REFERENCE"}}`, false))
+	time.Sleep(1 * time.Second)
+
+	appliedMap := map[string]interface{}{"ROUTE_MAP_APPLIED": map[string]interface{}{"POLVI|10": map[string]interface{}{
+		"route_operation": "permit", "call_route_map": "POLVIC", "match_protocol": "bgp", "match_interface": "Ethernet120",
+		"match_as_path": "ASP1", "set_ext_community_inline": "route-target:9:9"}}}
+	loadDB(db.StateDB, appliedMap)
+	time.Sleep(1 * time.Second)
+	for _, c := range []struct{ name, url, want string }{
+		{"conditions state", stmt + "/conditions/state", `{"openconfig-routing-policy:state":{"call-policy":"POLVIC","install-protocol-eq":"openconfig-policy-types:BGP"}}`},
+		{"match-as-path-set state", bgpCond + "/match-as-path-set/state", `{"openconfig-bgp-policy:state":{"as-path-set":"ASP1"}}`},
+		{"match-interface state", stmt + "/conditions/match-interface/state", `{"openconfig-routing-policy:state":{"interface":"Ethernet120"}}`},
+		// FRR holds the members the reference expands to.
+		{"set-ext-community state", sec + "/state", `{"openconfig-bgp-policy:state":{"method":"INLINE"}}`},
+		{"set-ext-community inline state", sec + "/inline/state", `{"openconfig-bgp-policy:state":{"communities":["route-target:9:9"]}}`},
+	} {
+		t.Run("GET "+c.name, processGetRequest(c.url, nil, c.want, false))
+		time.Sleep(1 * time.Second)
+	}
+
+	t.Run("DELETE match-interface config", processDeleteRequest(stmt+"/conditions/match-interface/config", false))
+	time.Sleep(1 * time.Second)
+	t.Run("DELETE set-ext-community", processDeleteRequest(sec, false))
+	time.Sleep(1 * time.Second)
+	t.Run("DELETE conditions config call-policy", processDeleteRequest(stmt+"/conditions/config/call-policy", false))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify ROUTE_MAP after the deletes", verifyDbResult(rclient, "ROUTE_MAP|POLVI|10", map[string]interface{}{"ROUTE_MAP": map[string]interface{}{"POLVI|10": map[string]interface{}{
+		"route_operation": "permit", "match_protocol": "bgp", "match_as_path": "ASP1", "match_ext_community": "ECVI"}}}, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+	unloadDB(db.StateDB, appliedTbl)
 }
