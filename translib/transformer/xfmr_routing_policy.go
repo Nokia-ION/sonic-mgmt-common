@@ -2936,9 +2936,9 @@ func rpolStmtCondOwnedFlds(uri string) (string, string, map[string]bool) {
 	case "match-prefix-set":
 		flds = rpolMatchPrefixSetFlds
 	case "bgp-conditions":
-		flds = rpolBgpConditionsFlds
+		flds = append(append([]string{}, rpolBgpConditionsFlds...), rpolMatchAsPathFld)
 	default:
-		flds = append(append([]string{}, rpolMatchPrefixSetFlds...), rpolBgpConditionsFlds...)
+		flds = append(append(append([]string{}, rpolMatchPrefixSetFlds...), rpolBgpConditionsFlds...), rpolCondLeafFlds...)
 	}
 	return m[1], m[2], rpolOwnedFldSet(flds)
 }
@@ -2961,9 +2961,9 @@ func rpolStmtActionsOwnedFlds(uri string) (string, string, map[string]bool) {
 	var flds []string
 	switch strings.Join(segs, "/") {
 	case "":
-		flds = append([]string{rpolRouteOperationFld}, rpolBgpActionsFlds...)
+		flds = append(append([]string{rpolRouteOperationFld}, rpolBgpActionsFlds...), rpolSetExtCommFlds...)
 	case "bgp-actions":
-		flds = rpolBgpActionsFlds
+		flds = append(append([]string{}, rpolBgpActionsFlds...), rpolSetExtCommFlds...)
 	case "bgp-actions/set-community", "bgp-actions/set-community/inline", "bgp-actions/set-community/reference":
 		flds = rpolSetCommunityFlds
 	case "bgp-actions/set-as-path-prepend":
@@ -3060,6 +3060,14 @@ func rpolYangToDbScopedXfmr(inParams XfmrParams) (map[string]map[string]db.Value
 	if owned == nil {
 		policyName, stmtName, owned = rpolStmtActionsOwnedFlds(inParams.requestUri)
 	}
+	if r, ok := matchRpolStmtLeafReq(inParams.requestUri); ok {
+		if flds, ferr := rpolStmtLeafDeleteFields(r); ferr == nil {
+			policyName, stmtName, owned = r.policy, r.stmt, map[string]bool{}
+			for f := range flds {
+				owned[f] = true
+			}
+		}
+	}
 	if owned != nil {
 		res = rpolReplaceStmtRow(inParams, res, policyName, stmtName, owned)
 	}
@@ -3107,6 +3115,10 @@ func rpolYangToDbXfmr(inParams XfmrParams) (res map[string]map[string]db.Value, 
 		}
 	}()
 	res = make(map[string]map[string]db.Value)
+
+	if leafRes, handled, leafErr := rpolLeavesYangToDb(inParams); handled {
+		return leafRes, leafErr
+	}
 
 	reqInfo, err := parseRpolRequestUri(inParams.requestUri)
 	if err != nil {
@@ -4084,6 +4096,10 @@ func rpolDbToYangXfmr(inParams XfmrParams) (err error) {
 			err = tlerr.InvalidArgsError{Format: fmt.Sprintf("routing-policy transformer panic in GET path: %v", r)}
 		}
 	}()
+
+	if handled, leafErr := rpolLeavesDbToYang(inParams); handled {
+		return leafErr
+	}
 
 	reqInfo, err := parseRpolRequestUri(inParams.requestUri)
 	if err != nil {
