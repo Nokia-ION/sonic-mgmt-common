@@ -2635,7 +2635,6 @@ func validateIntfPrefixesRemoveBlockedByVrrp(cfgDb *db.DB, ifName string, prefix
 		return nil
 	}
 
-	remaining := make(map[string]int)
 	removing := make(map[string][]string)
 	for _, pref := range parents {
 		canon, network, _, ok := vrrpCanonPrefix(pref)
@@ -2644,8 +2643,6 @@ func validateIntfPrefixesRemoveBlockedByVrrp(cfgDb *db.DB, ifName string, prefix
 		}
 		if removed[canon] {
 			removing[network.String()] = append(removing[network.String()], canon)
-		} else {
-			remaining[network.String()]++
 		}
 	}
 	if len(removing) == 0 {
@@ -2673,7 +2670,7 @@ func validateIntfPrefixesRemoveBlockedByVrrp(cfgDb *db.DB, ifName string, prefix
 					continue
 				}
 				key := owner.String()
-				if len(removing[key]) > 0 && remaining[key] == 0 {
+				if len(removing[key]) > 0 {
 					details = append(details, fmt.Sprintf("%s VIP %s (VR Id: %d)", label, vip, vrid))
 					for _, canon := range removing[key] {
 						blocking[canon] = true
@@ -2695,7 +2692,7 @@ func validateIntfPrefixesRemoveBlockedByVrrp(cfgDb *db.DB, ifName string, prefix
 		blockingPrefixes = append(blockingPrefixes, canon)
 	}
 	sort.Strings(blockingPrefixes)
-	return tlerr.InvalidArgs("Cannot change interface IP %s on %s: %s %s associated with this prefix.",
+	return tlerr.InvalidArgs("Cannot alter interface IP %s on %s: %s %s associated with this prefix.",
 		strings.Join(blockingPrefixes, ", "), ifName, strings.Join(details, ", "), verb)
 }
 

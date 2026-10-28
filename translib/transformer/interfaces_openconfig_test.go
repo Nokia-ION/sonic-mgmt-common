@@ -22,10 +22,11 @@
 package transformer_test
 
 import (
-	"github.com/Azure/sonic-mgmt-common/translib/db"
-	"github.com/Azure/sonic-mgmt-common/translib/tlerr"
 	"testing"
 	"time"
+
+	"github.com/Azure/sonic-mgmt-common/translib/db"
+	"github.com/Azure/sonic-mgmt-common/translib/tlerr"
 )
 
 func Test_openconfig_interfaces(t *testing.T) {
@@ -1402,7 +1403,7 @@ func Test_openconfig_routed_vlan_ipv4_vrrp_owned_prefix_remove(t *testing.T) {
 	listPayload := "{\"openconfig-if-ip:addresses\":{\"address\":[{\"ip\":\"50.0.0.2\",\"config\":{\"ip\":\"50.0.0.2\",\"prefix-length\":24}}]}}"
 
 	// Prefix owning the VIP cannot be deleted.
-	expErr := tlerr.InvalidArgsError{Format: "Cannot change interface IP 50.0.0.1/24 on Vlan100: VRRP VIP 50.0.0.254 (VR Id: 25) is associated with this prefix."}
+	expErr := tlerr.InvalidArgsError{Format: "Cannot alter interface IP 50.0.0.1/24 on Vlan100: VRRP VIP 50.0.0.254 (VR Id: 25) is associated with this prefix."}
 	t.Run("Delete prefix owning VRRP VIP rejected", processDeleteRequest(baseURL+"/address[ip=50.0.0.1]", true, expErr))
 	// Bulk delete of all addresses includes the owning prefix.
 	t.Run("Delete all IPv4 addresses rejected", processDeleteRequest(baseURL, true, expErr))
@@ -1451,7 +1452,7 @@ func Test_openconfig_routed_vlan_ipv6_vrrp_owned_prefix_remove(t *testing.T) {
 	v6URL := "/openconfig-interfaces:interfaces/interface[name=Vlan100]/openconfig-vlan:routed-vlan/openconfig-if-ip:ipv6/addresses/address[ip=2001:db8::1]"
 	v4URL := "/openconfig-interfaces:interfaces/interface[name=Vlan100]/openconfig-vlan:routed-vlan/openconfig-if-ip:ipv4/addresses/address[ip=50.0.0.1]"
 
-	expErr := tlerr.InvalidArgsError{Format: "Cannot change interface IP 2001:db8::1/64 on Vlan100: VRRP6 VIP 2001:db8::ff (VR Id: 29) is associated with this prefix."}
+	expErr := tlerr.InvalidArgsError{Format: "Cannot alter interface IP 2001:db8::1/64 on Vlan100: VRRP6 VIP 2001:db8::ff (VR Id: 29) is associated with this prefix."}
 	t.Run("Delete IPv6 prefix owning VRRP6 VIP rejected", processDeleteRequest(v6URL, true, expErr))
 
 	// IPv4 prefix is unaffected by IPv6-only VRRP.
@@ -1463,6 +1464,104 @@ func Test_openconfig_routed_vlan_ipv6_vrrp_owned_prefix_remove(t *testing.T) {
 			"Vlan100":                "",
 			"Vlan100|2001:db8::1/64": "",
 			"Vlan100|50.0.0.1/24":    "",
+		},
+		"VRRP6": map[string]interface{}{
+			"Vlan100|29": "",
+		},
+	}
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_routed_vlan_ipv4_vrrp_same_prefix_remove(t *testing.T) {
+	t.Log("\n\n+++++++++++++ ROUTED VLAN IPv4 REMOVE ANY ADDRESS ON A VRRP-OWNED PREFIX ++++++++++++")
+
+	preReqMap := map[string]interface{}{
+		"VLAN_INTERFACE": map[string]interface{}{
+			"Vlan100|50.0.0.1/24": map[string]interface{}{},
+			"Vlan100|50.0.0.2/24": map[string]interface{}{},
+		},
+		"VRRP": map[string]interface{}{
+			"Vlan100|25": map[string]interface{}{
+				"vid":  "25",
+				"vip@": "50.0.0.254",
+			},
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+
+	baseURL := "/openconfig-interfaces:interfaces/interface[name=Vlan100]/openconfig-vlan:routed-vlan/openconfig-if-ip:ipv4/addresses"
+
+	// Either address on the VIP's prefix is protected, even though the other one would remain.
+	expErr1 := tlerr.InvalidArgsError{Format: "Cannot alter interface IP 50.0.0.1/24 on Vlan100: VRRP VIP 50.0.0.254 (VR Id: 25) is associated with this prefix."}
+	t.Run("Delete first address on VRRP-owned prefix rejected", processDeleteRequest(baseURL+"/address[ip=50.0.0.1]", true, expErr1))
+	expErr2 := tlerr.InvalidArgsError{Format: "Cannot alter interface IP 50.0.0.2/24 on Vlan100: VRRP VIP 50.0.0.254 (VR Id: 25) is associated with this prefix."}
+	t.Run("Delete second address on VRRP-owned prefix rejected", processDeleteRequest(baseURL+"/address[ip=50.0.0.2]", true, expErr2))
+	expErrAll := tlerr.InvalidArgsError{Format: "Cannot alter interface IP 50.0.0.1/24, 50.0.0.2/24 on Vlan100: VRRP VIP 50.0.0.254 (VR Id: 25) is associated with this prefix."}
+	t.Run("Delete all IPv4 addresses rejected", processDeleteRequest(baseURL, true, expErrAll))
+
+	// Replacing the list so that one of the addresses is dropped is rejected too.
+	listPayload := "{\"openconfig-if-ip:addresses\":{\"address\":[{\"ip\":\"50.0.0.2\",\"config\":{\"ip\":\"50.0.0.2\",\"prefix-length\":24}}]}}"
+	t.Run("Replace address list dropping an address on the VRRP-owned prefix rejected", processSetRequest(baseURL, listPayload, "PUT", true))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify first address still configured", processGetRequest(baseURL+"/address[ip=50.0.0.1]/config", nil,
+		"{\"openconfig-if-ip:config\":{\"ip\":\"50.0.0.1\",\"prefix-length\":24}}", false))
+	t.Run("Verify second address still configured", processGetRequest(baseURL+"/address[ip=50.0.0.2]/config", nil,
+		"{\"openconfig-if-ip:config\":{\"ip\":\"50.0.0.2\",\"prefix-length\":24}}", false))
+
+	cleanupTbl := map[string]interface{}{
+		"VLAN_INTERFACE": map[string]interface{}{
+			"Vlan100":             "",
+			"Vlan100|50.0.0.1/24": "",
+			"Vlan100|50.0.0.2/24": "",
+		},
+		"VRRP": map[string]interface{}{
+			"Vlan100|25": "",
+		},
+	}
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_routed_vlan_ipv6_vrrp_same_prefix_remove(t *testing.T) {
+	t.Log("\n\n+++++++++++++ ROUTED VLAN IPv6 REMOVE ANY ADDRESS ON A VRRP-OWNED PREFIX ++++++++++++")
+
+	preReqMap := map[string]interface{}{
+		"VLAN_INTERFACE": map[string]interface{}{
+			"Vlan100|2001:db8::1/64": map[string]interface{}{},
+			"Vlan100|2001:db8::2/64": map[string]interface{}{},
+		},
+		"VRRP6": map[string]interface{}{
+			"Vlan100|29": map[string]interface{}{
+				"vid":  "29",
+				"vip@": "2001:db8::ff",
+			},
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+
+	baseURL := "/openconfig-interfaces:interfaces/interface[name=Vlan100]/openconfig-vlan:routed-vlan/openconfig-if-ip:ipv6/addresses"
+
+	expErr1 := tlerr.InvalidArgsError{Format: "Cannot alter interface IP 2001:db8::1/64 on Vlan100: VRRP6 VIP 2001:db8::ff (VR Id: 29) is associated with this prefix."}
+	t.Run("Delete first IPv6 address on VRRP6-owned prefix rejected", processDeleteRequest(baseURL+"/address[ip=2001:db8::1]", true, expErr1))
+	expErr2 := tlerr.InvalidArgsError{Format: "Cannot alter interface IP 2001:db8::2/64 on Vlan100: VRRP6 VIP 2001:db8::ff (VR Id: 29) is associated with this prefix."}
+	t.Run("Delete second IPv6 address on VRRP6-owned prefix rejected", processDeleteRequest(baseURL+"/address[ip=2001:db8::2]", true, expErr2))
+	expErrAll := tlerr.InvalidArgsError{Format: "Cannot alter interface IP 2001:db8::1/64, 2001:db8::2/64 on Vlan100: VRRP6 VIP 2001:db8::ff (VR Id: 29) is associated with this prefix."}
+	t.Run("Delete all IPv6 addresses rejected", processDeleteRequest(baseURL, true, expErrAll))
+
+	listPayload := "{\"openconfig-if-ip:addresses\":{\"address\":[{\"ip\":\"2001:db8::2\",\"config\":{\"ip\":\"2001:db8::2\",\"prefix-length\":64}}]}}"
+	t.Run("Replace IPv6 address list dropping an address on the VRRP6-owned prefix rejected", processSetRequest(baseURL, listPayload, "PUT", true))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify first IPv6 address still configured", processGetRequest(baseURL+"/address[ip=2001:db8::1]/config", nil,
+		"{\"openconfig-if-ip:config\":{\"ip\":\"2001:db8::1\",\"prefix-length\":64}}", false))
+	t.Run("Verify second IPv6 address still configured", processGetRequest(baseURL+"/address[ip=2001:db8::2]/config", nil,
+		"{\"openconfig-if-ip:config\":{\"ip\":\"2001:db8::2\",\"prefix-length\":64}}", false))
+
+	cleanupTbl := map[string]interface{}{
+		"VLAN_INTERFACE": map[string]interface{}{
+			"Vlan100":                "",
+			"Vlan100|2001:db8::1/64": "",
+			"Vlan100|2001:db8::2/64": "",
 		},
 		"VRRP6": map[string]interface{}{
 			"Vlan100|29": "",
@@ -1527,7 +1626,7 @@ func Test_openconfig_subinterface_ipv4_vrrp_owned_prefix_remove(t *testing.T) {
 	time.Sleep(1 * time.Second)
 
 	// The remaining prefix owns the VIP.
-	expErr := tlerr.InvalidArgsError{Format: "Cannot change interface IP 1.0.0.1/24 on Ethernet0: VRRP VIP 1.0.0.10 (VR Id: 2) is associated with this prefix."}
+	expErr := tlerr.InvalidArgsError{Format: "Cannot alter interface IP 1.0.0.1/24 on Ethernet0: VRRP VIP 1.0.0.10 (VR Id: 2) is associated with this prefix."}
 	t.Run("Delete prefix owning VRRP VIP rejected", processDeleteRequest(baseURL+"/address[ip=1.0.0.1]", true, expErr))
 	t.Run("Delete all IPv4 addresses rejected", processDeleteRequest(baseURL, true, expErr))
 	time.Sleep(1 * time.Second)
@@ -1565,7 +1664,7 @@ func Test_openconfig_subinterface_ipv6_vrrp_owned_prefix_remove(t *testing.T) {
 	loadDB(db.ConfigDB, preReqMap)
 
 	url := "/openconfig-interfaces:interfaces/interface[name=Ethernet0]/subinterfaces/subinterface[index=0]/openconfig-if-ip:ipv6/addresses/address[ip=2001:db8::1]"
-	expErr := tlerr.InvalidArgsError{Format: "Cannot change interface IP 2001:db8::1/64 on Ethernet0: VRRP6 VIP 2001:db8::10 (VR Id: 2) is associated with this prefix."}
+	expErr := tlerr.InvalidArgsError{Format: "Cannot alter interface IP 2001:db8::1/64 on Ethernet0: VRRP6 VIP 2001:db8::10 (VR Id: 2) is associated with this prefix."}
 	t.Run("Delete IPv6 prefix owning VRRP6 VIP rejected", processDeleteRequest(url, true, expErr))
 	time.Sleep(1 * time.Second)
 
