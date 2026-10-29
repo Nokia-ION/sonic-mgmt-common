@@ -3696,3 +3696,73 @@ func Test_openconfig_routing_policy_as_path_sets_conditions_and_set_ext_communit
 	unloadDB(db.ConfigDB, cleanupTbl)
 	unloadDB(db.StateDB, appliedTbl)
 }
+
+// match-tag-set takes a tag value or a TAG_SET holding one, and set-tag one
+// inline tag; the state of each is what FRR applied.
+func Test_openconfig_routing_policy_match_tag_set_and_set_tag(t *testing.T) {
+	cleanupTbl := map[string]interface{}{
+		"ROUTE_MAP":     map[string]interface{}{"POLTG|10": ""},
+		"ROUTE_MAP_SET": map[string]interface{}{"POLTG": ""},
+		"TAG_SET":       map[string]interface{}{"TS1": "", "TS2": ""},
+	}
+	appliedTbl := map[string]interface{}{"ROUTE_MAP_APPLIED": map[string]interface{}{"POLTG|10": ""}}
+	preReqMap := map[string]interface{}{
+		"ROUTE_MAP_SET": map[string]interface{}{"POLTG": map[string]interface{}{"NULL": "NULL"}},
+		"ROUTE_MAP":     map[string]interface{}{"POLTG|10": map[string]interface{}{"route_operation": "permit"}},
+		"TAG_SET": map[string]interface{}{"TS1": map[string]interface{}{"tag_value@": "300"},
+			"TS2": map[string]interface{}{"tag_value@": "100,200"}},
+	}
+	unloadDB(db.ConfigDB, cleanupTbl)
+	unloadDB(db.StateDB, appliedTbl)
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	stmt := rpolContainerUrl + "/policy-definitions/policy-definition[name=POLTG]/statements/statement[name=10]"
+	mts := stmt + "/conditions/match-tag-set/config"
+	st := stmt + "/actions/set-tag"
+
+	t.Run("PATCH match-tag-set with a tag value", processSetRequest(mts, `{"tag-set":"100","match-set-options":"ANY"}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("PATCH match-tag-set with a set holding one tag", processSetRequest(mts, `{"tag-set":"TS1"}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("PATCH match-tag-set with a set holding two tags is refused", processSetRequest(mts, `{"tag-set":"TS2"}`, "PATCH", true,
+		tlerr.InvalidArgsError{Format: "tag-set TS2 holds 2 tags; a route-map entry matches one tag"}))
+	time.Sleep(1 * time.Second)
+	t.Run("PATCH match-tag-set INVERT is refused", processSetRequest(mts, `{"tag-set":"TS1","match-set-options":"INVERT"}`, "PATCH", true))
+	time.Sleep(1 * time.Second)
+
+	t.Run("PATCH set-tag inline", processSetRequest(st, `{"config":{"mode":"INLINE"},"inline":{"config":{"tag":[77]}}}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("PATCH set-tag reference is refused", processSetRequest(st+"/reference/config", `{"tag-set":"TS1"}`, "PATCH", true))
+	time.Sleep(1 * time.Second)
+	t.Run("PATCH set-tag with two tags is refused", processSetRequest(st+"/inline/config", `{"tag":[77,78]}`, "PATCH", true))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify ROUTE_MAP", verifyDbResult(rclient, "ROUTE_MAP|POLTG|10", map[string]interface{}{"ROUTE_MAP": map[string]interface{}{"POLTG|10": map[string]interface{}{
+		"route_operation": "permit", "match_tag": "TS1", "set_tag": "77"}}}, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET match-tag-set config", processGetRequest(mts, nil, `{"openconfig-routing-policy:config":{"tag-set":"TS1"}}`, false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET set-tag", processGetRequest(st, nil, `{"openconfig-routing-policy:set-tag":{"config":{"mode":"INLINE"},"inline":{"config":{"tag":[77]}}}}`, false))
+	time.Sleep(1 * time.Second)
+
+	loadDB(db.StateDB, map[string]interface{}{"ROUTE_MAP_APPLIED": map[string]interface{}{"POLTG|10": map[string]interface{}{
+		"route_operation": "permit", "match_tag": "300", "set_tag": "77"}}})
+	time.Sleep(1 * time.Second)
+	// FRR holds the tag the set resolves to, not the set's name.
+	t.Run("GET match-tag-set state", processGetRequest(stmt+"/conditions/match-tag-set/state", nil, `{"openconfig-routing-policy:state":{"tag-set":"300"}}`, false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET set-tag inline state", processGetRequest(st+"/inline/state", nil, `{"openconfig-routing-policy:state":{"tag":[77]}}`, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("DELETE set-tag", processDeleteRequest(st, false))
+	time.Sleep(1 * time.Second)
+	t.Run("DELETE match-tag-set config", processDeleteRequest(mts, false))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify ROUTE_MAP after the deletes", verifyDbResult(rclient, "ROUTE_MAP|POLTG|10", map[string]interface{}{"ROUTE_MAP": map[string]interface{}{"POLTG|10": map[string]interface{}{
+		"route_operation": "permit"}}}, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+	unloadDB(db.StateDB, appliedTbl)
+}

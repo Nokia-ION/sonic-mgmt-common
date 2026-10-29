@@ -2961,7 +2961,7 @@ func rpolStmtActionsOwnedFlds(uri string) (string, string, map[string]bool) {
 	var flds []string
 	switch strings.Join(segs, "/") {
 	case "":
-		flds = append(append([]string{rpolRouteOperationFld}, rpolBgpActionsFlds...), rpolSetExtCommFlds...)
+		flds = append(append([]string{rpolRouteOperationFld, rpolSetTagFld}, rpolBgpActionsFlds...), rpolSetExtCommFlds...)
 	case "bgp-actions":
 		flds = append(append([]string{}, rpolBgpActionsFlds...), rpolSetExtCommFlds...)
 	case "bgp-actions/set-community", "bgp-actions/set-community/inline", "bgp-actions/set-community/reference":

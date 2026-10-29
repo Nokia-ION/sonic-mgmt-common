@@ -37,6 +37,11 @@ var rpolStmtLeafFlds = map[string]map[string]string{
 		"ext-community-set": rpolMatchExtCommunityFld,
 		"match-set-options": "",
 	},
+	// A tag value or the name of a TAG_SET holding one.
+	"conditions/match-tag-set/config": {
+		"tag-set":           rpolMatchTagFld,
+		"match-set-options": "",
+	},
 }
 
 const (
@@ -48,13 +53,18 @@ const (
 	rpolSetExtCommRefFld        = "set_ext_community_ref"
 	rpolAppliedExtCommInlineFld = "set_ext_community_inline"
 	rpolSetExtCommNode          = "actions/bgp-actions/set-ext-community"
+	rpolMatchTagFld             = "match_tag"
+	rpolSetTagFld               = "set_tag"
+	rpolSetTagNode              = "actions/set-tag"
+	rpolTagSetTbl               = "TAG_SET"
+	rpolTagSetValueFld          = "tag_value@"
 	rpolAsPathSetTbl            = "AS_PATH_SET"
 	rpolAsPathSetMemberFld      = "as_path_set_member@"
 )
 
 // The ROUTE_MAP fields the leaves above and set-ext-community own, by the
 // container a REPLACE or a DELETE of it covers.
-var rpolCondLeafFlds = []string{rpolCallRouteMapFld, rpolMatchProtocolFld, rpolMatchInterfaceFld, rpolMatchAsPathFld}
+var rpolCondLeafFlds = []string{rpolCallRouteMapFld, rpolMatchProtocolFld, rpolMatchInterfaceFld, rpolMatchAsPathFld, rpolMatchTagFld}
 var rpolSetExtCommFlds = []string{rpolSetExtCommInlineFld, rpolSetExtCommRefFld}
 
 // The install protocols ROUTE_MAP match_protocol takes, as FRR spells them.
@@ -73,7 +83,7 @@ var rpolStmtLeafReqUriRe = regexp.MustCompile(`^/openconfig-routing-policy:routi
 // rpolStmtLeafFlds and set-ext-community, at or below them.
 var rpolStmtLeafNodes = []string{"conditions/config", "conditions/state", "conditions/match-interface",
 	"conditions/bgp-conditions/match-as-path-set", "conditions/bgp-conditions/match-community-set",
-	"conditions/bgp-conditions/match-ext-community-set", rpolSetExtCommNode}
+	"conditions/bgp-conditions/match-ext-community-set", "conditions/match-tag-set", rpolSetExtCommNode, rpolSetTagNode}
 
 type rpolStmtLeafReq struct {
 	policy, stmt string
@@ -135,8 +145,10 @@ func rpolStmtLeafToDb(container, leaf string, f reflect.Value) (string, bool, er
 		}
 		return p, true, nil
 	case "match-set-options":
-		v := f.Interface().(ocbinds.E_OpenconfigRoutingPolicy_MatchSetOptionsType)
-		if v != ocbinds.OpenconfigRoutingPolicy_MatchSetOptionsType_UNSET && v != ocbinds.OpenconfigRoutingPolicy_MatchSetOptionsType_ANY {
+		// The bgp-conditions and the tag-set options are different enums, so
+		// the value is read by name.
+		name, _ := ygot.EnumName(f.Interface().(ygot.GoEnum))
+		if f.Int() != 0 && name != "ANY" {
 			return "", false, tlerr.NotSupportedError{Format: fmt.Sprintf("routing-policy statement %s match-set-options supports ANY only", strings.TrimSuffix(container, "/config"))}
 		}
 		return "", false, nil
@@ -273,6 +285,16 @@ func rpolStmtLeafWriteFields(r *rpolStmtLeafReq, stmtObj reflect.Value) (map[str
 			fields[k] = v
 		}
 	}
+	if strings.HasPrefix(r.node, rpolSetTagNode) {
+		st, _ := ocWalkPath(stmtObj, rpolSetTagNode, false).Interface().(*ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_SetTag)
+		tag, err := rpolSetTagValue(st)
+		if err != nil {
+			return nil, err
+		}
+		if tag != "" {
+			fields[rpolSetTagFld] = tag
+		}
+	}
 	if r.leaf != "" {
 		narrowed := map[string]string{}
 		for _, c := range r.cfgContainers() {
@@ -282,7 +304,7 @@ func rpolStmtLeafWriteFields(r *rpolStmtLeafReq, stmtObj reflect.Value) (map[str
 				}
 			}
 		}
-		if !strings.HasPrefix(r.node, rpolSetExtCommNode) {
+		if !strings.HasPrefix(r.node, rpolSetExtCommNode) && !strings.HasPrefix(r.node, rpolSetTagNode) {
 			fields = narrowed
 		}
 	}
@@ -300,6 +322,8 @@ func rpolStmtLeafDeleteFields(r *rpolStmtLeafReq) (map[string]string, error) {
 		}
 	}
 	switch {
+	case strings.HasPrefix(r.node, rpolSetTagNode):
+		fields[rpolSetTagFld] = ""
 	case strings.HasPrefix(r.node, rpolSetExtCommNode+"/inline"):
 		fields[rpolSetExtCommInlineFld] = ""
 	case strings.HasPrefix(r.node, rpolSetExtCommNode+"/reference"):
@@ -333,6 +357,9 @@ func rpolStmtLeafYangToDb(inParams XfmrParams, r *rpolStmtLeafReq) (map[string]m
 		return res, err
 	}
 	set, clear := niBgpSplitClearFlds(fields)
+	if err := rpolMatchTagSetErr(inParams, set[rpolMatchTagFld]); err != nil {
+		return res, err
+	}
 	if r.leaf != "" && len(set) == 0 {
 		return res, tlerr.InvalidArgsError{Format: "routing-policy statement " + r.node + " " + r.leaf + " is missing in request payload"}
 	}
@@ -359,11 +386,18 @@ func rpolStmtLeavesToYang(stmtObj reflect.Value, r *rpolStmtLeafReq, entry db.Va
 	for _, c := range r.cfgContainers() {
 		target := strings.TrimSuffix(c, "config") + cfgSide
 		for leaf, fld := range rpolStmtLeafFlds[c] {
+			if cfgSide == "state" {
+				// bgpmon publishes a list field without the leaf-list marker.
+				fld = strings.TrimSuffix(fld, "@")
+			}
 			if fld == "" || (r.leaf != "" && r.leaf != leaf) || strings.TrimSpace(entry.Field[fld]) == "" {
 				continue
 			}
 			rpolStmtLeafFromDb(leaf, ocFieldByPath(ocWalkPath(stmtObj, target, true), leaf), entry.Field[fld])
 		}
+	}
+	if strings.HasPrefix(r.node, rpolSetTagNode) {
+		rpolSetTagToYang(stmtObj, r, entry, cfgSide)
 	}
 	if !strings.HasPrefix(r.node, rpolSetExtCommNode) {
 		return
@@ -462,6 +496,9 @@ func rpolStmtLeafSetUris(policyName, stmtName string, stmtObj reflect.Value) []s
 	if sec := ocWalkPath(stmtObj, rpolSetExtCommNode, false); sec.IsValid() && !sec.Elem().IsZero() {
 		uris = append(uris, rpolStmtUriPrefix(policyName, stmtName)+"/"+rpolSetExtCommNode)
 	}
+	if st := ocWalkPath(stmtObj, rpolSetTagNode, false); st.IsValid() && !st.Elem().IsZero() {
+		uris = append(uris, rpolStmtUriPrefix(policyName, stmtName)+"/"+rpolSetTagNode)
+	}
 	return uris
 }
 
@@ -491,7 +528,76 @@ func rpolStmtLeafGetUris(policyName, stmtName string, entry db.Value) []string {
 			break
 		}
 	}
+	if strings.TrimSpace(entry.Field[rpolSetTagFld]) != "" {
+		uris = append(uris, rpolStmtUriPrefix(policyName, stmtName)+"/"+rpolSetTagNode)
+	}
 	return uris
+}
+
+// rpolSetTagValue maps set-tag onto ROUTE_MAP set_tag, which holds one tag
+// value: the INLINE mode with one numeric tag.
+func rpolSetTagValue(st *ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_SetTag) (string, error) {
+	const pfx = "routing-policy statement actions set-tag"
+	if st == nil {
+		return "", nil
+	}
+	if (st.Config != nil && st.Config.Mode == ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_SetTag_Config_Mode_REFERENCE) ||
+		(st.Reference != nil && st.Reference.Config != nil && st.Reference.Config.TagSet != nil) {
+		return "", tlerr.NotSupportedError{Format: pfx + " supports the INLINE mode only"}
+	}
+	if st.Inline == nil || st.Inline.Config == nil || len(st.Inline.Config.Tag) == 0 {
+		return "", nil
+	}
+	if len(st.Inline.Config.Tag) > 1 {
+		return "", tlerr.NotSupportedError{Format: pfx + " inline holds one tag; a route-map entry sets one"}
+	}
+	t, ok := st.Inline.Config.Tag[0].(*ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_SetTag_Inline_Config_Tag_Union_Uint32)
+	if !ok {
+		return "", tlerr.NotSupportedError{Format: pfx + " inline tag supports a decimal value only"}
+	}
+	return fmt.Sprintf("%d", t.Uint32), nil
+}
+
+// rpolSetTagToYang fills set-tag from a ROUTE_MAP or an applied row.
+func rpolSetTagToYang(stmtObj reflect.Value, r *rpolStmtLeafReq, entry db.Value, cfgSide string) {
+	raw := strings.TrimSpace(entry.Field[rpolSetTagFld])
+	if raw == "" {
+		return
+	}
+	var tag uint32
+	if _, err := fmt.Sscanf(raw, "%d", &tag); err != nil {
+		return
+	}
+	node := strings.TrimPrefix(strings.TrimPrefix(r.node, rpolSetTagNode), "/")
+	st := ocWalkPath(stmtObj, rpolSetTagNode, true)
+	if (node == "" || node == cfgSide) && (r.leaf == "" || r.leaf == "mode") {
+		ocFieldByPath(ocWalkPath(st, cfgSide, true), "mode").Set(reflect.ValueOf(
+			ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_SetTag_Config_Mode_INLINE))
+	}
+	if node == "" || strings.HasPrefix("inline/"+cfgSide, node) {
+		list := ocFieldByPath(ocWalkPath(st, "inline/"+cfgSide, true), "tag")
+		var u reflect.Value
+		if cfgSide == "state" {
+			u = reflect.ValueOf(&ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_SetTag_Inline_State_Tag_Union_Uint32{Uint32: tag})
+		} else {
+			u = reflect.ValueOf(&ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_SetTag_Inline_Config_Tag_Union_Uint32{Uint32: tag})
+		}
+		list.Set(reflect.Append(list, u))
+	}
+}
+
+// rpolMatchTagSetErr refuses a match-tag-set naming a TAG_SET that holds more
+// than one tag: FRR matches one tag per route-map entry.
+func rpolMatchTagSetErr(inParams XfmrParams, tagSet string) error {
+	tagSet = strings.TrimSpace(tagSet)
+	if tagSet == "" || strings.Trim(tagSet, "0123456789") == "" {
+		return nil
+	}
+	entry := niBgpCfgDbEntry(inParams, rpolTagSetTbl, tagSet)
+	if n := len(strings.Split(entry.Field[rpolTagSetValueFld], ",")); strings.TrimSpace(entry.Field[rpolTagSetValueFld]) != "" && n > 1 {
+		return tlerr.InvalidArgsError{Format: fmt.Sprintf("tag-set %s holds %d tags; a route-map entry matches one tag", tagSet, n)}
+	}
+	return nil
 }
 
 // AS path sets: AS_PATH_SET|<name> holding the members. frrcfgd renders every
@@ -690,6 +796,9 @@ func init() {
 	}
 	for _, p := range []string{"config/method", "config/options", "inline/config/communities", "reference/config/ext-community-set-refs", "reference/config/ext-community-set-ref"} {
 		rpolMappedPayloadLeaves["policy-definitions/policy-definition/statements/statement/"+rpolSetExtCommNode+"/"+p] = true
+	}
+	for _, p := range []string{"config/mode", "inline/config/tag"} {
+		rpolMappedPayloadLeaves["policy-definitions/policy-definition/statements/statement/"+rpolSetTagNode+"/"+p] = true
 	}
 	for _, p := range []string{"as-path-set-name", "config/as-path-set-name", "config/as-path-set-member"} {
 		rpolMappedPayloadLeaves["defined-sets/bgp-defined-sets/as-path-sets/as-path-set/"+p] = true
