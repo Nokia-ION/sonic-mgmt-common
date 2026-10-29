@@ -129,6 +129,8 @@ type niStaticRouteReqInfo struct {
 	index          string
 	targetLeaf     string
 	targetPathKind string
+	// Below a next-hop: interface-ref or enable-bfd, and config or state.
+	subNode, subSide string
 }
 
 func init() {
@@ -208,6 +210,9 @@ func parseNiStaticRouteRequestUri(uri string) (*niStaticRouteReqInfo, error) {
 }
 
 func matchNiStaticRouteRequestUri(uri string) (*niStaticRouteReqInfo, error) {
+	if reqInfo := matchNiStaticRouteNhSubReq(uri); reqInfo != nil {
+		return reqInfo, nil
+	}
 	if m := niStaticRouteNhStateReqUriRe.FindStringSubmatch(uri); len(m) >= 5 {
 		leaf := ""
 		if len(m) >= 6 {
@@ -387,6 +392,7 @@ var niStaticRouteNhFieldOrder = []string{
 	niStaticRouteDistanceFld,
 	niStaticRouteAdvertiseFld,
 	niStaticRouteTagFld,
+	niStaticRouteBfdFld,
 }
 
 // The padding of a next-hop that leaves an attribute unset is the default the
@@ -398,6 +404,7 @@ var niStaticRouteNhFieldDefault = map[string]string{
 	niStaticRouteNexthopVrfFld: "default",
 	niStaticRouteDistanceFld:   "0",
 	niStaticRouteAdvertiseFld:  "false",
+	niStaticRouteBfdFld:        "false",
 }
 
 // niStaticRouteIsIpv6Prefix reports the address family of a validated prefix.
@@ -1426,6 +1433,9 @@ func buildNiStaticRouteHierResMap(cfgDb *db.DB, s *ygot.GoStruct, niName, protoN
 					}
 					nh[niStaticRouteDistanceFld] = distance
 				}
+				if err := niStaticRouteNhSubFields(nhObj, index, nh); err != nil {
+					return res, err
+				}
 				entries = niStaticRouteUpsertNextHop(entries, index, nh)
 				changed = true
 			}
@@ -1787,6 +1797,7 @@ func populateNiStaticRouteNextHopsToYang(ygRoot *ygot.GoStruct, niName, protoNam
 			// next-hop has.
 			nhObj.Config.Preference = nil
 		}
+		niStaticRouteNhSubToYang(nhObj, e, "config")
 	}
 	return nil
 }
@@ -1818,6 +1829,7 @@ func populateNiStaticRouteNextHopsStateToYang(ygRoot *ygot.GoStruct, niName, pro
 		} else {
 			nhObj.State.Preference = nil
 		}
+		niStaticRouteNhSubToYang(nhObj, e, "state")
 		if nhObj.Config != nil && nhObj.Config.Index == nil && nhObj.Config.NextHop == nil && nhObj.Config.Preference == nil {
 			nhObj.Config = nil
 		}
@@ -1863,6 +1875,8 @@ var YangToDb_ni_static_route_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPa
 				Format: "DELETE is not supported at the next-hops container; delete one next-hop or the static route instead",
 				Path:   inParams.requestUri,
 			}
+		case niStaticRouteTargetNhSub:
+			return niStaticRouteNhSubDelete(inParams, reqInfo)
 		case niStaticRouteTargetNextHopInst, niStaticRouteTargetNextHopCfg:
 			if reqInfo.targetLeaf == niStaticRoutePreferenceLeaf {
 				// Only the preference, which is one element of the distance
@@ -1934,6 +1948,11 @@ var YangToDb_ni_static_route_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPa
 		return makeNiStaticRouteResMap(reqInfo.niName, reqInfo.prefix, fields), nil
 	case niStaticRouteTargetNextHopInst, niStaticRouteTargetNextHopCfg:
 		return niStaticRouteSetNextHop(inParams, reqInfo)
+	case niStaticRouteTargetNhSub:
+		if reqInfo.subSide == "state" {
+			return res, tlerr.NotSupportedError{Format: "static route next-hop state is read-only", Path: inParams.requestUri}
+		}
+		return niStaticRouteSetNextHop(inParams, reqInfo)
 	}
 	return res, tlerr.NotSupportedError{Format: "unsupported path under the network-instance STATIC protocol instance", Path: inParams.requestUri}
 }
@@ -1981,6 +2000,9 @@ func niStaticRouteSetNextHop(inParams XfmrParams, reqInfo *niStaticRouteReqInfo)
 	}
 	if hasPreference {
 		nh[niStaticRouteDistanceFld] = distance
+	}
+	if err := niStaticRouteNhSubFields(getNiStaticRouteNextHopObj(wrappedRoot, reqInfo.niName, reqInfo.protoName, reqInfo.prefix, reqInfo.index, false), reqInfo.index, nh); err != nil {
+		return res, err
 	}
 	existing := niStaticRouteEntryOrEmpty(inParams.dbs[db.ConfigDB], reqInfo.niName, reqInfo.prefix)
 	entries := niStaticRouteUpsertNextHop(niStaticRouteDecodeNextHops(existing), reqInfo.index, nh)
@@ -2149,6 +2171,8 @@ var DbToYang_ni_static_route_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrPa
 			}
 		}
 		return nil
+	case niStaticRouteTargetNhSub:
+		return niStaticRouteNhSubDbToYang(inParams, reqInfo)
 	case niStaticRouteTargetNextHopsRoot, niStaticRouteTargetNextHopInst, niStaticRouteTargetNextHopCfg:
 		entry, err := niStaticRouteEntryFromDb(cfgDb, reqInfo.niName, reqInfo.prefix)
 		if err != nil {
