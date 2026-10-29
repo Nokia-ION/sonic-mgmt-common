@@ -757,7 +757,7 @@ func Test_openconfig_network_instance_static_route_next_hop_merge(t *testing.T) 
 	expectedGetJSON := `{"openconfig-network-instance:next-hops":{"next-hop":[` +
 		`{"config":{"index":"10.1.1.1","next-hop":"10.1.1.1"},"index":"10.1.1.1"},` +
 		`{"config":{"index":"LOCAL_LINK+Ethernet4","next-hop":"openconfig-local-routing:LOCAL_LINK"},` +
-		`"index":"LOCAL_LINK+Ethernet4"}]}}`
+		`"index":"LOCAL_LINK+Ethernet4","interface-ref":{"config":{"interface":"Ethernet4"}}}]}}`
 	t.Run("GET merged static route next-hops",
 		processGetRequest(niStaticRouteProtoUrl+"/static-routes/static[prefix=10.50.0.0/16]/next-hops", nil, expectedGetJSON, false))
 	time.Sleep(1 * time.Second)
@@ -1394,7 +1394,7 @@ func Test_openconfig_network_instance_static_route_keyed_aggregate_state(t *test
 	expectedGetJSON := `{"openconfig-network-instance:static":[` +
 		`{"config":{"prefix":"10.2.0.0/24","set-tag":22},"next-hops":{"next-hop":[` +
 		`{"config":{"index":"10.2.2.2","next-hop":"10.2.2.2"},"index":"10.2.2.2"},` +
-		`{"index":"10.2.2.2+Ethernet0","state":{"index":"10.2.2.2+Ethernet0","next-hop":"10.2.2.2","preference":200}}]},` +
+		`{"index":"10.2.2.2+Ethernet0","interface-ref":{"state":{"interface":"Ethernet0"}},"state":{"index":"10.2.2.2+Ethernet0","next-hop":"10.2.2.2","preference":200}}]},` +
 		`"prefix":"10.2.0.0/24","state":{"prefix":"10.2.0.0/24","set-tag":22}}]}`
 
 	t.Run("GET keyed static route merges route and next-hop state",
@@ -1471,4 +1471,59 @@ func Test_openconfig_network_instance_static_route_state_wildcard(t *testing.T) 
 	time.Sleep(1 * time.Second)
 
 	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+// A next-hop's interface-ref names the interface its index carries, and
+// enable-bfd is its element of the bfd list, on IP next-hops only.
+func Test_openconfig_network_instance_static_route_next_hop_interface_ref_and_bfd(t *testing.T) {
+	cleanupTbl := map[string]interface{}{"STATIC_ROUTE": map[string]interface{}{"default|172.16.7.0/24": ""}}
+	appliedTbl := map[string]interface{}{"STATIC_ROUTE_APPLIED": map[string]interface{}{"default|172.16.7.0/24": ""}}
+	unloadDB(db.ConfigDB, cleanupTbl)
+	unloadDB(db.StateDB, appliedTbl)
+	time.Sleep(1 * time.Second)
+
+	rtUrl := niStaticRouteProtoUrl + "/static-routes/static[prefix=172.16.7.0/24]/next-hops"
+	nhUrl := rtUrl + "/next-hop[index=10.1.1.1+Ethernet120]"
+	t.Run("PATCH next-hop with interface-ref and enable-bfd", processSetRequest(rtUrl,
+		`{"next-hop":[{"index":"10.1.1.1+Ethernet120","config":{"index":"10.1.1.1+Ethernet120","next-hop":"10.1.1.1"},`+
+			`"interface-ref":{"config":{"interface":"Ethernet120"}},"enable-bfd":{"config":{"enabled":true}}}]}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("PATCH subinterface next-hop", processSetRequest(rtUrl+"/next-hop[index=10.1.1.2+Ethernet120.10]/interface-ref/config",
+		`{"interface":"Ethernet120","subinterface":10}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify STATIC_ROUTE", verifyDbResult(rclient, "STATIC_ROUTE|default|172.16.7.0/24", map[string]interface{}{"STATIC_ROUTE": map[string]interface{}{
+		"default|172.16.7.0/24": map[string]interface{}{"nexthop": "10.1.1.1,10.1.1.2", "ifname": "Ethernet120,Ethernet120.10", "bfd": "true,false"}}}, false))
+	time.Sleep(1 * time.Second)
+
+	for _, c := range []struct{ name, url, want string }{
+		{"interface-ref", nhUrl + "/interface-ref", `{"openconfig-network-instance:interface-ref":{"config":{"interface":"Ethernet120"}}}`},
+		{"enable-bfd", nhUrl + "/enable-bfd", `{"openconfig-network-instance:enable-bfd":{"config":{"enabled":true},"state":{"enabled":true}}}`},
+		{"subinterface", rtUrl + "/next-hop[index=10.1.1.2+Ethernet120.10]/interface-ref/config/subinterface", `{"openconfig-network-instance:subinterface":10}`},
+	} {
+		t.Run("GET "+c.name, processGetRequest(c.url, nil, c.want, false))
+		time.Sleep(1 * time.Second)
+	}
+
+	t.Run("PATCH interface-ref naming another interface is refused", processSetRequest(nhUrl+"/interface-ref/config", `{"interface":"Ethernet0"}`, "PATCH", true,
+		tlerr.InvalidArgsError{Format: `static route next-hop interface-ref names "Ethernet0"; its index "10.1.1.1+Ethernet120" names "Ethernet120"`}))
+	time.Sleep(1 * time.Second)
+	t.Run("PATCH enable-bfd on a LOCAL_LINK next-hop is refused", processSetRequest(rtUrl+"/next-hop[index=LOCAL_LINK+Ethernet120]/enable-bfd/config",
+		`{"enabled":true}`, "PATCH", true))
+	time.Sleep(1 * time.Second)
+	t.Run("DELETE interface-ref is refused", processDeleteRequest(nhUrl+"/interface-ref", true))
+	time.Sleep(1 * time.Second)
+
+	t.Run("DELETE enable-bfd", processDeleteRequest(nhUrl+"/enable-bfd", false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET enable-bfd config enabled after the delete", processGetRequest(nhUrl+"/enable-bfd/config/enabled", nil, `{"openconfig-network-instance:enabled":false}`, false))
+	time.Sleep(1 * time.Second)
+
+	loadDB(db.StateDB, map[string]interface{}{"STATIC_ROUTE_APPLIED": map[string]interface{}{"default|172.16.7.0/24": map[string]interface{}{
+		"nexthop": "10.1.1.1", "ifname": "Ethernet120"}}})
+	time.Sleep(1 * time.Second)
+	t.Run("GET interface-ref state", processGetRequest(nhUrl+"/interface-ref/state", nil, `{"openconfig-network-instance:state":{"interface":"Ethernet120"}}`, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+	unloadDB(db.StateDB, appliedTbl)
 }
