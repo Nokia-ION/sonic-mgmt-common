@@ -689,19 +689,10 @@ module openconfig-network-instance-annot {
       }
     }
 
-    // The applied transport addresses come from the same row, so the transport
-    // subtree is annotated onto the same transformer. Without an annotation
-    // here the nearest annotated ancestor is the neighbor list, whose dispatch
-    // maps CONFIG_DB only and would report nothing for these leaves.
-    // transport/config is annotated separately above so SET/GET/DELETE of the
-    // configured source address and passive-mode do not land here.
-    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:bgp/oc-netinst:neighbors/oc-netinst:neighbor/oc-netinst:transport {
-      deviate add {
-          sonic-ext:db-name "STATE_DB";
-          sonic-ext:subtree-transformer "ni_bgp_nbr_state_xfmr";
-      }
-    }
-
+    // The applied transport addresses come from the same row, so transport/state
+    // is annotated onto the same transformer. The transport container itself is
+    // left to the neighbor list's dispatch, as timers is, which serves its
+    // config and replays its state.
     deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:protocols/oc-netinst:protocol/oc-netinst:bgp/oc-netinst:neighbors/oc-netinst:neighbor/oc-netinst:transport/oc-netinst:state {
       deviate add {
           sonic-ext:db-name "STATE_DB";

@@ -911,6 +911,39 @@ func Test_openconfig_network_instance_bgp_neighbor_transport_config_passive_mode
 	unloadDB(db.ConfigDB, cleanupTbl)
 }
 
+// The transport container holds the config and the state: a write of it maps
+// its config, and a read reports both.
+func Test_openconfig_network_instance_bgp_neighbor_transport_container(t *testing.T) {
+	preReqMap := map[string]interface{}{
+		"BGP_GLOBALS":  map[string]interface{}{"default": map[string]interface{}{"local_asn": "65100"}},
+		"BGP_NEIGHBOR": map[string]interface{}{"default|20.0.0.1": map[string]interface{}{"asn": "65200"}},
+	}
+	cleanupTbl := map[string]interface{}{
+		"BGP_NEIGHBOR": map[string]interface{}{"default|20.0.0.1": ""},
+		"BGP_GLOBALS":  map[string]interface{}{"default": ""},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	url := "/openconfig-network-instance:network-instances/network-instance[name=default]/protocols/protocol[identifier=BGP][name=bgp]/bgp/neighbors/neighbor[neighbor-address=20.0.0.1]/transport"
+	t.Run("PATCH network-instance BGP neighbor transport container",
+		processSetRequest(url, `{"config":{"local-address":"11.0.0.154","passive-mode":true,"tcp-mss":1400}}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify the transport container write",
+		verifyDbResult(rclient, "BGP_NEIGHBOR|default|20.0.0.1", map[string]interface{}{
+			"BGP_NEIGHBOR": map[string]interface{}{"default|20.0.0.1": map[string]interface{}{
+				"asn": "65200", "local_addr": "11.0.0.154", "passive_mode": "true", "tcp_mss": "1400"}},
+		}, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET network-instance BGP neighbor transport container",
+		processGetRequest(url, nil, `{"openconfig-network-instance:transport":{"config":{"local-address":"11.0.0.154","passive-mode":true,"tcp-mss":1400},`+
+			`"state":{"passive-mode":true}}}`, false))
+	time.Sleep(1 * time.Second)
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
 func Test_openconfig_network_instance_bgp_neighbor_transport_config_container(t *testing.T) {
 	var url, urlInputBodyJSON string
 

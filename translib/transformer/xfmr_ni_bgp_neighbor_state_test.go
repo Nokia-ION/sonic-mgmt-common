@@ -249,9 +249,8 @@ func Test_openconfig_network_instance_bgp_neighbor_applied_transport_state(t *te
 		processGetRequest(niBgpNbrTransportUrl+"/state", nil, expectedGetJSON, false))
 	time.Sleep(1 * time.Second)
 
-	// transport carries an annotation of its own, so a request anchored on the
-	// container is served here. Without it the nearest annotated ancestor is the
-	// neighbor list, whose dispatch maps CONFIG_DB and would report nothing.
+	// A request anchored on the transport container reaches the neighbor list's
+	// dispatch, which replays the applied transport state.
 	expectedGetJSON = `{"openconfig-network-instance:transport":{"state":` +
 		`{"local-address":"11.0.0.154","local-port":48810,"remote-address":"11.0.0.155","remote-port":179}}}`
 	t.Run("GET BGP neighbor transport container",
