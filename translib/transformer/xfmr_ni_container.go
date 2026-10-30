@@ -40,7 +40,7 @@ import (
 //
 // A GET here answers with everything this module maps under a network
 // instance: the BGP protocol instance, the static routes, the local
-// aggregates, the table connections and the AFTs. A SET is served by the handler that owns each
+// aggregates, the table connections, the interfaces and the AFTs. A SET is served by the handler that owns each
 // subtree, which translib calls for its own node; this level refuses a payload
 // naming anything with no mapping. A DELETE is still refused.
 const (
@@ -299,7 +299,6 @@ func niContainerCheckPayloadShape(niObj *ocbinds.OpenconfigNetworkInstance_Netwo
 		{"encapsulation", niObj.Encapsulation != nil},
 		{"fdb", niObj.Fdb != nil},
 		{"inter-instance-policies", niObj.InterInstancePolicies != nil},
-		{"interfaces", niObj.Interfaces != nil},
 		{"mpls", niObj.Mpls != nil},
 		{"policy-forwarding", niObj.PolicyForwarding != nil},
 		{"route-limits", niObj.RouteLimits != nil},
@@ -535,6 +534,9 @@ func niContainerNamesFromDb(cfgDb *db.DB) []string {
 			}
 		}
 	}
+	for _, name := range niIntfInstanceNames(cfgDb) {
+		names[name] = true
+	}
 	// A static route of the default instance is keyed by its prefix alone, so
 	// only a two-part key names an instance of its own.
 	if keys, err := cfgDb.GetKeys(&db.TableSpec{Name: niStaticRouteTbl}); err == nil {
@@ -582,12 +584,18 @@ func populateNiContainerProtocolsFromDb(inParams XfmrParams, ygRoot *ygot.GoStru
 }
 
 // populateNiContainerNonProtocolFromDb fills what a network instance holds
-// beside its protocols: the table connections, and the AFTs of the instance
-// that has them.
+// beside its protocols: the table connections, the interfaces bound to it, and
+// the AFTs of the instance that has them.
 func populateNiContainerNonProtocolFromDb(inParams XfmrParams, ygRoot *ygot.GoStruct, cfgDb *db.DB, niName string) error {
 	if rows, err := niTableConnDbRowsForNi(cfgDb, niName); (err == nil && len(rows) > 0) || len(niLocalAggrRows(cfgDb, niName, "")) > 0 {
 		uri := niContainerNiUri(niName) + "/table-connections"
 		if err := niContainerReplay(inParams, ygRoot, uri, DbToYang_ni_table_conn_cfg_xfmr); err != nil {
+			return err
+		}
+	}
+	if len(niIntfRows(cfgDb, niName)) > 0 {
+		uri := niContainerNiUri(niName) + "/interfaces"
+		if err := niContainerReplay(inParams, ygRoot, uri, DbToYang_ni_intf_xfmr); err != nil {
 			return err
 		}
 	}
@@ -739,7 +747,9 @@ func niContainerDeleteInstance(inParams XfmrParams, cfgDb *db.DB, niName, kind s
 	}
 
 	// The AFTs report the forwarding state fpmsyncd publishes, so there is
-	// nothing under them for a delete to remove.
+	// nothing under them for a delete to remove. The interfaces stay bound:
+	// they are removed through the interfaces list, so a DELETE of the
+	// instance does not take the L3 configuration of its interfaces with it.
 	return nil
 }
 
