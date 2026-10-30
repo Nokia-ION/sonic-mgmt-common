@@ -204,6 +204,7 @@ var niBgpGlobalSubscVirtual = map[string]bool{
 	"/bgp/neighbors":                          true,
 	"/bgp/neighbors/neighbor":                 true,
 	"/bgp/neighbors/neighbor/timers":          true,
+	"/bgp/neighbors/neighbor/transport":       true,
 	"/bgp/neighbors/neighbor/as-path-options": true,
 	"/bgp/peer-groups":                        true,
 	"/bgp/peer-groups/peer-group":             true,

@@ -366,6 +366,8 @@ var niBgpMappedPayloadLeaves = map[string]bool{
 	"neighbors/neighbor/timers/config/connect-retry":                                          true,
 	"neighbors/neighbor/timers/config/hold-time":                                              true,
 	"neighbors/neighbor/timers/config/keepalive-interval":                                     true,
+	"neighbors/neighbor/transport/config/local-address":                                       true,
+	"neighbors/neighbor/transport/config/passive-mode":                                        true,
 	"neighbors/neighbor/as-path-options/config/allow-own-as":                                  true,
 	"neighbors/neighbor/afi-safis/afi-safi/afi-safi-name":                                     true,
 	"neighbors/neighbor/afi-safis/afi-safi/config/afi-safi-name":                              true,
@@ -1269,6 +1271,14 @@ func buildNiBgpHierResMap(s *ygot.GoStruct, niName, protoName string) (map[strin
 					nbrFields[niBgpNbrKeepaliveFld] = strconv.FormatUint(uint64(*nbrObj.Timers.Config.KeepaliveInterval), 10)
 				}
 			}
+			if nbrObj.Transport != nil && nbrObj.Transport.Config != nil {
+				if nbrObj.Transport.Config.LocalAddress != nil && strings.TrimSpace(*nbrObj.Transport.Config.LocalAddress) != "" {
+					nbrFields[niBgpNbrLocalAddrFld] = strings.TrimSpace(*nbrObj.Transport.Config.LocalAddress)
+				}
+				if nbrObj.Transport.Config.PassiveMode != nil {
+					nbrFields[niBgpNbrPassiveModeFld] = strconv.FormatBool(*nbrObj.Transport.Config.PassiveMode)
+				}
+			}
 			leafFields, _ := niBgpPeerFields(niBgpNbrKind, reflect.ValueOf(nbrObj))
 			for f, v := range leafFields {
 				nbrFields[f] = v
@@ -1572,6 +1582,14 @@ func populateNiBgpHierToYangFromDb(cfgDb *db.DB, ygRoot *ygot.GoStruct, niName, 
 						keep := uint16(keepVal)
 						tmCfg.KeepaliveInterval = &keep
 					}
+				}
+			}
+			if trCfg := getNiBgpNbrTransportCfgObj(ygRoot, niName, protoName, nbrAddr, true); trCfg != nil {
+				if addr := strings.TrimSpace(nbrEntry.Field[niBgpNbrLocalAddrFld]); addr != "" {
+					trCfg.LocalAddress = &addr
+				}
+				if passive, convErr := strconv.ParseBool(strings.TrimSpace(nbrEntry.Field[niBgpNbrPassiveModeFld])); convErr == nil {
+					trCfg.PassiveMode = &passive
 				}
 			}
 			if err := niBgpPeerLeavesToYang(niBgpNbrKind, ygRoot, niName, protoName, nbrAddr, "", "", nbrEntry); err != nil {
