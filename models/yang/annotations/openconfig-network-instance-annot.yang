@@ -1639,6 +1639,224 @@ module openconfig-network-instance-annot {
       }
     }
 
+    // The FDB of the default network instance is the MAC table the ASIC holds,
+    // the ASIC_DB FDB entries, their interface named through the COUNTERS_DB
+    // name maps. SONiC has no configuration for the FDB, so it is read-only.
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:fdb {
+      deviate add {
+          sonic-ext:virtual-table "true";
+          sonic-ext:db-name "ASIC_DB";
+          sonic-ext:subtree-transformer "ni_fdb_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:fdb/oc-netinst:config {
+      deviate add {
+          sonic-ext:db-name "ASIC_DB";
+          sonic-ext:subtree-transformer "ni_fdb_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:fdb/oc-netinst:config/oc-netinst:mac-learning {
+      deviate add {
+          sonic-ext:db-name "ASIC_DB";
+          sonic-ext:subtree-transformer "ni_fdb_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:fdb/oc-netinst:config/oc-netinst:mac-aging-time {
+      deviate add {
+          sonic-ext:db-name "ASIC_DB";
+          sonic-ext:subtree-transformer "ni_fdb_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:fdb/oc-netinst:config/oc-netinst:maximum-entries {
+      deviate add {
+          sonic-ext:db-name "ASIC_DB";
+          sonic-ext:subtree-transformer "ni_fdb_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:fdb/oc-netinst:state {
+      deviate add {
+          sonic-ext:db-name "ASIC_DB";
+          sonic-ext:subtree-transformer "ni_fdb_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:fdb/oc-netinst:state/oc-netinst:mac-learning {
+      deviate add {
+          sonic-ext:db-name "ASIC_DB";
+          sonic-ext:subtree-transformer "ni_fdb_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:fdb/oc-netinst:state/oc-netinst:mac-aging-time {
+      deviate add {
+          sonic-ext:db-name "ASIC_DB";
+          sonic-ext:subtree-transformer "ni_fdb_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:fdb/oc-netinst:state/oc-netinst:maximum-entries {
+      deviate add {
+          sonic-ext:db-name "ASIC_DB";
+          sonic-ext:subtree-transformer "ni_fdb_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:fdb/oc-netinst:mac-table {
+      deviate add {
+          sonic-ext:virtual-table "true";
+          sonic-ext:db-name "ASIC_DB";
+          sonic-ext:subtree-transformer "ni_fdb_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:fdb/oc-netinst:mac-table/oc-netinst:entries {
+      deviate add {
+          sonic-ext:virtual-table "true";
+          sonic-ext:db-name "ASIC_DB";
+          sonic-ext:subtree-transformer "ni_fdb_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:fdb/oc-netinst:mac-table/oc-netinst:entries/oc-netinst:entry {
+      deviate add {
+          sonic-ext:virtual-table "true";
+          sonic-ext:db-name "ASIC_DB";
+          sonic-ext:subtree-transformer "ni_fdb_xfmr";
+          sonic-ext:path-transformer "ni_fdb_path_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:fdb/oc-netinst:mac-table/oc-netinst:entries/oc-netinst:entry/oc-netinst:mac-address {
+      deviate add {
+          sonic-ext:db-name "ASIC_DB";
+          sonic-ext:subtree-transformer "ni_fdb_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:fdb/oc-netinst:mac-table/oc-netinst:entries/oc-netinst:entry/oc-netinst:vlan {
+      deviate add {
+          sonic-ext:db-name "ASIC_DB";
+          sonic-ext:subtree-transformer "ni_fdb_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:fdb/oc-netinst:mac-table/oc-netinst:entries/oc-netinst:entry/oc-netinst:config {
+      deviate add {
+          sonic-ext:db-name "ASIC_DB";
+          sonic-ext:subtree-transformer "ni_fdb_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:fdb/oc-netinst:mac-table/oc-netinst:entries/oc-netinst:entry/oc-netinst:config/oc-netinst:mac-address {
+      deviate add {
+          sonic-ext:db-name "ASIC_DB";
+          sonic-ext:subtree-transformer "ni_fdb_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:fdb/oc-netinst:mac-table/oc-netinst:entries/oc-netinst:entry/oc-netinst:config/oc-netinst:vlan {
+      deviate add {
+          sonic-ext:db-name "ASIC_DB";
+          sonic-ext:subtree-transformer "ni_fdb_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:fdb/oc-netinst:mac-table/oc-netinst:entries/oc-netinst:entry/oc-netinst:state {
+      deviate add {
+          sonic-ext:db-name "ASIC_DB";
+          sonic-ext:subtree-transformer "ni_fdb_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:fdb/oc-netinst:mac-table/oc-netinst:entries/oc-netinst:entry/oc-netinst:state/oc-netinst:mac-address {
+      deviate add {
+          sonic-ext:db-name "ASIC_DB";
+          sonic-ext:subtree-transformer "ni_fdb_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:fdb/oc-netinst:mac-table/oc-netinst:entries/oc-netinst:entry/oc-netinst:state/oc-netinst:vlan {
+      deviate add {
+          sonic-ext:db-name "ASIC_DB";
+          sonic-ext:subtree-transformer "ni_fdb_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:fdb/oc-netinst:mac-table/oc-netinst:entries/oc-netinst:entry/oc-netinst:state/oc-netinst:age {
+      deviate add {
+          sonic-ext:db-name "ASIC_DB";
+          sonic-ext:subtree-transformer "ni_fdb_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:fdb/oc-netinst:mac-table/oc-netinst:entries/oc-netinst:entry/oc-netinst:state/oc-netinst:entry-type {
+      deviate add {
+          sonic-ext:db-name "ASIC_DB";
+          sonic-ext:subtree-transformer "ni_fdb_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:fdb/oc-netinst:mac-table/oc-netinst:entries/oc-netinst:entry/oc-netinst:interface {
+      deviate add {
+          sonic-ext:db-name "ASIC_DB";
+          sonic-ext:subtree-transformer "ni_fdb_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:fdb/oc-netinst:mac-table/oc-netinst:entries/oc-netinst:entry/oc-netinst:interface/oc-netinst:interface-ref {
+      deviate add {
+          sonic-ext:db-name "ASIC_DB";
+          sonic-ext:subtree-transformer "ni_fdb_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:fdb/oc-netinst:mac-table/oc-netinst:entries/oc-netinst:entry/oc-netinst:interface/oc-netinst:interface-ref/oc-netinst:config {
+      deviate add {
+          sonic-ext:db-name "ASIC_DB";
+          sonic-ext:subtree-transformer "ni_fdb_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:fdb/oc-netinst:mac-table/oc-netinst:entries/oc-netinst:entry/oc-netinst:interface/oc-netinst:interface-ref/oc-netinst:config/oc-netinst:interface {
+      deviate add {
+          sonic-ext:db-name "ASIC_DB";
+          sonic-ext:subtree-transformer "ni_fdb_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:fdb/oc-netinst:mac-table/oc-netinst:entries/oc-netinst:entry/oc-netinst:interface/oc-netinst:interface-ref/oc-netinst:config/oc-netinst:subinterface {
+      deviate add {
+          sonic-ext:db-name "ASIC_DB";
+          sonic-ext:subtree-transformer "ni_fdb_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:fdb/oc-netinst:mac-table/oc-netinst:entries/oc-netinst:entry/oc-netinst:interface/oc-netinst:interface-ref/oc-netinst:state {
+      deviate add {
+          sonic-ext:db-name "ASIC_DB";
+          sonic-ext:subtree-transformer "ni_fdb_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:fdb/oc-netinst:mac-table/oc-netinst:entries/oc-netinst:entry/oc-netinst:interface/oc-netinst:interface-ref/oc-netinst:state/oc-netinst:interface {
+      deviate add {
+          sonic-ext:db-name "ASIC_DB";
+          sonic-ext:subtree-transformer "ni_fdb_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:fdb/oc-netinst:mac-table/oc-netinst:entries/oc-netinst:entry/oc-netinst:interface/oc-netinst:interface-ref/oc-netinst:state/oc-netinst:subinterface {
+      deviate add {
+          sonic-ext:db-name "ASIC_DB";
+          sonic-ext:subtree-transformer "ni_fdb_xfmr";
+      }
+    }
+
     // The AFT container reports the forwarding state fpmsyncd publishes to
     // APPL_DB. Each list below it is mapped by its own transformer; this one
     // answers a request on the container itself by fanning out to them, since
