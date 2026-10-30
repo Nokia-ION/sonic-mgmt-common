@@ -40,7 +40,7 @@ import (
 //
 // A GET here answers with everything this module maps under a network
 // instance: the BGP protocol instance, the static routes, the local
-// aggregates, the table connections, the interfaces and the AFTs. A SET is served by the handler that owns each
+// aggregates, the table connections, the interfaces, the FDB and the AFTs. A SET is served by the handler that owns each
 // subtree, which translib calls for its own node; this level refuses a payload
 // naming anything with no mapping. A DELETE is still refused.
 const (
@@ -585,7 +585,7 @@ func populateNiContainerProtocolsFromDb(inParams XfmrParams, ygRoot *ygot.GoStru
 
 // populateNiContainerNonProtocolFromDb fills what a network instance holds
 // beside its protocols: the table connections, the interfaces bound to it, and
-// the AFTs of the instance that has them.
+// the FDB and the AFTs of the instance that has them.
 func populateNiContainerNonProtocolFromDb(inParams XfmrParams, ygRoot *ygot.GoStruct, cfgDb *db.DB, niName string) error {
 	if rows, err := niTableConnDbRowsForNi(cfgDb, niName); (err == nil && len(rows) > 0) || len(niLocalAggrRows(cfgDb, niName, "")) > 0 {
 		uri := niContainerNiUri(niName) + "/table-connections"
@@ -601,6 +601,12 @@ func populateNiContainerNonProtocolFromDb(inParams XfmrParams, ygRoot *ygot.GoSt
 	}
 	if err := niTablesToYang(ygRoot, cfgDb, niName, niContainerNiUri(niName)+"/tables"); err != nil {
 		return err
+	}
+	if niFdbServesNi(niName) && inParams.dbs[db.AsicDB] != nil {
+		uri := niContainerNiUri(niName) + "/fdb"
+		if err := niContainerReplay(inParams, ygRoot, uri, DbToYang_ni_fdb_xfmr); err != nil {
+			return err
+		}
 	}
 	if niAftsServesNi(niName) && inParams.dbs[db.ApplDB] != nil {
 		uri := niContainerNiUri(niName) + "/afts"
