@@ -77,6 +77,7 @@ import (
 	set "github.com/Workiva/go-datastructures/set"
 	"github.com/go-redis/redis/v7"
 	log "github.com/golang/glog"
+	"github.com/sonic-net/sonic-swss-common/goext/redisconn"
 )
 
 var CVL_SCHEMA string = "schema/"
@@ -741,6 +742,7 @@ func getRedisOptions(dbName string) *redis.Options {
 	opt.Addr = dbAddr
 	opt.Password = GetDbPassword(dbName)
 	opt.DB = GetDbId(dbName)
+	opt.Dialer = redisconn.WrapDialer(opt.Dialer, opt.DialTimeout, opt.TLSConfig)
 
 	return &opt
 }
