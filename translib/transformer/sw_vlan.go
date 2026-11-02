@@ -1186,6 +1186,9 @@ func deleteVlanIntfAndMembers(inParams *XfmrParams, vlanName *string) error {
 	}
 	subOpMap[db.ConfigDB] = resMap
 	inParams.subOpDataMap[DELETE] = &subOpMap
+	if stpErr := syncStpConfigForVlanMemberResult(inParams, resMap); stpErr != nil {
+		return stpErr
+	}
 	return err
 }
 
@@ -1236,7 +1239,10 @@ var YangToDb_sw_vlans_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (map[
 		if len(vlanMap) != 0 {
 			res_map[VLAN_TN] = vlanMap
 		}
-		return res_map, err
+		if err = syncStpConfigForVlanMemberResult(&inParams, res_map); err != nil {
+			return nil, err
+		}
+		return res_map, nil
 	}
 
 	if intf.Ethernet == nil && intf.Aggregation == nil {
@@ -1326,7 +1332,13 @@ var YangToDb_sw_vlans_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (map[
 	log.Info("YangToDb_sw_vlans_xfmr: inParams.subOpDataMap UPDATE: ", inParams.subOpDataMap[UPDATE])
 	log.Info("YangToDb_sw_vlans_xfmr: inParams.subOpDataMap DELETE: ", inParams.subOpDataMap[DELETE])
 	log.Info("YangToDb_sw_vlans_xfmr: inParams.subOpDataMap REPLACE: ", inParams.subOpDataMap[REPLACE])
-	return res_map, err
+	if err != nil {
+		return nil, err
+	}
+	if err = syncStpConfigForVlanMemberResult(&inParams, res_map); err != nil {
+		return nil, err
+	}
+	return res_map, nil
 }
 
 func fillDBSwitchedVlanInfoForIntf(d *db.DB, ifName *string, vlanMemberMap map[string]map[string]db.Value) error {
