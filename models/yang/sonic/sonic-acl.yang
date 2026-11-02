@@ -52,6 +52,18 @@ module sonic-acl {
 					}
 				}
 
+				leaf oc_set_name {
+					description
+						"OpenConfig acl-set name as configured over gNMI. SONiC
+						ACL_TABLE keys normalize spaces and dashes; this leaf
+						preserves the client-visible set name for read-back.";
+					type string {
+						length 1..255 {
+							error-app-tag oc-set-name-invalid-length;
+						}
+					}
+				}
+
 				leaf stage {
 					type enumeration {
 						enum INGRESS;

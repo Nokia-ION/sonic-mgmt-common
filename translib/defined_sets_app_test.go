@@ -207,6 +207,26 @@ func verifyRuleFields(aclKey, ruleKey string, want map[string]string) func(*test
 	}
 }
 
+func verifyAclTablePorts(aclKey, port string, wantBound bool) func(*testing.T) {
+	return func(t *testing.T) {
+		d := getConfigDb()
+		if d == nil {
+			t.Fatal("Failed to connect to config Db")
+		}
+		defer d.DeleteDB()
+
+		entry, err := d.GetEntry(&db.TableSpec{Name: ACL_TABLE}, db.Key{Comp: []string{aclKey}})
+		if err != nil {
+			t.Fatalf("Failed to read %s|%s; err=%v", ACL_TABLE, aclKey, err)
+		}
+		ports := entry.GetList("ports")
+		found := contains(ports, port)
+		if found != wantBound {
+			t.Errorf("%s ports %v, port %q bound=%v want %v", aclKey, ports, port, found, wantBound)
+		}
+	}
+}
+
 func Test_DefinedSetsApp_PortSetOperations(t *testing.T) {
 	url := portSetsUrl + "[name=DST-PORTS-TEST]"
 
