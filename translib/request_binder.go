@@ -142,6 +142,12 @@ func (binder *requestBinder) unMarshallPayload(workObj *interface{}) error {
 		log.Error(err)
 		return tlerr.TranslibSyntaxValidationError{StatusCode: 400, ErrorStr: err}
 	}
+	if binder.uri != nil {
+		if err := normalizeIcmpv4IdentityPayload(*binder.uri, binder.payload); err != nil {
+			log.Error(err)
+			return tlerr.TranslibSyntaxValidationError{StatusCode: 400, ErrorStr: err}
+		}
+	}
 
 	if log.V(5) {
 		log.Info("Ygot target object:")
