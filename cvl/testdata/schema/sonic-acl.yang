@@ -64,6 +64,16 @@ module sonic-acl {
 					}
 				}
 
+				leaf oc_set_name {
+					description
+						"OpenConfig acl-set name as configured over gNMI.";
+					type string {
+						length 1..255 {
+							error-app-tag oc-set-name-invalid-length;
+						}
+					}
+				}
+
 				leaf stage {
 					type enumeration {
 						enum INGRESS;
