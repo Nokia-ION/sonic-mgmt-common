@@ -54,7 +54,7 @@ const (
 
 	STP_MODE_MST = "mst"
 
-	// Default values aligned with sonic-utilities/config/stp.py MST defaults.
+	// Default values aligned with MST defaults.
 	DEFAULT_BRIDGE_PRIORITY = "32768"
 	DEFAULT_PORT_PRIORITY   = "128"
 	DEFAULT_PATH_COST       = "1"
@@ -153,8 +153,8 @@ func mstInstCfgKey() string {
 }
 
 func mstPortCfgKey(ifName string) string {
-	// CONFIG_DB/CVL key follows YANG list keys (inst_id|ifname). CLI may use
-	// MST_INSTANCE|<id>|<ifname>; stpmgr accepts both formats.
+	// CONFIG_DB/CVL key follows YANG list keys (inst_id|ifname).
+	// MST_INSTANCE|<id>|<ifname> is also accepted by stpmgr.
 	return fmt.Sprintf("%d|%s", RSTP_MSTI_ID, ifName)
 }
 
@@ -318,8 +318,8 @@ func enableRstpGlobal(res map[string]map[string]db.Value) {
 }
 
 // stripStpGlobalYangDefaultsForMst blocks translib from merging YANG schema defaults
-// (e.g. rootguard_timeout) into STP|GLOBAL on MST/RSTP enable. CLI writes only
-// mode=mst; persisting PVST-only defaults breaks config save/reload validation.
+// (e.g. rootguard_timeout) into STP|GLOBAL on MST/RSTP enable. Only mode=mst is
+// written; persisting PVST-only defaults breaks config save/reload validation.
 func stripStpGlobalYangDefaultsForMst(yangDefValMap map[string]map[string]db.Value) {
 	if yangDefValMap == nil {
 		return
@@ -366,10 +366,495 @@ func populateMstPortEntries(cfgDb *db.DB, res map[string]map[string]db.Value) er
 	return nil
 }
 
+// stpVlanMemberPlan is the CONFIG_DB STP row change for an RSTP VLAN member add/delete.
+// Existing STP_PORT and STP_MST_PORT rows are not rewritten.
+type stpVlanMemberPlan struct {
+	createPort map[string]map[string]string
+	createMst  map[string]map[string]string
+	deletePort map[string]struct{}
+	deleteMst  map[string]struct{}
+}
+
+type stpVlanMemberState struct {
+	mode       string
+	current    map[string][]string
+	added      []string
+	deleted    []string
+	stpPorts   map[string]bool
+	mstKeys    []string
+	vlanToInst map[string]string
+}
+
+func vlanIDText(vlanName string) string {
+	if strings.HasPrefix(vlanName, "Vlan") {
+		return strings.TrimPrefix(vlanName, "Vlan")
+	}
+	return vlanName
+}
+
+func expandVlanListTokens(raw string) []string {
+	var ids []string
+	for _, token := range strings.Split(raw, ",") {
+		token = strings.TrimSpace(token)
+		if token == "" {
+			continue
+		}
+		rangeSep := ""
+		switch {
+		case strings.Contains(token, "-"):
+			rangeSep = "-"
+		case strings.Contains(token, ".."):
+			rangeSep = ".."
+		}
+		if rangeSep != "" {
+			bounds := strings.SplitN(token, rangeSep, 2)
+			start, errStart := strconv.Atoi(bounds[0])
+			end, errEnd := strconv.Atoi(bounds[1])
+			if errStart == nil && errEnd == nil && start <= end {
+				for vid := start; vid <= end; vid++ {
+					ids = append(ids, strconv.Itoa(vid))
+				}
+				continue
+			}
+		}
+		ids = append(ids, token)
+	}
+	return ids
+}
+
+func vlanIDsFromMstEntry(entry db.Value) []string {
+	var raw []string
+	if list := entry.GetList("vlan"); len(list) > 0 {
+		raw = append(raw, list...)
+	} else if value := entry.Get("vlan"); value != "" {
+		raw = append(raw, value)
+	}
+	if value := entry.Get("vlan_list"); value != "" {
+		raw = append(raw, value)
+	}
+	var ids []string
+	for _, item := range raw {
+		ids = append(ids, expandVlanListTokens(item)...)
+	}
+	return ids
+}
+
+func splitVlanMemberKey(key string) (vlanName, ifName string, ok bool) {
+	parts := strings.SplitN(key, "|", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
+}
+
+func dbKeyText(key db.Key) string {
+	if len(key.Comp) == 0 {
+		return ""
+	}
+	if len(key.Comp) == 1 {
+		return key.Comp[0]
+	}
+	return strings.Join(key.Comp, "|")
+}
+
+func splitMstPortKey(key string) (inst, ifName string, ok bool) {
+	text := key
+	if strings.HasPrefix(text, "MST_INSTANCE|") {
+		text = strings.TrimPrefix(text, "MST_INSTANCE|")
+	}
+	parts := strings.SplitN(text, "|", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
+}
+
+func mstPortInstCfgKey(inst, ifName string) string {
+	return inst + "|" + ifName
+}
+
+func mstStpPortMemberFields() map[string]string {
+	fields := defaultStpPortBootstrapFields()
+	fields["link_type"] = DEFAULT_LINK_TYPE
+	return fields
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
+}
+
+func mstInstanceForVlan(vlanName string, vlanToInst map[string]string) string {
+	if inst, ok := vlanToInst[vlanIDText(vlanName)]; ok && inst != "" && inst != "0" {
+		return inst
+	}
+	return "0"
+}
+
+func planStpVlanMemberChange(state stpVlanMemberState) stpVlanMemberPlan {
+	plan := stpVlanMemberPlan{
+		createPort: map[string]map[string]string{},
+		createMst:  map[string]map[string]string{},
+		deletePort: map[string]struct{}{},
+		deleteMst:  map[string]struct{}{},
+	}
+	if state.mode != STP_MODE_MST {
+		return plan
+	}
+
+	addedByIf := map[string][]string{}
+	deletedByIf := map[string][]string{}
+	for _, key := range state.added {
+		vlanName, ifName, ok := splitVlanMemberKey(key)
+		if !ok {
+			continue
+		}
+		addedByIf[ifName] = append(addedByIf[ifName], vlanName)
+	}
+	for _, key := range state.deleted {
+		vlanName, ifName, ok := splitVlanMemberKey(key)
+		if !ok {
+			continue
+		}
+		deletedByIf[ifName] = append(deletedByIf[ifName], vlanName)
+	}
+
+	ifaces := map[string]struct{}{}
+	for ifName := range addedByIf {
+		ifaces[ifName] = struct{}{}
+	}
+	for ifName := range deletedByIf {
+		ifaces[ifName] = struct{}{}
+	}
+
+	for ifName := range ifaces {
+		remaining := map[string]struct{}{}
+		for _, vlanName := range state.current[ifName] {
+			remaining[vlanName] = struct{}{}
+		}
+		for _, vlanName := range deletedByIf[ifName] {
+			delete(remaining, vlanName)
+		}
+		for _, vlanName := range addedByIf[ifName] {
+			remaining[vlanName] = struct{}{}
+		}
+
+		if len(remaining) == 0 && state.stpPorts[ifName] {
+			plan.deletePort[ifName] = struct{}{}
+		}
+		if len(addedByIf[ifName]) > 0 && len(remaining) > 0 && !state.stpPorts[ifName] {
+			plan.createPort[ifName] = mstStpPortMemberFields()
+		}
+
+		keep := map[string]struct{}{}
+		if len(remaining) > 0 {
+			keep["0"] = struct{}{}
+			for vlanName := range remaining {
+				keep[mstInstanceForVlan(vlanName, state.vlanToInst)] = struct{}{}
+			}
+		}
+		present := map[string]struct{}{}
+		for _, key := range state.mstKeys {
+			inst, portName, ok := splitMstPortKey(key)
+			if !ok || portName != ifName {
+				continue
+			}
+			present[inst] = struct{}{}
+			if _, ok := keep[inst]; !ok {
+				plan.deleteMst[key] = struct{}{}
+			}
+		}
+		if len(addedByIf[ifName]) == 0 || len(remaining) == 0 {
+			continue
+		}
+		createInst := map[string]struct{}{"0": {}}
+		for _, vlanName := range addedByIf[ifName] {
+			createInst[mstInstanceForVlan(vlanName, state.vlanToInst)] = struct{}{}
+		}
+		for inst := range createInst {
+			if _, ok := present[inst]; ok {
+				continue
+			}
+			if _, deletingPort := plan.deletePort[ifName]; deletingPort {
+				continue
+			}
+			plan.createMst[mstPortInstCfgKey(inst, ifName)] = map[string]string{
+				"priority": DEFAULT_PORT_PRIORITY,
+			}
+		}
+	}
+	return plan
+}
+
+func configEntryExists(cfgDb *db.DB, table, key string) (bool, error) {
+	entry, err := cfgDb.GetEntry(&db.TableSpec{Name: table}, db.Key{Comp: []string{key}})
+	if err != nil {
+		if tlerr.IsTranslibRedisClientEntryNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return entry.IsPopulated(), nil
+}
+
+func stpGlobalMode(cfgDb *db.DB) (string, error) {
+	entry, err := cfgDb.GetEntry(&db.TableSpec{Name: STP_GLOBAL_TBL}, db.Key{Comp: []string{STP_GLOBAL_KEY}})
+	if err != nil {
+		if tlerr.IsTranslibRedisClientEntryNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	return entry.Get("mode"), nil
+}
+
+func vlanNamesForInterface(cfgDb *db.DB, ifName string) ([]string, error) {
+	keys, err := cfgDb.GetKeysByPattern(&db.TableSpec{Name: VLAN_MEMBER_TBL}, "*"+ifName)
+	if err != nil {
+		if tlerr.IsTranslibRedisClientEntryNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var vlans []string
+	for _, key := range keys {
+		text := dbKeyText(key)
+		vlanName, member, ok := splitVlanMemberKey(text)
+		if !ok || member != ifName {
+			continue
+		}
+		vlans = append(vlans, vlanName)
+	}
+	return vlans, nil
+}
+
+func mstVlanInstanceMap(cfgDb *db.DB) (map[string]string, error) {
+	vlanToInst := map[string]string{}
+	keys, err := cfgDb.GetKeysByPattern(&db.TableSpec{Name: STP_MST_INST_TBL}, "*")
+	if err != nil {
+		if tlerr.IsTranslibRedisClientEntryNotExist(err) {
+			return vlanToInst, nil
+		}
+		return nil, err
+	}
+	for _, key := range keys {
+		inst := dbKeyText(key)
+		if inst == "" || inst == "0" {
+			continue
+		}
+		entry, err := cfgDb.GetEntry(&db.TableSpec{Name: STP_MST_INST_TBL}, db.Key{Comp: []string{inst}})
+		if err != nil {
+			if tlerr.IsTranslibRedisClientEntryNotExist(err) {
+				continue
+			}
+			return nil, err
+		}
+		for _, vlanID := range vlanIDsFromMstEntry(entry) {
+			vlanToInst[vlanID] = inst
+		}
+	}
+	return vlanToInst, nil
+}
+
+func mstPortKeys(cfgDb *db.DB) ([]string, error) {
+	keys, err := cfgDb.GetKeysByPattern(&db.TableSpec{Name: STP_MST_PORT_TBL}, "*")
+	if err != nil {
+		if tlerr.IsTranslibRedisClientEntryNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var out []string
+	for _, key := range keys {
+		if text := dbKeyText(key); text != "" {
+			out = append(out, text)
+		}
+	}
+	return out, nil
+}
+
+func vlanMemberKeySet(table map[string]db.Value) []string {
+	if len(table) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(table))
+	for key := range table {
+		keys = append(keys, key)
+	}
+	return keys
+}
+
+func subOpVlanMemberKeys(inParams *XfmrParams, op Operation) []string {
+	if inParams == nil || inParams.subOpDataMap == nil || inParams.subOpDataMap[op] == nil {
+		return nil
+	}
+	cfg := (*inParams.subOpDataMap[op])[db.ConfigDB]
+	if cfg == nil {
+		return nil
+	}
+	return vlanMemberKeySet(cfg[VLAN_MEMBER_TBL])
+}
+
+func collectVlanMemberResultKeys(inParams *XfmrParams, resMap map[string]map[string]db.Value) (added, deleted []string) {
+	seenAdd := map[string]struct{}{}
+	seenDel := map[string]struct{}{}
+	add := func(keys []string) {
+		for _, key := range keys {
+			if _, ok := seenAdd[key]; ok {
+				continue
+			}
+			seenAdd[key] = struct{}{}
+			added = append(added, key)
+		}
+	}
+	del := func(keys []string) {
+		for _, key := range keys {
+			if _, ok := seenDel[key]; ok {
+				continue
+			}
+			seenDel[key] = struct{}{}
+			deleted = append(deleted, key)
+		}
+	}
+	if inParams != nil && (inParams.oper == CREATE || inParams.oper == UPDATE || inParams.oper == REPLACE) {
+		add(vlanMemberKeySet(resMap[VLAN_MEMBER_TBL]))
+	}
+	if inParams != nil && inParams.oper == DELETE {
+		del(vlanMemberKeySet(resMap[VLAN_MEMBER_TBL]))
+	}
+	add(subOpVlanMemberKeys(inParams, CREATE))
+	add(subOpVlanMemberKeys(inParams, UPDATE))
+	add(subOpVlanMemberKeys(inParams, REPLACE))
+	del(subOpVlanMemberKeys(inParams, DELETE))
+	return added, deleted
+}
+
+func mergeStpTable(dst map[string]map[string]db.Value, table string, rows map[string]map[string]string) {
+	if len(rows) == 0 {
+		return
+	}
+	if dst[table] == nil {
+		dst[table] = map[string]db.Value{}
+	}
+	for key, fields := range rows {
+		dst[table][key] = db.Value{Field: cloneStringMap(fields)}
+	}
+}
+
+func mergeStpDeletes(dst map[string]map[string]db.Value, table string, keys map[string]struct{}) {
+	if len(keys) == 0 {
+		return
+	}
+	if dst[table] == nil {
+		dst[table] = map[string]db.Value{}
+	}
+	for key := range keys {
+		dst[table][key] = db.Value{Field: map[string]string{}}
+	}
+}
+
+func placeStpPlan(inParams *XfmrParams, resMap map[string]map[string]db.Value, plan stpVlanMemberPlan) {
+	if inParams == nil {
+		return
+	}
+	hasDelete := len(plan.deleteMst) > 0 || len(plan.deletePort) > 0
+	if hasDelete {
+		if inParams.oper == DELETE && resMap != nil {
+			mergeStpDeletes(resMap, STP_MST_PORT_TBL, plan.deleteMst)
+			mergeStpDeletes(resMap, STP_PORT_TBL, plan.deletePort)
+		} else if delMap := ensureSubOpCfgMap(*inParams, DELETE); delMap != nil {
+			mergeStpDeletes(delMap, STP_MST_PORT_TBL, plan.deleteMst)
+			mergeStpDeletes(delMap, STP_PORT_TBL, plan.deletePort)
+		}
+	}
+
+	hasCreate := len(plan.createPort) > 0 || len(plan.createMst) > 0
+	if !hasCreate {
+		return
+	}
+	if inParams.oper == CREATE && resMap != nil {
+		mergeStpTable(resMap, STP_PORT_TBL, plan.createPort)
+		mergeStpTable(resMap, STP_MST_PORT_TBL, plan.createMst)
+		return
+	}
+	createMap := ensureSubOpCfgMap(*inParams, CREATE)
+	if createMap == nil {
+		return
+	}
+	mergeStpTable(createMap, STP_PORT_TBL, plan.createPort)
+	mergeStpTable(createMap, STP_MST_PORT_TBL, plan.createMst)
+}
+
+// syncStpConfigForVlanMemberResult creates or removes STP_PORT and STP_MST_PORT
+// when an OpenConfig VLAN member change is translated. resMap is the map returned
+// for inParams.oper; VLAN_MEMBER keys already queued on subOpDataMap are included.
+func syncStpConfigForVlanMemberResult(inParams *XfmrParams, resMap map[string]map[string]db.Value) error {
+	if inParams == nil || inParams.d == nil {
+		return nil
+	}
+	added, deleted := collectVlanMemberResultKeys(inParams, resMap)
+	if len(added) == 0 && len(deleted) == 0 {
+		return nil
+	}
+	mode, err := stpGlobalMode(inParams.d)
+	if err != nil {
+		return err
+	}
+	if mode != STP_MODE_MST {
+		return nil
+	}
+
+	ifaces := map[string]struct{}{}
+	for _, key := range append(append([]string{}, added...), deleted...) {
+		_, ifName, ok := splitVlanMemberKey(key)
+		if ok {
+			ifaces[ifName] = struct{}{}
+		}
+	}
+	current := map[string][]string{}
+	stpPorts := map[string]bool{}
+	for ifName := range ifaces {
+		vlans, err := vlanNamesForInterface(inParams.d, ifName)
+		if err != nil {
+			return err
+		}
+		current[ifName] = vlans
+		exists, err := configEntryExists(inParams.d, STP_PORT_TBL, ifName)
+		if err != nil {
+			return err
+		}
+		stpPorts[ifName] = exists
+	}
+	vlanToInst, err := mstVlanInstanceMap(inParams.d)
+	if err != nil {
+		return err
+	}
+	mstKeys, err := mstPortKeys(inParams.d)
+	if err != nil {
+		return err
+	}
+	plan := planStpVlanMemberChange(stpVlanMemberState{
+		mode:       mode,
+		current:    current,
+		added:      added,
+		deleted:    deleted,
+		stpPorts:   stpPorts,
+		mstKeys:    mstKeys,
+		vlanToInst: vlanToInst,
+	})
+	placeStpPlan(inParams, resMap, plan)
+	log.Infof("STP VLAN member sync mode=%s added=%v deleted=%v createPort=%v createMst=%v deletePort=%v deleteMst=%v",
+		mode, added, deleted, plan.createPort, plan.createMst, plan.deletePort, plan.deleteMst)
+	return nil
+}
+
 func disableRstpMsti0(res map[string]map[string]db.Value) {
-	// Match CLI disable_global_mst(): delete_table for port tables. An empty inner
-	// map signals translib to DeleteTable, avoiding per-row CVL must failures on
-	// link_type/edge_port when STP|GLOBAL is removed before row deletes.
+	// Delete the port tables. An empty inner map signals translib to DeleteTable,
+	// avoiding per-row CVL must failures on link_type/edge_port when STP|GLOBAL
+	// is removed before row deletes.
 	res[STP_MST_PORT_TBL] = map[string]db.Value{}
 	res[STP_PORT_TBL] = map[string]db.Value{}
 	res[STP_MST_INST_TBL] = map[string]db.Value{mstInstCfgKey(): {}}
