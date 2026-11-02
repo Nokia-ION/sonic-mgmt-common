@@ -470,23 +470,17 @@ func Test_AclApp_IPv6AclAndRule(t *testing.T) {
 // instead of openconfig-packet-match, so a client may name the container either
 // plainly or qualified with the extension module; both must reach the same
 // ACL_RULE fields.
-func Test_AclApp_ReplaceIngressBindingList(t *testing.T) {
-	acl1 := "/openconfig-acl:acl/acl-sets/acl-set[name=100][type=ACL_IPV4]"
-	acl2 := "/openconfig-acl:acl/acl-sets/acl-set[name=ACL-NAMED-V4][type=ACL_IPV4]"
-	rule1 := acl1 + "/acl-entries/acl-entry[sequence-id=1]"
-	rule2 := acl2 + "/acl-entries/acl-entry[sequence-id=1]"
-	intfUrl := "/openconfig-acl:acl/interfaces/interface[id=Ethernet4]"
-	listUrl := intfUrl + "/ingress-acl-sets"
+func Test_AclApp_ReplaceRuleLeaf(t *testing.T) {
+	aclUrl := "/openconfig-acl:acl/acl-sets/acl-set[name=MyACL5][type=ACL_IPV4]"
+	ruleUrl := aclUrl + "/acl-entries/acl-entry[sequence-id=8]"
+	srcUrl := ruleUrl + "/ipv4/config/source-address"
 
-	t.Run("Create_Acl_100", processSetRequest(acl1, `{"config":{"name":"100","type":"ACL_IPV4"}}`, "POST", false))
-	t.Run("Create_Acl_Named", processSetRequest(acl2, `{"config":{"name":"ACL-NAMED-V4","type":"ACL_IPV4"}}`, "POST", false))
-	t.Run("Create_Rule_100", processSetRequest(rule1, requestOneRulePostJson, "POST", false))
-	t.Run("Create_Rule_Named", processSetRequest(rule2, requestOneRulePostJson, "POST", false))
-	t.Run("Bind_100", processSetRequest(intfUrl, `{"id":"Ethernet4","config":{"id":"Ethernet4"},"ingress-acl-sets":{"ingress-acl-set":[{"set-name":"100","type":"ACL_IPV4","config":{"set-name":"100","type":"ACL_IPV4"}}]}}`, "PATCH", false))
-	t.Run("Replace_With_Named_Only", processSetRequest(listUrl, `{"ingress-acl-set":[{"set-name":"ACL-NAMED-V4","type":"ACL_IPV4","config":{"set-name":"ACL-NAMED-V4","type":"ACL_IPV4"}}]}`, "PUT", false))
-	t.Run("Verify_100_Unbound", verifyAclTablePorts("100_ACL_IPV4", "Ethernet4", false))
-	t.Run("Verify_Named_Bound", verifyAclTablePorts("ACL_NAMED_V4_ACL_IPV4", "Ethernet4", true))
-	t.Run("Get_Named_Set_Name", processGetRequest(listUrl, `{"openconfig-acl:ingress-acl-set":[{"config":{"set-name":"ACL-NAMED-V4","type":"openconfig-acl:ACL_IPV4"},"set-name":"ACL-NAMED-V4","state":{"set-name":"ACL-NAMED-V4","type":"openconfig-acl:ACL_IPV4"},"type":"openconfig-acl:ACL_IPV4"}]}`, false))
+	t.Run("Create_Acl", processSetRequest(aclUrl, oneAclCreateJsonRequest, "POST", false))
+	t.Run("Create_Rule", processSetRequest(ruleUrl, requestOneRulePostJson, "POST", false))
+	t.Run("Replace_Source_Address", processSetRequest(srcUrl, `"11.1.1.9/32"`, "PUT", false))
+	t.Run("Verify_Replaced_Source", verifyRuleFields("MyACL5_ACL_IPV4", "RULE_8", map[string]string{
+		"SRC_IP": "11.1.1.9/32"}))
+	t.Run("Delete_Acl", processDeleteRequest(aclUrl))
 }
 
 func Test_AclApp_IcmpMatch(t *testing.T) {

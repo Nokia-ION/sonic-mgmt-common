@@ -484,10 +484,20 @@ func (app *AclApp) processCommon(d *db.DB, opcode int) error {
 								log.Errorf("processCommon: Given CREATE path %s not handled", targetUriPath)
 							}
 						case REPLACE:
-							if err = app.clearStaleRulePortMatch(d, aclKey, ruleKey, app.ruleTableMap[aclKey][ruleKey]); err != nil {
-								return err
+							if isRuleNodeSubtree {
+								if err = app.clearStaleRulePortMatch(d, aclKey, ruleKey, app.ruleTableMap[aclKey][ruleKey]); err != nil {
+									return err
+								}
+								if err = app.clearStaleRuleIcmpv6Code(d, aclKey, ruleKey); err != nil {
+									return err
+								}
+								err = d.ModEntry(app.ruleTs, db.Key{Comp: []string{aclKey, ruleKey}}, app.ruleTableMap[aclKey][ruleKey])
+							} else {
+								if err = app.clearStaleRulePortMatch(d, aclKey, ruleKey, app.ruleTableMap[aclKey][ruleKey]); err != nil {
+									return err
+								}
+								err = d.SetEntry(app.ruleTs, db.Key{Comp: []string{aclKey, ruleKey}}, app.ruleTableMap[aclKey][ruleKey])
 							}
-							err = d.SetEntry(app.ruleTs, db.Key{Comp: []string{aclKey, ruleKey}}, app.ruleTableMap[aclKey][ruleKey])
 						case UPDATE:
 							if err = app.clearStaleRulePortMatch(d, aclKey, ruleKey, app.ruleTableMap[aclKey][ruleKey]); err != nil {
 								return err
