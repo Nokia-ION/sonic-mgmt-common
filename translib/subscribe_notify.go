@@ -275,6 +275,35 @@ func initialUpdateDedupKey(nInfo *notificationInfo) (string, bool) {
 	return path.String(nInfo.path), true
 }
 
+// resolvedUpdateDedupKey returns the key under which the initial update of an
+// instance a wildcard path resolved to is remembered, and whether it may be
+// deduplicated at all.
+//
+// A wildcard path backed by more than one db row per instance resolves every
+// one of those rows to the same instance, a policy definition from its set row
+// and from each statement row for example. The update is a GET of the resolved
+// path and the fields below it, so the rows after the first that sent it would
+// only repeat it. Only the initial sync is deduplicated: after it, each
+// notification reports a change of its own row.
+func resolvedUpdateDedupKey(nInfo *notificationInfo, sInfo *subscribeInfo, relativePrefix string,
+	forceProcessSub bool, prefixStr string, fields []*yangNodeInfo) (string, bool) {
+	switch {
+	case nInfo == nil || sInfo == nil || sInfo.syncDone:
+		return "", false
+	case nInfo.handler != nil:
+		return "", false
+	case len(relativePrefix) == 0 && !nInfo.flags.Has(niWildcardPath) && !forceProcessSub:
+		return "", false
+	}
+	var b strings.Builder
+	b.WriteString(prefixStr)
+	for _, f := range fields {
+		b.WriteByte('\x00')
+		b.WriteString(f.getPath())
+	}
+	return b.String(), true
+}
+
 // markInitialUpdateSent records that the initial update for the given
 // dedup key (see initialUpdateDedupKey) has been sent.
 func (sInfo *subscribeInfo) markInitialUpdateSent(key string) {
@@ -775,6 +804,13 @@ func (ne *notificationEvent) sendNotification(nInfo *notificationInfo, relativeP
 		return
 	}
 
+	rKey, rDedupe := resolvedUpdateDedupKey(nInfo, sInfo, relativePrefix, ne.forceProcessSub, prefixStr, fields)
+	if rDedupe && sInfo.initSynced[rKey] {
+		log.V(1).Infof("[%s] initial update for %s already sent; skipping table %v",
+			ne.id, prefixStr, tableInfo(nInfo.table))
+		return
+	}
+
 	resp := &SubscribeResponse{
 		Path:      prefixStr,
 		Timestamp: time.Now().UnixNano(),
@@ -873,6 +909,9 @@ func (ne *notificationEvent) sendNotification(nInfo *notificationInfo, relativeP
 
 	log.Infof("[%s] Sending %d updates and %d deletes", ne.id, numUpdate, numDelete)
 	ne.send(resp)
+	if rDedupe {
+		sInfo.markInitialUpdateSent(rKey)
+	}
 }
 
 // sendFanoutNotification serves a path whose wildcarded list at listIdx could
