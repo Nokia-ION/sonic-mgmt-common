@@ -236,3 +236,47 @@ func TestSendInitialUpdate_skipsFixedPathWithGlobKey(t *testing.T) {
 		t.Fatalf("expected no responses, queue has %d", q.Len())
 	}
 }
+
+// An instance a wildcard path resolves to is sent once in the initial sync,
+// whichever row resolved it; after the sync every notification is sent.
+func TestResolvedUpdateDedupKey(t *testing.T) {
+	wild := dedupeTestNInfo(db.StateDB, "ROUTE_MAP_APPLIED", "*", "*")
+	wild.path = dedupeTestPath("openconfig-routing-policy:routing-policy", "policy-definitions", "policy-definition")
+	wild.flags.Set(niWildcardPath)
+	fields := []*yangNodeInfo{new(yangNodeInfo)}
+	inst := "/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition[name=P1]"
+
+	sInfo := &subscribeInfo{}
+	k1, ok := resolvedUpdateDedupKey(wild, sInfo, "", false, inst, fields)
+	if !ok {
+		t.Fatal("a wildcard path in the initial sync should be deduplicated")
+	}
+	set := dedupeTestNInfo(db.StateDB, "ROUTE_MAP_SET_APPLIED", "*")
+	set.path, set.flags = wild.path, wild.flags
+	if k2, ok := resolvedUpdateDedupKey(set, sInfo, "", false, inst, fields); !ok || k2 != k1 {
+		t.Fatalf("rows of another table resolving to the same instance must share the key; key=%q ok=%v", k2, ok)
+	}
+	if k3, _ := resolvedUpdateDedupKey(wild, sInfo, "", false, inst+"[name=P2]", fields); k3 == k1 {
+		t.Fatal("another instance must not share the key")
+	}
+	if k4, _ := resolvedUpdateDedupKey(wild, sInfo, "", false, inst, []*yangNodeInfo{{leafName: "state"}}); k4 == k1 {
+		t.Fatal("other fields of the instance must not share the key")
+	}
+
+	fixed := dedupeTestNInfo(db.StateDB, "ROUTE_MAP_SET_APPLIED", "P1")
+	if _, ok := resolvedUpdateDedupKey(fixed, sInfo, "", false, inst, fields); ok {
+		t.Fatal("a fixed path is left to initialUpdateDedupKey")
+	}
+	if _, ok := resolvedUpdateDedupKey(fixed, sInfo, "", true, inst, fields); !ok {
+		t.Fatal("a path resolved from a glob key in the initial sync should be deduplicated")
+	}
+	handler := dedupeTestNInfo(db.StateDB, "ROUTE_MAP_APPLIED", "*", "*")
+	handler.flags = wild.flags
+	handler.handler = func(*apis.NotificationContext, apis.NotificationSender) {}
+	if _, ok := resolvedUpdateDedupKey(handler, sInfo, "", false, inst, fields); ok {
+		t.Fatal("an app handler path is never deduplicated")
+	}
+	if _, ok := resolvedUpdateDedupKey(wild, &subscribeInfo{syncDone: true}, "", false, inst, fields); ok {
+		t.Fatal("a notification after the initial sync is never deduplicated")
+	}
+}
