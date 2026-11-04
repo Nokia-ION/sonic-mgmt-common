@@ -44,9 +44,7 @@ const (
 	VRRP_FIELD_PRIORITY                         = "priority"
 	VRRP_FIELD_PREEMPT                          = "preempt"
 	VRRP_FIELD_PREEMPT_DELAY                    = "preempt_delay"
-	VRRP_FIELD_ACCEPT_MODE                      = "accept_mode"
 	VRRP_FIELD_ADV_INTERVAL                     = "adv_interval"
-	VRRP_FIELD_VIRTUAL_LLA                      = "virtual_link_local"
 	VRRP_FIELD_TRACK_PRIO_INCR                  = "priority_increment"
 	VRRP_STATE_FIELD_EFF_PRIORITY               = "effective_priority"
 	VRRP_STATE_FIELD_STATE                      = "state"
@@ -63,9 +61,7 @@ type vrrpGroupData struct {
 	priority                   uint8
 	preempt                    bool
 	preemptDelay               uint16
-	acceptMode                 bool
 	advertisementCenti         uint16
-	virtualLinkLocal           string
 	trackInterfaces            []string
 	priorityDecrement          uint8
 	currentPriority            uint8
@@ -927,9 +923,6 @@ func mapRoutedVlanIPv4VrrpGroupToDbFields(
 		if grpObj.Config.PreemptDelay != nil {
 			fields[VRRP_FIELD_PREEMPT_DELAY] = strconv.Itoa(int(*grpObj.Config.PreemptDelay))
 		}
-		if grpObj.Config.AcceptMode != nil {
-			fields[VRRP_FIELD_ACCEPT_MODE] = strconv.FormatBool(*grpObj.Config.AcceptMode)
-		}
 		if grpObj.Config.AdvertisementInterval != nil {
 			fields[VRRP_FIELD_ADV_INTERVAL] = strconv.Itoa(centiToSec(*grpObj.Config.AdvertisementInterval))
 		}
@@ -964,19 +957,11 @@ func mapRoutedVlanIPv6VrrpGroupToDbFields(
 		if grpObj.Config.PreemptDelay != nil {
 			fields[VRRP_FIELD_PREEMPT_DELAY] = strconv.Itoa(int(*grpObj.Config.PreemptDelay))
 		}
-		if grpObj.Config.AcceptMode != nil {
-			fields[VRRP_FIELD_ACCEPT_MODE] = strconv.FormatBool(*grpObj.Config.AcceptMode)
-		}
 		if grpObj.Config.AdvertisementInterval != nil {
 			fields[VRRP_FIELD_ADV_INTERVAL] = strconv.Itoa(centiToSec(*grpObj.Config.AdvertisementInterval))
 		}
 		if len(grpObj.Config.VirtualAddress) > 0 {
 			fields[VRRP_FIELD_VIP] = strings.Join(normalizeVirtualAddressesList(grpObj.Config.VirtualAddress, true), ",")
-		}
-		if grpObj.Config.VirtualLinkLocal != nil {
-			if vll, ok := normalizeVirtualLinkLocal(*grpObj.Config.VirtualLinkLocal); ok {
-				fields[VRRP_FIELD_VIRTUAL_LLA] = vll
-			}
 		}
 	}
 	trackMap := mapRoutedVlanIPv6TrackToDb(ifName, vrid, grpObj.InterfaceTracking, cfgDb, vrrpTrackTbl)
@@ -1005,9 +990,6 @@ func mapSubIntfIPv4VrrpGroupToDbFields(
 		}
 		if grpObj.Config.PreemptDelay != nil {
 			fields[VRRP_FIELD_PREEMPT_DELAY] = strconv.Itoa(int(*grpObj.Config.PreemptDelay))
-		}
-		if grpObj.Config.AcceptMode != nil {
-			fields[VRRP_FIELD_ACCEPT_MODE] = strconv.FormatBool(*grpObj.Config.AcceptMode)
 		}
 		if grpObj.Config.AdvertisementInterval != nil {
 			fields[VRRP_FIELD_ADV_INTERVAL] = strconv.Itoa(centiToSec(*grpObj.Config.AdvertisementInterval))
@@ -1043,19 +1025,11 @@ func mapSubIntfIPv6VrrpGroupToDbFields(
 		if grpObj.Config.PreemptDelay != nil {
 			fields[VRRP_FIELD_PREEMPT_DELAY] = strconv.Itoa(int(*grpObj.Config.PreemptDelay))
 		}
-		if grpObj.Config.AcceptMode != nil {
-			fields[VRRP_FIELD_ACCEPT_MODE] = strconv.FormatBool(*grpObj.Config.AcceptMode)
-		}
 		if grpObj.Config.AdvertisementInterval != nil {
 			fields[VRRP_FIELD_ADV_INTERVAL] = strconv.Itoa(centiToSec(*grpObj.Config.AdvertisementInterval))
 		}
 		if len(grpObj.Config.VirtualAddress) > 0 {
 			fields[VRRP_FIELD_VIP] = strings.Join(normalizeVirtualAddressesList(grpObj.Config.VirtualAddress, true), ",")
-		}
-		if grpObj.Config.VirtualLinkLocal != nil {
-			if vll, ok := normalizeVirtualLinkLocal(*grpObj.Config.VirtualLinkLocal); ok {
-				fields[VRRP_FIELD_VIRTUAL_LLA] = vll
-			}
 		}
 	}
 	trackMap := mapSubIntfIPv6TrackToDb(ifName, vrid, grpObj.InterfaceTracking, cfgDb, vrrpTrackTbl)
@@ -1500,17 +1474,10 @@ func buildVrrpLeafDeleteMap(
 		fields[VRRP_FIELD_PREEMPT] = "true"
 	case strings.HasSuffix(normPath, "/vrrp-group/config/preempt-delay"):
 		fields[VRRP_FIELD_PREEMPT_DELAY] = "0"
-	case strings.HasSuffix(normPath, "/vrrp-group/config/accept-mode"):
-		fields[VRRP_FIELD_ACCEPT_MODE] = "false"
 	case strings.HasSuffix(normPath, "/vrrp-group/config/advertisement-interval"):
 		fields[VRRP_FIELD_ADV_INTERVAL] = "1"
 	case strings.HasSuffix(normPath, "/vrrp-group/config/virtual-address"):
 		fields[VRRP_FIELD_VIP] = ""
-	case strings.HasSuffix(normPath, "/vrrp-group/config/virtual-link-local"):
-		if !isIPv6 {
-			return false, resMap
-		}
-		fields[VRRP_FIELD_VIRTUAL_LLA] = ""
 	case strings.HasSuffix(normPath, "/vrrp-group/interface-tracking/config/priority-decrement"):
 		trackIfList := getExistingTrackInterfaces(cfgDb, vrrpTrackTbl, ifName, vrid)
 		if len(trackIfList) == 0 {
@@ -1581,13 +1548,6 @@ func buildVrrpLeafSetMap(
 		}
 		fields[VRRP_FIELD_PREEMPT_DELAY] = strconv.Itoa(int(uint16(val)))
 		return vrid, fields, trackEntries, true
-	case strings.HasSuffix(normPath, "/vrrp-group/config/accept-mode"):
-		val, ok := toBoolParam(param)
-		if !ok {
-			return 0, fields, trackEntries, false
-		}
-		fields[VRRP_FIELD_ACCEPT_MODE] = strconv.FormatBool(val)
-		return vrid, fields, trackEntries, true
 	case strings.HasSuffix(normPath, "/vrrp-group/config/advertisement-interval"):
 		val, ok := toUint64Param(param)
 		if !ok {
@@ -1605,20 +1565,6 @@ func buildVrrpLeafSetMap(
 			return 0, fields, trackEntries, false
 		}
 		fields[VRRP_FIELD_VIP] = strings.Join(normAddrs, ",")
-		return vrid, fields, trackEntries, true
-	case strings.HasSuffix(normPath, "/vrrp-group/config/virtual-link-local"):
-		if !isIPv6 {
-			return 0, fields, trackEntries, false
-		}
-		rawVll, ok := toStringParam(param)
-		if !ok {
-			return 0, fields, trackEntries, false
-		}
-		vll, valid := normalizeVirtualLinkLocal(rawVll)
-		if !valid {
-			return 0, fields, trackEntries, false
-		}
-		fields[VRRP_FIELD_VIRTUAL_LLA] = vll
 		return vrid, fields, trackEntries, true
 	case strings.HasSuffix(normPath, "/vrrp-group/interface-tracking/config/priority-decrement"):
 		val, ok := toUint64Param(param)
@@ -1730,18 +1676,6 @@ func toUint64Param(param interface{}) (uint64, bool) {
 		}
 	}
 	return 0, false
-}
-
-func toStringParam(param interface{}) (string, bool) {
-	switch v := param.(type) {
-	case string:
-		return v, true
-	case *string:
-		if v != nil {
-			return *v, true
-		}
-	}
-	return "", false
 }
 
 func toStringSliceParam(param interface{}) ([]string, bool) {
@@ -1998,7 +1932,6 @@ func populateRoutedVlanVrrpGroup(grpObj *ocbinds.OpenconfigInterfaces_Interfaces
 	grpObj.State.Priority = &grp.priority
 	grpObj.State.Preempt = &grp.preempt
 	grpObj.State.PreemptDelay = &grp.preemptDelay
-	grpObj.State.AcceptMode = &grp.acceptMode
 	grpObj.State.AdvertisementInterval = &grp.advertisementCenti
 	// Left unset when vrrpd's value is unavailable; see mergeIntfVrrpStateData.
 	if grp.hasCurrentPriority {
@@ -2014,7 +1947,6 @@ func populateRoutedVlanVrrpGroup(grpObj *ocbinds.OpenconfigInterfaces_Interfaces
 	grpObj.State.VirtualAddress = append(grpObj.State.VirtualAddress[:0], grp.virtualAddresses...)
 
 	grpObj.Config.PreemptDelay = &grp.preemptDelay
-	grpObj.Config.AcceptMode = &grp.acceptMode
 
 	if len(grp.trackInterfaces) > 0 || grp.priorityDecrement > 0 {
 		ygot.BuildEmptyTree(grpObj.InterfaceTracking)
@@ -2035,7 +1967,6 @@ func populateRoutedVlanIPv6VrrpGroup(grpObj *ocbinds.OpenconfigInterfaces_Interf
 	grpObj.Config.Priority = &grp.priority
 	grpObj.Config.Preempt = &grp.preempt
 	grpObj.Config.PreemptDelay = &grp.preemptDelay
-	grpObj.Config.AcceptMode = &grp.acceptMode
 	grpObj.Config.AdvertisementInterval = &grp.advertisementCenti
 	grpObj.Config.VirtualAddress = append(grpObj.Config.VirtualAddress[:0], grp.virtualAddresses...)
 
@@ -2043,7 +1974,6 @@ func populateRoutedVlanIPv6VrrpGroup(grpObj *ocbinds.OpenconfigInterfaces_Interf
 	grpObj.State.Priority = &grp.priority
 	grpObj.State.Preempt = &grp.preempt
 	grpObj.State.PreemptDelay = &grp.preemptDelay
-	grpObj.State.AcceptMode = &grp.acceptMode
 	grpObj.State.AdvertisementInterval = &grp.advertisementCenti
 	// Left unset when vrrpd's value is unavailable; see mergeIntfVrrpStateData.
 	if grp.hasCurrentPriority {
@@ -2057,11 +1987,6 @@ func populateRoutedVlanIPv6VrrpGroup(grpObj *ocbinds.OpenconfigInterfaces_Interf
 	grpObj.State.Counters.NeighborAdvertisementsSent = grp.neighborAdvertisementsSent
 	grpObj.State.Counters.StateTransitions = grp.stateTransitions
 	grpObj.State.VirtualAddress = append(grpObj.State.VirtualAddress[:0], grp.virtualAddresses...)
-
-	if grp.virtualLinkLocal != "" {
-		grpObj.Config.VirtualLinkLocal = &grp.virtualLinkLocal
-		grpObj.State.VirtualLinkLocal = &grp.virtualLinkLocal
-	}
 
 	if len(grp.trackInterfaces) > 0 || grp.priorityDecrement > 0 {
 		ygot.BuildEmptyTree(grpObj.InterfaceTracking)
@@ -2088,7 +2013,6 @@ func populateSubIntfIPv4VrrpGroup(grpObj *ocbinds.OpenconfigInterfaces_Interface
 	grpObj.State.Priority = &grp.priority
 	grpObj.State.Preempt = &grp.preempt
 	grpObj.State.PreemptDelay = &grp.preemptDelay
-	grpObj.State.AcceptMode = &grp.acceptMode
 	grpObj.State.AdvertisementInterval = &grp.advertisementCenti
 	// Left unset when vrrpd's value is unavailable; see mergeIntfVrrpStateData.
 	if grp.hasCurrentPriority {
@@ -2104,7 +2028,6 @@ func populateSubIntfIPv4VrrpGroup(grpObj *ocbinds.OpenconfigInterfaces_Interface
 	grpObj.State.VirtualAddress = append(grpObj.State.VirtualAddress[:0], grp.virtualAddresses...)
 
 	grpObj.Config.PreemptDelay = &grp.preemptDelay
-	grpObj.Config.AcceptMode = &grp.acceptMode
 
 	if len(grp.trackInterfaces) > 0 || grp.priorityDecrement > 0 {
 		ygot.BuildEmptyTree(grpObj.InterfaceTracking)
@@ -2125,7 +2048,6 @@ func populateSubIntfIPv6VrrpGroup(grpObj *ocbinds.OpenconfigInterfaces_Interface
 	grpObj.Config.Priority = &grp.priority
 	grpObj.Config.Preempt = &grp.preempt
 	grpObj.Config.PreemptDelay = &grp.preemptDelay
-	grpObj.Config.AcceptMode = &grp.acceptMode
 	grpObj.Config.AdvertisementInterval = &grp.advertisementCenti
 	grpObj.Config.VirtualAddress = append(grpObj.Config.VirtualAddress[:0], grp.virtualAddresses...)
 
@@ -2133,7 +2055,6 @@ func populateSubIntfIPv6VrrpGroup(grpObj *ocbinds.OpenconfigInterfaces_Interface
 	grpObj.State.Priority = &grp.priority
 	grpObj.State.Preempt = &grp.preempt
 	grpObj.State.PreemptDelay = &grp.preemptDelay
-	grpObj.State.AcceptMode = &grp.acceptMode
 	grpObj.State.AdvertisementInterval = &grp.advertisementCenti
 	// Left unset when vrrpd's value is unavailable; see mergeIntfVrrpStateData.
 	if grp.hasCurrentPriority {
@@ -2147,11 +2068,6 @@ func populateSubIntfIPv6VrrpGroup(grpObj *ocbinds.OpenconfigInterfaces_Interface
 	grpObj.State.Counters.NeighborAdvertisementsSent = grp.neighborAdvertisementsSent
 	grpObj.State.Counters.StateTransitions = grp.stateTransitions
 	grpObj.State.VirtualAddress = append(grpObj.State.VirtualAddress[:0], grp.virtualAddresses...)
-
-	if grp.virtualLinkLocal != "" {
-		grpObj.Config.VirtualLinkLocal = &grp.virtualLinkLocal
-		grpObj.State.VirtualLinkLocal = &grp.virtualLinkLocal
-	}
 
 	if len(grp.trackInterfaces) > 0 || grp.priorityDecrement > 0 {
 		ygot.BuildEmptyTree(grpObj.InterfaceTracking)
@@ -2192,9 +2108,7 @@ func getIntfVrrpData(cfgDb *db.DB, ifName string, targetVrid string, vrrpTbl str
 			priority:           parseUint8(entry.Get(VRRP_FIELD_PRIORITY), 100),
 			preempt:            getVrrpPreempt(entry),
 			preemptDelay:       parseUint16(entry.Get(VRRP_FIELD_PREEMPT_DELAY), 0),
-			acceptMode:         parseBool(entry.Get(VRRP_FIELD_ACCEPT_MODE), false),
 			advertisementCenti: uint16(parseUint8(entry.Get(VRRP_FIELD_ADV_INTERVAL), 1)) * 100,
-			virtualLinkLocal:   getVirtualLinkLocal(entry, isIPv6),
 		}
 	}
 
@@ -2458,29 +2372,6 @@ func uniqueStringsInOrder(list []string) []string {
 		out = append(out, item)
 	}
 	return out
-}
-
-func getVirtualLinkLocal(entry db.Value, isIPv6 bool) string {
-	if !isIPv6 {
-		return ""
-	}
-	vll := strings.TrimSpace(entry.Get(VRRP_FIELD_VIRTUAL_LLA))
-	if vll == "" {
-		vll = strings.TrimSpace(entry.Get("virtual-link-local"))
-	}
-	return vll
-}
-
-func normalizeVirtualLinkLocal(vll string) (string, bool) {
-	vll = strings.TrimSpace(vll)
-	if vll == "" {
-		return "", false
-	}
-	ip := net.ParseIP(vll)
-	if ip == nil || ip.To4() != nil || !ip.IsLinkLocalUnicast() {
-		return "", false
-	}
-	return vll, true
 }
 
 func validateVrrpFieldsVipSubnet(cfgDb *db.DB, ifName string, fields map[string]string) error {
