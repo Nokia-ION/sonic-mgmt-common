@@ -957,7 +957,7 @@ func Test_openconfig_routing_policy_policy_definition_statement_actions_bgp_acti
 	t.Run("Verify ROUTE_MAP set_community_ref mapping", verifyDbResult(rclient, "ROUTE_MAP|POL1|10", expectedMap, false))
 	time.Sleep(1 * time.Second)
 
-	expectedGetJSON := "{\"openconfig-bgp-policy:set-community\":{\"config\":{\"method\":\"REFERENCE\"},\"reference\":{\"config\":" +
+	expectedGetJSON := "{\"openconfig-bgp-policy:set-community\":{\"config\":{\"method\":\"REFERENCE\",\"options\":\"REPLACE\"},\"reference\":{\"config\":" +
 		"{\"community-set-ref\":\"COMMSET1\",\"community-set-refs\":[\"COMMSET1\"]}}}}"
 	t.Run("GET routing-policy statement actions bgp set-community", processGetRequest(url, nil, expectedGetJSON, false))
 	time.Sleep(1 * time.Second)
@@ -3089,23 +3089,78 @@ func Test_openconfig_routing_policy_statement_actions_bgp_set_community_options(
 		processSetRequest(emptyOptionsUrl, urlInputBodyJSON, "PATCH", true, emptyErr))
 	time.Sleep(1 * time.Second)
 
-	// Under REFERENCE there is no field to carry options at all, so it is
-	// refused rather than accepted and dropped.
-	urlInputBodyJSON = `{"config":{"method":"REFERENCE"},"reference":{"config":{"community-set-refs":["CS1"]}}}`
-	t.Run("PATCH set-community naming a reference",
+	// Under REFERENCE, options is set_community_ref_additive: frrcfgd expands
+	// the referenced set and appends "additive" when it is true.
+	storedRef := func(additive string) map[string]interface{} {
+		row := map[string]interface{}{"set_community_inline": "", "set_community_ref": "CS1"}
+		if additive != "" {
+			row["set_community_ref_additive"] = additive
+		}
+		return map[string]interface{}{"ROUTE_MAP": map[string]interface{}{"POL1|10": row}}
+	}
+	urlInputBodyJSON = `{"config":{"method":"REFERENCE","options":"ADD"},"reference":{"config":{"community-set-refs":["CS1"]}}}`
+	t.Run("PATCH set-community naming a reference with options ADD",
 		processSetRequest(setCommUrl, urlInputBodyJSON, "PATCH", false, nil))
 	time.Sleep(1 * time.Second)
 
-	refErr := tlerr.NotSupportedError{
-		Format: "routing-policy statement actions bgp-actions set-community config options is not supported with the REFERENCE method; ROUTE_MAP records the referenced community-set in set_community_ref and has no field to carry options alongside it",
-	}
-	urlInputBodyJSON = `{"openconfig-bgp-policy:options":"ADD"}`
-	t.Run("PATCH options under the REFERENCE method rejected",
-		processSetRequest(optionsUrl, urlInputBodyJSON, "PATCH", true, refErr))
+	t.Run("Verify the reference and its additive flag",
+		verifyDbResult(rclient, "ROUTE_MAP|POL1|10", storedRef("true"), false))
 	time.Sleep(1 * time.Second)
 
-	t.Run("GET the config container reports no options under REFERENCE",
-		processGetRequest(cfgUrl, nil, `{"openconfig-bgp-policy:config":{"method":"REFERENCE"}}`, false))
+	t.Run("GET the config container reports ADD under REFERENCE",
+		processGetRequest(cfgUrl, nil, `{"openconfig-bgp-policy:config":{"method":"REFERENCE","options":"ADD"}}`, false))
+	time.Sleep(1 * time.Second)
+
+	urlInputBodyJSON = `{"openconfig-bgp-policy:options":"REPLACE"}`
+	t.Run("PATCH options REPLACE under the REFERENCE method",
+		processSetRequest(optionsUrl, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify REPLACE cleared the additive flag",
+		verifyDbResult(rclient, "ROUTE_MAP|POL1|10", storedRef("false"), false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET options reports REPLACE under REFERENCE",
+		processGetRequest(optionsUrl, nil, `{"openconfig-bgp-policy:options":"REPLACE"}`, false))
+	time.Sleep(1 * time.Second)
+
+	urlInputBodyJSON = `{"openconfig-bgp-policy:options":"ADD"}`
+	t.Run("PATCH options ADD under the REFERENCE method",
+		processSetRequest(optionsUrl, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify ADD set the additive flag",
+		verifyDbResult(rclient, "ROUTE_MAP|POL1|10", storedRef("true"), false))
+	time.Sleep(1 * time.Second)
+
+	urlInputBodyJSON = `{"openconfig-bgp-policy:options":"REMOVE"}`
+	t.Run("PATCH options REMOVE under the REFERENCE method rejected",
+		processSetRequest(optionsUrl, urlInputBodyJSON, "PATCH", true, removeErr))
+	time.Sleep(1 * time.Second)
+
+	t.Run("DELETE options under the REFERENCE method", processDeleteRequest(optionsUrl, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify the delete removed the additive flag",
+		verifyDbResult(rclient, "ROUTE_MAP|POL1|10", storedRef(""), false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("GET options reports REPLACE once the flag is gone",
+		processGetRequest(optionsUrl, nil, `{"openconfig-bgp-policy:options":"REPLACE"}`, false))
+	time.Sleep(1 * time.Second)
+
+	// A reference written with no options keeps the flag stored.
+	urlInputBodyJSON = `{"config":{"method":"REFERENCE","options":"ADD"},"reference":{"config":{"community-set-refs":["CS1"]}}}`
+	t.Run("PATCH set-community naming a reference with options ADD again",
+		processSetRequest(setCommUrl, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	urlInputBodyJSON = `{"config":{"method":"REFERENCE"},"reference":{"config":{"community-set-refs":["CS1"]}}}`
+	t.Run("PATCH set-community naming a reference without options",
+		processSetRequest(setCommUrl, urlInputBodyJSON, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify a reference without options keeps the flag",
+		verifyDbResult(rclient, "ROUTE_MAP|POL1|10", storedRef("true"), false))
 	time.Sleep(1 * time.Second)
 
 	unloadDB(db.ConfigDB, cleanupTbl)

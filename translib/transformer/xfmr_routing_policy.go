@@ -55,6 +55,7 @@ const (
 	rpolMatchIpv6PrefixSetFld                = "match_ipv6_prefix_set"
 	rpolSetCommunityInlineFld                = "set_community_inline"
 	rpolSetCommunityRefFld                   = "set_community_ref"
+	rpolSetCommunityRefAdditiveFld           = "set_community_ref_additive"
 	rpolSetAsnFld                            = "set_asn"
 	rpolSetRepeatAsnFld                      = "set_repeat_asn"
 	rpolSetNextHopFld                        = "set_next_hop"
@@ -1720,9 +1721,10 @@ func rpolSetCommunityAdditive(options ocbinds.E_OpenconfigBgpPolicy_BgpSetCommun
 	return false, false, tlerr.NotSupportedError{Format: "routing-policy statement actions bgp-actions set-community config options REMOVE is not supported; FRR removes communities only through \"set comm-list <name> delete\", which ROUTE_MAP has no field for"}
 }
 
-// rpolSetCommunityStored reads back what a statement already carries. options
-// has no field of its own: it is a marker on set_community_inline, so a request
-// that changes options alone re-encodes the communities that are there.
+// rpolSetCommunityStored reads back what a statement already carries. Under
+// INLINE, options is a marker on set_community_inline, so a request that changes
+// options alone re-encodes the communities that are there; under REFERENCE it is
+// set_community_ref_additive.
 func rpolSetCommunityStored(cfgDb *db.DB, policyName, stmtName string) (communities []string, additive bool, ref string) {
 	if cfgDb == nil {
 		return nil, false, ""
@@ -1740,7 +1742,9 @@ func rpolSetCommunityStored(cfgDb *db.DB, policyName, stmtName string) (communit
 func rpolSetCommunityOptionsResMap(inParams XfmrParams, reqInfo *rpolReqInfo, additive bool) (map[string]map[string]db.Value, error) {
 	stored, _, ref := rpolSetCommunityStored(inParams.dbs[db.ConfigDB], reqInfo.policyName, reqInfo.stmtName)
 	if ref != "" {
-		return nil, rpolSetCommunityOptionsRefErr(inParams)
+		return makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, map[string]string{
+			rpolSetCommunityRefAdditiveFld: strconv.FormatBool(additive),
+		}), nil
 	}
 	if len(stored) == 0 {
 		return nil, tlerr.InvalidArgsError{Format: "routing-policy statement actions bgp-actions set-community config options is stored as a marker on the inline communities, so the communities have to be configured before options"}
@@ -1748,10 +1752,6 @@ func rpolSetCommunityOptionsResMap(inParams XfmrParams, reqInfo *rpolReqInfo, ad
 	return makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, map[string]string{
 		rpolSetCommunityInlineFld: rpolSetCommunityInlineEncode(stored, additive),
 	}), nil
-}
-
-func rpolSetCommunityOptionsRefErr(inParams XfmrParams) error {
-	return tlerr.NotSupportedError{Format: "routing-policy statement actions bgp-actions set-community config options is not supported with the REFERENCE method; ROUTE_MAP records the referenced community-set in set_community_ref and has no field to carry options alongside it", Path: inParams.requestUri}
 }
 
 func parseRpolPolicyNameValue(v interface{}) (string, bool) {
@@ -2836,7 +2836,7 @@ func validateRpolMatchPfxSetOptions(inParams XfmrParams, reqInfo *rpolReqInfo) e
 
 var rpolMatchPrefixSetFlds = []string{rpolMatchPrefixSetFld, rpolMatchIpv6PrefixSetFld}
 var rpolBgpConditionsFlds = []string{rpolMatchMedFld, rpolMatchOriginFld, rpolMatchLocalPrefFld, rpolMatchCommunityFld, rpolMatchExtCommunityFld}
-var rpolSetCommunityFlds = []string{rpolSetCommunityInlineFld, rpolSetCommunityRefFld}
+var rpolSetCommunityFlds = []string{rpolSetCommunityInlineFld, rpolSetCommunityRefFld, rpolSetCommunityRefAdditiveFld}
 var rpolSetAsPathPrependFlds = []string{rpolSetAsnFld, rpolSetRepeatAsnFld}
 var rpolBgpActionsFlds = append(append([]string{rpolSetNextHopFld, rpolSetIpv6NextHopGlobalFld, rpolSetOriginFld, rpolSetLocalPrefFld, rpolSetMedFld, rpolSetMetricActionFld, rpolSetMetricFld},
 	rpolSetCommunityFlds...), rpolSetAsPathPrependFlds...)
@@ -3220,8 +3220,9 @@ func rpolYangToDbXfmr(inParams XfmrParams) (res map[string]map[string]db.Value, 
 			switch reqInfo.targetLeaf {
 			case "":
 				return makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, map[string]string{
-					rpolSetCommunityInlineFld: "",
-					rpolSetCommunityRefFld:    "",
+					rpolSetCommunityInlineFld:      "",
+					rpolSetCommunityRefFld:         "",
+					rpolSetCommunityRefAdditiveFld: "",
 				}), nil
 			case rpolSetCommunityOptionsLeaf:
 				// Dropping options keeps the communities and takes the marker
@@ -3230,7 +3231,9 @@ func rpolYangToDbXfmr(inParams XfmrParams) (res map[string]map[string]db.Value, 
 				// rewritten as an update rather than deleted.
 				stored, _, ref := rpolSetCommunityStored(inParams.dbs[db.ConfigDB], reqInfo.policyName, reqInfo.stmtName)
 				if ref != "" {
-					return res, rpolSetCommunityOptionsRefErr(inParams)
+					return makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, map[string]string{
+						rpolSetCommunityRefAdditiveFld: "",
+					}), nil
 				}
 				if len(stored) == 0 {
 					// No communities, so no marker to clear.
@@ -3255,7 +3258,8 @@ func rpolYangToDbXfmr(inParams XfmrParams) (res map[string]map[string]db.Value, 
 			}), nil
 		case rpolTargetStmtBgpSetCommunityRefCfg:
 			return makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, map[string]string{
-				rpolSetCommunityRefFld: "",
+				rpolSetCommunityRefFld:         "",
+				rpolSetCommunityRefAdditiveFld: "",
 			}), nil
 		case rpolTargetStmtBgpSetAsPathCfg:
 			fields := map[string]string{}
@@ -3668,9 +3672,6 @@ func rpolYangToDbXfmr(inParams XfmrParams) (res map[string]map[string]db.Value, 
 
 		switch cfgObj.Method {
 		case ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_SetCommunity_Config_Method_REFERENCE:
-			if optionsGiven {
-				return res, rpolSetCommunityOptionsRefErr(inParams)
-			}
 			refCfgObj := getRpolPolicyStmtBgpSetCommunityRefCfgObj(inParams.ygRoot, reqInfo.policyName, reqInfo.stmtName, false)
 			refName, refErr := rpolSetCommunityRefName(refCfgObj)
 			if refErr != nil {
@@ -3679,10 +3680,18 @@ func rpolYangToDbXfmr(inParams XfmrParams) (res map[string]map[string]db.Value, 
 			if refName == "" {
 				return res, tlerr.InvalidArgsError{Format: "routing-policy statement actions bgp-actions set-community reference config community-set-refs is missing in request payload"}
 			}
-			res = makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, map[string]string{
+			// frrcfgd expands the referenced set into "set community <members>",
+			// and appends "additive" when set_community_ref_additive is true. A
+			// write naming no options keeps the flag stored, as a write at the
+			// reference config does.
+			fields := map[string]string{
 				rpolSetCommunityInlineFld: "",
 				rpolSetCommunityRefFld:    refName,
-			})
+			}
+			if optionsGiven {
+				fields[rpolSetCommunityRefAdditiveFld] = strconv.FormatBool(additive)
+			}
+			res = makeRpolRouteMapResMap(reqInfo.policyName, reqInfo.stmtName, fields)
 			res = mergeDbResMap(res, makeRpolCommunitySetResMap(refName,
 				rpolCommunitySetSeedFields(inParams.dbs[db.ConfigDB], rpolCommunitySetTbl, refName, "")))
 			return res, nil
@@ -4473,8 +4482,13 @@ func rpolDbToYangXfmr(inParams XfmrParams) (err error) {
 			if reportMethod {
 				cfgObj.Method = ocbinds.OpenconfigRoutingPolicy_RoutingPolicy_PolicyDefinitions_PolicyDefinition_Statements_Statement_Actions_BgpActions_SetCommunity_Config_Method_REFERENCE
 			}
-			// options is not reported under REFERENCE: no field records it, so
-			// there is nothing to report.
+			if reportOptions {
+				if additive, _ := strconv.ParseBool(entry.Field[rpolSetCommunityRefAdditiveFld]); additive {
+					cfgObj.Options = ocbinds.OpenconfigBgpPolicy_BgpSetCommunityOptionType_ADD
+				} else {
+					cfgObj.Options = ocbinds.OpenconfigBgpPolicy_BgpSetCommunityOptionType_REPLACE
+				}
+			}
 			refCfgObj := getRpolPolicyStmtBgpSetCommunityRefCfgObj(inParams.ygRoot, reqInfo.policyName, reqInfo.stmtName, true)
 			if refCfgObj != nil {
 				// Both spellings are reported. 6.2.0 deprecated the singular
