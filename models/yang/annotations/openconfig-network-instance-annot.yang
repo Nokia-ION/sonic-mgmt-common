@@ -1848,6 +1848,119 @@ module openconfig-network-instance-annot {
       }
     }
 
+    // The VLANs of the default network instance are the SONiC VLANs, the
+    // CONFIG_DB VLAN rows top-level /vlans maps too, their state and members
+    // what vlanmgrd applied to APPL_DB. No other instance holds a VLAN.
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:vlans {
+      deviate add {
+          sonic-ext:virtual-table "true";
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "ni_vlans_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:vlans/oc-netinst:vlan {
+      deviate add {
+          sonic-ext:virtual-table "true";
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "ni_vlans_xfmr";
+          sonic-ext:path-transformer "ni_vlans_path_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:vlans/oc-netinst:vlan/oc-netinst:vlan-id {
+      deviate add {
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "ni_vlans_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:vlans/oc-netinst:vlan/oc-netinst:config {
+      deviate add {
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "ni_vlans_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:vlans/oc-netinst:vlan/oc-netinst:config/oc-netinst:vlan-id {
+      deviate add {
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "ni_vlans_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:vlans/oc-netinst:vlan/oc-netinst:config/oc-netinst:name {
+      deviate add {
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "ni_vlans_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:vlans/oc-netinst:vlan/oc-netinst:config/oc-netinst:status {
+      deviate add {
+          sonic-ext:db-name "CONFIG_DB";
+          sonic-ext:subtree-transformer "ni_vlans_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:vlans/oc-netinst:vlan/oc-netinst:state {
+      deviate add {
+          sonic-ext:db-name "APPL_DB";
+          sonic-ext:subtree-transformer "ni_vlans_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:vlans/oc-netinst:vlan/oc-netinst:state/oc-netinst:vlan-id {
+      deviate add {
+          sonic-ext:db-name "APPL_DB";
+          sonic-ext:subtree-transformer "ni_vlans_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:vlans/oc-netinst:vlan/oc-netinst:state/oc-netinst:name {
+      deviate add {
+          sonic-ext:db-name "APPL_DB";
+          sonic-ext:subtree-transformer "ni_vlans_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:vlans/oc-netinst:vlan/oc-netinst:state/oc-netinst:status {
+      deviate add {
+          sonic-ext:db-name "APPL_DB";
+          sonic-ext:subtree-transformer "ni_vlans_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:vlans/oc-netinst:vlan/oc-netinst:members {
+      deviate add {
+          sonic-ext:virtual-table "true";
+          sonic-ext:db-name "APPL_DB";
+          sonic-ext:subtree-transformer "ni_vlans_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:vlans/oc-netinst:vlan/oc-netinst:members/oc-netinst:member {
+      deviate add {
+          sonic-ext:virtual-table "true";
+          sonic-ext:db-name "APPL_DB";
+          sonic-ext:subtree-transformer "ni_vlans_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:vlans/oc-netinst:vlan/oc-netinst:members/oc-netinst:member/oc-netinst:state {
+      deviate add {
+          sonic-ext:db-name "APPL_DB";
+          sonic-ext:subtree-transformer "ni_vlans_xfmr";
+      }
+    }
+
+    deviation /oc-netinst:network-instances/oc-netinst:network-instance/oc-netinst:vlans/oc-netinst:vlan/oc-netinst:members/oc-netinst:member/oc-netinst:state/oc-netinst:interface {
+      deviate add {
+          sonic-ext:db-name "APPL_DB";
+          sonic-ext:subtree-transformer "ni_vlans_xfmr";
+      }
+    }
+
     // The AFT container reports the forwarding state fpmsyncd publishes to
     // APPL_DB. Each list below it is mapped by its own transformer; this one
     // answers a request on the container itself by fanning out to them, since

@@ -305,7 +305,6 @@ func niContainerCheckPayloadShape(niObj *ocbinds.OpenconfigNetworkInstance_Netwo
 		{"segment-routing", niObj.SegmentRouting != nil},
 		{"state", niObj.State != nil},
 		{"tables", niObj.Tables != nil},
-		{"vlans", niObj.Vlans != nil},
 	} {
 		if part.carry {
 			unmapped = append(unmapped, part.name)
@@ -596,6 +595,12 @@ func populateNiContainerNonProtocolFromDb(inParams XfmrParams, ygRoot *ygot.GoSt
 	if len(niIntfRows(cfgDb, niName)) > 0 {
 		uri := niContainerNiUri(niName) + "/interfaces"
 		if err := niContainerReplay(inParams, ygRoot, uri, DbToYang_ni_intf_xfmr); err != nil {
+			return err
+		}
+	}
+	if niVlanServesNi(niName) && len(niVlanNamesFromDb(cfgDb)) > 0 {
+		uri := niContainerNiUri(niName) + "/vlans"
+		if err := niContainerReplay(inParams, ygRoot, uri, DbToYang_ni_vlans_xfmr); err != nil {
 			return err
 		}
 	}
