@@ -219,3 +219,45 @@ func Test_openconfig_portchannel_lag_type(t *testing.T) {
 	t.Run("DELETE PortChannel113", processDeleteRequest(url, true))
 	time.Sleep(1 * time.Second)
 }
+
+// Test_openconfig_portchannel_bulk_member_before_lag verifies a single PATCH on the
+// interfaces list can create a PortChannel and bind a member when the member (with
+// aggregate-id) appears before the PortChannel in the array — the ordering that
+// previously failed with "Invalid Interface:<PortChannel>".
+func Test_openconfig_portchannel_bulk_member_before_lag(t *testing.T) {
+	const lagName = "PortChannel47"
+	const memberPort = "Ethernet0"
+
+	url := "/openconfig-interfaces:interfaces"
+
+	t.Log("\n\n--- Prepare member (remove L3 addresses) ---")
+	memberAddrURL := "/openconfig-interfaces:interfaces/interface[name=" + memberPort + "]/subinterfaces/subinterface[index=0]/openconfig-if-ip:ipv4/addresses"
+	t.Run("DELETE member IPv4 addresses", processDeleteRequest(memberAddrURL, true))
+	time.Sleep(1 * time.Second)
+
+	t.Log("\n\n--- PATCH interfaces: member before PortChannel (gNMI-style bulk update) ---")
+	url_input_body_json := "{\"openconfig-interfaces:interface\": [" +
+		"{\"name\":\"" + memberPort + "\",\"openconfig-if-ethernet:ethernet\":{\"config\":{\"openconfig-if-aggregate:aggregate-id\":\"" + lagName + "\"}}}," +
+		"{\"name\":\"" + lagName + "\",\"config\":{\"name\":\"" + lagName + "\",\"enabled\":true},\"openconfig-if-aggregate:aggregation\":{\"config\":{\"lag-type\":\"LACP\"}}}" +
+		"]}"
+	t.Run("PATCH bulk create lag and member with member listed first", processSetRequest(url, url_input_body_json, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	t.Log("\n\n--- Verify member aggregate-id ---")
+	aggURL := "/openconfig-interfaces:interfaces/interface[name=" + memberPort + "]/openconfig-if-ethernet:ethernet/config/openconfig-if-aggregate:aggregate-id"
+	expectedAgg := "{\"openconfig-if-aggregate:aggregate-id\": \"" + lagName + "\"}"
+	t.Run("GET member aggregate-id", processGetRequest(aggURL, nil, expectedAgg, false))
+	time.Sleep(1 * time.Second)
+
+	t.Log("\n\n--- Verify PortChannel created ---")
+	lagTypeURL := "/openconfig-interfaces:interfaces/interface[name=" + lagName + "]/openconfig-if-aggregate:aggregation/config/lag-type"
+	expectedLagType := "{\"openconfig-if-aggregate:lag-type\": \"LACP\"}"
+	t.Run("GET PortChannel lag-type", processGetRequest(lagTypeURL, nil, expectedLagType, false))
+	time.Sleep(1 * time.Second)
+
+	t.Log("\n\n--- Cleanup ---")
+	t.Run("DELETE member aggregate-id", processDeleteRequest(aggURL, true))
+	time.Sleep(1 * time.Second)
+	t.Run("DELETE PortChannel", processDeleteRequest("/openconfig-interfaces:interfaces/interface[name="+lagName+"]", true))
+	time.Sleep(1 * time.Second)
+}
