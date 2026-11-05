@@ -218,11 +218,71 @@ func TestExpandSetOpsMixedInterfaceList(t *testing.T) {
 	if len(ops) != 2 {
 		t.Fatalf("got %d ops, want 2", len(ops))
 	}
-	if ops[0].Path != "/openconfig-interfaces:interfaces/interface[name=Ethernet46]" {
+	// PortChannels run first so members listed before them can still join.
+	if ops[0].Path != "/openconfig-interfaces:interfaces/interface[name=PortChannel100]" {
 		t.Errorf("ops[0].Path = %s", ops[0].Path)
 	}
-	if ops[1].Path != "/openconfig-interfaces:interfaces/interface[name=PortChannel100]" {
+	if ops[1].Path != "/openconfig-interfaces:interfaces/interface[name=Ethernet46]" {
 		t.Errorf("ops[1].Path = %s", ops[1].Path)
+	}
+}
+
+func TestExpandSetOpsPortChannelsBeforeMembers(t *testing.T) {
+	payload := []byte(`{
+  "interface": [
+    {"name": "Ethernet46", "openconfig-if-ethernet:ethernet": {"config": {"openconfig-if-aggregate:aggregate-id": "PortChannel49"}}},
+    {"name": "Ethernet48", "config": {"name": "Ethernet48"}},
+    {"name": "PortChannel49", "config": {"name": "PortChannel49", "enabled": true}},
+    {"name": "Vlan10", "config": {"name": "Vlan10"}},
+    {"name": "PortChannel2", "config": {"name": "PortChannel2"}}
+  ]
+}`)
+	ops, _, err := expandSetOps("/openconfig-interfaces:interfaces", payload, UPDATE)
+	if err != nil {
+		t.Fatalf("expandSetOps: %v", err)
+	}
+	var got []string
+	for _, op := range ops {
+		got = append(got, strings.TrimPrefix(op.Path, "/openconfig-interfaces:interfaces/interface"))
+	}
+	want := []string{"[name=Vlan10]", "[name=PortChannel49]", "[name=PortChannel2]", "[name=Ethernet46]", "[name=Ethernet48]"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("op order = %v, want %v", got, want)
+	}
+}
+
+func TestExpandSetOpsVlansBeforeSwitchedVlanMembers(t *testing.T) {
+	payload := []byte(`{
+  "interface": [
+    {"name": "Ethernet40", "openconfig-if-ethernet:ethernet": {"openconfig-vlan:switched-vlan": {"config": {"access-vlan": 2010}}}},
+    {"name": "PortChannel52", "openconfig-if-aggregate:aggregation": {"openconfig-vlan:switched-vlan": {"config": {"access-vlan": 2010}}}},
+    {"name": "Vlan2010", "config": {"name": "Vlan2010"}},
+    {"name": "Loopback0", "config": {"name": "Loopback0"}},
+    {"name": "Vlan2011", "config": {"name": "Vlan2011"}}
+  ]
+}`)
+	ops, _, err := expandSetOps("/openconfig-interfaces:interfaces", payload, UPDATE)
+	if err != nil {
+		t.Fatalf("expandSetOps: %v", err)
+	}
+	var got []string
+	for _, op := range ops {
+		got = append(got, strings.TrimPrefix(op.Path, "/openconfig-interfaces:interfaces/interface"))
+	}
+	want := []string{"[name=Vlan2010]", "[name=Vlan2011]", "[name=PortChannel52]", "[name=Ethernet40]", "[name=Loopback0]"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("op order = %v, want %v", got, want)
+	}
+}
+
+func TestExpandSetOpsLacpListOrderUnchanged(t *testing.T) {
+	payload := []byte(`{"interfaces":{"interface":[{"name":"PortChannel20"},{"name":"PortChannel10"}]}}`)
+	ops, _, err := expandListInstances("/openconfig-lacp:lacp", payload)
+	if err != nil {
+		t.Fatalf("expandListInstances: %v", err)
+	}
+	if len(ops) != 2 || !strings.HasSuffix(ops[0].Path, "[name=PortChannel20]") {
+		t.Errorf("non-interfaces lists must keep payload order, got %+v", ops)
 	}
 }
 

@@ -1484,6 +1484,15 @@ var YangToDb_intf_eth_port_config_xfmr SubTreeXfmrYangToDb = func(inParams XfmrP
 			if err != nil {
 				return nil, err
 			}
+			curLag, lerr := retrievePortChannelAssociatedWithIntf(&inParams, &ifName)
+			if lerr != nil {
+				return nil, lerr
+			}
+			if curLag != nil && *curLag != lagStr {
+				errStr := ifName + " is already a member of " + *curLag
+				log.Error(errStr)
+				return nil, tlerr.InvalidArgsError{Format: errStr}
+			}
 
 		case DELETE:
 			lagId, err := retrievePortChannelAssociatedWithIntf(&inParams, &ifName)
