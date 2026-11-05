@@ -95,13 +95,6 @@ module openconfig-interfaces-annot {
         }
     }
 
-    deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:state/oc-intf:oper-status {
-        deviate add {
-            sonic-ext:field-transformer "intf_oper_status_xfmr";
-            sonic-ext:field-name "oper_status";
-        }
-    }
-
     deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:state/oc-intf:last-change {
         deviate add {
             sonic-ext:field-transformer "intf_last_change_xfmr";
@@ -118,18 +111,6 @@ module openconfig-interfaces-annot {
         deviate add {
             sonic-ext:field-transformer "intf_management_xfmr";
             sonic-ext:db-name "STATE_DB";
-        }
-    }
-
-    deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:state/oc-intf:cpu {
-        deviate add {
-            sonic-ext:field-transformer "intf_cpu_xfmr";
-        }
-    }
-
-    deviation /oc-intf:interfaces/oc-intf:interface/oc-eth:ethernet/oc-eth:state/oc-eth:mac-address {
-        deviate add {
-            sonic-ext:field-transformer "intf_eth_mac_address_xfmr";
         }
     }
 
@@ -155,22 +136,8 @@ module openconfig-interfaces-annot {
 
     deviation /oc-intf:interfaces/oc-intf:interface/oc-lag:aggregation/oc-lag:state {
       deviate add {
-            sonic-ext:db-nm "STATE_DB";
             sonic-ext:subtree-transformer "intf_lag_state_xfmr";
             sonic-ext:path-transformer "intf_lag_state_path_xfmr";
-      }
-    }
-
-    deviation /oc-intf:interfaces/oc-intf:interface/oc-lag:aggregation/oc-lag:state/oc-lag:lag-speed {
-        deviate add {
-            sonic-ext:composite-field-names "LAG_MEMBER_TABLE:link.speed,LAG_MEMBER_TABLE:runner.selected";
-        }
-    }
-
-    deviation /oc-intf:interfaces/oc-intf:interface/oc-lag:aggregation/oc-lag:state/oc-lag:member {
-      deviate add {
-            sonic-ext:db-nm "STATE_DB";
-            sonic-ext:table-name "LAG_MEMBER_TABLE";
       }
     }
 
@@ -557,13 +524,6 @@ module openconfig-interfaces-annot {
         }
     }
 
-    deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:state/oc-intf:ifindex {
-        deviate add {
-            sonic-ext:field-transformer "pins_ifindex_xfmr";
-            sonic-ext:table-name "P4RT_PORT_ID_TABLE";
-        }
-    }
-
     deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:state/p4rt-if:id {
         deviate add {
             sonic-ext:field-transformer "pins_if_id_xfmr";
@@ -595,12 +555,6 @@ module openconfig-interfaces-annot {
         deviate add {
             sonic-ext:field-transformer "intf_oper_status_xfmr";
             sonic-ext:composite-field-names "PORT_TABLE:oper_status,MGMT_PORT_TABLE:oper_status";
-        }
-    }
-
-    deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:state/oc-intf:management {
-        deviate add {
-            sonic-ext:field-transformer "intf_mgmt_xfmr";
         }
     }
 

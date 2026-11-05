@@ -48,12 +48,9 @@ func init() {
 	XlateFuncBind("YangToDb_intf_type_xfmr", YangToDb_intf_type_xfmr)
 	XlateFuncBind("DbToYang_intf_type_xfmr", DbToYang_intf_type_xfmr)
 	XlateFuncBind("DbToYang_intf_admin_status_xfmr", DbToYang_intf_admin_status_xfmr)
-	XlateFuncBind("DbToYang_intf_oper_status_xfmr", DbToYang_intf_oper_status_xfmr)
 	XlateFuncBind("DbToYang_intf_last_change_xfmr", DbToYang_intf_last_change_xfmr)
 	XlateFuncBind("DbToYang_intf_ifindex_xfmr", DbToYang_intf_ifindex_xfmr)
 	XlateFuncBind("DbToYang_intf_management_xfmr", DbToYang_intf_management_xfmr)
-	XlateFuncBind("DbToYang_intf_cpu_xfmr", DbToYang_intf_cpu_xfmr)
-	XlateFuncBind("DbToYang_intf_eth_mac_address_xfmr", DbToYang_intf_eth_mac_address_xfmr)
 	XlateFuncBind("YangToDb_intf_enabled_xfmr", YangToDb_intf_enabled_xfmr)
 	XlateFuncBind("DbToYang_intf_enabled_xfmr", DbToYang_intf_enabled_xfmr)
 	XlateFuncBind("DbToYang_intf_eth_aggr_id_xfmr", DbToYang_intf_eth_aggr_id_xfmr)
@@ -131,7 +128,6 @@ func init() {
 
 const (
 	PORT_ADMIN_STATUS   = "admin_status"
-	PORT_OPER_STATUS    = "oper_status"
 	PORT_LAST_UP_TIME   = "last_up_time"
 	PORT_LAST_DOWN_TIME = "last_down_time"
 	PORT_FLAP_COUNT     = "flap_count"
@@ -140,9 +136,6 @@ const (
 
 	PORTCHANNEL_INTERFACE_TN = "PORTCHANNEL_INTERFACE"
 	PORTCHANNEL_MEMBER_TN    = "PORTCHANNEL_MEMBER"
-	PORTCHANNEL_TN           = "PORTCHANNEL"
-	LAG_TABLE_TN             = "LAG_TABLE"
-	LAG_MEMBER_TABLE_TN      = "LAG_MEMBER_TABLE"
 	LOOPBACK_INTERFACE_TN    = "LOOPBACK_INTERFACE"
 	DEFAULT_MTU              = "9100"
 
@@ -886,55 +879,6 @@ var DbToYang_intf_admin_status_xfmr FieldXfmrDbtoYang = func(inParams XfmrParams
 	return result, err
 }
 
-func operStatusDbToOC(operStatus string) ocbinds.E_OpenconfigInterfaces_Interfaces_Interface_State_OperStatus {
-	switch operStatus {
-	case "up":
-		return ocbinds.OpenconfigInterfaces_Interfaces_Interface_State_OperStatus_UP
-	case "testing":
-		return ocbinds.OpenconfigInterfaces_Interfaces_Interface_State_OperStatus_TESTING
-	case "unknown":
-		return ocbinds.OpenconfigInterfaces_Interfaces_Interface_State_OperStatus_UNKNOWN
-	case "not present":
-		return ocbinds.OpenconfigInterfaces_Interfaces_Interface_State_OperStatus_NOT_PRESENT
-	default:
-		return ocbinds.OpenconfigInterfaces_Interfaces_Interface_State_OperStatus_DOWN
-	}
-}
-
-var DbToYang_intf_oper_status_xfmr FieldXfmrDbtoYang = func(inParams XfmrParams) (map[string]interface{}, error) {
-	result := make(map[string]interface{})
-
-	data := (*inParams.dbDataMap)[inParams.curDb]
-
-	intfType, _, ierr := getIntfTypeByName(inParams.key)
-	if intfType == IntfTypeUnset || ierr != nil {
-		log.Info("DbToYang_intf_oper_status_xfmr - Invalid interface type IntfTypeUnset")
-		return result, errors.New("Invalid interface type IntfTypeUnset")
-	}
-	intTbl := IntfTypeTblMap[intfType]
-
-	tblName, _ := getPortTableNameByDBId(intTbl, inParams.curDb)
-	if _, ok := data[tblName]; !ok {
-		log.Info("DbToYang_intf_oper_status_xfmr table not found : ", tblName)
-		return result, errors.New("table not found : " + tblName)
-	}
-	pTbl := data[tblName]
-	if _, ok := pTbl[inParams.key]; !ok {
-		log.Info("DbToYang_intf_oper_status_xfmr Interface not found : ", inParams.key)
-		return result, errors.New("Interface not found : " + inParams.key)
-	}
-	prtInst := pTbl[inParams.key]
-	operStatus, ok := prtInst.Field[PORT_OPER_STATUS]
-	if ok {
-		status := operStatusDbToOC(operStatus)
-		result["oper-status"] = ocbinds.E_OpenconfigInterfaces_Interfaces_Interface_State_OperStatus.ΛMap(status)["E_OpenconfigInterfaces_Interfaces_Interface_State_OperStatus"][int64(status)].Name
-	} else {
-		log.Info("Oper status field not found in DB")
-	}
-
-	return result, nil
-}
-
 func recentPortStateChangeNs(lastUpTimeStr, lastDownTimeStr string) (uint64, error) {
 	const layout = "Mon Jan 02 15:04:05 2006"
 	var lastUpTime, lastDownTime time.Time
@@ -1049,33 +993,8 @@ func sonicSnmpIfIndex(ifName string) (uint32, error) {
 }
 
 const (
-	deviceMetadataTN  = "DEVICE_METADATA"
-	deviceMetadataKey = "localhost"
-	deviceMetadataMac = "mac"
-	mgmtPortStateTbl  = "MGMT_PORT_TABLE"
+	mgmtPortStateTbl = "MGMT_PORT_TABLE"
 )
-
-// getSystemMacFromDb returns the chassis/system base MAC from CONFIG_DB
-// (DEVICE_METADATA|localhost|mac). The same value is returned for every
-// Ethernet interface state/mac-address GET.
-func getSystemMacFromDb(d *db.DB) (string, error) {
-	if d == nil {
-		return "", errors.New("CONFIG_DB handle not available")
-	}
-	entry, err := d.GetEntry(&db.TableSpec{Name: deviceMetadataTN}, db.Key{Comp: []string{deviceMetadataKey}})
-	if err != nil {
-		return "", err
-	}
-	macStr := strings.TrimSpace(entry.Get(deviceMetadataMac))
-	if macStr == "" {
-		return "", errors.New("system mac not found in DEVICE_METADATA")
-	}
-	hw, err := net.ParseMAC(macStr)
-	if err != nil {
-		return "", fmt.Errorf("invalid system mac in DEVICE_METADATA: %w", err)
-	}
-	return hw.String(), nil
-}
 
 func validateIntfInDb(inParams XfmrParams) error {
 	data := (*inParams.dbDataMap)[inParams.curDb]
@@ -1139,32 +1058,6 @@ var DbToYang_intf_management_xfmr FieldXfmrDbtoYang = func(inParams XfmrParams) 
 
 	log.Info("DbToYang_intf_management_xfmr: ", err.Error())
 	return result, err
-}
-
-// DbToYang_intf_cpu_xfmr reports whether an interface is the system CPU /
-// control-plane interface. SONiC does not model a dedicated CPU interface
-// in OpenConfig, so this is always false.
-var DbToYang_intf_cpu_xfmr FieldXfmrDbtoYang = func(inParams XfmrParams) (map[string]interface{}, error) {
-	result := make(map[string]interface{})
-	result["cpu"] = false
-	return result, nil
-}
-
-var DbToYang_intf_eth_mac_address_xfmr FieldXfmrDbtoYang = func(inParams XfmrParams) (map[string]interface{}, error) {
-	result := make(map[string]interface{})
-
-	if err := validateIntfInDb(inParams); err != nil {
-		log.Info("DbToYang_intf_eth_mac_address_xfmr: ", err.Error())
-		return result, err
-	}
-
-	macAddr, err := getSystemMacFromDb(inParams.dbs[db.ConfigDB])
-	if err != nil {
-		log.Info("DbToYang_intf_eth_mac_address_xfmr: ", err.Error())
-		return result, err
-	}
-	result["mac-address"] = macAddr
-	return result, nil
 }
 
 var YangToDb_intf_enabled_xfmr FieldXfmrYangToDb = func(inParams XfmrParams) (map[string]string, error) {
@@ -2378,7 +2271,7 @@ var populatePortCounters PopulateIntfCounters = func(inParams XfmrParams, ifName
 		"/openconfig-interfaces:interfaces/interface/subinterfaces/subinterface/openconfig-if-ip:ipv4/state/counters":
 		for _, attr := range subV4CntList {
 			uri := targetUriPath + "/" + attr
-			if ok, err := getSpecificCounterAttr(uri, &CounterData, counter); !ok || err != nil {
+			if ok, err := getSpecificCounterAttr(inParams, uri, &CounterData, counter); !ok || err != nil {
 				log.Info("Get subinterface IPv4 Counter URI failed :", uri)
 			}
 		}
@@ -2386,7 +2279,7 @@ var populatePortCounters PopulateIntfCounters = func(inParams XfmrParams, ifName
 		"/openconfig-interfaces:interfaces/interface/subinterfaces/subinterface/openconfig-if-ip:ipv6/state/counters":
 		for _, attr := range subV6CntList {
 			uri := targetUriPath + "/" + attr
-			if ok, err := getSpecificCounterAttr(uri, &CounterData, counter); !ok || err != nil {
+			if ok, err := getSpecificCounterAttr(inParams, uri, &CounterData, counter); !ok || err != nil {
 				log.Info("Get subinterface IPv6 Counter URI failed :", uri)
 			}
 		}
