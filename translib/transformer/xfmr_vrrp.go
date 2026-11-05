@@ -323,6 +323,9 @@ func yangToDbRoutedVlanVrrp(inParams XfmrParams, isIPv6 bool) (map[string]map[st
 	if ifName == "" {
 		return map[string]map[string]db.Value{}, nil
 	}
+	if err := validateDenyVrrpReplaceVirtualRouterIdLeaf(inParams, pathInfo); err != nil {
+		return nil, err
+	}
 	uriIP := pathInfo.Var("ip")
 
 	vrrpTbl := VRRP_TBL
@@ -449,6 +452,9 @@ func yangToDbSubIntfVrrp(inParams XfmrParams, isIPv6 bool) (map[string]map[strin
 		inParams.oper, inParams.uri, inParams.requestUri, pathInfo.YangPath, ifName, pathInfo.Var("index"), isIPv6, inParams.param)
 	if ifName == "" {
 		return map[string]map[string]db.Value{}, nil
+	}
+	if err := validateDenyVrrpReplaceVirtualRouterIdLeaf(inParams, pathInfo); err != nil {
+		return nil, err
 	}
 	subIntfIdx := parseSubIntfIndex(pathInfo.Var("index"))
 	parentIfName := ifName
@@ -588,6 +594,29 @@ func getVrrpPathInfo(inParams XfmrParams) *PathInfo {
 		return reqPathInfo
 	}
 	return pathInfo
+}
+
+func isVrrpVirtualRouterIdLeafPath(pathInfo *PathInfo) bool {
+	if pathInfo == nil {
+		return false
+	}
+	return strings.HasSuffix(normalizedYangPath(pathInfo.YangPath), "/vrrp-group/config/virtual-router-id")
+}
+
+func validateDenyVrrpReplaceVirtualRouterIdLeaf(inParams XfmrParams, pathInfo *PathInfo) error {
+	if inParams.oper != REPLACE {
+		return nil
+	}
+	if isVrrpVirtualRouterIdLeafPath(pathInfo) {
+		return tlerr.NotSupportedError{Format: "The virtual-router-id cannot be modified directly, delete the existing VRRP group and recreate it with the new virtual-router-id."}
+	}
+	if inParams.requestUri != "" && inParams.requestUri != inParams.uri {
+		reqPathInfo := NewPathInfo(inParams.requestUri)
+		if isVrrpVirtualRouterIdLeafPath(reqPathInfo) {
+			return tlerr.NotSupportedError{Format: "The virtual-router-id cannot be modified directly, delete the existing VRRP group and recreate it with the new virtual-router-id."}
+		}
+	}
+	return nil
 }
 
 func getRoutedVlanIPv4VrrpGroupFromRoot(inParams XfmrParams, ifName string, uriIP string, targetVrid uint8) (*ocbinds.OpenconfigInterfaces_Interfaces_Interface_RoutedVlan_Ipv4_Addresses_Address_Vrrp_VrrpGroup, uint8, bool) {
