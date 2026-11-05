@@ -415,7 +415,42 @@ func keyedOpsForListInstances(listPath string, listEntry *yang.Entry, insts []js
 		}
 		ops = append(ops, derivedSetOp{Path: keyed, Payload: []byte(inst)})
 	}
-	return ops, nil
+	return orderListInstanceOps(ops), nil
+}
+
+const (
+	ocVlanInstancePrefix        = "/openconfig-interfaces:interfaces/interface[name=Vlan"
+	ocPortChannelInstancePrefix = "/openconfig-interfaces:interfaces/interface[name=PortChannel"
+)
+
+// orderListInstanceOps puts interface instances that others in the same list
+// may reference ahead of the rest: VLANs (switched-vlan membership), then
+// PortChannels (aggregate-id). Bulk runs the ops in order, each with its own
+// ygRoot, so a reference only resolves if its target was already written
+// earlier in the transaction. Relative order is otherwise kept.
+func orderListInstanceOps(ops []derivedSetOp) []derivedSetOp {
+	if len(ops) < 2 {
+		return ops
+	}
+	isVlan := func(op derivedSetOp) bool { return strings.HasPrefix(op.Path, ocVlanInstancePrefix) }
+	isLag := func(op derivedSetOp) bool { return strings.HasPrefix(op.Path, ocPortChannelInstancePrefix) }
+	ordered := make([]derivedSetOp, 0, len(ops))
+	for _, op := range ops {
+		if isVlan(op) {
+			ordered = append(ordered, op)
+		}
+	}
+	for _, op := range ops {
+		if isLag(op) {
+			ordered = append(ordered, op)
+		}
+	}
+	for _, op := range ops {
+		if !isVlan(op) && !isLag(op) {
+			ordered = append(ordered, op)
+		}
+	}
+	return ordered
 }
 
 func keyedListInstanceURI(listPath string, listEntry *yang.Entry, instance json.RawMessage) (string, error) {
