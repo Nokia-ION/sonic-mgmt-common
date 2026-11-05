@@ -58,7 +58,7 @@ const (
 	// turns out to use. A table keeps the type it was created with, so an
 	// action added to the type later would never reach the tables already
 	// standing. Mirrors qosAclTableActions in xfmr_qos_policer.go.
-	qosAclActions = "PACKET_ACTION,POLICER_ACTION,SET_TC,COUNTER"
+	qosAclActions = "PACKET_ACTION,POLICER_ACTION,SET_TC,SET_DSCP,COUNTER"
 )
 
 // qosPolBindUrl is the ingress scheduler-policy binding of one interface.

@@ -11,11 +11,11 @@ package transformer
 // realized as:
 //
 //	ACL_TABLE_TYPE  a custom type declaring the match fields in use plus
-//	                PACKET_ACTION, POLICER_ACTION, SET_TC and COUNTER
+//	                PACKET_ACTION, POLICER_ACTION, SET_TC, SET_DSCP and COUNTER
 //	ACL_TABLE       one ingress table per classifier, bound to the ports that
 //	                bind the classifier or the scheduler-policy
 //	ACL_RULE        one rule per classifier term, carrying the term's match
-//	                fields and POLICER_ACTION / SET_TC
+//	                fields and POLICER_ACTION / SET_TC / SET_DSCP
 //	POLICER         one entry per policing scheduler, holding cir/cbs and the
 //	                exceed action
 //
@@ -24,15 +24,17 @@ package transformer
 // CONFIG_DB. The stitching is therefore recovered from the tables themselves:
 // a rule's POLICER_ACTION names the policer, and the policer name encodes the
 // scheduler-policy and sequence it came from. target-group is stored on the
-// same rule as SET_TC (the SAI_ACL_ENTRY_ATTR_ACTION_SET_TC action).
+// same rule as SET_TC (the SAI_ACL_ENTRY_ATTR_ACTION_SET_TC action) and
+// remark/set-dscp as SET_DSCP (SAI_ACL_ENTRY_ATTR_ACTION_SET_DSCP).
 //
-// remark/set-dscp has no ingress ACL backend action yet, so it is rejected
-// rather than silently dropped.
+// set-dot1p and set-mpls-tc have no ingress ACL backend action, so they are
+// rejected rather than silently dropped.
 //
 ////////////////////////////////////////////////////////////////////////////////
 
 import (
 	"fmt"
+	"math/bits"
 	"strconv"
 	"strings"
 
@@ -69,7 +71,7 @@ const (
 	 * even though nothing asks for it, because aclorch creates a counter per
 	 * rule and builds the SAI action type list from this leaf-list.
 	 */
-	qosAclTableActions = "PACKET_ACTION,POLICER_ACTION,SET_TC,COUNTER"
+	qosAclTableActions = "PACKET_ACTION,POLICER_ACTION,SET_TC,SET_DSCP,COUNTER"
 
 	// Term ids count down from this base so that a numerically lower term id
 	// is matched first, which is the order the OpenConfig term list implies.
@@ -340,11 +342,26 @@ func qosAclRuleFields(termId string, term *ocbinds.OpenconfigQos_Qos_Classifiers
 			Format: "Classifier term " + termId + " hop-limit condition is not supported",
 		}
 	}
-	if (c.Ipv4 != nil && c.Ipv4.Config != nil && len(c.Ipv4.Config.DscpSet) > 0) ||
-		(c.Ipv6 != nil && c.Ipv6.Config != nil && len(c.Ipv6.Config.DscpSet) > 0) {
-		return val, nil, tlerr.NotSupportedError{
-			Format: "Classifier term " + termId + " dscp-set is only supported in a classifier that matches on DSCP alone",
+	addDscp := func(dscp *uint8, dscpSet []uint8) error {
+		switch {
+		case dscp != nil && len(dscpSet) > 0:
+			return tlerr.InvalidArgsError{Format: "Classifier term " + termId + " sets both dscp and dscp-set"}
+		case dscp != nil:
+			val.Field["DSCP"] = strconv.Itoa(int(*dscp))
+		case len(dscpSet) > 0:
+			match, ok := qosDscpSetMatch(dscpSet)
+			if !ok {
+				return tlerr.NotSupportedError{
+					Format: fmt.Sprintf("Classifier term %s dscp-set %v is not a single DSCP value/mask; "+
+						"split it across terms", termId, dscpSet),
+				}
+			}
+			val.Field["DSCP"] = match
+		default:
+			return nil
 		}
+		addMatch("DSCP")
+		return nil
 	}
 
 	if c.Ipv4 != nil && c.Ipv4.Config != nil {
@@ -357,9 +374,8 @@ func qosAclRuleFields(termId string, term *ocbinds.OpenconfigQos_Qos_Classifiers
 			val.Field["DST_IP"] = *cfg.DestinationAddress
 			addMatch("DST_IP")
 		}
-		if cfg.Dscp != nil {
-			val.Field["DSCP"] = strconv.Itoa(int(*cfg.Dscp))
-			addMatch("DSCP")
+		if err := addDscp(cfg.Dscp, cfg.DscpSet); err != nil {
+			return val, nil, err
 		}
 		if cfg.Protocol != nil {
 			proto, err := qosIpv4Protocol(cfg.Protocol)
@@ -381,9 +397,8 @@ func qosAclRuleFields(termId string, term *ocbinds.OpenconfigQos_Qos_Classifiers
 			val.Field["DST_IPV6"] = *cfg.DestinationAddress
 			addMatch("DST_IPV6")
 		}
-		if cfg.Dscp != nil {
-			val.Field["DSCP"] = strconv.Itoa(int(*cfg.Dscp))
-			addMatch("DSCP")
+		if err := addDscp(cfg.Dscp, cfg.DscpSet); err != nil {
+			return val, nil, err
 		}
 		if cfg.Protocol != nil {
 			proto, err := qosIpv6Protocol(cfg.Protocol)
@@ -450,6 +465,48 @@ func qosAclRuleFields(termId string, term *ocbinds.OpenconfigQos_Qos_Classifiers
 	}
 
 	return val, matches, nil
+}
+
+// qosDscpSetMatch renders a dscp-set as the "value/mask" DSCP match aclorch
+// takes. An ACL rule holds one such match, so a set is accepted only when it is
+// exactly the values one value/mask selects; ok is false otherwise. A set of one
+// value keeps the full mask, which tells it apart from a plain dscp on read.
+func qosDscpSetMatch(dscpSet []uint8) (string, bool) {
+	uniq := map[uint8]bool{}
+	and, or := uint8(0x3F), uint8(0)
+	for _, d := range dscpSet {
+		if d > 0x3F {
+			return "", false
+		}
+		uniq[d] = true
+		and &= d
+		or |= d
+	}
+	varying := and ^ or
+	if len(uniq) != 1<<bits.OnesCount8(varying) {
+		return "", false
+	}
+	return fmt.Sprintf("%d/%d", and, 0x3F&^varying), true
+}
+
+// qosDscpSetFromMatch lists the DSCP values a "value/mask" match selects.
+func qosDscpSetFromMatch(match string) ([]uint8, bool) {
+	parts := strings.Split(match, "/")
+	if len(parts) != 2 {
+		return nil, false
+	}
+	value, err1 := strconv.ParseUint(parts[0], 0, 8)
+	mask, err2 := strconv.ParseUint(parts[1], 0, 8)
+	if err1 != nil || err2 != nil || value > 0x3F || mask > 0x3F {
+		return nil, false
+	}
+	set := []uint8{}
+	for d := uint64(0); d <= 0x3F; d++ {
+		if d&mask == value&mask {
+			set = append(set, uint8(d))
+		}
+	}
+	return set, true
 }
 
 func qosIpv4Protocol(u ocbinds.OpenconfigQos_Qos_Classifiers_Classifier_Terms_Term_Conditions_Ipv4_Config_Protocol_Union) (string, error) {
@@ -662,12 +719,13 @@ func qosTargetGroupToTc(inParams XfmrParams, name string) (string, error) {
 	return "", tlerr.NotFoundError{Format: "Forwarding group " + name + " not found"}
 }
 
-// qosApplyTermActions writes the SET_TC field from a classifier term onto the
-// ACL rule that realizes it. target-group resolves to a traffic class, stored
-// as the aclorch SET_TC action (SAI_ACL_ENTRY_ATTR_ACTION_SET_TC).
+// qosApplyTermActions writes the SET_TC and SET_DSCP fields from a classifier
+// term onto the ACL rule that realizes it. target-group resolves to a traffic
+// class, stored as the aclorch SET_TC action (SAI_ACL_ENTRY_ATTR_ACTION_SET_TC);
+// remark/set-dscp is the SET_DSCP action (SAI_ACL_ENTRY_ATTR_ACTION_SET_DSCP).
 //
-// remark actions (set-dscp, set-dot1p, set-mpls-tc) have no ingress ACL backend
-// action, so they are rejected rather than silently dropped.
+// set-dot1p and set-mpls-tc have no ingress ACL backend action, so they are
+// rejected rather than silently dropped.
 func qosApplyTermActions(inParams XfmrParams,
 	term *ocbinds.OpenconfigQos_Qos_Classifiers_Classifier_Terms_Term,
 	ruleVal *db.Value) error {
@@ -683,9 +741,13 @@ func qosApplyTermActions(inParams XfmrParams,
 		ruleVal.Field["SET_TC"] = tc
 	}
 	if qosTermHasRemark(term) {
-		return tlerr.NotSupportedError{
-			Format: "Classifier remark actions (set-dscp, set-dot1p, set-mpls-tc) are not supported",
+		cfg := term.Actions.Remark.Config
+		if cfg.SetDot1P != nil || cfg.SetMplsTc != nil {
+			return tlerr.NotSupportedError{
+				Format: "Classifier remark actions set-dot1p and set-mpls-tc are not supported",
+			}
 		}
+		ruleVal.Field["SET_DSCP"] = strconv.Itoa(int(*cfg.SetDscp))
 	}
 	return nil
 }
@@ -1305,7 +1367,13 @@ func qosFillTermFromRule(inParams XfmrParams, clsObj *ocbinds.OpenconfigQos_Qos_
 		ipv6Cfg().DestinationAddress = &addr
 	}
 	if v, ok := rule.Field["DSCP"]; ok {
-		if n, err := strconv.ParseUint(v, 10, 8); err == nil {
+		if set, isSet := qosDscpSetFromMatch(v); isSet {
+			if family == "ipv6" {
+				ipv6Cfg().DscpSet = set
+			} else {
+				ipv4Cfg().DscpSet = set
+			}
+		} else if n, err := strconv.ParseUint(v, 10, 8); err == nil {
 			dscp := uint8(n)
 			if family == "ipv6" {
 				ipv6Cfg().Dscp = &dscp
@@ -1373,6 +1441,23 @@ func qosFillTermFromRule(inParams XfmrParams, clsObj *ocbinds.OpenconfigQos_Qos_
 			a.State.TargetGroup = &fg
 		} else {
 			log.V(lvl.DEBUG).Infof("qosFillTermFromRule: no forwarding group with priority %v", v)
+		}
+	}
+	if v, ok := rule.Field["SET_DSCP"]; ok {
+		if n, err := strconv.ParseUint(v, 10, 8); err == nil {
+			a := actions()
+			if a.Remark == nil {
+				a.Remark = &ocbinds.OpenconfigQos_Qos_Classifiers_Classifier_Terms_Term_Actions_Remark{}
+			}
+			if a.Remark.Config == nil {
+				a.Remark.Config = &ocbinds.OpenconfigQos_Qos_Classifiers_Classifier_Terms_Term_Actions_Remark_Config{}
+			}
+			if a.Remark.State == nil {
+				a.Remark.State = &ocbinds.OpenconfigQos_Qos_Classifiers_Classifier_Terms_Term_Actions_Remark_State{}
+			}
+			cfgDscp, stateDscp := uint8(n), uint8(n)
+			a.Remark.Config.SetDscp = &cfgDscp
+			a.Remark.State.SetDscp = &stateDscp
 		}
 	}
 
