@@ -26,7 +26,6 @@ const (
 	QUEUE_NAME_TO_ID_MAP                  = "QUEUE_NAME_TO_ID_MAP"
 	PG_NAME_TO_ID_MAP                     = "PG_NAME_TO_ID_MAP"
 	PG_ID_KEY                             = "PG_ID_MAP"
-	CPU                                   = "CPU"
 	FRONT_PANEL                           = "FRONT_PANEL"
 	BUFFER_PG                             = "BUFFER_PG"
 	TXCACHE_QUEUE_MAP_PREFIX              = "queueMap_"
@@ -114,21 +113,6 @@ var DbToYang_qos_name_xfmr FieldXfmrDbtoYang = func(inParams XfmrParams) (map[st
 	resMap := make(map[string]interface{})
 	resMap["name"] = inParams.key
 	return resMap, err
-}
-
-func getMembers(stateDb *db.DB, intfName string) ([]string, error) {
-	if !strings.HasPrefix(intfName, PORTCHANNEL) {
-		return []string{intfName}, nil
-	}
-	memKeys, err := stateDb.GetKeys(&db.TableSpec{Name: LAG_MEMBER_TABLE_TN + stateDb.Opts.KeySeparator + intfName})
-	if err != nil {
-		return []string{intfName}, fmt.Errorf("%w; Unable to retrieve member keys for %s", err, intfName)
-	}
-	var members []string
-	for i := range memKeys {
-		members = append(members, memKeys[i].Get(1))
-	}
-	return members, nil
 }
 
 func doGetIntfBufferTableEntries(d *db.DB, ifName, tableName string) []db.Key {
