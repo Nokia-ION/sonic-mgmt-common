@@ -1635,7 +1635,7 @@ func TestCPU_GetSpecificCounterAttr_Subinterface(t *testing.T) {
 	}
 
 	for _, p := range pathsV4 {
-		status, err := getSpecificCounterAttr(p, entry, v4Counter)
+		status, err := getSpecificCounterAttr(XfmrParams{}, p, entry, v4Counter)
 		if !status || err != nil {
 			t.Errorf("getSpecificCounterAttr failed for path %s: err=%v", p, err)
 		}
@@ -1653,23 +1653,23 @@ func TestCPU_GetSpecificCounterAttr_Subinterface(t *testing.T) {
 	}
 
 	for _, p := range pathsV6 {
-		status, err := getSpecificCounterAttr(p, entry, v6Counter)
+		status, err := getSpecificCounterAttr(XfmrParams{}, p, entry, v6Counter)
 		if !status || err != nil {
 			t.Errorf("getSpecificCounterAttr failed for path %s: err=%v", p, err)
 		}
 	}
 
 	// Default fallback path
-	status, err := getSpecificCounterAttr("/openconfig-interfaces:interfaces/invalid/path", entry, v4Counter)
+	status, err := getSpecificCounterAttr(XfmrParams{}, "/openconfig-interfaces:interfaces/invalid/path", entry, v4Counter)
 	if !status || err != nil {
 		t.Errorf("getSpecificCounterAttr expected true, nil for invalid path, got status=%v, err=%v", status, err)
 	}
 
 	// Invalid type assertion branches in first switch
-	getSpecificCounterAttr("/openconfig-interfaces:interfaces/interface/state/counters", entry, "invalid_type")
-	getSpecificCounterAttr("/openconfig-interfaces:interfaces/interface/subinterfaces/subinterface/ipv4/state/counters", entry, "invalid_type")
-	getSpecificCounterAttr("/openconfig-interfaces:interfaces/interface/subinterfaces/subinterface/ipv6/state/counters", entry, "invalid_type")
-	getSpecificCounterAttr("/openconfig-interfaces:interfaces/interface/ethernet/state/counters", entry, "invalid_type")
+	getSpecificCounterAttr(XfmrParams{}, "/openconfig-interfaces:interfaces/interface/state/counters", entry, "invalid_type")
+	getSpecificCounterAttr(XfmrParams{}, "/openconfig-interfaces:interfaces/interface/subinterfaces/subinterface/ipv4/state/counters", entry, "invalid_type")
+	getSpecificCounterAttr(XfmrParams{}, "/openconfig-interfaces:interfaces/interface/subinterfaces/subinterface/ipv6/state/counters", entry, "invalid_type")
+	getSpecificCounterAttr(XfmrParams{}, "/openconfig-interfaces:interfaces/interface/ethernet/state/counters", entry, "invalid_type")
 }
 
 func TestCPU_DbToYang_intf_oper_status_xfmr(t *testing.T) {
