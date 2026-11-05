@@ -1821,3 +1821,51 @@ func Test_openconfig_subinterface_ipv4_vrrp_vip_parent_subnet_rejected(t *testin
 	}
 	unloadDB(db.ConfigDB, cleanupTbl)
 }
+
+func Test_openconfig_vrrp_replace_virtual_router_id_rejected(t *testing.T) {
+	t.Log("\n\n+++++++++++++ VRRP REPLACE virtual-router-id LEAF REJECTED ++++++++++++")
+
+	preReqMap := map[string]interface{}{
+		"VLAN_INTERFACE": map[string]interface{}{
+			"Vlan100|50.0.0.1/24": map[string]interface{}{},
+		},
+		"VRRP": map[string]interface{}{
+			"Vlan100|25": map[string]interface{}{
+				"vid":          "25",
+				"vip@":         "50.0.0.254/24",
+				"preempt":      "true",
+				"priority":     "100",
+				"adv_interval": "1",
+			},
+		},
+		"INTERFACE": map[string]interface{}{
+			"Ethernet0|20.0.0.1/24": map[string]interface{}{},
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+
+	replaceErr := tlerr.NotSupportedError{Format: "Replace is not supported for virtual-router-id. Delete the VRRP group and create it under the new virtual-router-id."}
+
+	v4RoutedURL := "/openconfig-interfaces:interfaces/interface[name=Vlan100]/openconfig-vlan:routed-vlan/openconfig-if-ip:ipv4/addresses/address[ip=50.0.0.1]/vrrp/vrrp-group[virtual-router-id=25]/config/virtual-router-id"
+	t.Run("Replace routed-vlan ipv4 virtual-router-id leaf rejected", processSetRequest(v4RoutedURL, "25", "PUT", true, replaceErr))
+	t.Run("Replace routed-vlan ipv4 virtual-router-id leaf rejected mismatched value", processSetRequest(v4RoutedURL, "11", "PUT", true, replaceErr))
+
+	v6RoutedURL := "/openconfig-interfaces:interfaces/interface[name=Vlan100]/openconfig-vlan:routed-vlan/openconfig-if-ip:ipv6/addresses/address[ip=2001:db8::1]/vrrp/vrrp-group[virtual-router-id=29]/config/virtual-router-id"
+	t.Run("Replace routed-vlan ipv6 virtual-router-id leaf rejected", processSetRequest(v6RoutedURL, "29", "PUT", true, replaceErr))
+
+	subIntfURL := "/openconfig-interfaces:interfaces/interface[name=Ethernet0]/subinterfaces/subinterface[index=0]/openconfig-if-ip:ipv4/addresses/address[ip=20.0.0.1]/vrrp/vrrp-group[virtual-router-id=19]/config/virtual-router-id"
+	t.Run("Replace subinterface ipv4 virtual-router-id leaf rejected", processSetRequest(subIntfURL, "19", "PUT", true, replaceErr))
+
+	cleanupTbl := map[string]interface{}{
+		"VLAN_INTERFACE": map[string]interface{}{
+			"Vlan100|50.0.0.1/24": "",
+		},
+		"VRRP": map[string]interface{}{
+			"Vlan100|25": "",
+		},
+		"INTERFACE": map[string]interface{}{
+			"Ethernet0|20.0.0.1/24": "",
+		},
+	}
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
