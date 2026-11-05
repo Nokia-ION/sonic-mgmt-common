@@ -41,8 +41,9 @@ package transformer_test
 // the rule as the SET_TC action (SAI_ACL_ENTRY_ATTR_ACTION_SET_TC). See
 // xfmr_qos_policer.go.
 //
-// set-dscp and the other remark actions have no ingress ACL backend action yet,
-// so they are rejected rather than silently dropped.
+// remark/set-dscp is the SET_DSCP action (SAI_ACL_ENTRY_ATTR_ACTION_SET_DSCP).
+// set-dot1p and set-mpls-tc have no ingress ACL backend action, so they are
+// rejected rather than silently dropped.
 
 import (
 	"testing"
@@ -767,6 +768,91 @@ func Test_qos_rewrite_unknown_forwarding_group(t *testing.T) {
 	t.Log("\n\n+++++++++++++ Done ++++++++++++")
 }
 
+// Test_qos_rewrite_set_dscp covers a DSCP classifier whose terms also rewrite
+// the DSCP, the policy-map class that matches DSCP 4 and 5 and sets DSCP 4. The
+// remark makes the classifier an ACL; a dscp-set becomes one masked DSCP match
+// and set-dscp the SET_DSCP action.
+func Test_qos_rewrite_set_dscp(t *testing.T) {
+	cleanuptbl := qosRwCleanupTbl()
+	unloadDB(db.ConfigDB, cleanuptbl)
+	loadDB(db.ConfigDB, qosRwPreloadFwdGroup())
+	time.Sleep(1 * time.Second)
+
+	t.Log("\n\n+++++++++++++ DSCP match and set-dscp in one term ++++++++++++")
+	url_body_json := `{"openconfig-qos:classifier":[{
+		"name":"` + qosRwCls + `",
+		"config":{"name":"` + qosRwCls + `","type":"IPV4"},
+		"terms":{"term":[{
+			"id":"1",
+			"config":{"id":"1"},
+			"conditions":{"ipv4":{"config":{"dscp-set":[4,5]}}},
+			"actions":{"config":{"target-group":"` + qosRwFg + `"},
+				"remark":{"config":{"set-dscp":4}}}
+		},{
+			"id":"2",
+			"config":{"id":"2"},
+			"conditions":{"ipv4":{"config":{"dscp":7}}},
+			"actions":{"config":{"target-group":"` + qosRwFg2 + `"},
+				"remark":{"config":{"set-dscp":6}}}
+		}]}
+	}]}`
+	t.Run("Set classifier", processSetRequest(qosRwClassifiersUrl, url_body_json, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+
+	expected_map := map[string]interface{}{"ACL_RULE": map[string]interface{}{
+		qosRwCls + "|TERM_1": map[string]interface{}{
+			"PRIORITY":      "59999",
+			"PACKET_ACTION": "FORWARD",
+			"IP_TYPE":       "IPV4ANY",
+			"DSCP":          "4/62",
+			"SET_TC":        qosRwFgTc,
+			"SET_DSCP":      "4",
+		}}}
+	t.Run("Verify dscp-set rule", verifyDbResult(rclient, "ACL_RULE|"+qosRwCls+"|TERM_1", expected_map, false))
+
+	expected_map = map[string]interface{}{"ACL_RULE": map[string]interface{}{
+		qosRwCls + "|TERM_2": map[string]interface{}{
+			"PRIORITY":      "59998",
+			"PACKET_ACTION": "FORWARD",
+			"IP_TYPE":       "IPV4ANY",
+			"DSCP":          "7",
+			"SET_TC":        qosRwFg2Tc,
+			"SET_DSCP":      "6",
+		}}}
+	t.Run("Verify dscp rule", verifyDbResult(rclient, "ACL_RULE|"+qosRwCls+"|TERM_2", expected_map, false))
+
+	t.Run("Verify nothing mapped", verifyDbResult(rclient, "DSCP_TO_TC_MAP|"+qosRwCls,
+		map[string]interface{}{}, false))
+
+	t.Log("\n\n+++++++++++++ Read the term back ++++++++++++")
+	termUrl := qosRwClassifierUrl(qosRwCls) + "/terms/term[id=1]"
+	t.Run("Get dscp-set", processGetRequest(termUrl+"/conditions/ipv4/config/dscp-set", nil,
+		`{"openconfig-qos:dscp-set":[4,5]}`, false))
+	t.Run("Get remark", processGetRequest(termUrl+"/actions/remark", nil,
+		`{"openconfig-qos:remark":{"config":{"set-dscp":4},"state":{"set-dscp":4}}}`, false))
+
+	t.Log("\n\n+++++++++++++ A dscp-set no value/mask covers is rejected ++++++++++++")
+	url_body_json = `{"openconfig-qos:classifier":[{
+		"name":"` + qosRwCls + `",
+		"config":{"name":"` + qosRwCls + `","type":"IPV4"},
+		"terms":{"term":[{
+			"id":"3",
+			"config":{"id":"3"},
+			"conditions":{"ipv4":{"config":{"dscp-set":[1,2,3]}}},
+			"actions":{"remark":{"config":{"set-dscp":0}}}
+		}]}
+	}]}`
+	expected_err := tlerr.NotSupportedError{
+		Format: "Classifier term 3 dscp-set [1 2 3] is not a single DSCP value/mask; split it across terms"}
+	t.Run("Set uncoverable set", processSetRequest(qosRwClassifiersUrl, url_body_json, "PATCH", true, expected_err))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify no rule written", verifyDbResult(rclient, "ACL_RULE|"+qosRwCls+"|TERM_3",
+		map[string]interface{}{}, false))
+
+	unloadDB(db.ConfigDB, cleanuptbl)
+	t.Log("\n\n+++++++++++++ Done ++++++++++++")
+}
+
 // Test_qos_rewrite_unsupported_remark covers the remark fields aclorch has no
 // ingress action for. Accepting them silently would leave the operator
 // believing the packet is rewritten when nothing touches it.
@@ -776,9 +862,9 @@ func Test_qos_rewrite_unsupported_remark(t *testing.T) {
 	time.Sleep(1 * time.Second)
 
 	expected_err := tlerr.NotSupportedError{
-		Format: "Classifier remark actions (set-dscp, set-dot1p, set-mpls-tc) are not supported"}
+		Format: "Classifier remark actions set-dot1p and set-mpls-tc are not supported"}
 
-	t.Log("\n\n+++++++++++++ set-dscp is rejected ++++++++++++")
+	t.Log("\n\n+++++++++++++ set-mpls-tc is rejected ++++++++++++")
 	url_body_json := `{"openconfig-qos:classifier":[{
 		"name":"` + qosRwCls + `",
 		"config":{"name":"` + qosRwCls + `","type":"IPV4"},
@@ -786,13 +872,13 @@ func Test_qos_rewrite_unsupported_remark(t *testing.T) {
 			"id":"1",
 			"config":{"id":"1"},
 			"conditions":{"transport":{"config":{"destination-port":22}}},
-			"actions":{"remark":{"config":{"set-dscp":32}}}
+			"actions":{"remark":{"config":{"set-dscp":32,"set-mpls-tc":4}}}
 		}]}
 	}]}`
-	t.Run("Set set-dscp classifier", processSetRequest(qosRwClassifiersUrl, url_body_json, "PATCH", true, expected_err))
+	t.Run("Set set-mpls-tc classifier", processSetRequest(qosRwClassifiersUrl, url_body_json, "PATCH", true, expected_err))
 	time.Sleep(1 * time.Second)
 
-	t.Run("Verify no set-dscp rule", verifyDbResult(rclient, "ACL_RULE|"+qosRwCls+"|TERM_1",
+	t.Run("Verify no set-mpls-tc rule", verifyDbResult(rclient, "ACL_RULE|"+qosRwCls+"|TERM_1",
 		map[string]interface{}{}, false))
 
 	t.Log("\n\n+++++++++++++ set-dot1p is rejected ++++++++++++")

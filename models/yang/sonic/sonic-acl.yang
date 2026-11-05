@@ -177,6 +177,20 @@ module sonic-acl {
 					}
 				}
 
+				leaf SET_DSCP {
+					description
+						"DSCP (0..63) rewritten on matching packets, realized as the
+						aclorch SET_DSCP action (SAI_ACL_ENTRY_ATTR_ACTION_SET_DSCP).
+						It is valid on an ingress table whose custom table type
+						lists SET_DSCP among its ACTIONS; aclorch enforces that, for
+						the reason given under SET_TC.";
+					type uint8 {
+						range 0..63 {
+							error-app-tag set-dscp-invalid-range;
+						}
+					}
+				}
+
 				leaf IP_TYPE {
 					mandatory true;
 					type enumeration {
@@ -297,7 +311,17 @@ module sonic-acl {
 				}
 
 				leaf DSCP { 
-					type inet:dscp;
+					description
+						"DSCP to match, either one value or 'value/mask', which
+						aclorch accepts as a masked match.";
+					type union {
+						type inet:dscp;
+						type string {
+							pattern "([0-9]|[1-5][0-9]|6[0-3])/([0-9]|[1-5][0-9]|6[0-3])" {
+								error-app-tag dscp-mask-invalid;
+							}
+						}
+					}
 				}
 
 				leaf POLICER_ACTION {

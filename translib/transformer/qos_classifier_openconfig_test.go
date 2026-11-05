@@ -311,19 +311,19 @@ func Test_qos_classifier_dscp_conflicts(t *testing.T) {
 	t.Run("Verify nothing mapped either",
 		verifyDbResult(rclient, "DSCP_TO_TC_MAP|"+qosClsDscp, map[string]interface{}{}, false))
 
-	t.Log("\n\n+++++++++++++ dscp-set on an ACL-backed classifier is rejected ++++++++++++")
+	t.Log("\n\n+++++++++++++ dscp-set on an ACL-backed classifier no value/mask covers is rejected ++++++++++++")
 	url_body_json = `{"openconfig-qos:classifier":[{
 		"name":"` + qosClsDscp + `",
 		"config":{"name":"` + qosClsDscp + `","type":"IPV4"},
 		"terms":{"term":[{
 			"id":"1",
 			"config":{"id":"1"},
-			"conditions":{"ipv4":{"config":{"dscp-set":[12,14],"source-address":"10.1.1.0/24"}}},
+			"conditions":{"ipv4":{"config":{"dscp-set":[12,13,14],"source-address":"10.1.1.0/24"}}},
 			"actions":{"config":{"target-group":"` + qosRwFg + `"}}
 		}]}
 	}]}`
 	expected_err = tlerr.NotSupportedError{
-		Format: "Classifier term 1 dscp-set is only supported in a classifier that matches on DSCP alone"}
+		Format: "Classifier term 1 dscp-set [12 13 14] is not a single DSCP value/mask; split it across terms"}
 	t.Run("Set ACL dscp-set", processSetRequest(qosRwClassifiersUrl, url_body_json, "PATCH", true, expected_err))
 	time.Sleep(1 * time.Second)
 	t.Run("Verify no ACL rule",
