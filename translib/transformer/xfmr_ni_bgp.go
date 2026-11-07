@@ -1203,6 +1203,48 @@ func wrapNiBgpRootAsDevice(s *ygot.GoStruct, niName, protoName string) (*ygot.Go
 	return &wrappedRoot, nil
 }
 
+// niBgpGlobalAfHierResMap maps the global afi-safis of a container-level
+// payload by the rules their leaf paths use: enabled is the instance's default
+// activation of the family, a field of the globals row added to gFields, and
+// the multipath limits are fields of the family's own row.
+func niBgpGlobalAfHierResMap(afis *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_Bgp_Global_AfiSafis,
+	niName string, gFields map[string]string) (map[string]map[string]db.Value, error) {
+	res := make(map[string]map[string]db.Value)
+	if afis == nil {
+		return res, nil
+	}
+	for afiEnum, afiObj := range afis.AfiSafi {
+		if afiObj == nil {
+			continue
+		}
+		afiSafi, ok := niBgpAfiSafiNameFromEnum(afiEnum)
+		if !ok {
+			name, _ := ygot.EnumName(afiEnum)
+			return nil, tlerr.InvalidArgsError{Format: fmt.Sprintf("unsupported BGP global afi-safi-name %q", name)}
+		}
+		if afiObj.Config != nil && afiObj.Config.Enabled != nil {
+			fld, err := niBgpGlobalDefaultUnicastFldForAfi(afiSafi)
+			if err != nil {
+				return nil, err
+			}
+			gFields[fld] = strconv.FormatBool(*afiObj.Config.Enabled)
+		}
+		afFields := map[string]string{}
+		if mp := afiObj.UseMultiplePaths; mp != nil {
+			if mp.Ebgp != nil && mp.Ebgp.Config != nil && mp.Ebgp.Config.MaximumPaths != nil {
+				afFields[niBgpMaxEbgpPathsFld] = strconv.FormatUint(uint64(*mp.Ebgp.Config.MaximumPaths), 10)
+			}
+			if mp.Ibgp != nil && mp.Ibgp.Config != nil && mp.Ibgp.Config.MaximumPaths != nil {
+				afFields[niBgpMaxIbgpPathsFld] = strconv.FormatUint(uint64(*mp.Ibgp.Config.MaximumPaths), 10)
+			}
+		}
+		if len(afFields) > 0 {
+			res = mergeDbResMapFields(res, makeNiBgpGlobalsAfSingleResMap(niName, afiSafi, afFields))
+		}
+	}
+	return res, nil
+}
+
 // buildNiBgpHierResMap maps a container-level payload. It also returns the
 // fields the payload asks to remove, which the caller stages as a delete.
 func buildNiBgpHierResMap(s *ygot.GoStruct, niName, protoName string) (map[string]map[string]db.Value, map[string]map[string]db.Value, error) {
@@ -1226,6 +1268,11 @@ func buildNiBgpHierResMap(s *ygot.GoStruct, niName, protoName string) (map[strin
 		for fld, val := range niBgpGlobalLeavesHierResMap(s, niName, protoName) {
 			gFields[fld] = val
 		}
+		afRes, err := niBgpGlobalAfHierResMap(bgpObj.Global.AfiSafis, niName, gFields)
+		if err != nil {
+			return res, nil, err
+		}
+		res = mergeDbResMapFields(res, afRes)
 		if len(gFields) > 0 {
 			res = mergeDbResMapFields(res, makeNiBgpGlobalsResMap(niName, gFields))
 		}
