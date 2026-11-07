@@ -1151,6 +1151,80 @@ func Test_openconfig_network_instance_bgp_global_afi_safi_ipv4_use_multiple_path
 	unloadDB(db.ConfigDB, cleanupTbl)
 }
 
+// The global afi-safis are written at every level of the hierarchy above
+// their leaves, by the rules the leaves use: enabled is the globals row's
+// default activation of the family, the multipath limits the family's row.
+func Test_openconfig_network_instance_bgp_global_afi_safis_container_levels(t *testing.T) {
+	proto := "/openconfig-network-instance:network-instances/network-instance[name=default]/protocols/protocol[identifier=BGP][name=bgp]"
+	af := proto + "/bgp/global/afi-safis/afi-safi[afi-safi-name=IPV4_UNICAST]"
+	ebgp := `{"config":{"maximum-paths":2}}`
+	mp := `{"ebgp":` + ebgp + `,"ibgp":{"config":{"maximum-paths":3}}}`
+	entry := `{"afi-safi-name":"openconfig-bgp-types:IPV4_UNICAST","config":{"afi-safi-name":"openconfig-bgp-types:IPV4_UNICAST","enabled":false},"use-multiple-paths":` + mp + `}`
+	afis := `{"afi-safi":[` + entry + `]}`
+	global := `{"afi-safis":` + afis + `}`
+	bgp := `{"global":` + global + `}`
+	protoBody := `{"identifier":"openconfig-policy-types:BGP","name":"bgp","config":{"identifier":"openconfig-policy-types:BGP","name":"bgp"},"bgp":` + bgp + `}`
+
+	preReqMap := map[string]interface{}{
+		"BGP_GLOBALS": map[string]interface{}{"default": map[string]interface{}{"local_asn": "65100"}},
+	}
+	cleanupTbl := map[string]interface{}{
+		"BGP_GLOBALS_AF": map[string]interface{}{"default|ipv4_unicast": ""},
+		"BGP_GLOBALS":    map[string]interface{}{"default": ""},
+	}
+	afRow := func(fields map[string]interface{}) map[string]interface{} {
+		return map[string]interface{}{"BGP_GLOBALS_AF": map[string]interface{}{"default|ipv4_unicast": fields}}
+	}
+	globalsRow := func(fields map[string]interface{}) map[string]interface{} {
+		return map[string]interface{}{"BGP_GLOBALS": map[string]interface{}{"default": fields}}
+	}
+	for _, tc := range []struct {
+		level, url, body string
+		ibgp, enabled    bool
+	}{
+		{"use-multiple-paths/ebgp", af + "/use-multiple-paths/ebgp", ebgp, false, false},
+		{"use-multiple-paths", af + "/use-multiple-paths", mp, true, false},
+		{"afi-safi instance", af, entry, true, true},
+		{"afi-safis", proto + "/bgp/global/afi-safis", afis, true, true},
+		{"global", proto + "/bgp/global", global, true, true},
+		{"bgp", proto + "/bgp", bgp, true, true},
+		{"protocol instance", proto, protoBody, true, true},
+	} {
+		unloadDB(db.ConfigDB, cleanupTbl)
+		loadDB(db.ConfigDB, preReqMap)
+		time.Sleep(1 * time.Second)
+		t.Run("PATCH global afi-safis at "+tc.level, processSetRequest(tc.url, tc.body, "PATCH", false, nil))
+		time.Sleep(1 * time.Second)
+		want := map[string]interface{}{"max_ebgp_paths": "2"}
+		if tc.ibgp {
+			want["max_ibgp_paths"] = "3"
+		}
+		t.Run("Verify BGP_GLOBALS_AF after "+tc.level, verifyDbResult(rclient, "BGP_GLOBALS_AF|default|ipv4_unicast", afRow(want), false))
+		wantGlobals := map[string]interface{}{"local_asn": "65100"}
+		if tc.enabled {
+			wantGlobals["default_ipv4_unicast"] = "false"
+		}
+		t.Run("Verify BGP_GLOBALS after "+tc.level, verifyDbResult(rclient, "BGP_GLOBALS|default", globalsRow(wantGlobals), false))
+	}
+
+	t.Run("GET global afi-safi use-multiple-paths", processGetRequest(af+"/use-multiple-paths", nil,
+		`{"openconfig-network-instance:use-multiple-paths":{"ebgp":{"config":{"maximum-paths":2},"state":{"maximum-paths":2}},"ibgp":{"config":{"maximum-paths":3},"state":{"maximum-paths":3}}}}`, false))
+	getEntry := `{"afi-safi-name":"openconfig-bgp-types:IPV4_UNICAST",` +
+		`"config":{"afi-safi-name":"openconfig-bgp-types:IPV4_UNICAST","enabled":false},` +
+		`"state":{"afi-safi-name":"openconfig-bgp-types:IPV4_UNICAST","enabled":false},` +
+		`"use-multiple-paths":{"ebgp":{"config":{"maximum-paths":2},"state":{"maximum-paths":2}},"ibgp":{"config":{"maximum-paths":3},"state":{"maximum-paths":3}}}}`
+	t.Run("GET global afi-safi instance", processGetRequest(af, nil, `{"openconfig-network-instance:afi-safi":[`+getEntry+`]}`, false))
+	t.Run("GET global afi-safis", processGetRequest(proto+"/bgp/global/afi-safis", nil, `{"openconfig-network-instance:afi-safis":{"afi-safi":[`+getEntry+`]}}`, false))
+	t.Run("PATCH global afi-safi allow-multiple-as refused",
+		processSetRequest(af+"/use-multiple-paths", `{"ebgp":{"config":{"allow-multiple-as":true}}}`, "PATCH", true,
+			tlerr.NotSupportedError{Format: "BGP container payload carries leaves that have no CONFIG_DB mapping: bgp/global/afi-safis/afi-safi[ipv4_unicast]/use-multiple-paths/ebgp/config/allow-multiple-as"}))
+	t.Run("PATCH global afi-safi L2VPN_EVPN at the afi-safis level refused",
+		processSetRequest(proto+"/bgp/global/afi-safis", `{"afi-safi":[{"afi-safi-name":"openconfig-bgp-types:L2VPN_EVPN","config":{"afi-safi-name":"openconfig-bgp-types:L2VPN_EVPN","enabled":true}}]}`, "PATCH", true,
+			tlerr.InvalidArgsError{Format: "unsupported BGP global afi-safi-name \"L2VPN_EVPN\""}))
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
 func Test_openconfig_network_instance_bgp_global_afi_safi_ipv4_config_enabled(t *testing.T) {
 	var url, urlInputBodyJSON string
 
