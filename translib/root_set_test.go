@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Azure/sonic-mgmt-common/translib/db"
 	"github.com/Azure/sonic-mgmt-common/translib/ocbinds"
 	"github.com/Azure/sonic-mgmt-common/translib/tlerr"
 )
@@ -553,5 +554,60 @@ func TestBulkAnswersEachUpdateSent(t *testing.T) {
 		if r.Entry.Err != nil || r.Operation != UPDATE {
 			t.Errorf("response %d = %+v, want a successful UPDATE", k, r)
 		}
+	}
+}
+
+// A root SET writes routing-policy before the modules that reference it,
+// keeping the payload's order for the rest.
+func TestDeriveSetOpsFromPayloadRoutingPolicyFirst(t *testing.T) {
+	payload := []byte(`{"openconfig-lldp:lldp":{"config":{"enabled":true}},` +
+		`"openconfig-network-instance:network-instances":{"network-instance":[{"name":"default"}]},` +
+		`"openconfig-routing-policy:routing-policy":{"policy-definitions":{}}}`)
+	ops, err := deriveSetOpsFromPayload(payload)
+	if err != nil {
+		t.Fatalf("deriveSetOpsFromPayload: %v", err)
+	}
+	var got []string
+	for _, op := range ops {
+		got = append(got, op.Path)
+	}
+	want := []string{"/openconfig-routing-policy:routing-policy", "/openconfig-lldp:lldp", "/openconfig-network-instance:network-instances"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("order = %v, want %v", got, want)
+	}
+}
+
+const rootSetPgPolicyPayload = `{"openconfig-network-instance:network-instances":{"network-instance":[{"name":"default","config":{"name":"default"},` +
+	`"protocols":{"protocol":[{"identifier":"openconfig-policy-types:BGP","name":"BGP","config":{"identifier":"openconfig-policy-types:BGP","name":"BGP"},` +
+	`"bgp":{"global":{"config":{"as":65501,"router-id":"192.0.2.1"}},"peer-groups":{"peer-group":[{"peer-group-name":"BGP-PEER-GROUP1",` +
+	`"config":{"peer-group-name":"BGP-PEER-GROUP1"},"afi-safis":{"afi-safi":[{"afi-safi-name":"openconfig-bgp-types:IPV4_UNICAST",` +
+	`"config":{"afi-safi-name":"openconfig-bgp-types:IPV4_UNICAST","enabled":true},` +
+	`"apply-policy":{"config":{"import-policy":["PERMIT-ALL"],"export-policy":["PERMIT-ALL"]}}}]}}]}}}]}}]},` +
+	`"openconfig-routing-policy:routing-policy":{"policy-definitions":{"policy-definition":[{"name":"PERMIT-ALL","config":{"name":"PERMIT-ALL"},` +
+	`"statements":{"statement":[{"name":"20","config":{"name":"20"},"actions":{"config":{"policy-result":"ACCEPT_ROUTE"}}}]}}]}}}`
+
+func rootSetPgPolicyCleanup() {
+	Delete(SetRequest{Path: "/openconfig-network-instance:network-instances/network-instance[name=default]/protocols/protocol[identifier=BGP][name=BGP]"})
+	Delete(SetRequest{Path: "/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition[name=PERMIT-ALL]"})
+}
+
+// A root SET naming network-instances before the routing-policy its
+// peer-group applies is accepted: the policy is written first.
+func TestRootSetPolicyAppliedBeforeItIsNamed(t *testing.T) {
+	rootSetPgPolicyCleanup()
+	defer rootSetPgPolicyCleanup()
+	if _, err := Update(SetRequest{Path: "/", Payload: []byte(rootSetPgPolicyPayload)}); err != nil {
+		t.Fatalf("root SET with network-instances first: %v", err)
+	}
+	d := getConfigDb()
+	if d == nil {
+		t.Fatal("no CONFIG_DB")
+	}
+	defer d.DeleteDB()
+	if _, err := d.GetEntry(&db.TableSpec{Name: "ROUTE_MAP_SET"}, db.Key{Comp: []string{"PERMIT-ALL"}}); err != nil {
+		t.Errorf("ROUTE_MAP_SET|PERMIT-ALL: %v", err)
+	}
+	if _, err := d.GetEntry(&db.TableSpec{Name: "BGP_PEER_GROUP_AF"}, db.Key{Comp: []string{"default", "BGP-PEER-GROUP1", "ipv4_unicast"}}); err != nil {
+		t.Errorf("BGP_PEER_GROUP_AF|default|BGP-PEER-GROUP1|ipv4_unicast: %v", err)
 	}
 }
