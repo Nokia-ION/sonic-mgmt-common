@@ -617,19 +617,29 @@ func Action(req ActionRequest) (ActionResponse, error) {
 // Bulk - BULK Request API for northbounds
 // Processes the request in received order
 // Transaction based
+// Answers each entry of req.Request with the response at its own index, up
+// to and including the first entry that fails, however many SETs translib
+// derives from it.
 func Bulk(req BulkRequest) (BulkResponse, error) {
+	expanded, origin, err := expandBulkRootSet(req)
+	if err != nil {
+		return BulkResponse{}, err
+	}
+	sent := req.Request
+	req.Request = expanded
+	resp, err := bulkApply(req)
+	return collapseBulkResponse(resp, sent, origin), err
+}
+
+// bulkApply runs the entries of req in one transaction, answering each in
+// order and stopping at the first that fails.
+func bulkApply(req BulkRequest) (BulkResponse, error) {
 	var err error
 	var keys []db.WatchKeys
 	var errSrc ErrSource
 	var appResp SetResponse
 
 	resp := BulkResponse{}
-
-	expanded, err := expandBulkRootSet(req)
-	if err != nil {
-		return resp, err
-	}
-	req.Request = expanded
 
 	if !isAuthorizedForBulk(req) {
 		return resp, tlerr.AuthorizationError{
