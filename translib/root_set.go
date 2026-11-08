@@ -96,7 +96,42 @@ func deriveSetOpsFromPayload(payload []byte) ([]derivedSetOp, error) {
 		}
 		ops = append(ops, op)
 	}
-	return ops, nil
+	return orderRootSetOps(ops), nil
+}
+
+// rootSetReferencedModules lists, in the order they are written, the modules
+// whose entries other modules of a root SET may reference: routing-policy
+// holds the policies and defined sets that network-instance protocols apply
+// and match on.
+var rootSetReferencedModules = []string{
+	"/openconfig-routing-policy:routing-policy",
+}
+
+// orderRootSetOps puts the modules others may reference ahead of the rest.
+// Bulk runs the ops in order and CVL checks each op's references as it is
+// written, so a reference only resolves if its target was written earlier in
+// the transaction, whatever order the payload named the modules in. Relative
+// order is otherwise kept.
+func orderRootSetOps(ops []derivedSetOp) []derivedSetOp {
+	if len(ops) < 2 {
+		return ops
+	}
+	ordered := make([]derivedSetOp, 0, len(ops))
+	placed := make([]bool, len(ops))
+	for _, module := range rootSetReferencedModules {
+		for i, op := range ops {
+			if !placed[i] && op.Path == module {
+				ordered = append(ordered, op)
+				placed[i] = true
+			}
+		}
+	}
+	for i, op := range ops {
+		if !placed[i] {
+			ordered = append(ordered, op)
+		}
+	}
+	return ordered
 }
 
 func parseTopLevelJSONObject(payload []byte) ([]jsonObjectKey, error) {
