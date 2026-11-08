@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/Azure/sonic-mgmt-common/translib/ocbinds"
+	"github.com/Azure/sonic-mgmt-common/translib/tlerr"
 )
 
 func TestIsRootSetPath(t *testing.T) {
@@ -142,12 +143,15 @@ func TestExpandBulkRootSetMultipleKeys(t *testing.T) {
 			{Entry: SetRequest{Path: "/openconfig-lldp:lldp", Payload: []byte(`{"config":{"enabled":true}}`)}, Operation: UPDATE},
 		},
 	}
-	got, err := expandBulkRootSet(req)
+	got, origin, err := expandBulkRootSet(req)
 	if err != nil {
 		t.Fatalf("expandBulkRootSet: %v", err)
 	}
 	if len(got) != 3 {
 		t.Fatalf("got %d entries, want 3", len(got))
+	}
+	if !reflect.DeepEqual(origin, []int{0, 0, 1}) {
+		t.Errorf("origin = %v, want [0 0 1]", origin)
 	}
 	if got[0].Entry.Path != "/openconfig-interfaces:interfaces" {
 		t.Errorf("got[0].Path = %s", got[0].Entry.Path)
@@ -474,5 +478,80 @@ func TestRootSetUnMarshallAfterDerive(t *testing.T) {
 	}
 	if lldp.Config == nil || lldp.Config.Enabled == nil || !*lldp.Config.Enabled {
 		t.Errorf("lldp.config.enabled not set from payload: %+v", lldp.Config)
+	}
+}
+
+// Responses to the parts of one expanded entry fold back onto that entry,
+// keeping its first error; a transaction that stopped partway answers only
+// the entries it reached.
+func TestCollapseBulkResponse(t *testing.T) {
+	errA := tlerr.InvalidArgs("part failed")
+	sent := []BulkRequestEntry{{Operation: UPDATE}, {Operation: REPLACE}}
+	origin := []int{0, 0, 1}
+	part := func(err error) BulkResponseEntry {
+		return BulkResponseEntry{Operation: UPDATE, Entry: SetResponse{Err: err}}
+	}
+	for _, tc := range []struct {
+		name  string
+		parts []BulkResponseEntry
+		want  []BulkResponseEntry
+	}{
+		{"every part succeeds", []BulkResponseEntry{part(nil), part(nil), part(nil)},
+			[]BulkResponseEntry{{Operation: UPDATE}, {Operation: REPLACE}}},
+		{"the second part of the first entry fails",
+			[]BulkResponseEntry{part(nil), part(errA)},
+			[]BulkResponseEntry{{Operation: UPDATE, Entry: SetResponse{Err: errA}}}},
+		{"the first part fails before the rest run",
+			[]BulkResponseEntry{part(errA)},
+			[]BulkResponseEntry{{Operation: UPDATE, Entry: SetResponse{Err: errA}}}},
+		{"the second entry fails",
+			[]BulkResponseEntry{part(nil), part(nil), part(errA)},
+			[]BulkResponseEntry{{Operation: UPDATE}, {Operation: REPLACE, Entry: SetResponse{Err: errA}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := collapseBulkResponse(BulkResponse{Response: tc.parts}, sent, origin)
+			if !reflect.DeepEqual(got.Response, tc.want) {
+				t.Errorf("got %+v, want %+v", got.Response, tc.want)
+			}
+		})
+	}
+}
+
+const rootSetBulkRpolPayload = `{"defined-sets":{"prefix-sets":{"prefix-set":[{"name":"R7-SET","config":{"name":"R7-SET","mode":"IPV4"},` +
+	`"prefixes":{"prefix":[{"ip-prefix":"198.51.100.7/32","masklength-range":"exact","config":{"ip-prefix":"198.51.100.7/32","masklength-range":"exact"}}]}}]}},` +
+	`"policy-definitions":{"policy-definition":[{"name":"R7-POL","config":{"name":"R7-POL"},"statements":{"statement":[{"name":"10","config":{"name":"10"},` +
+	`"conditions":{"match-prefix-set":{"config":{"prefix-set":"R7-SET"}}},"actions":{"config":{"policy-result":"ACCEPT_ROUTE"}}}]}}]}}`
+
+func rootSetBulkCleanup() {
+	for _, p := range []string{
+		"/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition[name=R7-POL]",
+		"/openconfig-routing-policy:routing-policy/defined-sets/prefix-sets/prefix-set[name=R7-SET]",
+		"/openconfig-routing-policy:routing-policy/defined-sets/prefix-sets/prefix-set[name=R7-SET2]",
+	} {
+		Delete(SetRequest{Path: p})
+	}
+}
+
+// A bulk SET whose first update translib expands into a prefix-set and a
+// policy is still answered with one response per update sent.
+func TestBulkAnswersEachUpdateSent(t *testing.T) {
+	rootSetBulkCleanup()
+	defer rootSetBulkCleanup()
+	req := BulkRequest{Request: []BulkRequestEntry{
+		{Entry: SetRequest{Path: "/openconfig-routing-policy:routing-policy", Payload: []byte(rootSetBulkRpolPayload)}, Operation: UPDATE},
+		{Entry: SetRequest{Path: "/openconfig-routing-policy:routing-policy/defined-sets/prefix-sets/prefix-set[name=R7-SET2]/config",
+			Payload: []byte(`{"name":"R7-SET2","mode":"IPV4"}`)}, Operation: UPDATE},
+	}}
+	resp, err := Bulk(req)
+	if err != nil {
+		t.Fatalf("Bulk: %v", err)
+	}
+	if len(resp.Response) != len(req.Request) {
+		t.Fatalf("got %d responses to %d updates", len(resp.Response), len(req.Request))
+	}
+	for k, r := range resp.Response {
+		if r.Entry.Err != nil || r.Operation != UPDATE {
+			t.Errorf("response %d = %+v, want a successful UPDATE", k, r)
+		}
 	}
 }

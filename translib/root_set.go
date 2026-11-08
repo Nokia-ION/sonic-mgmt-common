@@ -243,27 +243,55 @@ func applyRootSetAsBulk(req SetRequest, ops []derivedSetOp, operation int) (SetR
 // expandBulkRootSet expands origin-only non-DELETE entries into one Bulk
 // entry per payload key (and, for UPDATE, per YANG list instance when the
 // URI has no list keys), preserving request order. REPLACE list payloads
-// stay on the parent path.
-func expandBulkRootSet(req BulkRequest) ([]BulkRequestEntry, error) {
-	var out []BulkRequestEntry
+// stay on the parent path. origin names, for each expanded entry, the index
+// of the entry of req it was derived from.
+func expandBulkRootSet(req BulkRequest) (out []BulkRequestEntry, origin []int, err error) {
 	for i := range req.Request {
 		entry := req.Request[i]
 		if entry.Operation == DELETE {
 			out = append(out, entry)
+			origin = append(origin, i)
 			continue
 		}
 		ops, _, err := expandSetOps(entry.Entry.Path, entry.Entry.Payload, entry.Operation)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
+		}
+		if len(ops) == 0 {
+			return nil, nil, tlerr.InvalidArgs("root-path SET payload is empty")
 		}
 		for _, op := range ops {
 			e := entry
 			e.Entry.Path = op.Path
 			e.Entry.Payload = op.Payload
 			out = append(out, e)
+			origin = append(origin, i)
 		}
 	}
-	return out, nil
+	return out, origin, nil
+}
+
+// collapseBulkResponse folds the responses to the expanded entries back onto
+// the entries the caller sent, one each and in order. An entry answers with
+// its own operation and the first error among its parts; when the
+// transaction stopped partway through an entry's parts, that entry is the
+// last one answered.
+func collapseBulkResponse(resp BulkResponse, sent []BulkRequestEntry, origin []int) BulkResponse {
+	out := BulkResponse{}
+	for k, r := range resp.Response {
+		if k >= len(origin) {
+			break
+		}
+		i := origin[k]
+		if i == len(out.Response) {
+			out.Response = append(out.Response, BulkResponseEntry{Operation: sent[i].Operation, Entry: r.Entry})
+			continue
+		}
+		if out.Response[i].Entry.Err == nil && r.Entry.Err != nil {
+			out.Response[i].Entry = r.Entry
+		}
+	}
+	return out
 }
 
 // expandSetOps derives SET targets from an origin payload and, for UPDATE,
