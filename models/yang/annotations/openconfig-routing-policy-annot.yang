@@ -336,6 +336,27 @@ module openconfig-routing-policy-annot {
       }
     }
 
+    deviation /oc-rpol:routing-policy/oc-rpol:policy-definitions/oc-rpol:policy-definition/oc-rpol:statements/oc-rpol:statement/oc-rpol:actions/oc-bgp-pol:bgp-actions/oc-bgp-pol:set-community/oc-bgp-pol:state {
+      deviate add {
+          sonic-ext:db-name "STATE_DB";
+          sonic-ext:subtree-transformer "routing_policy_xfmr";
+      }
+    }
+
+    deviation /oc-rpol:routing-policy/oc-rpol:policy-definitions/oc-rpol:policy-definition/oc-rpol:statements/oc-rpol:statement/oc-rpol:actions/oc-bgp-pol:bgp-actions/oc-bgp-pol:set-community/oc-bgp-pol:state/oc-bgp-pol:method {
+      deviate add {
+          sonic-ext:db-name "STATE_DB";
+          sonic-ext:subtree-transformer "routing_policy_xfmr";
+      }
+    }
+
+    deviation /oc-rpol:routing-policy/oc-rpol:policy-definitions/oc-rpol:policy-definition/oc-rpol:statements/oc-rpol:statement/oc-rpol:actions/oc-bgp-pol:bgp-actions/oc-bgp-pol:set-community/oc-bgp-pol:state/oc-bgp-pol:options {
+      deviate add {
+          sonic-ext:db-name "STATE_DB";
+          sonic-ext:subtree-transformer "routing_policy_xfmr";
+      }
+    }
+
     deviation /oc-rpol:routing-policy/oc-rpol:policy-definitions/oc-rpol:policy-definition/oc-rpol:statements/oc-rpol:statement/oc-rpol:actions/oc-bgp-pol:bgp-actions/oc-bgp-pol:set-community/oc-bgp-pol:inline/oc-bgp-pol:state {
       deviate add {
           sonic-ext:db-name "STATE_DB";
