@@ -3821,3 +3821,52 @@ func Test_openconfig_routing_policy_match_tag_set_and_set_tag(t *testing.T) {
 	unloadDB(db.ConfigDB, cleanupTbl)
 	unloadDB(db.StateDB, appliedTbl)
 }
+
+// set-community state options report the option FRR applied: its applied
+// clause carries the additive marker for ADD and none for REPLACE. method is
+// not reported, FRR applying a reference as the members of its set.
+func Test_openconfig_routing_policy_statement_actions_bgp_set_community_state_options(t *testing.T) {
+	appliedTbl := map[string]interface{}{"ROUTE_MAP_APPLIED": map[string]interface{}{"SCST|10": "", "SCST|20": ""}}
+	appliedMap := map[string]interface{}{
+		"ROUTE_MAP_APPLIED": map[string]interface{}{
+			"SCST|10": map[string]interface{}{"route_operation": "permit", "set_community_inline": "65000:1 additive"},
+			"SCST|20": map[string]interface{}{"route_operation": "permit", "set_community_inline": "65000:2"},
+		},
+	}
+	cfgTbl := map[string]interface{}{
+		"ROUTE_MAP":     map[string]interface{}{"SCST|10": "", "SCST|20": ""},
+		"ROUTE_MAP_SET": map[string]interface{}{"SCST": ""},
+	}
+	cfgMap := map[string]interface{}{
+		"ROUTE_MAP_SET": map[string]interface{}{"SCST": map[string]interface{}{"NULL": "NULL"}},
+		"ROUTE_MAP": map[string]interface{}{
+			"SCST|10": map[string]interface{}{"route_operation": "permit", "set_community_inline": "65000:1 additive"},
+			"SCST|20": map[string]interface{}{"route_operation": "permit", "set_community_inline": "65000:2"},
+		},
+	}
+	unloadDB(db.ConfigDB, cfgTbl)
+	unloadDB(db.StateDB, appliedTbl)
+	loadDB(db.ConfigDB, cfgMap)
+	loadDB(db.StateDB, appliedMap)
+	time.Sleep(1 * time.Second)
+	defer func() {
+		unloadDB(db.StateDB, appliedTbl)
+		unloadDB(db.ConfigDB, cfgTbl)
+	}()
+
+	sc := func(stmt string) string {
+		return "/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition[name=SCST]" +
+			"/statements/statement[name=" + stmt + "]/actions/bgp-actions/set-community"
+	}
+	t.Run("GET set-community state options ADD",
+		processGetRequest(sc("10")+"/state/options", nil, `{"openconfig-bgp-policy:options":"ADD"}`, false))
+	t.Run("GET set-community state container ADD",
+		processGetRequest(sc("10")+"/state", nil, `{"openconfig-bgp-policy:state":{"options":"ADD"}}`, false))
+	t.Run("GET set-community state options REPLACE",
+		processGetRequest(sc("20")+"/state/options", nil, `{"openconfig-bgp-policy:options":"REPLACE"}`, false))
+	t.Run("GET set-community container reports config and state",
+		processGetRequest(sc("10"), nil, `{"openconfig-bgp-policy:set-community":{"config":{"method":"INLINE","options":"ADD"},`+
+			`"inline":{"config":{"communities":["65000:1"]}},"state":{"options":"ADD"}}}`, false))
+	t.Run("GET set-community state reports the inline members too",
+		processGetRequest(sc("20")+"/inline/state", nil, `{"openconfig-bgp-policy:state":{"communities":["65000:2"]}}`, false))
+}
