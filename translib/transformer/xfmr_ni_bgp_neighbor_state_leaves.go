@@ -20,7 +20,12 @@ const (
 	niBgpNbrStateSrcApplied = iota
 	niBgpNbrStateSrcStats
 	niBgpNbrStateSrcConfig
+	// A per-family setting FRR applies to the neighbor, read from the first
+	// family that carries it, IPv4 unicast before IPv6 unicast.
+	niBgpNbrStateSrcAfStats
 )
+
+var niBgpNbrStateAfStatsFamilies = []string{niBgpAfiSafiIPv4, niBgpAfiSafiIPv6}
 
 type niBgpNbrStateLeaf struct {
 	src int
@@ -64,7 +69,14 @@ var niBgpNbrStateLeafFlds = map[string]map[string]niBgpNbrStateLeaf{
 	"graceful-restart/state": {
 		"enabled": {niBgpNbrStateSrcConfig, "graceful_restart_enable"},
 	},
+	// FRR applies allowas-in per family; the configuration writes the one
+	// count to every family of the neighbor.
+	"as-path-options/state": {
+		"allow-own-as": {niBgpNbrStateSrcAfStats, niBgpNbrAfStatsAllowOwnAsFld},
+	},
 }
+
+const niBgpNbrAfStatsAllowOwnAsFld = "allow_own_as"
 
 // The last NOTIFICATION FRR keeps is the one behind the last reset, so the
 // leaves of one direction are filled only when it went that way.
@@ -78,10 +90,11 @@ const (
 	niBgpNbrStateMessagesContainer = "state/messages"
 )
 
-var niBgpNbrStateOwnContainers = map[string]bool{"timers/state": true, "ebgp-multihop/state": true, "enable-bfd/state": true, "graceful-restart/state": true}
+var niBgpNbrStateOwnContainers = map[string]bool{"timers/state": true, "ebgp-multihop/state": true, "enable-bfd/state": true, "graceful-restart/state": true,
+	"as-path-options/state": true}
 
 var niBgpNbrStateLeafReqUriRe = regexp.MustCompile(niBgpNbrStateUriPfx +
-	`/(state|timers/state|transport/state|ebgp-multihop/state|enable-bfd/state|graceful-restart/state)(?:/([a-z-]+))?$`)
+	`/(state|timers/state|transport/state|ebgp-multihop/state|enable-bfd/state|graceful-restart/state|as-path-options/state)(?:/([a-z-]+))?$`)
 var niBgpNbrStateMsgReqUriRe = regexp.MustCompile(niBgpNbrStateUriPfx +
 	`/state/messages(?:/(sent|received)(?:/([A-Za-z-]+))?)?$`)
 
@@ -189,6 +202,16 @@ func niBgpNbrStateRows(inParams XfmrParams, niName, neighborAddr string) (map[in
 			return nil, err
 		} else if found {
 			rows[niBgpNbrStateSrcStats] = entry
+		}
+		for _, afiSafi := range niBgpNbrStateAfStatsFamilies {
+			entry, found, err := niBgpNbrAfStatsFresh(stateDb, niName, neighborAddr, afiSafi)
+			if err != nil {
+				return nil, err
+			}
+			if found && strings.TrimSpace(entry.Field[niBgpNbrAfStatsAllowOwnAsFld]) != "" {
+				rows[niBgpNbrStateSrcAfStats] = entry
+				break
+			}
 		}
 	}
 	if cfgDb := inParams.dbs[db.ConfigDB]; cfgDb != nil {
@@ -327,20 +350,29 @@ func niBgpNbrStateLeafSubscribe(r *niBgpNbrStateLeafReq) XfmrSubscOutParams {
 		result.nOpts = &notificationOpts{pType: Sample}
 		return result
 	}
-	applied, config := map[string]string{}, map[string]string{}
+	applied, config, afStats := map[string]string{}, map[string]string{}, map[string]string{}
 	for leaf, src := range niBgpNbrStateLeafFlds[r.container] {
 		if r.leaf != "" && r.leaf != leaf {
 			continue
 		}
-		if src.src == niBgpNbrStateSrcConfig {
+		switch src.src {
+		case niBgpNbrStateSrcConfig:
 			config[src.fld] = leaf
-		} else {
+		case niBgpNbrStateSrcAfStats:
+			afStats[src.fld] = leaf
+		default:
 			applied[src.fld] = leaf
 		}
 	}
 	result.dbDataMap = RedisDbSubscribeMap{}
+	if len(applied) > 0 || len(afStats) > 0 {
+		result.dbDataMap[db.StateDB] = map[string]map[string]map[string]string{}
+	}
 	if len(applied) > 0 {
-		result.dbDataMap[db.StateDB] = map[string]map[string]map[string]string{niBgpNbrAppliedTbl: {key: applied}}
+		result.dbDataMap[db.StateDB][niBgpNbrAppliedTbl] = map[string]map[string]string{key: applied}
+	}
+	if len(afStats) > 0 {
+		result.dbDataMap[db.StateDB][niBgpNbrAfStatsTbl] = map[string]map[string]string{key + "|*": afStats}
 	}
 	if len(config) > 0 {
 		result.dbDataMap[db.ConfigDB] = map[string]map[string]map[string]string{niBgpNbrTbl: {key: config}}

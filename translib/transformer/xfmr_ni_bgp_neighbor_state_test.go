@@ -836,3 +836,41 @@ func Test_openconfig_network_instance_bgp_neighbor_af_state_leaves(t *testing.T)
 	unloadDB(db.ConfigDB, map[string]interface{}{"BGP_NEIGHBOR_AF": map[string]interface{}{"default|11.0.0.155|ipv4_unicast": ""}})
 	unloadNiBgpNbrAfStats("11.0.0.155", niBgpNbrAfIPv4)
 }
+
+// allow-own-as state reports the count FRR applied, from the first family
+// that carries it.
+func Test_openconfig_network_instance_bgp_neighbor_as_path_options_state(t *testing.T) {
+	afStats := func(rows map[string]interface{}) map[string]interface{} {
+		return map[string]interface{}{"BGP_NEIGH_AF_STATS": rows}
+	}
+	keys := afStats(map[string]interface{}{"default|11.0.0.155|ipv4_unicast": "", "default|11.0.0.155|ipv6_unicast": ""})
+	loadNiBgpNbrApplied("11.0.0.155", niBgpNbrAppliedRow())
+	loadDB(db.ConfigDB, map[string]interface{}{
+		"BGP_NEIGHBOR": map[string]interface{}{"default|11.0.0.155": map[string]interface{}{"asn": "65300"}},
+	})
+	defer func() {
+		unloadDB(db.StateDB, keys)
+		unloadDB(db.ConfigDB, map[string]interface{}{"BGP_NEIGHBOR": map[string]interface{}{"default|11.0.0.155": ""}})
+		unloadNiBgpNbrApplied("11.0.0.155")
+	}()
+
+	nbrUrl := niBgpProtoUrl + "/bgp/neighbors/neighbor[neighbor-address=11.0.0.155]"
+	loadDB(db.StateDB, afStats(map[string]interface{}{
+		"default|11.0.0.155|ipv4_unicast": map[string]interface{}{"prefixes_received": "0", "allow_own_as": "3"},
+		"default|11.0.0.155|ipv6_unicast": map[string]interface{}{"prefixes_received": "0", "allow_own_as": "5"},
+	}))
+	time.Sleep(1 * time.Second)
+	t.Run("GET allow-own-as from the IPv4 family",
+		processGetRequest(nbrUrl+"/as-path-options/state/allow-own-as", nil, `{"openconfig-network-instance:allow-own-as":3}`, false))
+	t.Run("GET as-path-options state container",
+		processGetRequest(nbrUrl+"/as-path-options/state", nil, `{"openconfig-network-instance:state":{"allow-own-as":3}}`, false))
+
+	unloadDB(db.StateDB, keys)
+	loadDB(db.StateDB, afStats(map[string]interface{}{
+		"default|11.0.0.155|ipv4_unicast": map[string]interface{}{"prefixes_received": "0"},
+		"default|11.0.0.155|ipv6_unicast": map[string]interface{}{"prefixes_received": "0", "allow_own_as": "5"},
+	}))
+	time.Sleep(1 * time.Second)
+	t.Run("GET allow-own-as from the IPv6 family when IPv4 has none",
+		processGetRequest(nbrUrl+"/as-path-options/state/allow-own-as", nil, `{"openconfig-network-instance:allow-own-as":5}`, false))
+}
