@@ -1947,6 +1947,7 @@ func getSubIntfIPv6AddressObj(subIntfObj *ocbinds.OpenconfigInterfaces_Interface
 
 func populateRoutedVlanVrrpGroup(grpObj *ocbinds.OpenconfigInterfaces_Interfaces_Interface_RoutedVlan_Ipv4_Addresses_Address_Vrrp_VrrpGroup, grp vrrpGroupData) {
 	ygot.BuildEmptyTree(grpObj)
+	ygot.BuildEmptyTree(grpObj.State)
 
 	vrid := grp.vrid
 	grpObj.VirtualRouterId = &vrid
@@ -1988,6 +1989,7 @@ func populateRoutedVlanVrrpGroup(grpObj *ocbinds.OpenconfigInterfaces_Interfaces
 
 func populateRoutedVlanIPv6VrrpGroup(grpObj *ocbinds.OpenconfigInterfaces_Interfaces_Interface_RoutedVlan_Ipv6_Addresses_Address_Vrrp_VrrpGroup, grp vrrpGroupData) {
 	ygot.BuildEmptyTree(grpObj)
+	ygot.BuildEmptyTree(grpObj.State)
 
 	vrid := grp.vrid
 	grpObj.VirtualRouterId = &vrid
@@ -2028,6 +2030,7 @@ func populateRoutedVlanIPv6VrrpGroup(grpObj *ocbinds.OpenconfigInterfaces_Interf
 
 func populateSubIntfIPv4VrrpGroup(grpObj *ocbinds.OpenconfigInterfaces_Interfaces_Interface_Subinterfaces_Subinterface_Ipv4_Addresses_Address_Vrrp_VrrpGroup, grp vrrpGroupData) {
 	ygot.BuildEmptyTree(grpObj)
+	ygot.BuildEmptyTree(grpObj.State)
 
 	vrid := grp.vrid
 	grpObj.VirtualRouterId = &vrid
@@ -2069,6 +2072,7 @@ func populateSubIntfIPv4VrrpGroup(grpObj *ocbinds.OpenconfigInterfaces_Interface
 
 func populateSubIntfIPv6VrrpGroup(grpObj *ocbinds.OpenconfigInterfaces_Interfaces_Interface_Subinterfaces_Subinterface_Ipv6_Addresses_Address_Vrrp_VrrpGroup, grp vrrpGroupData) {
 	ygot.BuildEmptyTree(grpObj)
+	ygot.BuildEmptyTree(grpObj.State)
 
 	vrid := grp.vrid
 	grpObj.VirtualRouterId = &vrid
