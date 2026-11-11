@@ -684,7 +684,9 @@ func niBgpPeerCfgDbToYang(k *niBgpPeerKind, inParams XfmrParams, base SubTreeXfm
 }
 
 var YangToDb_ni_bgp_nbr_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (map[string]map[string]db.Value, error) {
-	return niBgpPeerCfgYangToDb(niBgpNbrKind, inParams, yangToDbNiBgpNbrCfgBase)
+	return niBgpCheckedYangToDb(inParams, func(p XfmrParams) (map[string]map[string]db.Value, error) {
+		return niBgpPeerCfgYangToDb(niBgpNbrKind, p, yangToDbNiBgpNbrCfgBase)
+	})
 }
 
 var DbToYang_ni_bgp_nbr_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) error {

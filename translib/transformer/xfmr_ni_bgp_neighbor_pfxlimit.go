@@ -53,6 +53,20 @@ const (
 	niBgpNbrMaxPfxForceFld    = "max_prefix_force"
 )
 
+// niBgpNbrPfxLimitPayloadLeaves lists the leaves, relative to the bgp
+// container, that a request at or below a neighbor's prefix-limit writes.
+var niBgpNbrPfxLimitPayloadLeaves = func() map[string]bool {
+	leaves := map[string]bool{}
+	for _, fam := range []string{"ipv4-unicast", "ipv6-unicast"} {
+		for _, cont := range []string{"prefix-limit", "prefix-limit-received"} {
+			for _, leaf := range []string{niBgpNbrMaxPrefixesLeaf, niBgpNbrPreventTeardownLeaf, niBgpNbrWarnThresholdLeaf} {
+				leaves["neighbors/neighbor/afi-safis/afi-safi/"+fam+"/"+cont+"/config/"+leaf] = true
+			}
+		}
+	}
+	return leaves
+}()
+
 var niBgpNbrAfPfxLimitReqUriRe = regexp.MustCompile(niBgpNbrUriPfx + `/afi-safis/afi-safi\[afi-safi-name=([^\]]+)\]/(ipv4-unicast|ipv6-unicast)/(prefix-limit|prefix-limit-received)/config(?:/(max-prefixes|prevent-teardown|warning-threshold-pct))?$`)
 var niBgpNbrAfFamilyReqUriRe = regexp.MustCompile(niBgpNbrUriPfx + `/afi-safis/afi-safi\[afi-safi-name=([^\]]+)\]/(ipv4-unicast|ipv6-unicast)(?:/(prefix-limit|prefix-limit-received))?$`)
 
