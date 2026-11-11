@@ -28,6 +28,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	log "github.com/golang/glog"
 
@@ -506,6 +507,9 @@ func niBgpPayloadListKey(k reflect.Value) string {
 	}
 	if afi, ok := k.Interface().(ocbinds.E_OpenconfigBgpTypes_AFI_SAFI_TYPE); ok {
 		if name, ok := niBgpAfiSafiNameFromEnum(afi); ok {
+			return name
+		}
+		if name, err := ygot.EnumName(afi); err == nil {
 			return name
 		}
 	}
@@ -1836,7 +1840,99 @@ func niBgpDeleteGlobalsForNi(inParams XfmrParams, niName string) (map[string]map
 	return res, nil
 }
 
-var YangToDb_ni_bgp_global_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (res map[string]map[string]db.Value, err error) {
+var YangToDb_ni_bgp_global_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (map[string]map[string]db.Value, error) {
+	return niBgpCheckedYangToDb(inParams, yangToDbNiBgpGlobalCfg)
+}
+
+// niBgpCheckedYangToDb maps a write with mapFn and refuses one that would be
+// accepted without being applied: a payload leaf with no CONFIG_DB mapping,
+// wherever the request is rooted, or a new AS for a running BGP instance,
+// which frrcfgd does not apply.
+func niBgpCheckedYangToDb(inParams XfmrParams, mapFn SubTreeXfmrYangToDb) (map[string]map[string]db.Value, error) {
+	res, err := mapFn(inParams)
+	if err != nil || inParams.oper == DELETE {
+		return res, err
+	}
+	if err = niBgpUnmappedWriteErr(inParams); err == nil {
+		err = niBgpAsChangeErr(inParams, res)
+	}
+	if err != nil {
+		return make(map[string]map[string]db.Value), err
+	}
+	return res, nil
+}
+
+// niBgpUnmappedWriteErr refuses the payload of a write below a BGP instance
+// when it carries a leaf with no CONFIG_DB mapping. Every transformer the
+// payload reaches asks, so the answer is kept for the transaction.
+func niBgpUnmappedWriteErr(inParams XfmrParams) error {
+	if inParams.ygRoot == nil || *inParams.ygRoot == nil {
+		return nil
+	}
+	m := niBgpProtoInstanceReqUriRe.FindStringSubmatch(niHandlerReqUri(inParams))
+	if m == nil {
+		return nil
+	}
+	cacheKey := fmt.Sprintf("niBgpUnmapped|%p|%s|%s", *inParams.ygRoot, m[1], m[2])
+	if inParams.txCache != nil {
+		if v, ok := inParams.txCache.Load(cacheKey); ok {
+			cached, _ := v.(error)
+			return cached
+		}
+	}
+	var err error
+	if wrapped, wrapErr := wrapNiBgpRootAsDevice(inParams.ygRoot, m[1], m[2]); wrapErr == nil {
+		var unmapped []string
+		if bgpObj := lookupNiBgpProtoObj(wrapped, m[1], m[2]); bgpObj != nil {
+			collectOcUnmappedPayloadLeaves(reflect.ValueOf(bgpObj), niBgpWriteMappedLeaves(), "", "bgp", 0, &unmapped)
+			sort.Strings(unmapped)
+		}
+		if len(unmapped) > 0 {
+			err = tlerr.NotSupportedError{
+				Format: "BGP container payload carries leaves that have no CONFIG_DB mapping: " + formatOcLeafPathList(unmapped),
+				Path:   inParams.requestUri,
+			}
+		}
+	}
+	if inParams.txCache != nil {
+		inParams.txCache.Store(cacheKey, err)
+	}
+	return err
+}
+
+// niBgpWriteMappedLeaves adds to niBgpMappedPayloadLeaves the leaves that only
+// a request below the bgp container can write.
+var niBgpWriteMappedLeaves = sync.OnceValue(func() map[string]bool {
+	mapped := make(map[string]bool, len(niBgpMappedPayloadLeaves)+len(niBgpNbrPfxLimitPayloadLeaves))
+	for _, set := range []map[string]bool{niBgpMappedPayloadLeaves, niBgpNbrPfxLimitPayloadLeaves} {
+		for leaf := range set {
+			mapped[leaf] = true
+		}
+	}
+	return mapped
+})
+
+// niBgpAsChangeErr refuses a write giving a BGP instance an AS other than the
+// one it runs: frrcfgd cannot change the AS of a live instance and leaves it
+// as it was, so the instance has to be deleted and created again.
+func niBgpAsChangeErr(inParams XfmrParams, res map[string]map[string]db.Value) error {
+	for niName, row := range res[niBgpGlobalsTbl] {
+		asn := strings.TrimSpace(row.Field[niBgpAsFld])
+		if asn == "" {
+			continue
+		}
+		held := strings.TrimSpace(niBgpCfgDbEntry(inParams, niBgpGlobalsTbl, niName).Field[niBgpAsFld])
+		if held != "" && held != asn {
+			return tlerr.NotSupportedError{
+				Format: fmt.Sprintf("BGP instance %s runs AS %s; the AS of a running instance cannot be changed to %s, delete the BGP instance first", niName, held, asn),
+				Path:   inParams.requestUri,
+			}
+		}
+	}
+	return nil
+}
+
+var yangToDbNiBgpGlobalCfg SubTreeXfmrYangToDb = func(inParams XfmrParams) (res map[string]map[string]db.Value, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Errorf("network-instance BGP transformer panic in SET path for %s: %v\n%s", inParams.requestUri, r, debug.Stack())
