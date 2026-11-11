@@ -1340,6 +1340,15 @@ func buildNiBgpHierResMap(s *ygot.GoStruct, niName, protoName string) (map[strin
 			// A payload may name a list instance while setting no mapped leaf
 			// under it; that still asks for the row itself to exist.
 			res = mergeDbResMapFields(res, makeNiBgpNbrResMap(niName, nbrAddr, nbrFields))
+			fanSet, fanClear := niBgpSplitClearFlds(niBgpPeerFanFields(niBgpNbrKind, reflect.ValueOf(nbrObj)))
+			for _, afiSafi := range niBgpPeerFanFamilies {
+				if len(fanSet) > 0 {
+					res = mergeDbResMapFields(res, makeNiBgpNbrAfSingleResMap(niName, nbrAddr, afiSafi, fanSet))
+				}
+				if len(fanClear) > 0 {
+					clears = mergeDbResMapFields(clears, makeNiBgpNbrAfSingleResMap(niName, nbrAddr, afiSafi, fanClear))
+				}
+			}
 			if nbrObj.AsPathOptions != nil && nbrObj.AsPathOptions.Config != nil && nbrObj.AsPathOptions.Config.AllowOwnAs != nil {
 				allowOwnAs := *nbrObj.AsPathOptions.Config.AllowOwnAs
 				if allowOwnAs == 0 {
@@ -1436,6 +1445,15 @@ func buildNiBgpHierResMap(s *ygot.GoStruct, niName, protoName string) (map[strin
 				return res, nil, err
 			}
 			res = mergeDbResMapFields(res, makeNiBgpPgResMap(niName, pgName, pgFields))
+			fanSet, fanClear := niBgpSplitClearFlds(niBgpPeerFanFields(niBgpPgKind, reflect.ValueOf(pgObj)))
+			for _, afiSafi := range niBgpPeerFanFamilies {
+				if len(fanSet) > 0 {
+					res = mergeDbResMapFields(res, makeNiBgpPgAfResMap(niName, pgName, afiSafi, fanSet))
+				}
+				if len(fanClear) > 0 {
+					clears = mergeDbResMapFields(clears, makeNiBgpPgAfResMap(niName, pgName, afiSafi, fanClear))
+				}
+			}
 			if pgObj.AfiSafis != nil {
 				for afiEnum, afiObj := range pgObj.AfiSafis.AfiSafi {
 					if afiObj == nil {
@@ -1646,6 +1664,9 @@ func populateNiBgpHierToYangFromDb(cfgDb *db.DB, ygRoot *ygot.GoStruct, niName, 
 			if err := niBgpPeerLeavesToYang(niBgpNbrKind, ygRoot, niName, protoName, nbrAddr, "", "", nbrEntry); err != nil {
 				return err
 			}
+			if err := niBgpPeerFanLeavesToYang(niBgpNbrKind, cfgDb, ygRoot, niName, protoName, nbrAddr, "", ""); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -1739,6 +1760,9 @@ func populateNiBgpHierToYangFromDb(cfgDb *db.DB, ygRoot *ygot.GoStruct, niName, 
 				}
 			}
 			if err := niBgpPeerLeavesToYang(niBgpPgKind, ygRoot, niName, protoName, pgName, "", "", pgEntry); err != nil {
+				return err
+			}
+			if err := niBgpPeerFanLeavesToYang(niBgpPgKind, cfgDb, ygRoot, niName, protoName, pgName, "", ""); err != nil {
 				return err
 			}
 		}

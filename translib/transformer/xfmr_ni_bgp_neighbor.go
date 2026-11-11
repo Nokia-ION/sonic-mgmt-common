@@ -2118,6 +2118,10 @@ var yangToDbNiBgpNbrCfgBase SubTreeXfmrYangToDb = func(inParams XfmrParams) (map
 		case "", "allow-own-as":
 			allowOwnAs, err := parseNiBgpNbrAllowOwnAs(inParams)
 			if err != nil {
+				// replace-peer-as, beside it, is mapped by the fan-out leaves.
+				if reqInfo.targetLeaf == "" {
+					return res, nil
+				}
 				return res, err
 			}
 			if *allowOwnAs == 0 {

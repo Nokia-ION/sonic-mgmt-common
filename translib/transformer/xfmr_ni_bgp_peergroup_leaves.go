@@ -58,18 +58,27 @@ var niBgpPgAfLeafFlds = map[string]map[string]string{
 	},
 }
 
+// niBgpPgFanLeaves are the peer-group's fan-out leaves, by the config
+// container holding them.
+var niBgpPgFanLeaves = map[string]map[string]niBgpFanLeaf{
+	"config":                 {"remove-private-as": niBgpFanRemovePrivateAs},
+	"as-path-options/config": {"allow-own-as": niBgpFanAllowOwnAs, "replace-peer-as": niBgpFanReplacePeerAs},
+}
+
 var niBgpPgKind = &niBgpPeerKind{
-	scope:         "peer-group",
-	payloadPfx:    "peer-groups/peer-group",
-	tbl:           niBgpPeerGroupTbl,
-	afTbl:         niBgpPeerGroupAfTbl,
-	leafFlds:      niBgpPgLeafFlds,
-	ownContainers: map[string]bool{"transport/config": true, "ebgp-multihop/config": true, "enable-bfd/config": true, "graceful-restart/config": true},
-	afLeafFlds:    niBgpPgAfLeafFlds,
+	scope:      "peer-group",
+	payloadPfx: "peer-groups/peer-group",
+	tbl:        niBgpPeerGroupTbl,
+	afTbl:      niBgpPeerGroupAfTbl,
+	leafFlds:   niBgpPgLeafFlds,
+	fanLeaves:  niBgpPgFanLeaves,
+	ownContainers: map[string]bool{"transport/config": true, "ebgp-multihop/config": true, "enable-bfd/config": true, "graceful-restart/config": true,
+		"as-path-options/config": true},
+	afLeafFlds: niBgpPgAfLeafFlds,
 	leafReqRe: regexp.MustCompile(niBgpPgUriPfx +
-		`/(` + niBgpPeerLeafContainers(niBgpPgLeafFlds) + `)(?:/([a-z-]+))?$`),
+		`/(` + niBgpPeerLeafContainers(niBgpPgLeafFlds, niBgpPgFanLeaves) + `)(?:/([a-z-]+))?$`),
 	afLeafReqRe: regexp.MustCompile(niBgpPgUriPfx +
-		`/afi-safis/afi-safi\[afi-safi-name=([^\]]+)\]/(` + niBgpPeerLeafContainers(niBgpPgAfLeafFlds) + `|add-paths/config)(?:/([a-z-]+))?$`),
+		`/afi-safis/afi-safi\[afi-safi-name=([^\]]+)\]/(` + niBgpPeerLeafContainers(niBgpPgAfLeafFlds, nil) + `|add-paths/config)(?:/([a-z-]+))?$`),
 	afFamilyReqRe: regexp.MustCompile(niBgpPgUriPfx +
 		`/afi-safis/afi-safi\[afi-safi-name=([^\]]+)\]/(ipv4-unicast|ipv6-unicast|ipv4-unicast/prefix-limit|ipv6-unicast/prefix-limit)$`),
 	normalizeAf: normalizeNiBgpPgAfiSafiName,
@@ -95,7 +104,7 @@ var DbToYang_ni_bgp_pg_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams) 
 }
 
 func init() {
-	niBgpPgKind.registerSubsc(niBgpPgSubscMaps, niBgpPgSubscVirtual, niBgpSubscKeyNiPg, niBgpSubscKeyNiPgAf)
+	niBgpPgKind.registerSubsc(niBgpPgSubscMaps, niBgpPgSubscVirtual, niBgpSubscKeyNiPg, niBgpSubscKeyNiPgAf, niBgpSubscKeyNiPgAllAfs)
 	for _, f := range niBgpPgKind.afInstOwnedFlds() {
 		niBgpPgAfInstOwnedFlds[f] = true
 	}

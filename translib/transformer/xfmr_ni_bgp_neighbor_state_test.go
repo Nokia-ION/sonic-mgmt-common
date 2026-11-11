@@ -874,3 +874,35 @@ func Test_openconfig_network_instance_bgp_neighbor_as_path_options_state(t *test
 	t.Run("GET allow-own-as from the IPv6 family when IPv4 has none",
 		processGetRequest(nbrUrl+"/as-path-options/state/allow-own-as", nil, `{"openconfig-network-instance:allow-own-as":5}`, false))
 }
+
+// replace-peer-as and remove-private-as state report the as-override and
+// private AS removal FRR applied, each from the first family carrying it.
+func Test_openconfig_network_instance_bgp_neighbor_as_path_rewrite_state(t *testing.T) {
+	afStats := func(rows map[string]interface{}) map[string]interface{} {
+		return map[string]interface{}{"BGP_NEIGH_AF_STATS": rows}
+	}
+	keys := afStats(map[string]interface{}{"default|11.0.0.155|ipv4_unicast": "", "default|11.0.0.155|ipv6_unicast": ""})
+	loadNiBgpNbrApplied("11.0.0.155", niBgpNbrAppliedRow())
+	loadDB(db.ConfigDB, map[string]interface{}{
+		"BGP_NEIGHBOR": map[string]interface{}{"default|11.0.0.155": map[string]interface{}{"asn": "65300"}},
+	})
+	defer func() {
+		unloadDB(db.StateDB, keys)
+		unloadDB(db.ConfigDB, map[string]interface{}{"BGP_NEIGHBOR": map[string]interface{}{"default|11.0.0.155": ""}})
+		unloadNiBgpNbrApplied("11.0.0.155")
+	}()
+
+	nbrUrl := niBgpProtoUrl + "/bgp/neighbors/neighbor[neighbor-address=11.0.0.155]"
+	loadDB(db.StateDB, afStats(map[string]interface{}{
+		"default|11.0.0.155|ipv4_unicast": map[string]interface{}{"prefixes_received": "0", "as_override": "true"},
+		"default|11.0.0.155|ipv6_unicast": map[string]interface{}{"prefixes_received": "0", "as_override": "true",
+			"remove_private_as": "PRIVATE_AS_REPLACE_ALL"},
+	}))
+	time.Sleep(1 * time.Second)
+	t.Run("GET replace-peer-as state", processGetRequest(nbrUrl+"/as-path-options/state/replace-peer-as", nil,
+		`{"openconfig-network-instance:replace-peer-as":true}`, false))
+	t.Run("GET as-path-options state container", processGetRequest(nbrUrl+"/as-path-options/state", nil,
+		`{"openconfig-network-instance:state":{"replace-peer-as":true}}`, false))
+	t.Run("GET remove-private-as state from the IPv6 family when IPv4 has none", processGetRequest(nbrUrl+"/state/remove-private-as", nil,
+		`{"openconfig-network-instance:remove-private-as":"openconfig-bgp-types:PRIVATE_AS_REPLACE_ALL"}`, false))
+}

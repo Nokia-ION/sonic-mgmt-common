@@ -17,7 +17,8 @@ import (
 // mirrors every leaf; a list names the leaves mirrored beside those FRR
 // reports.
 var niBgpPgStateMirror = map[string][]string{
-	"":                 {"local-as", "auth-password", "description"},
+	"":                 {"local-as", "auth-password", "description", "remove-private-as"},
+	"as-path-options":  nil,
 	"timers":           nil,
 	"transport":        nil,
 	"ebgp-multihop":    nil,
@@ -37,7 +38,7 @@ var niBgpPgAfStateMirror = map[string][]string{
 }
 
 var niBgpPgStateMirrorReqUriRe = regexp.MustCompile(niBgpPgUriPfx +
-	`/(?:(timers|transport|ebgp-multihop|enable-bfd|graceful-restart)/)?state(?:/([a-z-]+))?$`)
+	`/(?:(as-path-options|timers|transport|ebgp-multihop|enable-bfd|graceful-restart)/)?state(?:/([a-z-]+))?$`)
 var niBgpPgAfStateMirrorReqUriRe = regexp.MustCompile(niBgpPgUriPfx +
 	`/afi-safis/afi-safi\[afi-safi-name=([^\]]+)\]/(?:(apply-policy|ipv4-unicast/prefix-limit|ipv6-unicast/prefix-limit|ipv4-unicast|ipv6-unicast|add-paths)/)?state(?:/([a-z-]+))?$`)
 
@@ -265,17 +266,20 @@ var Subscribe_ni_bgp_pg_state_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSubs
 		return subscribeNiBgpPgStateBase(inParams)
 	}
 	leaves, _ := r.mirrored()
-	fields := map[string][]string{}
-	for leaf, flds := range m.fields {
-		for _, l := range leaves {
-			if l == leaf {
-				fields[leaf] = flds
+	mirrored := func(held map[string][]string) map[string][]string {
+		kept := map[string][]string{}
+		for leaf, flds := range held {
+			for _, l := range leaves {
+				if l == leaf {
+					kept[leaf] = flds
+				}
+			}
+			if leaves == nil {
+				kept[leaf] = flds
 			}
 		}
-		if leaves == nil {
-			fields[leaf] = flds
-		}
+		return kept
 	}
-	m.fields = fields
+	m.fields, m.fan = mirrored(m.fields), mirrored(m.fan)
 	return niBgpSubscribe(inParams, niBgpPgSubscAnchor, nil, map[string]niBgpSubscMap{node: m}, nil)
 }

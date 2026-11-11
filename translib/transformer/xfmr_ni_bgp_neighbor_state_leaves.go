@@ -43,7 +43,8 @@ var niBgpNbrStateLeafFlds = map[string]map[string]niBgpNbrStateLeaf{
 		"description":   {niBgpNbrStateSrcApplied, "description"},
 		"neighbor-port": {niBgpNbrStateSrcApplied, niBgpNbrAppliedRmtPortFld},
 		// FRR does not report the password, so state reads what is configured.
-		"auth-password": {niBgpNbrStateSrcConfig, niBgpNbrAuthPwdFld},
+		"auth-password":     {niBgpNbrStateSrcConfig, niBgpNbrAuthPwdFld},
+		"remove-private-as": {niBgpNbrStateSrcAfStats, "remove_private_as"},
 	},
 	"timers/state": {
 		"connect-retry":                  {niBgpNbrStateSrcApplied, "connect_retry"},
@@ -69,10 +70,11 @@ var niBgpNbrStateLeafFlds = map[string]map[string]niBgpNbrStateLeaf{
 	"graceful-restart/state": {
 		"enabled": {niBgpNbrStateSrcConfig, "graceful_restart_enable"},
 	},
-	// FRR applies allowas-in per family; the configuration writes the one
-	// count to every family of the neighbor.
+	// FRR applies allowas-in, as-override and private AS removal per family;
+	// the configuration writes the one setting to every family of the neighbor.
 	"as-path-options/state": {
-		"allow-own-as": {niBgpNbrStateSrcAfStats, niBgpNbrAfStatsAllowOwnAsFld},
+		"allow-own-as":    {niBgpNbrStateSrcAfStats, niBgpNbrAfStatsAllowOwnAsFld},
+		"replace-peer-as": {niBgpNbrStateSrcAfStats, "as_override"},
 	},
 }
 
@@ -203,15 +205,26 @@ func niBgpNbrStateRows(inParams XfmrParams, niName, neighborAddr string) (map[in
 		} else if found {
 			rows[niBgpNbrStateSrcStats] = entry
 		}
+		// Each per-family setting is read from the first family holding it.
+		merged := db.Value{Field: map[string]string{}}
 		for _, afiSafi := range niBgpNbrStateAfStatsFamilies {
 			entry, found, err := niBgpNbrAfStatsFresh(stateDb, niName, neighborAddr, afiSafi)
 			if err != nil {
 				return nil, err
 			}
-			if found && strings.TrimSpace(entry.Field[niBgpNbrAfStatsAllowOwnAsFld]) != "" {
-				rows[niBgpNbrStateSrcAfStats] = entry
-				break
+			if !found {
+				continue
 			}
+			for _, leaves := range niBgpNbrStateLeafFlds {
+				for _, src := range leaves {
+					if _, held := merged.Field[src.fld]; !held && src.src == niBgpNbrStateSrcAfStats && strings.TrimSpace(entry.Field[src.fld]) != "" {
+						merged.Field[src.fld] = entry.Field[src.fld]
+					}
+				}
+			}
+		}
+		if len(merged.Field) > 0 {
+			rows[niBgpNbrStateSrcAfStats] = merged
 		}
 	}
 	if cfgDb := inParams.dbs[db.ConfigDB]; cfgDb != nil {

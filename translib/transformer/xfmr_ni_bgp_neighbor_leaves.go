@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/Azure/sonic-mgmt-common/translib/db"
@@ -51,6 +52,118 @@ var niBgpNbrAfLeafFlds = map[string]map[string]string{
 	"ipv6-unicast/config": {"send-default-route": "send_default_route"},
 }
 
+// niBgpFanLeaf is a leaf the list holds once and FRR applies per family: it
+// is written to the IPv4 and IPv6 unicast rows of the afi-safi table alike,
+// and read back while the rows holding it agree.
+type niBgpFanLeaf struct {
+	flds []string
+	// toDb maps the leaf, when the payload sets it, onto the fields of each
+	// family row, a field to remove marked with niBgpClearFldPrefix.
+	toDb func(f reflect.Value) (map[string]string, bool)
+	// fromDb renders the leaf one family row holds, none when the row holds
+	// nothing the leaf can express.
+	fromDb func(entry db.Value) (string, bool)
+	set    func(f reflect.Value, raw string) error
+}
+
+var niBgpPeerFanFamilies = []string{niBgpAfiSafiIPv4, niBgpAfiSafiIPv6}
+
+const (
+	niBgpPeerAsOverrideFld  = "as_override"
+	niBgpPeerRmPrivAsFld    = "remove_private_as_enabled"
+	niBgpPeerRmPrivAsAllFld = "remove_private_as_all"
+	niBgpPeerReplPrivAsFld  = "replace_private_as"
+)
+
+// allow-own-as is FRR's allowas-in count; 0 removes allowas-in.
+var niBgpFanAllowOwnAs = niBgpFanLeaf{
+	flds: []string{niBgpNbrAllowAsInFld, niBgpNbrAllowAsCntFld},
+	toDb: func(f reflect.Value) (map[string]string, bool) {
+		if f.IsNil() {
+			return nil, false
+		}
+		if n := f.Elem().Uint(); n != 0 {
+			return map[string]string{niBgpNbrAllowAsInFld: "true", niBgpNbrAllowAsCntFld: strconv.FormatUint(n, 10)}, true
+		}
+		return map[string]string{niBgpClearFldPrefix + niBgpNbrAllowAsInFld: "", niBgpClearFldPrefix + niBgpNbrAllowAsCntFld: ""}, true
+	},
+	fromDb: func(entry db.Value) (string, bool) {
+		if strings.TrimSpace(entry.Field[niBgpNbrAllowAsInFld]) != "true" {
+			return "", false
+		}
+		if cnt := strings.TrimSpace(entry.Field[niBgpNbrAllowAsCntFld]); cnt != "" {
+			return cnt, true
+		}
+		return "1", true
+	},
+	set: niBgpGlobalLeafFromDb,
+}
+
+// replace-peer-as is FRR's as-override.
+var niBgpFanReplacePeerAs = niBgpFanLeaf{
+	flds: []string{niBgpPeerAsOverrideFld},
+	toDb: func(f reflect.Value) (map[string]string, bool) {
+		if f.IsNil() {
+			return nil, false
+		}
+		if f.Elem().Bool() {
+			return map[string]string{niBgpPeerAsOverrideFld: "true"}, true
+		}
+		return map[string]string{niBgpClearFldPrefix + niBgpPeerAsOverrideFld: ""}, true
+	},
+	fromDb: func(entry db.Value) (string, bool) {
+		return "true", strings.TrimSpace(entry.Field[niBgpPeerAsOverrideFld]) == "true"
+	},
+	set: niBgpGlobalLeafFromDb,
+}
+
+// remove-private-as is FRR's remove-private-AS all, with replace-AS for
+// PRIVATE_AS_REPLACE_ALL. FRR's forms that act only on a path made of
+// private ASes alone have no OpenConfig option and read as none.
+var niBgpFanRemovePrivateAs = niBgpFanLeaf{
+	flds: []string{niBgpPeerRmPrivAsFld, niBgpPeerRmPrivAsAllFld, niBgpPeerReplPrivAsFld},
+	toDb: func(f reflect.Value) (map[string]string, bool) {
+		fields := map[string]string{niBgpPeerRmPrivAsFld: "true", niBgpPeerRmPrivAsAllFld: "true"}
+		switch f.Interface().(ocbinds.E_OpenconfigBgp_RemovePrivateAsOption) {
+		case ocbinds.OpenconfigBgp_RemovePrivateAsOption_PRIVATE_AS_REMOVE_ALL:
+			fields[niBgpClearFldPrefix+niBgpPeerReplPrivAsFld] = ""
+		case ocbinds.OpenconfigBgp_RemovePrivateAsOption_PRIVATE_AS_REPLACE_ALL:
+			fields[niBgpPeerReplPrivAsFld] = "true"
+		default:
+			return nil, false
+		}
+		return fields, true
+	},
+	fromDb: func(entry db.Value) (string, bool) {
+		if strings.TrimSpace(entry.Field[niBgpPeerRmPrivAsFld]) != "true" || strings.TrimSpace(entry.Field[niBgpPeerRmPrivAsAllFld]) != "true" {
+			return "", false
+		}
+		if strings.TrimSpace(entry.Field[niBgpPeerReplPrivAsFld]) == "true" {
+			return "PRIVATE_AS_REPLACE_ALL", true
+		}
+		return "PRIVATE_AS_REMOVE_ALL", true
+	},
+	set: niBgpRemovePrivateAsFromDb,
+}
+
+func niBgpRemovePrivateAsFromDb(f reflect.Value, raw string) error {
+	switch strings.TrimSpace(raw) {
+	case "PRIVATE_AS_REMOVE_ALL":
+		f.Set(reflect.ValueOf(ocbinds.OpenconfigBgp_RemovePrivateAsOption_PRIVATE_AS_REMOVE_ALL))
+	case "PRIVATE_AS_REPLACE_ALL":
+		f.Set(reflect.ValueOf(ocbinds.OpenconfigBgp_RemovePrivateAsOption_PRIVATE_AS_REPLACE_ALL))
+	}
+	return nil
+}
+
+// niBgpNbrFanLeaves are the neighbor's fan-out leaves, by the config
+// container holding them. Its allow-own-as is mapped by the neighbor config
+// transformer.
+var niBgpNbrFanLeaves = map[string]map[string]niBgpFanLeaf{
+	"config":                 {"remove-private-as": niBgpFanRemovePrivateAs},
+	"as-path-options/config": {"replace-peer-as": niBgpFanReplacePeerAs},
+}
+
 const (
 	niBgpNbrPeerTypeFld       = "peer_type"
 	niBgpNbrTxAddPathsFld     = "tx_add_paths"
@@ -73,6 +186,7 @@ type niBgpPeerKind struct {
 	// container in ownContainers is served here alone; the list's config
 	// transformer serves the other leaves of the rest.
 	leafFlds      map[string]map[string]string
+	fanLeaves     map[string]map[string]niBgpFanLeaf
 	ownContainers map[string]bool
 	afLeafFlds    map[string]map[string]string
 	leafReqRe     *regexp.Regexp
@@ -89,10 +203,25 @@ type niBgpPeerKind struct {
 	parentRow     func(inParams XfmrParams, res map[string]map[string]db.Value, niName, peer string) map[string]map[string]db.Value
 }
 
-// niBgpPeerLeafContainers renders the container names of leafFlds as the
-// alternatives of a request regexp.
-func niBgpPeerLeafContainers(leafFlds map[string]map[string]string) string {
-	return strings.Join(niBgpSortedKeys(leafFlds), "|")
+// niBgpPeerLeafContainers renders the container names of leafFlds and fan as
+// the alternatives of a request regexp.
+func niBgpPeerLeafContainers(leafFlds map[string]map[string]string, fan map[string]map[string]niBgpFanLeaf) string {
+	names := niBgpSortedKeys(leafFlds)
+	for _, c := range niBgpSortedFanKeys(fan) {
+		if _, held := leafFlds[c]; !held {
+			names = append(names, c)
+		}
+	}
+	return strings.Join(names, "|")
+}
+
+func niBgpSortedFanKeys(m map[string]map[string]niBgpFanLeaf) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 var niBgpNbrKind = &niBgpPeerKind{
@@ -101,12 +230,13 @@ var niBgpNbrKind = &niBgpPeerKind{
 	tbl:           niBgpNbrTbl,
 	afTbl:         niBgpNbrAfTbl,
 	leafFlds:      niBgpNbrLeafFlds,
+	fanLeaves:     niBgpNbrFanLeaves,
 	ownContainers: map[string]bool{"ebgp-multihop/config": true, "enable-bfd/config": true, "graceful-restart/config": true},
 	afLeafFlds:    niBgpNbrAfLeafFlds,
 	leafReqRe: regexp.MustCompile(niBgpNbrUriPfx +
-		`/(` + niBgpPeerLeafContainers(niBgpNbrLeafFlds) + `)(?:/([a-z-]+))?$`),
+		`/(` + niBgpPeerLeafContainers(niBgpNbrLeafFlds, niBgpNbrFanLeaves) + `)(?:/([a-z-]+))?$`),
 	afLeafReqRe: regexp.MustCompile(niBgpNbrUriPfx +
-		`/afi-safis/afi-safi\[afi-safi-name=([^\]]+)\]/(` + niBgpPeerLeafContainers(niBgpNbrAfLeafFlds) + `|add-paths/config)(?:/([a-z-]+))?$`),
+		`/afi-safis/afi-safi\[afi-safi-name=([^\]]+)\]/(` + niBgpPeerLeafContainers(niBgpNbrAfLeafFlds, nil) + `|add-paths/config)(?:/([a-z-]+))?$`),
 	normalizeAf: normalizeNiBgpNbrAfiSafiName,
 	obj: func(s *ygot.GoStruct, niName, protoName, peer string, create bool) reflect.Value {
 		return reflect.ValueOf(getNiBgpNbrObj(s, niName, protoName, peer, create))
@@ -130,6 +260,9 @@ type niBgpPeerLeafReq struct {
 // afi-safi container, or a leaf of the kind's table in a shared container.
 func (r *niBgpPeerLeafReq) owned() bool {
 	if r.afiSafi != "" || r.kind.ownContainers[r.container] {
+		return true
+	}
+	if _, fanned := r.kind.fanLeaves[r.container][r.leaf]; r.leaf != "" && fanned {
 		return true
 	}
 	_, ok := r.kind.leafFlds[r.container][r.leaf]
@@ -205,6 +338,9 @@ func niBgpNbrLeafToDb(leaf string, f reflect.Value) (string, bool) {
 }
 
 func niBgpNbrLeafFromDb(leaf string, f reflect.Value, raw string) error {
+	if leaf == "remove-private-as" {
+		return niBgpRemovePrivateAsFromDb(f, raw)
+	}
 	if leaf == "peer-type" {
 		switch strings.TrimSpace(raw) {
 		case "internal":
@@ -313,6 +449,145 @@ func niBgpPeerFields(k *niBgpPeerKind, obj reflect.Value) (map[string]string, []
 	return fields, unmapped
 }
 
+// niBgpFanFields maps the fan-out leaves of fan that cfg, a config struct,
+// sets, targetLeaf alone when it is named.
+func niBgpFanFields(cfg reflect.Value, fan map[string]niBgpFanLeaf, targetLeaf string) map[string]string {
+	fields := map[string]string{}
+	if !cfg.IsValid() || cfg.Kind() != reflect.Ptr || cfg.IsNil() {
+		return fields
+	}
+	for leaf, fl := range fan {
+		if targetLeaf != "" && targetLeaf != leaf {
+			continue
+		}
+		if f := ocFieldByPath(cfg, leaf); f.IsValid() {
+			if m, ok := fl.toDb(f); ok {
+				for fld, v := range m {
+					fields[fld] = v
+				}
+			}
+		}
+	}
+	return fields
+}
+
+// niBgpPeerFanFields maps every fan-out leaf obj, a list entry, holds.
+func niBgpPeerFanFields(k *niBgpPeerKind, obj reflect.Value) map[string]string {
+	fields := map[string]string{}
+	for c, fan := range k.fanLeaves {
+		for fld, v := range niBgpFanFields(ocWalkPath(obj, c, false), fan, "") {
+			fields[fld] = v
+		}
+	}
+	return fields
+}
+
+// niBgpWithoutFanLeaves drops the fan-out leaves of fan from unmapped, the
+// leaves of a container below prefix that its plain fields do not map.
+func niBgpWithoutFanLeaves(unmapped []string, prefix string, fan map[string]niBgpFanLeaf) []string {
+	kept := unmapped[:0]
+	for _, u := range unmapped {
+		if _, fanned := fan[strings.TrimPrefix(u, prefix+"/")]; !fanned {
+			kept = append(kept, u)
+		}
+	}
+	return kept
+}
+
+// niBgpPeerFanWrite writes fields, fan-out fields, to every family row of a
+// list entry, removing what a clear names from the rows holding it.
+func niBgpPeerFanWrite(inParams XfmrParams, k *niBgpPeerKind, niName, peer string, fields map[string]string) (map[string]map[string]db.Value, error) {
+	res := make(map[string]map[string]db.Value)
+	set, clear := niBgpSplitClearFlds(fields)
+	for _, afiSafi := range niBgpPeerFanFamilies {
+		existing := niBgpCfgDbEntry(inParams, k.afTbl, niName, peer, afiSafi)
+		stale := map[string]string{}
+		for f := range clear {
+			if _, ok := existing.Field[f]; ok {
+				stale[f] = ""
+			}
+		}
+		if len(stale) > 0 {
+			if err := niBgpStageSubOp(inParams, DELETE, k.afResMap(niName, peer, afiSafi, stale)); err != nil {
+				return nil, err
+			}
+		}
+		if len(set) > 0 {
+			res = mergeDbResMapFields(res, k.afResMap(niName, peer, afiSafi, set))
+		}
+	}
+	return k.parentRow(inParams, res, niName, peer), nil
+}
+
+// niBgpPeerFanDelete removes the fields of the fan-out leaves of fan, or of
+// targetLeaf alone, from the family rows holding them.
+func niBgpPeerFanDelete(inParams XfmrParams, k *niBgpPeerKind, niName, peer string, fan map[string]niBgpFanLeaf, targetLeaf string) map[string]map[string]db.Value {
+	res := make(map[string]map[string]db.Value)
+	for _, afiSafi := range niBgpPeerFanFamilies {
+		existing := niBgpCfgDbEntry(inParams, k.afTbl, niName, peer, afiSafi)
+		held := map[string]string{}
+		for leaf, fl := range fan {
+			if targetLeaf != "" && targetLeaf != leaf {
+				continue
+			}
+			for _, f := range fl.flds {
+				if _, ok := existing.Field[f]; ok {
+					held[f] = ""
+				}
+			}
+		}
+		if len(held) > 0 {
+			res = mergeDbResMapFields(res, k.afResMap(niName, peer, afiSafi, held))
+		}
+	}
+	return res
+}
+
+// niBgpPeerFanLeavesToYang fills the fan-out leaves of one list entry, in
+// container only when one is named, from its family rows. Rows that hold
+// different values make the leaf unreadable.
+func niBgpPeerFanLeavesToYang(k *niBgpPeerKind, cfgDb *db.DB, ygRoot *ygot.GoStruct, niName, protoName, peer, container, targetLeaf string) error {
+	rows := make([]db.Value, len(niBgpPeerFanFamilies))
+	for i, afiSafi := range niBgpPeerFanFamilies {
+		if entry, err := cfgDb.GetEntry(&db.TableSpec{Name: k.afTbl}, db.Key{Comp: []string{niName, peer, afiSafi}}); err == nil {
+			rows[i] = entry
+		}
+	}
+	for _, c := range niBgpSortedFanKeys(k.fanLeaves) {
+		if container != "" && c != container {
+			continue
+		}
+		for leaf, fl := range k.fanLeaves[c] {
+			if targetLeaf != "" && targetLeaf != leaf {
+				continue
+			}
+			val, from := "", ""
+			for i, entry := range rows {
+				v, ok := fl.fromDb(entry)
+				if !ok {
+					continue
+				}
+				if from != "" && v != val {
+					return tlerr.InvalidArgsError{Format: fmt.Sprintf("inconsistent %s across AFI-SAFIs for %s %s in %s (%s=%s, %s=%s)",
+						leaf, k.scope, peer, niName, from, val, niBgpPeerFanFamilies[i], v)}
+				}
+				val, from = v, niBgpPeerFanFamilies[i]
+			}
+			if from == "" {
+				continue
+			}
+			cfg := ocWalkPath(k.obj(ygRoot, niName, protoName, peer, true), c, true)
+			if !cfg.IsValid() {
+				continue
+			}
+			if err := fl.set(ocFieldByPath(cfg, leaf), val); err != nil {
+				return tlerr.InvalidArgsError{Format: fmt.Sprintf("invalid %s value for %s %s: %v", k.afTbl, c, leaf, err)}
+			}
+		}
+	}
+	return nil
+}
+
 // niBgpPeerAfFields maps every afi-safi table and add-paths leaf afObj holds,
 // clears included.
 func niBgpPeerAfFields(k *niBgpPeerKind, afObj reflect.Value, afiSafi string) (map[string]string, error) {
@@ -405,9 +680,11 @@ func niBgpPeerLeafYangToDb(inParams XfmrParams, r *niBgpPeerLeafReq) (map[string
 	}
 	k := r.kind
 	leafFlds := k.leafFlds[r.container]
+	fan := k.fanLeaves[r.container]
 	own := k.ownContainers[r.container]
+	_, fanned := fan[r.leaf]
 	if r.leaf != "" {
-		if _, ok := leafFlds[r.leaf]; !ok {
+		if _, ok := leafFlds[r.leaf]; !ok && !fanned {
 			return res, tlerr.NotSupportedError{Format: fmt.Sprintf("BGP %s %s leaf %s has no CONFIG_DB mapping", k.scope, r.container, r.leaf), Path: inParams.requestUri}
 		}
 	}
@@ -418,27 +695,49 @@ func niBgpPeerLeafYangToDb(inParams XfmrParams, r *niBgpPeerLeafReq) (map[string
 				fields[fld] = ""
 			}
 		}
-		return k.resMap(r.niName, r.peer, fields), nil
+		if len(fields) > 0 || len(fan) == 0 {
+			res = k.resMap(r.niName, r.peer, fields)
+		}
+		return mergeDbResMapFields(res, niBgpPeerFanDelete(inParams, k, r.niName, r.peer, fan, r.leaf)), nil
 	}
 	cfg := ocWalkPath(k.obj(inParams.ygRoot, r.niName, r.protoName, r.peer, false), r.container, false)
 	fields, unmapped := niBgpNbrLeafFields(cfg, k.payloadPfx+"/"+r.container, leafFlds, own)
+	unmapped = niBgpWithoutFanLeaves(unmapped, k.payloadPfx+"/"+r.container, fan)
 	if len(unmapped) > 0 {
 		return res, tlerr.NotSupportedError{Format: "BGP " + k.scope + " payload carries leaves that have no CONFIG_DB mapping: " + strings.Join(unmapped, ", "), Path: inParams.requestUri}
 	}
+	fanFields := niBgpFanFields(cfg, fan, r.leaf)
 	if r.leaf != "" {
-		val, ok := fields[leafFlds[r.leaf]]
-		if !ok {
-			return res, tlerr.InvalidArgsError{Format: fmt.Sprintf("BGP %s %s %s is missing in request payload", k.scope, r.container, r.leaf)}
+		if fanned {
+			if len(fanFields) == 0 {
+				return res, tlerr.InvalidArgsError{Format: fmt.Sprintf("BGP %s %s %s is missing in request payload", k.scope, r.container, r.leaf)}
+			}
+			fields = map[string]string{}
+		} else {
+			val, ok := fields[leafFlds[r.leaf]]
+			if !ok {
+				return res, tlerr.InvalidArgsError{Format: fmt.Sprintf("BGP %s %s %s is missing in request payload", k.scope, r.container, r.leaf)}
+			}
+			fields = map[string]string{leafFlds[r.leaf]: val}
 		}
-		fields = map[string]string{leafFlds[r.leaf]: val}
 	}
-	if len(fields) == 0 {
+	if len(fields) == 0 && len(fanFields) == 0 {
 		if own {
 			return res, tlerr.InvalidArgsError{Format: fmt.Sprintf("BGP %s %s payload carries no supported leaf", k.scope, r.container)}
 		}
 		return res, nil
 	}
-	return k.resMap(r.niName, r.peer, fields), nil
+	if len(fields) > 0 {
+		res = k.resMap(r.niName, r.peer, fields)
+	}
+	if len(fanFields) == 0 {
+		return res, nil
+	}
+	fanRes, err := niBgpPeerFanWrite(inParams, k, r.niName, r.peer, fanFields)
+	if err != nil {
+		return make(map[string]map[string]db.Value), err
+	}
+	return mergeDbResMapFields(res, fanRes), nil
 }
 
 func niBgpPeerAfLeafYangToDb(inParams XfmrParams, r *niBgpPeerLeafReq) (map[string]map[string]db.Value, error) {
@@ -616,16 +915,19 @@ func niBgpPeerLeafDbToYang(inParams XfmrParams, r *niBgpPeerLeafReq) error {
 	if err != nil {
 		return err
 	}
-	return niBgpPeerLeavesToYang(k, inParams.ygRoot, r.niName, r.protoName, r.peer, r.container, r.leaf, entry)
+	if err := niBgpPeerLeavesToYang(k, inParams.ygRoot, r.niName, r.protoName, r.peer, r.container, r.leaf, entry); err != nil {
+		return err
+	}
+	return niBgpPeerFanLeavesToYang(k, cfgDb, inParams.ygRoot, r.niName, r.protoName, r.peer, r.container, r.leaf)
 }
 
 // niBgpPeerPayloadHasLeaves reports a shared container payload carrying a leaf
-// of the kind's table, which the list's config transformer then maps
-// alongside its own.
+// of the kind's table or a fan-out leaf, which the list's config transformer
+// then maps alongside its own.
 func niBgpPeerPayloadHasLeaves(k *niBgpPeerKind, inParams XfmrParams, niName, protoName, peer, container string) bool {
 	cfg := ocWalkPath(k.obj(inParams.ygRoot, niName, protoName, peer, false), container, false)
 	fields, _ := niBgpNbrLeafFields(cfg, "", k.leafFlds[container], false)
-	return len(fields) > 0
+	return len(fields) > 0 || len(niBgpFanFields(cfg, k.fanLeaves[container], "")) > 0
 }
 
 // niBgpPeerCfgYangToDb serves a write to a config container of the list, the
@@ -697,7 +999,29 @@ var DbToYang_ni_bgp_nbr_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrParams)
 // cfgMaps holds the list's nodes, below the list, and listVirtual the
 // containers above the config containers, below bgp. The payload allow list
 // gains the leaves too.
-func (k *niBgpPeerKind) registerSubsc(cfgMaps map[string]niBgpSubscMap, afVirtual map[string]bool, key, afKey niBgpSubscKey) {
+func (k *niBgpPeerKind) registerSubsc(cfgMaps map[string]niBgpSubscMap, afVirtual map[string]bool, key, afKey, allAfsKey niBgpSubscKey) {
+	// A fan-out leaf is held on every family row, so it watches all of them,
+	// beside the rest of its container when that is another table's.
+	for c, leaves := range k.fanLeaves {
+		node := "/" + c
+		m, ok := cfgMaps[node]
+		if !ok {
+			m = niBgpSubscMap{dbNum: db.ConfigDB, table: k.afTbl, key: allAfsKey, fields: map[string][]string{}}
+			niBgpGlobalSubscVirtual["/bgp/"+k.payloadPfx+"/"+strings.TrimSuffix(c, "/config")] = true
+		}
+		for leaf, fl := range leaves {
+			if m.table == k.afTbl {
+				m.fields[leaf] = fl.flds
+			} else {
+				if m.fan == nil {
+					m.fan, m.fanTable, m.fanKey = map[string][]string{}, k.afTbl, allAfsKey
+				}
+				m.fan[leaf] = fl.flds
+			}
+			niBgpMappedPayloadLeaves[k.payloadPfx+"/"+c+"/"+leaf] = true
+		}
+		cfgMaps[node] = m
+	}
 	for c, leaves := range k.leafFlds {
 		node := "/" + c
 		m, ok := cfgMaps[node]
@@ -749,7 +1073,7 @@ func (k *niBgpPeerKind) afInstOwnedFlds() []string {
 }
 
 func init() {
-	niBgpNbrKind.registerSubsc(niBgpNbrCfgSubscMaps, niBgpNbrCfgSubscVirtual, niBgpSubscKeyNiNbr, niBgpSubscKeyNiNbrAf)
+	niBgpNbrKind.registerSubsc(niBgpNbrCfgSubscMaps, niBgpNbrCfgSubscVirtual, niBgpSubscKeyNiNbr, niBgpSubscKeyNiNbrAf, niBgpSubscKeyNiNbrAllAfs)
 	for _, f := range niBgpNbrKind.afInstOwnedFlds() {
 		niBgpNbrAfInstOwnedFlds[f] = true
 	}
