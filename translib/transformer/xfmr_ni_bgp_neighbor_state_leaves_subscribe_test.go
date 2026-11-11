@@ -44,3 +44,24 @@ func TestSubscribe_ni_bgp_nbr_as_path_options_state(t *testing.T) {
 		})
 	}
 }
+
+// replace-peer-as and remove-private-as state watch their fields on every
+// family row of the neighbor, on change.
+func TestSubscribe_ni_bgp_nbr_as_path_rewrite_state(t *testing.T) {
+	for _, tc := range []struct{ container, leaf, fld string }{
+		{"as-path-options/state", "replace-peer-as", "as_override"},
+		{"state", "remove-private-as", "remove_private_as"},
+	} {
+		t.Run(tc.leaf, func(t *testing.T) {
+			out := niBgpNbrStateLeafSubscribe(&niBgpNbrStateLeafReq{niName: "default", neighborAddr: "11.0.0.155",
+				container: tc.container, leaf: tc.leaf})
+			if out.onChange != OnchangeEnable || out.nOpts == nil || out.nOpts.pType != OnChange {
+				t.Fatalf("onChange=%v nOpts=%v, want on change", out.onChange, out.nOpts)
+			}
+			flds := out.dbDataMap[db.StateDB][niBgpNbrAfStatsTbl]["default|11.0.0.155|*"]
+			if len(flds) != 1 || flds[tc.fld] != tc.leaf {
+				t.Fatalf("dbDataMap %v, want BGP_NEIGH_AF_STATS %s only", out.dbDataMap, tc.fld)
+			}
+		})
+	}
+}

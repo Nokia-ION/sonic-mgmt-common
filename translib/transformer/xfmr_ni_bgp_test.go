@@ -6939,3 +6939,146 @@ func Test_openconfig_network_instance_bgp_peer_group_leaves_hierarchy(t *testing
 
 	unloadDB(db.ConfigDB, cleanupTbl)
 }
+
+// replace-peer-as and remove-private-as are set once on a neighbor and
+// written to its IPv4 and IPv6 unicast rows, FRR applying them per family; a
+// read needs the rows to agree.
+func Test_openconfig_network_instance_bgp_neighbor_as_path_rewrite_options(t *testing.T) {
+	afRow := func(af string, fields map[string]interface{}) map[string]interface{} {
+		return map[string]interface{}{"BGP_NEIGHBOR_AF": map[string]interface{}{"default|20.0.0.1|" + af: fields}}
+	}
+	preReqMap := map[string]interface{}{
+		"BGP_GLOBALS":  map[string]interface{}{"default": map[string]interface{}{"local_asn": "65100"}},
+		"BGP_NEIGHBOR": map[string]interface{}{"default|20.0.0.1": map[string]interface{}{"asn": "65200"}},
+		"BGP_NEIGHBOR_AF": map[string]interface{}{
+			"default|20.0.0.1|ipv4_unicast": map[string]interface{}{"admin_status": "up"},
+			"default|20.0.0.1|ipv6_unicast": map[string]interface{}{"admin_status": "up"},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"BGP_NEIGHBOR_AF": map[string]interface{}{"default|20.0.0.1|ipv4_unicast": "", "default|20.0.0.1|ipv6_unicast": ""},
+		"BGP_NEIGHBOR":    map[string]interface{}{"default|20.0.0.1": ""},
+		"BGP_GLOBALS":     map[string]interface{}{"default": ""},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	nbrUrl := niBgpProtoUrl + "/bgp/neighbors/neighbor[neighbor-address=20.0.0.1]"
+	verifyBoth := func(desc string, fields map[string]interface{}) {
+		for _, af := range []string{"ipv4_unicast", "ipv6_unicast"} {
+			t.Run("Verify "+af+" "+desc, verifyDbResult(rclient, "BGP_NEIGHBOR_AF|default|20.0.0.1|"+af, afRow(af, fields), false))
+		}
+		time.Sleep(1 * time.Second)
+	}
+
+	t.Run("PATCH neighbor config remove-private-as PRIVATE_AS_REPLACE_ALL", processSetRequest(nbrUrl+"/config/remove-private-as",
+		`{"openconfig-network-instance:remove-private-as":"openconfig-bgp-types:PRIVATE_AS_REPLACE_ALL"}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	verifyBoth("remove-private-as replace", map[string]interface{}{"admin_status": "up",
+		"remove_private_as_enabled": "true", "remove_private_as_all": "true", "replace_private_as": "true"})
+
+	t.Run("PATCH neighbor config with remove-private-as PRIVATE_AS_REMOVE_ALL", processSetRequest(nbrUrl+"/config",
+		`{"openconfig-network-instance:remove-private-as":"PRIVATE_AS_REMOVE_ALL"}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	verifyBoth("remove-private-as remove", map[string]interface{}{"admin_status": "up",
+		"remove_private_as_enabled": "true", "remove_private_as_all": "true"})
+	t.Run("GET neighbor config remove-private-as", processGetRequest(nbrUrl+"/config/remove-private-as", nil,
+		`{"openconfig-network-instance:remove-private-as":"openconfig-bgp-types:PRIVATE_AS_REMOVE_ALL"}`, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("PATCH neighbor as-path-options replace-peer-as", processSetRequest(nbrUrl+"/as-path-options/config/replace-peer-as",
+		`{"openconfig-network-instance:replace-peer-as":true}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	verifyBoth("as_override", map[string]interface{}{"admin_status": "up", "as_override": "true",
+		"remove_private_as_enabled": "true", "remove_private_as_all": "true"})
+	t.Run("GET neighbor as-path-options config", processGetRequest(nbrUrl+"/as-path-options/config", nil,
+		`{"openconfig-network-instance:config":{"replace-peer-as":true}}`, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("PATCH BGP container with the neighbor's as-path rewrites", processSetRequest(niBgpProtoUrl+"/bgp",
+		`{"neighbors":{"neighbor":[{"neighbor-address":"20.0.0.1","as-path-options":{"config":{"replace-peer-as":false}},`+
+			`"config":{"remove-private-as":"openconfig-bgp-types:PRIVATE_AS_REPLACE_ALL"}}]}}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	verifyBoth("from the BGP container", map[string]interface{}{"admin_status": "up",
+		"remove_private_as_enabled": "true", "remove_private_as_all": "true", "replace_private_as": "true"})
+
+	loadDB(db.ConfigDB, afRow("ipv4_unicast", map[string]interface{}{"replace_private_as": "false"}))
+	time.Sleep(1 * time.Second)
+	t.Run("GET neighbor remove-private-as the families disagree on", processGetRequest(nbrUrl+"/config/remove-private-as", nil, "", true,
+		tlerr.InvalidArgsError{Format: "inconsistent remove-private-as across AFI-SAFIs for neighbor 20.0.0.1 in default " +
+			"(ipv4_unicast=PRIVATE_AS_REMOVE_ALL, ipv6_unicast=PRIVATE_AS_REPLACE_ALL)"}))
+	time.Sleep(1 * time.Second)
+
+	t.Run("DELETE neighbor config remove-private-as", processDeleteRequest(nbrUrl+"/config/remove-private-as", false))
+	time.Sleep(1 * time.Second)
+	verifyBoth("after the deletes", map[string]interface{}{"admin_status": "up"})
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+// A peer-group's as-path-options and remove-private-as are written to its
+// IPv4 and IPv6 unicast rows, and its state mirrors them.
+func Test_openconfig_network_instance_bgp_peer_group_as_path_options(t *testing.T) {
+	afRow := func(af string, fields map[string]interface{}) map[string]interface{} {
+		return map[string]interface{}{"BGP_PEER_GROUP_AF": map[string]interface{}{"default|PG1|" + af: fields}}
+	}
+	preReqMap := map[string]interface{}{
+		"BGP_GLOBALS":    map[string]interface{}{"default": map[string]interface{}{"local_asn": "65100"}},
+		"BGP_PEER_GROUP": map[string]interface{}{"default|PG1": map[string]interface{}{"asn": "65300"}},
+		"BGP_PEER_GROUP_AF": map[string]interface{}{
+			"default|PG1|ipv4_unicast": map[string]interface{}{"admin_status": "up"},
+			"default|PG1|ipv6_unicast": map[string]interface{}{"admin_status": "up"},
+		},
+	}
+	cleanupTbl := map[string]interface{}{
+		"BGP_PEER_GROUP_AF": map[string]interface{}{"default|PG1|ipv4_unicast": "", "default|PG1|ipv6_unicast": ""},
+		"BGP_PEER_GROUP":    map[string]interface{}{"default|PG1": ""},
+		"BGP_GLOBALS":       map[string]interface{}{"default": ""},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	time.Sleep(1 * time.Second)
+
+	pgUrl := niBgpProtoUrl + "/bgp/peer-groups/peer-group[peer-group-name=PG1]"
+	verifyBoth := func(desc string, fields map[string]interface{}) {
+		for _, af := range []string{"ipv4_unicast", "ipv6_unicast"} {
+			t.Run("Verify "+af+" "+desc, verifyDbResult(rclient, "BGP_PEER_GROUP_AF|default|PG1|"+af, afRow(af, fields), false))
+		}
+		time.Sleep(1 * time.Second)
+	}
+
+	t.Run("PATCH peer-group as-path-options config", processSetRequest(pgUrl+"/as-path-options/config",
+		`{"openconfig-network-instance:allow-own-as":3,"openconfig-network-instance:replace-peer-as":true}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("PATCH peer-group config remove-private-as", processSetRequest(pgUrl+"/config/remove-private-as",
+		`{"openconfig-network-instance:remove-private-as":"openconfig-bgp-types:PRIVATE_AS_REMOVE_ALL"}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	verifyBoth("as-path rewrites", map[string]interface{}{"admin_status": "up", "allow_as_in": "true", "allow_as_count": "3",
+		"as_override": "true", "remove_private_as_enabled": "true", "remove_private_as_all": "true"})
+
+	t.Run("GET peer-group as-path-options", processGetRequest(pgUrl+"/as-path-options", nil,
+		`{"openconfig-network-instance:as-path-options":{"config":{"allow-own-as":3,"replace-peer-as":true},`+
+			`"state":{"allow-own-as":3,"replace-peer-as":true}}}`, false))
+	time.Sleep(1 * time.Second)
+	t.Run("GET peer-group state remove-private-as", processGetRequest(pgUrl+"/state/remove-private-as", nil,
+		`{"openconfig-network-instance:remove-private-as":"openconfig-bgp-types:PRIVATE_AS_REMOVE_ALL"}`, false))
+	time.Sleep(1 * time.Second)
+
+	t.Run("PATCH peer-group allow-own-as 0", processSetRequest(pgUrl+"/as-path-options/config/allow-own-as",
+		`{"openconfig-network-instance:allow-own-as":0}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	verifyBoth("allow-as removed", map[string]interface{}{"admin_status": "up", "as_override": "true",
+		"remove_private_as_enabled": "true", "remove_private_as_all": "true"})
+
+	t.Run("PATCH peer-group disable-peer-as-filter rejected", processSetRequest(pgUrl+"/as-path-options/config/disable-peer-as-filter",
+		`{"openconfig-network-instance:disable-peer-as-filter":true}`, "PATCH", true,
+		tlerr.NotSupportedError{Format: "BGP peer-group as-path-options/config leaf disable-peer-as-filter has no CONFIG_DB mapping"}))
+	time.Sleep(1 * time.Second)
+
+	t.Run("DELETE peer-group as-path-options config", processDeleteRequest(pgUrl+"/as-path-options/config", false))
+	time.Sleep(1 * time.Second)
+	t.Run("DELETE peer-group config remove-private-as", processDeleteRequest(pgUrl+"/config/remove-private-as", false))
+	time.Sleep(1 * time.Second)
+	verifyBoth("after the deletes", map[string]interface{}{"admin_status": "up"})
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}

@@ -47,6 +47,7 @@ const (
 	niBgpSubscKeyNiNbrAllAfs
 	niBgpSubscKeyNiPg
 	niBgpSubscKeyNiPgAf
+	niBgpSubscKeyNiPgAllAfs
 	niBgpSubscKeyNiAf
 	niBgpSubscKeyNiListenPfx
 )
@@ -54,13 +55,17 @@ const (
 // niBgpSubscMap describes one node a BGP transformer owns: the table and row
 // it reads and the field behind each of its leaves, which are the fields its
 // GET reads. A leaf in sampled is one that changes with traffic rather than
-// with configuration; a request covering one is sampled as a whole.
+// with configuration; a request covering one is sampled as a whole. A leaf in
+// fan is held in fanTable, under fanKey, rather than in table.
 type niBgpSubscMap struct {
-	dbNum   db.DBNum
-	table   string
-	key     niBgpSubscKey
-	fields  map[string][]string
-	sampled map[string]bool
+	dbNum    db.DBNum
+	table    string
+	key      niBgpSubscKey
+	fields   map[string][]string
+	sampled  map[string]bool
+	fanTable string
+	fanKey   niBgpSubscKey
+	fan      map[string][]string
 }
 
 func niBgpSubscVar(pathInfo *PathInfo, name string) string {
@@ -91,6 +96,8 @@ func (k niBgpSubscKey) build(pathInfo *PathInfo) string {
 		return ni + "|" + niBgpSubscVar(pathInfo, "peer-group-name")
 	case niBgpSubscKeyNiPgAf:
 		return ni + "|" + niBgpSubscVar(pathInfo, "peer-group-name") + "|" + niBgpSubscAf(pathInfo)
+	case niBgpSubscKeyNiPgAllAfs:
+		return ni + "|" + niBgpSubscVar(pathInfo, "peer-group-name") + "|*"
 	case niBgpSubscKeyNiAf:
 		return ni + "|" + niBgpSubscAf(pathInfo)
 	case niBgpSubscKeyNiListenPfx:
@@ -156,15 +163,33 @@ func niBgpSubscribe(inParams XfmrSubscInParams, anchor string, virtual map[strin
 		}
 		sampled = sampled || subsc.sampled[leaf]
 	}
+	fanFields := map[string]string{}
+	for leaf, flds := range subsc.fan {
+		if targetLeaf != "" && targetLeaf != leaf {
+			continue
+		}
+		for _, fld := range flds {
+			fanFields[fld] = leaf
+		}
+	}
 	// A leaf with no field, such as a key leaf or a default policy the write
 	// side refuses, has nothing to watch and reports nothing, as a GET does.
-	if len(fields) == 0 {
+	if len(fields) == 0 && len(fanFields) == 0 {
 		result.isVirtualTbl = true
 		result.onChange = OnchangeEnable
 		return result, nil
 	}
 
-	result.dbDataMap = RedisDbSubscribeMap{subsc.dbNum: {subsc.table: {subsc.key.build(pathInfo): fields}}}
+	result.dbDataMap = RedisDbSubscribeMap{}
+	if len(fields) > 0 {
+		result.dbDataMap[subsc.dbNum] = map[string]map[string]map[string]string{subsc.table: {subsc.key.build(pathInfo): fields}}
+	}
+	if len(fanFields) > 0 {
+		if result.dbDataMap[db.ConfigDB] == nil {
+			result.dbDataMap[db.ConfigDB] = map[string]map[string]map[string]string{}
+		}
+		result.dbDataMap[db.ConfigDB][subsc.fanTable] = map[string]map[string]string{subsc.fanKey.build(pathInfo): fanFields}
+	}
 	if sampled {
 		result.nOpts = &notificationOpts{pType: Sample}
 		return result, nil
