@@ -1573,16 +1573,53 @@ func niBgpSendCommunityTypeToField(param interface{}, fromTree []ocbinds.E_Openc
 			}
 		}
 	}
-	switch {
-	case len(vals) == 0:
+	if len(vals) == 0 {
 		return "", tlerr.InvalidArgsError{Format: "BGP " + scope + " send-community-type is missing in request payload"}
-	case len(vals) > 1:
-		return "", tlerr.NotSupportedError{Format: "BGP " + scope + " send-community-type accepts one community type, since CONFIG_DB holds a single send_community per address family, and the request carries " + strconv.Itoa(len(vals))}
 	}
-	return vals[0], nil
+	if len(vals) == 1 {
+		return vals[0], nil
+	}
+	// A list is held when its types are those of one send_community value,
+	// the deprecated both counting as standard and extended.
+	held := map[string]bool{}
+	for _, v := range vals {
+		if v == "both" {
+			held["standard"], held["extended"] = true, true
+			continue
+		}
+		held[v] = true
+	}
+	for value, types := range niBgpSendCommunityLists {
+		if len(held) == len(types) && niBgpHoldsAll(held, types) {
+			return value, nil
+		}
+	}
+	return "", tlerr.NotSupportedError{Format: "BGP " + scope + " send-community-type accepts one community type, STANDARD and EXTENDED, " +
+		"or STANDARD, EXTENDED and LARGE, since CONFIG_DB holds a single send_community per address family"}
 }
 
+// niBgpSendCommunityLists are the send_community values that stand for more
+// than one community type, with the types each sends.
+var niBgpSendCommunityLists = map[string][]ocbinds.E_OpenconfigBgp_CommunityType{
+	"both": {ocbinds.OpenconfigBgp_CommunityType_STANDARD, ocbinds.OpenconfigBgp_CommunityType_EXTENDED},
+	"all":  {ocbinds.OpenconfigBgp_CommunityType_STANDARD, ocbinds.OpenconfigBgp_CommunityType_EXTENDED, ocbinds.OpenconfigBgp_CommunityType_LARGE},
+}
+
+func niBgpHoldsAll(held map[string]bool, types []ocbinds.E_OpenconfigBgp_CommunityType) bool {
+	for _, t := range types {
+		if d, ok := niBgpCommunityTypeToDb(t); !ok || !held[d] {
+			return false
+		}
+	}
+	return true
+}
+
+// niBgpSendCommunityTypeFromDb reads send_community as the list of community
+// types it sends, both and all spelled out since OpenConfig deprecates BOTH.
 func niBgpSendCommunityTypeFromDb(v string) ([]ocbinds.E_OpenconfigBgp_CommunityType, bool) {
+	if types, ok := niBgpSendCommunityLists[strings.ToLower(strings.TrimSpace(v))]; ok {
+		return append([]ocbinds.E_OpenconfigBgp_CommunityType(nil), types...), true
+	}
 	if t, ok := niBgpCommunityTypeFromDb(v); ok {
 		return []ocbinds.E_OpenconfigBgp_CommunityType{t}, true
 	}
