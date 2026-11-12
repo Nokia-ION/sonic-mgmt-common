@@ -3715,6 +3715,25 @@ func Test_openconfig_routing_policy_as_path_sets_conditions_and_set_ext_communit
 		time.Sleep(1 * time.Second)
 	}
 
+	// ANY, the one option FRR applies, has no field of its own and is taken
+	// at the leaf as in a container.
+	for _, c := range []string{"match-as-path-set", "match-community-set", "match-ext-community-set"} {
+		t.Run("PATCH "+c+" match-set-options ANY leaf", processSetRequest(bgpCond+"/"+c+"/config/match-set-options",
+			`{"openconfig-bgp-policy:match-set-options":"ANY"}`, "PATCH", false, nil))
+		time.Sleep(1 * time.Second)
+	}
+	t.Run("PATCH match-tag-set match-set-options ANY leaf", processSetRequest(stmt+"/conditions/match-tag-set/config/match-set-options",
+		`{"openconfig-routing-policy:match-set-options":"ANY"}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("PATCH match-community-set match-set-options ALL leaf is refused", processSetRequest(bgpCond+"/match-community-set/config/match-set-options",
+		`{"openconfig-bgp-policy:match-set-options":"ALL"}`, "PATCH", true,
+		tlerr.NotSupportedError{Format: "routing-policy statement conditions/bgp-conditions/match-community-set match-set-options supports ANY only"}))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify ROUTE_MAP unchanged by match-set-options", verifyDbResult(rclient, "ROUTE_MAP|POLVI|10", map[string]interface{}{"ROUTE_MAP": map[string]interface{}{"POLVI|10": map[string]interface{}{
+		"route_operation": "permit", "call_route_map": "POLVIC", "match_protocol": "bgp", "match_interface": "Ethernet120",
+		"match_as_path": "ASP1", "match_ext_community": "ECVI", "set_ext_community_inline@": "route-target:2:2,route-origin:3:3"}}}, false))
+	time.Sleep(1 * time.Second)
+
 	t.Run("PATCH set-ext-community reference", processSetRequest(sec+"/reference/config",
 		`{"ext-community-set-refs":["ECVI"]}`, "PATCH", false, nil))
 	time.Sleep(1 * time.Second)
