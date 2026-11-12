@@ -2080,16 +2080,16 @@ func Test_openconfig_network_instance_bgp_neighbor_afi_safi_send_community_type(
 	t.Run("Verify the IPv4 row is unchanged by the IPv6 write", verifyDbResult(rclient, "BGP_NEIGHBOR_AF|default|20.0.0.1|ipv4_unicast", expectedMap, false))
 	time.Sleep(1 * time.Second)
 
-	expectedGetJSON := "{\"openconfig-network-instance:send-community-type\":[\"openconfig-bgp:STANDARD\"]}"
+	expectedGetJSON := "{\"openconfig-network-instance:send-community-type\":[\"STANDARD\"]}"
 	t.Run("GET neighbor IPv4 send-community-type", processGetRequest(v4, nil, expectedGetJSON, false))
 	time.Sleep(1 * time.Second)
 
-	// One field per address family cannot hold a list, so a request naming two
-	// community types is refused rather than truncated to the first.
-	urlInputBodyJSON = "{\"openconfig-network-instance:send-community-type\":[\"STANDARD\",\"EXTENDED\"]}"
-	t.Run("PATCH neighbor send-community-type with two values is refused",
+	// One field per address family holds a list only as both or all, so a
+	// list with no such value is refused rather than truncated to the first.
+	urlInputBodyJSON = "{\"openconfig-network-instance:send-community-type\":[\"STANDARD\",\"LARGE\"]}"
+	t.Run("PATCH neighbor send-community-type STANDARD and LARGE is refused",
 		processSetRequest(v4, urlInputBodyJSON, "PATCH", true, tlerr.NotSupportedError{
-			Format: "BGP neighbor send-community-type accepts one community type, since CONFIG_DB holds a single send_community per address family, and the request carries 2"}))
+			Format: "BGP neighbor send-community-type accepts one community type, STANDARD and EXTENDED, or STANDARD, EXTENDED and LARGE, since CONFIG_DB holds a single send_community per address family"}))
 	time.Sleep(1 * time.Second)
 
 	expectedMap = map[string]interface{}{
@@ -2102,6 +2102,23 @@ func Test_openconfig_network_instance_bgp_neighbor_afi_safi_send_community_type(
 	}
 	t.Run("Verify the refused list left the row alone", verifyDbResult(rclient, "BGP_NEIGHBOR_AF|default|20.0.0.1|ipv4_unicast", expectedMap, false))
 	time.Sleep(1 * time.Second)
+
+	// The lists FRR sends as both and all are held as those values and read
+	// back as the list, OpenConfig deprecating BOTH.
+	for _, c := range []struct{ name, body, fld, get string }{
+		{"STANDARD and EXTENDED", `["EXTENDED","STANDARD"]`, "both", `["STANDARD","EXTENDED"]`},
+		{"STANDARD, EXTENDED and LARGE", `["LARGE","STANDARD","EXTENDED"]`, "all", `["STANDARD","EXTENDED","LARGE"]`},
+		{"deprecated BOTH", `["BOTH"]`, "both", `["STANDARD","EXTENDED"]`},
+	} {
+		t.Run("PATCH neighbor send-community-type "+c.name, processSetRequest(v4, `{"openconfig-network-instance:send-community-type":`+c.body+`}`, "PATCH", false, nil))
+		time.Sleep(1 * time.Second)
+		t.Run("Verify send_community "+c.fld+" for "+c.name, verifyDbResult(rclient, "BGP_NEIGHBOR_AF|default|20.0.0.1|ipv4_unicast",
+			map[string]interface{}{"BGP_NEIGHBOR_AF": map[string]interface{}{"default|20.0.0.1|ipv4_unicast": map[string]interface{}{
+				"admin_status": "up", "send_community": c.fld}}}, false))
+		time.Sleep(1 * time.Second)
+		t.Run("GET neighbor send-community-type after "+c.name, processGetRequest(v4, nil, `{"openconfig-network-instance:send-community-type":`+c.get+`}`, false))
+		time.Sleep(1 * time.Second)
+	}
 
 	t.Run("DELETE neighbor IPv4 send-community-type", processDeleteRequest(v4, false))
 	time.Sleep(1 * time.Second)
@@ -2169,14 +2186,21 @@ func Test_openconfig_network_instance_bgp_peer_group_afi_safi_send_community_typ
 	t.Run("Verify BGP_PEER_GROUP_AF send_community", verifyDbResult(rclient, "BGP_PEER_GROUP_AF|default|PG1|ipv4_unicast", expectedMap, false))
 	time.Sleep(1 * time.Second)
 
-	expectedGetJSON := "{\"openconfig-network-instance:send-community-type\":[\"openconfig-bgp:EXTENDED\"]}"
+	expectedGetJSON := "{\"openconfig-network-instance:send-community-type\":[\"EXTENDED\"]}"
 	t.Run("GET peer-group send-community-type", processGetRequest(url, nil, expectedGetJSON, false))
 	time.Sleep(1 * time.Second)
 
 	urlInputBodyJSON = "{\"openconfig-network-instance:send-community-type\":[\"STANDARD\",\"LARGE\"]}"
 	t.Run("PATCH peer-group send-community-type with two values is refused",
 		processSetRequest(url, urlInputBodyJSON, "PATCH", true, tlerr.NotSupportedError{
-			Format: "BGP peer-group send-community-type accepts one community type, since CONFIG_DB holds a single send_community per address family, and the request carries 2"}))
+			Format: "BGP peer-group send-community-type accepts one community type, STANDARD and EXTENDED, or STANDARD, EXTENDED and LARGE, since CONFIG_DB holds a single send_community per address family"}))
+	time.Sleep(1 * time.Second)
+
+	t.Run("PATCH peer-group send-community-type STANDARD and EXTENDED", processSetRequest(url,
+		`{"openconfig-network-instance:send-community-type":["STANDARD","EXTENDED"]}`, "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("GET peer-group send-community-type as the list", processGetRequest(url, nil,
+		`{"openconfig-network-instance:send-community-type":["STANDARD","EXTENDED"]}`, false))
 	time.Sleep(1 * time.Second)
 
 	t.Run("DELETE peer-group send-community-type", processDeleteRequest(url, false))
