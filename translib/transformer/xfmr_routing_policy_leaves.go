@@ -311,6 +311,18 @@ func rpolStmtLeafWriteFields(r *rpolStmtLeafReq, stmtObj reflect.Value) (map[str
 	return fields, nil
 }
 
+// fieldless reports a request naming a leaf that maps to no field: the one
+// value of match-set-options FRR applies, ANY, which rpolStmtLeafToDb has
+// already checked the payload carries.
+func (r *rpolStmtLeafReq) fieldless() bool {
+	for _, c := range r.cfgContainers() {
+		if fld, mapped := rpolStmtLeafFlds[c][r.leaf]; mapped && fld == "" {
+			return true
+		}
+	}
+	return false
+}
+
 // rpolStmtLeafDeleteFields lists the fields a DELETE of the request removes.
 func rpolStmtLeafDeleteFields(r *rpolStmtLeafReq) (map[string]string, error) {
 	fields := map[string]string{}
@@ -361,7 +373,12 @@ func rpolStmtLeafYangToDb(inParams XfmrParams, r *rpolStmtLeafReq) (map[string]m
 		return res, err
 	}
 	if r.leaf != "" && len(set) == 0 {
-		return res, tlerr.InvalidArgsError{Format: "routing-policy statement " + r.node + " " + r.leaf + " is missing in request payload"}
+		if !r.fieldless() {
+			return res, tlerr.InvalidArgsError{Format: "routing-policy statement " + r.node + " " + r.leaf + " is missing in request payload"}
+		}
+		if len(niBgpCfgDbEntry(inParams, rpolRouteMapTbl, r.policy, r.stmt).Field) > 0 {
+			return res, nil
+		}
 	}
 	if held := niBgpHeldFields(inParams, makeRpolRouteMapResMap(r.policy, r.stmt, clear)); len(held) > 0 && inParams.oper != REPLACE {
 		if err := rpolStageSubOp(inParams, DELETE, held); err != nil {
