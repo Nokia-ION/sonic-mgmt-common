@@ -382,6 +382,13 @@ func yangToDbRoutedVlanVrrp(inParams XfmrParams, isIPv6 bool) (map[string]map[st
 			}
 			return resMap, nil
 		}
+		var cfgVrid *uint8
+		if grpObj.Config != nil {
+			cfgVrid = grpObj.Config.VirtualRouterId
+		}
+		if err := validateVrrpPayloadVrid(inParams.oper, targetVrid, grpObj.VirtualRouterId, cfgVrid); err != nil {
+			return nil, err
+		}
 		vrid, fields, trackEntries := mapRoutedVlanIPv6VrrpGroupToDbFields(grpObj, grpVrid, ifName, vrrpTrackTbl, inParams.dbs[db.ConfigDB], pathInfo)
 		if vrid == 0 {
 			return resMap, nil
@@ -422,6 +429,13 @@ func yangToDbRoutedVlanVrrp(inParams XfmrParams, isIPv6 bool) (map[string]map[st
 			resMap[vrrpTrackTbl] = leafTrackEntries
 		}
 		return resMap, nil
+	}
+	var cfgVrid *uint8
+	if grpObj.Config != nil {
+		cfgVrid = grpObj.Config.VirtualRouterId
+	}
+	if err := validateVrrpPayloadVrid(inParams.oper, targetVrid, grpObj.VirtualRouterId, cfgVrid); err != nil {
+		return nil, err
 	}
 	vrid, fields, trackEntries := mapRoutedVlanIPv4VrrpGroupToDbFields(grpObj, grpVrid, ifName, vrrpTrackTbl, inParams.dbs[db.ConfigDB], pathInfo)
 	if vrid == 0 {
@@ -518,6 +532,13 @@ func yangToDbSubIntfVrrp(inParams XfmrParams, isIPv6 bool) (map[string]map[strin
 			}
 			return resMap, nil
 		}
+		var cfgVrid *uint8
+		if grpObj.Config != nil {
+			cfgVrid = grpObj.Config.VirtualRouterId
+		}
+		if err := validateVrrpPayloadVrid(inParams.oper, targetVrid, grpObj.VirtualRouterId, cfgVrid); err != nil {
+			return nil, err
+		}
 		vrid, fields, trackEntries := mapSubIntfIPv6VrrpGroupToDbFields(grpObj, grpVrid, ifName, vrrpTrackTbl, inParams.dbs[db.ConfigDB], pathInfo)
 		if vrid == 0 {
 			return resMap, nil
@@ -558,6 +579,13 @@ func yangToDbSubIntfVrrp(inParams XfmrParams, isIPv6 bool) (map[string]map[strin
 			resMap[vrrpTrackTbl] = leafTrackEntries
 		}
 		return resMap, nil
+	}
+	var cfgVrid *uint8
+	if grpObj.Config != nil {
+		cfgVrid = grpObj.Config.VirtualRouterId
+	}
+	if err := validateVrrpPayloadVrid(inParams.oper, targetVrid, grpObj.VirtualRouterId, cfgVrid); err != nil {
+		return nil, err
 	}
 	vrid, fields, trackEntries := mapSubIntfIPv4VrrpGroupToDbFields(grpObj, grpVrid, ifName, vrrpTrackTbl, inParams.dbs[db.ConfigDB], pathInfo)
 	if vrid == 0 {
@@ -603,17 +631,37 @@ func isVrrpVirtualRouterIdLeafPath(pathInfo *PathInfo) bool {
 	return strings.HasSuffix(normalizedYangPath(pathInfo.YangPath), "/vrrp-group/config/virtual-router-id")
 }
 
-func validateDenyVrrpReplaceVirtualRouterIdLeaf(inParams XfmrParams, pathInfo *PathInfo) error {
-	if inParams.oper != REPLACE {
+func validateVrrpPayloadVrid(oper Operation, uriVrid uint8, payloadVrids ...*uint8) error {
+	if oper == DELETE || uriVrid == 0 {
 		return nil
 	}
-	if isVrrpVirtualRouterIdLeafPath(pathInfo) {
-		return tlerr.NotSupportedError{Format: "The virtual-router-id cannot be modified directly, delete the existing VRRP group and recreate it with the new virtual-router-id."}
+	for _, p := range payloadVrids {
+		if p != nil && *p != uriVrid {
+			return tlerr.InvalidArgs("virtual-router-id %d in the payload does not match the VRRP group key %d.", *p, uriVrid)
+		}
 	}
-	if inParams.requestUri != "" && inParams.requestUri != inParams.uri {
-		reqPathInfo := NewPathInfo(inParams.requestUri)
-		if isVrrpVirtualRouterIdLeafPath(reqPathInfo) {
+	return nil
+}
+
+func validateDenyVrrpReplaceVirtualRouterIdLeaf(inParams XfmrParams, pathInfo *PathInfo) error {
+	switch inParams.oper {
+	case REPLACE:
+		if isVrrpVirtualRouterIdLeafPath(pathInfo) {
 			return tlerr.NotSupportedError{Format: "The virtual-router-id cannot be modified directly, delete the existing VRRP group and recreate it with the new virtual-router-id."}
+		}
+		if inParams.requestUri != "" && inParams.requestUri != inParams.uri {
+			reqPathInfo := NewPathInfo(inParams.requestUri)
+			if isVrrpVirtualRouterIdLeafPath(reqPathInfo) {
+				return tlerr.NotSupportedError{Format: "The virtual-router-id cannot be modified directly, delete the existing VRRP group and recreate it with the new virtual-router-id."}
+			}
+		}
+	case UPDATE, CREATE:
+		if !isVrrpVirtualRouterIdLeafPath(pathInfo) {
+			return nil
+		}
+		uriVrid := parseUint8(pathInfo.Var("virtual-router-id"), 0)
+		if val, ok := toUint64Param(inParams.param); ok && uriVrid != 0 && val != uint64(uriVrid) {
+			return tlerr.InvalidArgs("virtual-router-id %d in the payload does not match the VRRP group key %d.", val, uriVrid)
 		}
 	}
 	return nil
