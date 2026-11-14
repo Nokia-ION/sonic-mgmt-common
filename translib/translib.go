@@ -621,14 +621,15 @@ func Action(req ActionRequest) (ActionResponse, error) {
 // to and including the first entry that fails, however many SETs translib
 // derives from it.
 func Bulk(req BulkRequest) (BulkResponse, error) {
+	ordered, pos := orderBulkEntries(req.Request)
+	req.Request = ordered
 	expanded, origin, err := expandBulkRootSet(req)
 	if err != nil {
 		return BulkResponse{}, err
 	}
-	sent := req.Request
 	req.Request = expanded
 	resp, err := bulkApply(req)
-	return collapseBulkResponse(resp, sent, origin), err
+	return restoreBulkOrder(collapseBulkResponse(resp, ordered, origin), pos), err
 }
 
 // bulkApply runs the entries of req in one transaction, answering each in
