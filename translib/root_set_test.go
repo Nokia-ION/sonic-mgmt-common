@@ -3,6 +3,7 @@
 package translib
 
 import (
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -609,5 +610,83 @@ func TestRootSetPolicyAppliedBeforeItIsNamed(t *testing.T) {
 	}
 	if _, err := d.GetEntry(&db.TableSpec{Name: "BGP_PEER_GROUP_AF"}, db.Key{Comp: []string{"default", "BGP-PEER-GROUP1", "ipv4_unicast"}}); err != nil {
 		t.Errorf("BGP_PEER_GROUP_AF|default|BGP-PEER-GROUP1|ipv4_unicast: %v", err)
+	}
+}
+
+// Within each run of entries between DELETEs, those writing routing-policy go
+// first, with or without the module prefix; the rest keep their order.
+func TestOrderBulkEntries(t *testing.T) {
+	ni := "/openconfig-network-instance:network-instances/network-instance[name=default]/table-connections"
+	entries := []BulkRequestEntry{
+		{Entry: SetRequest{Path: ni}, Operation: UPDATE},
+		{Entry: SetRequest{Path: "/openconfig-routing-policy:routing-policy/policy-definitions"}, Operation: UPDATE},
+		{Entry: SetRequest{Path: "/openconfig-routing-policy:routing-policy/defined-sets"}, Operation: DELETE},
+		{Entry: SetRequest{Path: ni}, Operation: REPLACE},
+		{Entry: SetRequest{Path: "/routing-policy/defined-sets"}, Operation: UPDATE},
+	}
+	out, pos := orderBulkEntries(entries)
+	if want := []int{1, 0, 2, 4, 3}; !reflect.DeepEqual(pos, want) {
+		t.Fatalf("order = %v, want %v", pos, want)
+	}
+	for k, e := range out {
+		if !reflect.DeepEqual(e, entries[pos[k]]) {
+			t.Errorf("entry %d = %+v, want entry %d", k, e, pos[k])
+		}
+	}
+}
+
+// The answers to the ordered entries come back in the order they were sent,
+// and a transaction that stopped answers only the entries it reached.
+func TestRestoreBulkOrder(t *testing.T) {
+	errPolicy := errors.New("policy")
+	resp := BulkResponse{Response: []BulkResponseEntry{{Operation: REPLACE}, {Operation: UPDATE}}}
+	got := restoreBulkOrder(resp, []int{1, 0})
+	if len(got.Response) != 2 || got.Response[0].Operation != UPDATE || got.Response[1].Operation != REPLACE {
+		t.Errorf("restored = %+v, want UPDATE then REPLACE", got.Response)
+	}
+	got = restoreBulkOrder(BulkResponse{Response: []BulkResponseEntry{{Operation: UPDATE, Entry: SetResponse{Err: errPolicy}}}}, []int{1, 0})
+	if len(got.Response) != 1 || got.Response[0].Entry.Err != errPolicy {
+		t.Errorf("restored = %+v, want the one failed answer", got.Response)
+	}
+}
+
+const bulkTableConnPayload = `{"table-connection":[{"address-family":"openconfig-types:IPV4","dst-protocol":"openconfig-policy-types:BGP",` +
+	`"src-protocol":"openconfig-policy-types:DIRECTLY_CONNECTED","config":{"address-family":"openconfig-types:IPV4",` +
+	`"dst-protocol":"openconfig-policy-types:BGP","src-protocol":"openconfig-policy-types:DIRECTLY_CONNECTED","import-policy":["CONNECTED-TO-BGP"]}}]}`
+
+const bulkConnPolicyPayload = `{"policy-definition":[{"name":"CONNECTED-TO-BGP","config":{"name":"CONNECTED-TO-BGP"},` +
+	`"statements":{"statement":[{"name":"10","config":{"name":"10"},"actions":{"config":{"policy-result":"ACCEPT_ROUTE"}}}]}}]}`
+
+func bulkTableConnCleanup() {
+	Delete(SetRequest{Path: "/openconfig-network-instance:network-instances/network-instance[name=default]/table-connections/" +
+		"table-connection[src-protocol=DIRECTLY_CONNECTED][dst-protocol=BGP][address-family=IPV4]"})
+	Delete(SetRequest{Path: "/openconfig-routing-policy:routing-policy/policy-definitions/policy-definition[name=CONNECTED-TO-BGP]"})
+}
+
+// A table-connection naming a policy written by a later update of the same
+// request is accepted, and each update is answered in the order sent.
+func TestBulkPolicyWrittenBeforeTheTableConnection(t *testing.T) {
+	bulkTableConnCleanup()
+	defer bulkTableConnCleanup()
+	req := BulkRequest{Request: []BulkRequestEntry{
+		{Entry: SetRequest{Path: "/openconfig-network-instance:network-instances/network-instance[name=default]/table-connections",
+			Payload: []byte(bulkTableConnPayload)}, Operation: UPDATE},
+		{Entry: SetRequest{Path: "/openconfig-routing-policy:routing-policy/policy-definitions", Payload: []byte(bulkConnPolicyPayload)}, Operation: REPLACE},
+	}}
+	resp, err := Bulk(req)
+	if err != nil {
+		t.Fatalf("Bulk: %v", err)
+	}
+	if len(resp.Response) != 2 || resp.Response[0].Operation != UPDATE || resp.Response[1].Operation != REPLACE {
+		t.Fatalf("responses = %+v, want UPDATE then REPLACE", resp.Response)
+	}
+	d := getConfigDb()
+	if d == nil {
+		t.Fatal("no CONFIG_DB")
+	}
+	defer d.DeleteDB()
+	entry, err := d.GetEntry(&db.TableSpec{Name: "ROUTE_REDISTRIBUTE"}, db.Key{Comp: []string{"default", "connected", "bgp", "ipv4"}})
+	if err != nil || entry.Field["route_map@"] != "CONNECTED-TO-BGP" && entry.Field["route_map"] != "CONNECTED-TO-BGP" {
+		t.Errorf("ROUTE_REDISTRIBUTE|default|connected|bgp|ipv4 = %v, %v; want route_map CONNECTED-TO-BGP", entry, err)
 	}
 }

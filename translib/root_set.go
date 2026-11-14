@@ -306,6 +306,66 @@ func expandBulkRootSet(req BulkRequest) (out []BulkRequestEntry, origin []int, e
 	return out, origin, nil
 }
 
+// orderBulkEntries puts, within each run of entries between DELETEs, those
+// writing a module others may reference ahead of the rest, as orderRootSetOps
+// does for the modules of one root SET; relative order is otherwise kept and
+// no entry moves across a DELETE. pos names, for each entry of out, its index
+// in entries.
+func orderBulkEntries(entries []BulkRequestEntry) (out []BulkRequestEntry, pos []int) {
+	for start := 0; start < len(entries); {
+		end := start + 1
+		if entries[start].Operation != DELETE {
+			for end < len(entries) && entries[end].Operation != DELETE {
+				end++
+			}
+		}
+		for _, referenced := range []bool{true, false} {
+			for i := start; i < end; i++ {
+				if isReferencedModulePath(entries[i].Entry.Path) == referenced {
+					out = append(out, entries[i])
+					pos = append(pos, i)
+				}
+			}
+		}
+		start = end
+	}
+	return out, pos
+}
+
+// isReferencedModulePath reports a path into one of rootSetReferencedModules,
+// with or without its module prefix.
+func isReferencedModulePath(path string) bool {
+	top := strings.TrimPrefix(path, "/")
+	if i := strings.IndexAny(top, "/["); i >= 0 {
+		top = top[:i]
+	}
+	local := func(s string) string { return s[strings.LastIndex(s, ":")+1:] }
+	for _, m := range rootSetReferencedModules {
+		if top != "" && local(top) == local(strings.TrimPrefix(m, "/")) {
+			return true
+		}
+	}
+	return false
+}
+
+// restoreBulkOrder puts the answers to the entries orderBulkEntries ordered
+// back in the order they were sent; pos is what it returned.
+func restoreBulkOrder(resp BulkResponse, pos []int) BulkResponse {
+	answered := make([]*BulkResponseEntry, len(pos))
+	for k := range resp.Response {
+		if k < len(pos) {
+			answered[pos[k]] = &resp.Response[k]
+		}
+	}
+	out := BulkResponse{}
+	for _, r := range answered {
+		if r != nil {
+			out.Response = append(out.Response, *r)
+		}
+	}
+	return out
+}
+
 // collapseBulkResponse folds the responses to the expanded entries back onto
 // the entries the caller sent, one each and in order. An entry answers with
 // its own operation and the first error among its parts; when the
