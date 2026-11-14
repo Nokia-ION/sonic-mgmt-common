@@ -225,6 +225,9 @@ var YangToDb_ni_container_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (
 	if wrapErr != nil {
 		return res, wrapErr
 	}
+	// translib calls this transformer for its nodes below the request too, so
+	// what the payload may carry is decided by the request path.
+	reqKind, _ := parseNiContainerRequestUri(inParams.requestUri)
 	niMap := niContainerInstancesFromPayload(wrappedRoot)
 	if len(niMap) == 0 {
 		return res, tlerr.InvalidArgsError{Format: "network-instance payload does not name any network instance"}
@@ -238,7 +241,7 @@ var YangToDb_ni_container_xfmr SubTreeXfmrYangToDb = func(inParams XfmrParams) (
 		if niMap[name] == nil {
 			continue
 		}
-		if err := niContainerCheckPayloadShape(niMap[name], name, kind); err != nil {
+		if err := niContainerCheckPayloadShape(niMap[name], name, reqKind); err != nil {
 			return res, err
 		}
 	}
@@ -264,6 +267,32 @@ func niContainerSortedNames(niMap map[string]*ocbinds.OpenconfigNetworkInstance_
 	return names
 }
 
+// niContainerCarries reports a container of the payload that holds a leaf or
+// a list entry. Another transformer of the same request may have built the
+// empty tree of the instance, which allocates its containers bare.
+func niContainerCarries(c interface{}) bool {
+	return niContainerHolds(reflect.ValueOf(c))
+}
+
+func niContainerHolds(v reflect.Value) bool {
+	switch v.Kind() {
+	case reflect.Invalid:
+		return false
+	case reflect.Ptr, reflect.Interface:
+		return !v.IsNil() && niContainerHolds(v.Elem())
+	case reflect.Struct:
+		for i := 0; i < v.NumField(); i++ {
+			if niContainerHolds(v.Field(i)) {
+				return true
+			}
+		}
+		return false
+	case reflect.Map, reflect.Slice:
+		return v.Len() > 0
+	}
+	return !v.IsZero()
+}
+
 // niContainerCheckPayloadShape refuses what this module does not map. A
 // payload naming one of these used to be accepted and dropped.
 func niContainerCheckPayloadShape(niObj *ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance, niName string, kind string) error {
@@ -272,10 +301,11 @@ func niContainerCheckPayloadShape(niObj *ocbinds.OpenconfigNetworkInstance_Netwo
 			Format: fmt.Sprintf("network-instance name %q in payload does not match list key %q", *niObj.Name, niName),
 		}
 	}
-	if kind == niContainerTargetProtocols && (niObj.TableConnections != nil || niObj.Afts != nil) {
+	afts := niContainerCarries(niObj.Afts)
+	if kind == niContainerTargetProtocols && (niContainerCarries(niObj.TableConnections) || afts) {
 		return tlerr.NotSupportedError{Format: "a payload at the protocols container carries nodes from outside it"}
 	}
-	if niObj.Afts != nil {
+	if afts {
 		return tlerr.NotSupportedError{
 			Format: "the AFTs of a network instance report forwarding state and cannot be written",
 		}
@@ -295,16 +325,16 @@ func niContainerCheckPayloadShape(niObj *ocbinds.OpenconfigNetworkInstance_Netwo
 		name  string
 		carry bool
 	}{
-		{"connection-points", niObj.ConnectionPoints != nil},
-		{"encapsulation", niObj.Encapsulation != nil},
-		{"fdb", niObj.Fdb != nil},
-		{"inter-instance-policies", niObj.InterInstancePolicies != nil},
-		{"mpls", niObj.Mpls != nil},
-		{"policy-forwarding", niObj.PolicyForwarding != nil},
-		{"route-limits", niObj.RouteLimits != nil},
-		{"segment-routing", niObj.SegmentRouting != nil},
-		{"state", niObj.State != nil},
-		{"tables", niObj.Tables != nil},
+		{"connection-points", niContainerCarries(niObj.ConnectionPoints)},
+		{"encapsulation", niContainerCarries(niObj.Encapsulation)},
+		{"fdb", niContainerCarries(niObj.Fdb)},
+		{"inter-instance-policies", niContainerCarries(niObj.InterInstancePolicies)},
+		{"mpls", niContainerCarries(niObj.Mpls)},
+		{"policy-forwarding", niContainerCarries(niObj.PolicyForwarding)},
+		{"route-limits", niContainerCarries(niObj.RouteLimits)},
+		{"segment-routing", niContainerCarries(niObj.SegmentRouting)},
+		{"state", niContainerCarries(niObj.State)},
+		{"tables", niContainerCarries(niObj.Tables)},
 	} {
 		if part.carry {
 			unmapped = append(unmapped, part.name)

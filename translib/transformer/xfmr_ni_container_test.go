@@ -169,3 +169,32 @@ func Test_openconfig_network_instance_protocols_aggregate_state(t *testing.T) {
 	})
 	unloadDB(db.ConfigDB, cleanupTbl)
 }
+
+// A declarative network-instance payload carries protocols beside the
+// instance's other containers, at every level above protocols.
+func Test_openconfig_network_instance_payload_with_protocols_and_table_connections(t *testing.T) {
+	cleanupTbl := map[string]interface{}{
+		"ROUTE_REDISTRIBUTE": map[string]interface{}{"default|connected|bgp|ipv4": ""},
+		"BGP_GLOBALS":        map[string]interface{}{"default": ""},
+	}
+	unloadDB(db.ConfigDB, cleanupTbl)
+	proto := `{"identifier":"openconfig-policy-types:BGP","name":"bgp","config":{"identifier":"openconfig-policy-types:BGP","name":"bgp"},` +
+		`"bgp":{"global":{"config":{"as":65200,"router-id":"11.0.0.64"}}}}`
+	tc := `{"address-family":"openconfig-types:IPV4","dst-protocol":"openconfig-policy-types:BGP","src-protocol":"openconfig-policy-types:DIRECTLY_CONNECTED",` +
+		`"config":{"address-family":"openconfig-types:IPV4","dst-protocol":"openconfig-policy-types:BGP","src-protocol":"openconfig-policy-types:DIRECTLY_CONNECTED"}}`
+	ni := `{"name":"default","config":{"name":"default"},"protocols":{"protocol":[` + proto + `]},"table-connections":{"table-connection":[` + tc + `]}}`
+	nis := "/openconfig-network-instance:network-instances"
+	for _, c := range []struct{ name, url, body string }{
+		{"network-instances", nis, `{"network-instance":[` + ni + `]}`},
+		{"network-instance list entry", nis + "/network-instance[name=default]", ni},
+	} {
+		t.Run("PATCH "+c.name+" with protocols and table-connections", processSetRequest(c.url, c.body, "PATCH", false, nil))
+		time.Sleep(1 * time.Second)
+		t.Run("Verify BGP_GLOBALS from "+c.name, verifyDbResult(rclient, "BGP_GLOBALS|default",
+			map[string]interface{}{"BGP_GLOBALS": map[string]interface{}{"default": map[string]interface{}{"local_asn": "65200", "router_id": "11.0.0.64"}}}, false))
+		t.Run("Verify ROUTE_REDISTRIBUTE from "+c.name, verifyDbResult(rclient, "ROUTE_REDISTRIBUTE|default|connected|bgp|ipv4",
+			map[string]interface{}{"ROUTE_REDISTRIBUTE": map[string]interface{}{"default|connected|bgp|ipv4": map[string]interface{}{"NULL": "NULL"}}}, false))
+		unloadDB(db.ConfigDB, cleanupTbl)
+		time.Sleep(1 * time.Second)
+	}
+}
