@@ -36,6 +36,7 @@ package transformer
 
 import (
 	"errors"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -765,10 +766,10 @@ func Test_parseNiAftsNextHopGroupsRequestUri(t *testing.T) {
 
 // The next-hop-group id is the NEXTHOP_GROUP_TABLE key, so a keyspace event
 // names the group and the group level leaves can be served on change. The member
-// list below is keyed on a next-hop id held inside a comma separated field value,
-// which a notification cannot be decomposed into, so a request reaching the
-// members has to keep sampling: accepting on-change there would report none of
-// the member changes it was asked for.
+// list below is keyed on a next-hop id held inside a comma separated field value;
+// translib reads the group a notification names and reports its members, so the
+// members are served on change too, watching the fields that hold them where the
+// anchor can name a leaf for them.
 func TestSubscribe_ni_afts_next_hop_groups_paths(t *testing.T) {
 	grps := niAftsSubscUrl + "/next-hop-groups"
 	grp := grps + "/next-hop-group[id=901]"
@@ -776,6 +777,7 @@ func TestSubscribe_ni_afts_next_hop_groups_paths(t *testing.T) {
 		name     string
 		uri      string
 		onChange bool
+		fields   map[string]string
 	}{
 		{
 			// Above the group list, so a notification on it names no group.
@@ -813,20 +815,29 @@ func TestSubscribe_ni_afts_next_hop_groups_paths(t *testing.T) {
 			onChange: true,
 		},
 		{
-			name: "member container",
-			uri:  grp + "/next-hops",
+			// Nothing below the anchor is a leaf the fields can name, so the
+			// addition and removal of a group is what is reported.
+			name:     "member container",
+			uri:      grp + "/next-hops",
+			onChange: true,
 		},
 		{
-			name: "member keyed",
-			uri:  grp + "/next-hops/next-hop[index=202]",
+			name:     "member keyed",
+			uri:      grp + "/next-hops/next-hop[index=202]",
+			onChange: true,
+			fields:   map[string]string{niAftsFldNhId: "index"},
 		},
 		{
-			name: "member state/weight leaf",
-			uri:  grp + "/next-hops/next-hop[index=202]/state/weight",
+			name:     "member state",
+			uri:      grp + "/next-hops/next-hop[index=202]/state",
+			onChange: true,
+			fields:   map[string]string{niAftsFldNhId: "index", niAftsFldWeight: "weight"},
 		},
 		{
-			name: "member wildcard under a wildcard group",
-			uri:  grps + "/next-hop-group[id=*]/next-hops/next-hop[index=*]/state/weight",
+			name:     "member wildcard under a wildcard group",
+			uri:      grps + "/next-hop-group[id=*]/next-hops/next-hop[index=*]/state",
+			onChange: true,
+			fields:   map[string]string{niAftsFldNhId: "index", niAftsFldWeight: "weight"},
 		},
 	}
 
@@ -867,10 +878,14 @@ func TestSubscribe_ni_afts_next_hop_groups_paths(t *testing.T) {
 				t.Errorf("expected a single key pattern, got %v", keys)
 			}
 			// id and state/id are both the list key, which the addition and
-			// removal of the row carries on its own, and the fields the row does
-			// hold describe members that are not served on change.
-			if len(fields) != 0 {
-				t.Errorf("expected no field mapped to a leaf, got %v", fields)
+			// removal of the row carries on its own; only a member anchor maps
+			// the fields holding the members.
+			want := tc.fields
+			if want == nil {
+				want = map[string]string{}
+			}
+			if !reflect.DeepEqual(fields, want) {
+				t.Errorf("fields = %v, want %v", fields, want)
 			}
 		})
 	}
@@ -898,6 +913,7 @@ func TestSubscribe_ni_afts_next_hop_groups_leaf_request_depth(t *testing.T) {
 			name:       "request on a member state/weight, anchored on its state",
 			uri:        grp + "/next-hops/next-hop[index=202]/state",
 			requestURI: grp + "/next-hops/next-hop[index=202]/state/weight",
+			onChange:   true,
 		},
 		{
 			// The CRUD parent-table check arrives with requestURI unset.
@@ -929,11 +945,9 @@ func TestSubscribe_ni_afts_next_hop_groups_leaf_request_depth(t *testing.T) {
 	}
 }
 
-// The path transformer is what makes the group level on-change subscription
-// usable: it turns the NEXTHOP_GROUP_TABLE key into the id the group list is
-// keyed on. A key it cannot own, and a path whose key it cannot supply, have to
-// be refused rather than half answered, since a path left with an unresolved key
-// would be reported against whichever group the infrastructure filled in.
+// The path transformer turns the NEXTHOP_GROUP_TABLE key into the id the group
+// list is keyed on. Below the group it leaves the member index unresolved, which
+// translib serves by reading the group; a key it cannot own is refused.
 func TestDbToYangPath_ni_afts_next_hop_groups(t *testing.T) {
 	const niList = "/openconfig-network-instance:network-instances/network-instance"
 	grpList := niList + "/afts/next-hop-groups/next-hop-group"
@@ -974,16 +988,16 @@ func TestDbToYangPath_ni_afts_next_hop_groups(t *testing.T) {
 		},
 		{
 			// The key names the group a member belongs to, never the member.
-			name:       "member list is refused",
+			name:       "member list names its group",
 			schemaPath: memberList,
 			keyComp:    []string{"901"},
-			wantErr:    true,
+			wantId:     "901",
 		},
 		{
-			name:       "leaf under a member is refused",
+			name:       "leaf under a member names its group",
 			schemaPath: memberList + "/state/weight",
 			keyComp:    []string{"901"},
-			wantErr:    true,
+			wantId:     "901",
 		},
 		{
 			name:       "non numeric key is refused",
@@ -1057,6 +1071,9 @@ func TestDbToYangPath_ni_afts_next_hop_groups(t *testing.T) {
 			}
 			if got != tc.wantId {
 				t.Errorf("id key = %q, want %q", got, tc.wantId)
+			}
+			if idx, ok := keys[memberList+"/index"]; ok {
+				t.Errorf("member index key = %q, want it left unresolved", idx)
 			}
 		})
 	}

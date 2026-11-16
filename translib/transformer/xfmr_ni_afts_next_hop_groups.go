@@ -239,12 +239,8 @@ var DbToYangPath_ni_afts_next_hop_groups_path_xfmr PathXfmrDbToYangFunc = func(p
 
 	// A member is keyed on a next-hop id held inside a comma separated field
 	// value, so the key names the group a member belongs to but not the member.
-	// Answering with the group alone would leave the member key unresolved, so
-	// the notification is refused instead.
-	if _, ok := niAftsSchemaPathUpto(params.ygSchemaPath, niAftsNhGrpMemberNode); ok {
-		return fmt.Errorf("AFT next-hop-group member index is not recoverable from the "+
-			"notification key for path %q", params.ygSchemaPath)
-	}
+	// The member index is left unresolved: translib then reads the group and
+	// reports each member it holds at its own path.
 
 	niPath, ok := niAftsSchemaPathUpto(params.ygSchemaPath, niAftsNiListNode)
 	if !ok {
@@ -258,6 +254,19 @@ var DbToYangPath_ni_afts_next_hop_groups_path_xfmr PathXfmrDbToYangFunc = func(p
 	}
 
 	return nil
+}
+
+// niAftsMemberFields maps the NEXTHOP_GROUP_TABLE fields that hold the members
+// to the leaves directly below anchor, a node at or below the member list.
+func niAftsMemberFields(anchor string) map[string]string {
+	bare := niBgpUriKeysRe.ReplaceAllString(strings.TrimSuffix(anchor, "/"), "")
+	switch {
+	case strings.HasSuffix(bare, "/"+niAftsNhGrpMembersNode+"/"+niAftsNhGrpMemberNode):
+		return map[string]string{niAftsFldNhId: "index"}
+	case strings.HasSuffix(bare, "/"+niAftsNhGrpMembersNode+"/"+niAftsNhGrpMemberNode+"/state"):
+		return map[string]string{niAftsFldNhId: "index", niAftsFldWeight: "weight"}
+	}
+	return map[string]string{}
 }
 
 var Subscribe_ni_afts_next_hop_groups_xfmr SubTreeXfmrSubscribe = func(inParams XfmrSubscInParams) (XfmrSubscOutParams, error) {
@@ -289,13 +298,16 @@ var Subscribe_ni_afts_next_hop_groups_xfmr SubTreeXfmrSubscribe = func(inParams 
 	// group level leaves can be served on change.
 	//
 	// The member list below is keyed on a next-hop id carried inside a comma
-	// separated field value, where a single field change stands for any number
-	// of members appearing, going away or being reweighted. The notification
-	// mapping reports one leaf per changed field and cannot decompose that, so a
-	// request reaching the members keeps sampling: an on-change subscription
-	// there would be accepted and then report none of it.
-	if reqInfo, err := parseNiAftsNextHopGroupsRequestUri(reqUri); err == nil &&
-		reqInfo.atGroupList && !reqInfo.atMembers {
+	// separated field value. The path transformer names the group and leaves the
+	// member unresolved, and translib then reads the group and reports each of
+	// its members, so a request reaching the members is served on change too.
+	// The fields holding them are mapped to a leaf directly below the anchor,
+	// the only place the framework can name one, so that a group rewritten in
+	// place is reported as well as one added or removed.
+	if reqInfo, err := parseNiAftsNextHopGroupsRequestUri(reqUri); err == nil && reqInfo.atGroupList {
+		if reqInfo.atMembers {
+			result.dbDataMap[db.ApplDB][niAftsNhGrpTbl]["*"] = niAftsMemberFields(inParams.uri)
+		}
 		result.onChange = OnchangeEnable
 		result.nOpts = &notificationOpts{pType: OnChange}
 		return result, nil
