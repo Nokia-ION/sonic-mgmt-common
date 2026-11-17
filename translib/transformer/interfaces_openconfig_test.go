@@ -22,6 +22,7 @@
 package transformer_test
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -538,6 +539,19 @@ func Test_openconfig_subintf_ipv6(t *testing.T) {
 	t.Log("\n\n+++++++++++++ DONE IPV6 ENABLED POLICY ON SUBINTERFACES  ++++++++++++")
 }
 
+func loadVrrpIntfIPs(tbl, ifName string, prefixes ...string) func() {
+	load := map[string]interface{}{}
+	clean := map[string]interface{}{}
+	for _, p := range prefixes {
+		load[ifName+"|"+p] = map[string]interface{}{}
+		clean[ifName+"|"+p] = ""
+	}
+	loadDB(db.ConfigDB, map[string]interface{}{tbl: load})
+	return func() {
+		unloadDB(db.ConfigDB, map[string]interface{}{tbl: clean})
+	}
+}
+
 func Test_openconfig_routed_vlan_ipv4_vrrp_get(t *testing.T) {
 	t.Log("\n\n+++++++++++++ QUERY IPv4 VRRP OPENCONFIG LEAVES ++++++++++++")
 
@@ -889,6 +903,7 @@ func Test_openconfig_routed_vlan_ipv6_vrrp_patch(t *testing.T) {
 
 func Test_openconfig_subinterface_ipv4_vrrp_get(t *testing.T) {
 	t.Log("\n\n+++++++++++++ QUERY SUBINTERFACE IPv4 VRRP OPENCONFIG LEAVES ++++++++++++")
+	defer loadVrrpIntfIPs("INTERFACE", "Ethernet0", "20.0.0.1/24")()
 
 	preReqMap := map[string]interface{}{
 		"VRRP": map[string]interface{}{
@@ -931,6 +946,7 @@ func Test_openconfig_subinterface_ipv4_vrrp_get(t *testing.T) {
 
 func Test_openconfig_subinterface_ipv6_vrrp_get(t *testing.T) {
 	t.Log("\n\n+++++++++++++ QUERY SUBINTERFACE IPv6 VRRP OPENCONFIG LEAVES ++++++++++++")
+	defer loadVrrpIntfIPs("INTERFACE", "Ethernet0", "2001:db8::1/64")()
 
 	preReqMap := map[string]interface{}{
 		"VRRP6": map[string]interface{}{
@@ -973,6 +989,7 @@ func Test_openconfig_subinterface_ipv6_vrrp_get(t *testing.T) {
 
 func Test_openconfig_portchannel_subinterface_vrrp_get(t *testing.T) {
 	t.Log("\n\n+++++++++++++ QUERY PORTCHANNEL SUBINTERFACE VRRP OPENCONFIG LEAVES ++++++++++++")
+	defer loadVrrpIntfIPs("PORTCHANNEL_INTERFACE", "PortChannel001", "20.0.0.1/24", "2001:db8::1/64")()
 
 	preReqMap := map[string]interface{}{
 		"VRRP": map[string]interface{}{
@@ -1049,6 +1066,7 @@ func Test_openconfig_portchannel_subinterface_vrrp_get(t *testing.T) {
 
 func Test_openconfig_subinterface_ipv4_vrrp_patch(t *testing.T) {
 	t.Log("\n\n+++++++++++++ PATCH SUBINTERFACE IPv4 VRRP OPENCONFIG LEAVES ++++++++++++")
+	defer loadVrrpIntfIPs("INTERFACE", "Ethernet0", "20.0.0.1/24")()
 
 	preReqMap := map[string]interface{}{
 		"VRRP": map[string]interface{}{
@@ -1098,6 +1116,7 @@ func Test_openconfig_subinterface_ipv4_vrrp_patch(t *testing.T) {
 
 func Test_openconfig_subinterface_ipv6_vrrp_patch(t *testing.T) {
 	t.Log("\n\n+++++++++++++ PATCH SUBINTERFACE IPv6 VRRP OPENCONFIG LEAVES ++++++++++++")
+	defer loadVrrpIntfIPs("INTERFACE", "Ethernet0", "2001:db8::1/64")()
 
 	preReqMap := map[string]interface{}{
 		"VRRP6": map[string]interface{}{
@@ -1146,6 +1165,7 @@ func Test_openconfig_subinterface_ipv6_vrrp_patch(t *testing.T) {
 
 func Test_openconfig_subinterface_ipv4_vrrp_delete_leaf_defaults(t *testing.T) {
 	t.Log("\n\n+++++++++++++ DELETE SUBINTERFACE IPv4 VRRP LEAF DEFAULTS ++++++++++++")
+	defer loadVrrpIntfIPs("INTERFACE", "Ethernet0", "20.0.0.1/24")()
 
 	preReqMap := map[string]interface{}{
 		"VRRP": map[string]interface{}{
@@ -1178,6 +1198,7 @@ func Test_openconfig_subinterface_ipv4_vrrp_delete_leaf_defaults(t *testing.T) {
 
 func Test_openconfig_subinterface_ipv6_vrrp_delete_leaf_defaults(t *testing.T) {
 	t.Log("\n\n+++++++++++++ DELETE SUBINTERFACE IPv6 VRRP LEAF DEFAULTS ++++++++++++")
+	defer loadVrrpIntfIPs("INTERFACE", "Ethernet0", "2001:db8::1/64")()
 
 	preReqMap := map[string]interface{}{
 		"VRRP6": map[string]interface{}{
@@ -1249,6 +1270,7 @@ func Test_openconfig_subinterface_ipv4_vrrp_patch_config_container(t *testing.T)
 
 func Test_openconfig_subinterface_ipv6_vrrp_patch_tracking_config_container(t *testing.T) {
 	t.Log("\n\n+++++++++++++ PATCH SUBINTERFACE IPv6 VRRP TRACKING CONFIG CONTAINER ++++++++++++")
+	defer loadVrrpIntfIPs("INTERFACE", "Ethernet0", "2001:db8::1/64")()
 
 	preReqMap := map[string]interface{}{
 		"VRRP6": map[string]interface{}{
@@ -1291,6 +1313,7 @@ func Test_openconfig_subinterface_ipv6_vrrp_patch_tracking_config_container(t *t
 // accept-mode and virtual-link-local are not-supported
 func Test_openconfig_vrrp_unsupported_leaves(t *testing.T) {
 	t.Log("\n\n+++++++++++++ VRRP UNSUPPORTED LEAVES accept-mode / virtual-link-local ++++++++++++")
+	defer loadVrrpIntfIPs("INTERFACE", "Ethernet0", "20.0.0.1/24", "2001:db8::1/64")()
 
 	preReqMap := map[string]interface{}{
 		"VRRP": map[string]interface{}{
@@ -1820,6 +1843,106 @@ func Test_openconfig_subinterface_ipv4_vrrp_vip_parent_subnet_rejected(t *testin
 		},
 	}
 	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_vrrp_address_key_validation(t *testing.T) {
+	t.Log("\n\n+++++++++++++ VRRP address[ip] KEY VALIDATION AGAINST CONFIG_DB INTERFACE IPs ++++++++++++")
+
+	defer loadVrrpIntfIPs("INTERFACE", "Ethernet0", "11.0.0.1/24", "11.0.0.5/24", "11::1/64")()
+	defer loadVrrpIntfIPs("VLAN_INTERFACE", "Vlan1000", "192.168.0.2/24")()
+
+	preReqMap := map[string]interface{}{
+		"VRRP": map[string]interface{}{
+			"Ethernet0|2": map[string]interface{}{
+				"vid": "2", "vip@": "11.0.0.10", "priority": "150",
+				"preempt": "true", "adv_interval": "1",
+			},
+			"Vlan1000|10": map[string]interface{}{
+				"vid": "10", "vip@": "192.168.0.1", "priority": "120",
+				"preempt": "true", "adv_interval": "1",
+			},
+		},
+		"VRRP6": map[string]interface{}{
+			"Ethernet0|3": map[string]interface{}{
+				"vid": "3", "vip@": "11::10", "priority": "130",
+				"preempt": "true", "adv_interval": "1",
+			},
+		},
+	}
+	loadDB(db.ConfigDB, preReqMap)
+	defer unloadDB(db.ConfigDB, map[string]interface{}{
+		"VRRP":  map[string]interface{}{"Ethernet0|2": "", "Vlan1000|10": ""},
+		"VRRP6": map[string]interface{}{"Ethernet0|3": ""},
+	})
+
+	subV4 := func(ip string) string {
+		return "/openconfig-interfaces:interfaces/interface[name=Ethernet0]/subinterfaces/subinterface[index=0]/openconfig-if-ip:ipv4/addresses/address[ip=" + ip + "]/vrrp/vrrp-group[virtual-router-id=2]"
+	}
+	subV6 := func(ip string) string {
+		return "/openconfig-interfaces:interfaces/interface[name=Ethernet0]/subinterfaces/subinterface[index=0]/openconfig-if-ip:ipv6/addresses/address[ip=" + ip + "]/vrrp/vrrp-group[virtual-router-id=3]"
+	}
+	vlanV4 := func(ip string) string {
+		return "/openconfig-interfaces:interfaces/interface[name=Vlan1000]/openconfig-vlan:routed-vlan/openconfig-if-ip:ipv4/addresses/address[ip=" + ip + "]/vrrp/vrrp-group[virtual-router-id=10]"
+	}
+	prio := func(p int) string { return "{\"openconfig-if-ip:priority\":" + strconv.Itoa(p) + "}" }
+
+	user := UserRoles{Name: "admin", Roles: []string{"admin"}}
+	const notConfigured = "is not configured on interface"
+	mustReject := func(t *testing.T, op string, err error) {
+		t.Helper()
+		if err == nil {
+			t.Fatalf("%s: expected rejection for unconfigured address, got success", op)
+		}
+		if !strings.Contains(err.Error(), notConfigured) {
+			t.Fatalf("%s: unexpected error %q, want it to contain %q", op, err.Error(), notConfigured)
+		}
+	}
+	rejectGet := func(url string) func(*testing.T) {
+		return func(t *testing.T) {
+			_, err := Get(GetRequest{Path: url, User: user})
+			mustReject(t, "GET "+url, err)
+		}
+	}
+	rejectPatch := func(url, payload string) func(*testing.T) {
+		return func(t *testing.T) {
+			_, err := Update(SetRequest{Path: url, Payload: []byte(payload)})
+			mustReject(t, "PATCH "+url, err)
+		}
+	}
+	rejectDelete := func(url string) func(*testing.T) {
+		return func(t *testing.T) {
+			_, err := Delete(SetRequest{Path: url})
+			mustReject(t, "DELETE "+url, err)
+		}
+	}
+
+	// Configured addresses succeed
+	t.Run("GET subintf ipv4 via configured 11.0.0.1", processGetRequest(subV4("11.0.0.1")+"/config/priority", nil, prio(150), false))
+	t.Run("GET subintf ipv6 via configured 11::1", processGetRequest(subV6("11::1")+"/config/priority", nil, prio(130), false))
+	t.Run("GET routed-vlan via configured 192.168.0.2", processGetRequest(vlanV4("192.168.0.2")+"/config/priority", nil, prio(120), false))
+
+	// Unconfigured host, are rejected
+	t.Run("GET subintf ipv4 unconfigured 11.0.0.42", rejectGet(subV4("11.0.0.42")+"/config/priority"))
+	t.Run("GET subintf ipv4 VIP 11.0.0.10", rejectGet(subV4("11.0.0.10")+"/config/priority"))
+	t.Run("GET subintf ipv4 group unconfigured 11.0.0.42", rejectGet(subV4("11.0.0.42")))
+	t.Run("GET subintf ipv6 unconfigured 11::42", rejectGet(subV6("11::42")+"/config/priority"))
+	t.Run("GET routed-vlan unconfigured 192.168.0.7", rejectGet(vlanV4("192.168.0.7")+"/state"))
+	t.Run("GET routed-vlan VIP 192.168.0.1", rejectGet(vlanV4("192.168.0.1")+"/state"))
+	t.Run("PATCH subintf ipv4 unconfigured", rejectPatch(subV4("11.0.0.42")+"/config/priority", "{\"priority\":105}"))
+	t.Run("PATCH subintf ipv6 unconfigured", rejectPatch(subV6("11::42")+"/config/priority", "{\"priority\":105}"))
+	t.Run("PATCH routed-vlan unconfigured", rejectPatch(vlanV4("192.168.0.7")+"/config/priority", "{\"priority\":105}"))
+	t.Run("DELETE subintf ipv4 group unconfigured", rejectDelete(subV4("11.0.0.42")))
+	t.Run("DELETE routed-vlan group unconfigured", rejectDelete(vlanV4("192.168.0.7")))
+	time.Sleep(1 * time.Second)
+
+	t.Run("Verify subintf ipv4 unchanged", processGetRequest(subV4("11.0.0.1")+"/config/priority", nil, prio(150), false))
+	t.Run("Verify subintf ipv6 unchanged", processGetRequest(subV6("11::1")+"/config/priority", nil, prio(130), false))
+	t.Run("Verify routed-vlan unchanged", processGetRequest(vlanV4("192.168.0.2")+"/config/priority", nil, prio(120), false))
+
+	t.Run("GET subintf ipv4 via second configured 11.0.0.5", processGetRequest(subV4("11.0.0.5")+"/config/priority", nil, prio(150), false))
+	t.Run("PATCH subintf ipv4 via second configured 11.0.0.5", processSetRequest(subV4("11.0.0.5")+"/config/priority", "{\"priority\":140}", "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("GET subintf ipv4 via first configured sees patch", processGetRequest(subV4("11.0.0.1")+"/config/priority", nil, prio(140), false))
 }
 
 func Test_openconfig_vrrp_replace_virtual_router_id_rejected(t *testing.T) {
