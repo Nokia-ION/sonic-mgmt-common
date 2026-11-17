@@ -327,6 +327,9 @@ func yangToDbRoutedVlanVrrp(inParams XfmrParams, isIPv6 bool) (map[string]map[st
 		return nil, err
 	}
 	uriIP := pathInfo.Var("ip")
+	if err := validateVrrpAddressKey(inParams.dbs[db.ConfigDB], ifName, uriIP, isIPv6); err != nil {
+		return nil, err
+	}
 
 	vrrpTbl := VRRP_TBL
 	vrrpTrackTbl := VRRP_TRACK_TBL
@@ -476,6 +479,9 @@ func yangToDbSubIntfVrrp(inParams XfmrParams, isIPv6 bool) (map[string]map[strin
 		parentIfName = fmt.Sprintf("%s.%d", ifName, subIntfIdx)
 	}
 	uriIP := pathInfo.Var("ip")
+	if err := validateVrrpAddressKey(inParams.dbs[db.ConfigDB], parentIfName, uriIP, isIPv6); err != nil {
+		return nil, err
+	}
 
 	vrrpTbl := VRRP_TBL
 	vrrpTrackTbl := VRRP_TRACK_TBL
@@ -678,6 +684,9 @@ func getRoutedVlanIPv4VrrpGroupFromRoot(inParams XfmrParams, ifName string, uriI
 		return nil, 0, false
 	}
 	addrObj, ok := intfObj.RoutedVlan.Ipv4.Addresses.Address[uriIP]
+	if uriIP != "" && uriIP != "*" && (!ok || addrObj == nil || addrObj.Vrrp == nil || addrObj.Vrrp.VrrpGroup == nil) {
+		return nil, 0, false
+	}
 	if !ok || addrObj == nil || addrObj.Vrrp == nil || addrObj.Vrrp.VrrpGroup == nil {
 		for _, cand := range intfObj.RoutedVlan.Ipv4.Addresses.Address {
 			if cand != nil && cand.Vrrp != nil && cand.Vrrp.VrrpGroup != nil {
@@ -713,6 +722,9 @@ func getRoutedVlanIPv6VrrpGroupFromRoot(inParams XfmrParams, ifName string, uriI
 		return nil, 0, false
 	}
 	addrObj, ok := intfObj.RoutedVlan.Ipv6.Addresses.Address[uriIP]
+	if uriIP != "" && uriIP != "*" && (!ok || addrObj == nil || addrObj.Vrrp == nil || addrObj.Vrrp.VrrpGroup == nil) {
+		return nil, 0, false
+	}
 	if !ok || addrObj == nil || addrObj.Vrrp == nil || addrObj.Vrrp.VrrpGroup == nil {
 		for _, cand := range intfObj.RoutedVlan.Ipv6.Addresses.Address {
 			if cand != nil && cand.Vrrp != nil && cand.Vrrp.VrrpGroup != nil {
@@ -833,6 +845,9 @@ func getSubIntfIPv4VrrpGroupFromRoot(inParams XfmrParams, ifName string, subIntf
 		return nil, 0, false
 	}
 	addrObj, ok := subIntfObj.Ipv4.Addresses.Address[uriIP]
+	if uriIP != "" && uriIP != "*" && (!ok || addrObj == nil || addrObj.Vrrp == nil || addrObj.Vrrp.VrrpGroup == nil) {
+		return nil, 0, false
+	}
 	if !ok || addrObj == nil || addrObj.Vrrp == nil || addrObj.Vrrp.VrrpGroup == nil {
 		for _, cand := range subIntfObj.Ipv4.Addresses.Address {
 			if cand != nil && cand.Vrrp != nil && cand.Vrrp.VrrpGroup != nil {
@@ -871,6 +886,9 @@ func getSubIntfIPv6VrrpGroupFromRoot(inParams XfmrParams, ifName string, subIntf
 		return nil, 0, false
 	}
 	addrObj, ok := subIntfObj.Ipv6.Addresses.Address[uriIP]
+	if uriIP != "" && uriIP != "*" && (!ok || addrObj == nil || addrObj.Vrrp == nil || addrObj.Vrrp.VrrpGroup == nil) {
+		return nil, 0, false
+	}
 	if !ok || addrObj == nil || addrObj.Vrrp == nil || addrObj.Vrrp.VrrpGroup == nil {
 		for _, cand := range subIntfObj.Ipv6.Addresses.Address {
 			if cand != nil && cand.Vrrp != nil && cand.Vrrp.VrrpGroup != nil {
@@ -1376,6 +1394,10 @@ func dbToYangVrrp(inParams XfmrParams, isIPv6 bool) error {
 		return nil
 	}
 
+	if err := validateVrrpAddressKey(cfgDb, ifName, pathInfo.Var("ip"), isIPv6); err != nil {
+		return err
+	}
+
 	vrrpTbl := VRRP_TBL
 	vrrpTrackTbl := VRRP_TRACK_TBL
 	vrrpStateTbl := VRRP_STATE_TBL
@@ -1427,6 +1449,14 @@ func dbToYangSubIntfVrrp(inParams XfmrParams, isIPv6 bool) error {
 	cfgDb := inParams.dbs[db.ConfigDB]
 	if cfgDb == nil {
 		return nil
+	}
+
+	addrIfName := ifName
+	if subIdx := parseSubIntfIndex(pathInfo.Var("index")); subIdx != 0 {
+		addrIfName = fmt.Sprintf("%s.%d", ifName, subIdx)
+	}
+	if err := validateVrrpAddressKey(cfgDb, addrIfName, pathInfo.Var("ip"), isIPv6); err != nil {
+		return err
 	}
 
 	vrrpTbl := VRRP_TBL
@@ -2547,6 +2577,34 @@ func getParentIntfIPPrefixes(cfgDb *db.DB, ifName string) []string {
 		}
 	}
 	return out
+}
+
+func vrrpAddressConfigured(cfgDb *db.DB, ifName, ip string, isIPv6 bool) bool {
+	want := net.ParseIP(strings.TrimSpace(ip))
+	if want == nil || (want.To4() == nil) != isIPv6 {
+		return false
+	}
+	for _, pref := range getParentIntfIPPrefixes(cfgDb, ifName) {
+		hostIP, _, err := net.ParseCIDR(strings.TrimSpace(pref))
+		if err != nil {
+			continue
+		}
+		if hostIP.Equal(want) {
+			return true
+		}
+	}
+	return false
+}
+
+func validateVrrpAddressKey(cfgDb *db.DB, ifName, ip string, isIPv6 bool) error {
+	ip = strings.TrimSpace(ip)
+	if ip == "" || ip == "*" {
+		return nil
+	}
+	if !vrrpAddressConfigured(cfgDb, ifName, ip, isIPv6) {
+		return tlerr.InvalidArgs("IP address %s is not configured on interface %s", ip, ifName)
+	}
+	return nil
 }
 
 func vrrpCanonPrefix(pref string) (canon string, network *net.IPNet, isIPv4 bool, ok bool) {
