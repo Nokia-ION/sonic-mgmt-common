@@ -336,6 +336,199 @@ module openconfig-interfaces-annot {
         }
     }
 
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:config/oc-ip:interval {
+        deviate add {
+            sonic-ext:field-transformer "ipv6_ra_interval_xfmr";
+            sonic-ext:field-name "ipv6_ra_interval";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:state/oc-ip:interval {
+        deviate add {
+            sonic-ext:field-transformer "ipv6_ra_interval_xfmr";
+            sonic-ext:field-name "ipv6_ra_interval";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:config/oc-ip:lifetime {
+        deviate add {
+            sonic-ext:field-transformer "ipv6_ra_lifetime_xfmr";
+            sonic-ext:field-name "ipv6_ra_lifetime";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:state/oc-ip:lifetime {
+        deviate add {
+            sonic-ext:field-transformer "ipv6_ra_lifetime_xfmr";
+            sonic-ext:field-name "ipv6_ra_lifetime";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:config/oc-ip:reachable-time {
+        deviate add {
+            sonic-ext:field-transformer "ipv6_ra_reachable_time_xfmr";
+            sonic-ext:field-name "ipv6_ra_reachable_time";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:state/oc-ip:reachable-time {
+        deviate add {
+            sonic-ext:field-transformer "ipv6_ra_reachable_time_xfmr";
+            sonic-ext:field-name "ipv6_ra_reachable_time";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:config/oc-ip:suppress {
+        deviate add {
+            sonic-ext:field-transformer "ipv6_ra_suppress_xfmr";
+            sonic-ext:field-name "ipv6_ra_suppress";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:state/oc-ip:suppress {
+        deviate add {
+            sonic-ext:field-transformer "ipv6_ra_suppress_xfmr";
+            sonic-ext:field-name "ipv6_ra_suppress";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:config/oc-ip:enable {
+        deviate add {
+            sonic-ext:field-transformer "ipv6_ra_enable_xfmr";
+            sonic-ext:field-name "ipv6_ra_enable";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:state/oc-ip:enable {
+        deviate add {
+            sonic-ext:field-transformer "ipv6_ra_enable_xfmr";
+            sonic-ext:field-name "ipv6_ra_enable";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:config/oc-ip:managed {
+        deviate add {
+            sonic-ext:field-transformer "ipv6_ra_managed_xfmr";
+            sonic-ext:field-name "ipv6_ra_managed";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:state/oc-ip:managed {
+        deviate add {
+            sonic-ext:field-transformer "ipv6_ra_managed_xfmr";
+            sonic-ext:field-name "ipv6_ra_managed";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:config/oc-ip:other-config {
+        deviate add {
+            sonic-ext:field-transformer "ipv6_ra_other_config_xfmr";
+            sonic-ext:field-name "ipv6_ra_other_config";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:state/oc-ip:other-config {
+        deviate add {
+            sonic-ext:field-transformer "ipv6_ra_other_config_xfmr";
+            sonic-ext:field-name "ipv6_ra_other_config";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:prefixes {
+        deviate add {
+            sonic-ext:table-name "NONE";
+            sonic-ext:subtree-transformer "ipv6_ra_prefixes_xfmr";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:prefixes/oc-ip:prefix {
+        deviate add {
+            sonic-ext:key-transformer "intf_tbl_key_xfmr";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:prefixes/oc-ip:prefix/oc-ip:config {
+        deviate add {
+            sonic-ext:table-name "NONE";
+            sonic-ext:subtree-transformer "ipv6_ra_prefixes_xfmr";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:prefixes/oc-ip:prefix/oc-ip:state {
+        deviate add {
+            sonic-ext:table-name "NONE";
+            sonic-ext:subtree-transformer "ipv6_ra_prefixes_xfmr";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:prefixes/oc-ip:prefix/oc-ip:config/oc-ip:prefix {
+        deviate add {
+            sonic-ext:field-transformer "ipv6_ra_prefix_prefix_xfmr";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:prefixes/oc-ip:prefix/oc-ip:state/oc-ip:prefix {
+        deviate add {
+            sonic-ext:field-transformer "ipv6_ra_prefix_prefix_xfmr";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:prefixes/oc-ip:prefix/oc-ip:config/oc-ip:valid-lifetime {
+        deviate add {
+            sonic-ext:field-transformer "ipv6_ra_prefix_valid_lifetime_xfmr";
+            sonic-ext:field-name "ipv6_ra_prefix_valid_lifetime";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:prefixes/oc-ip:prefix/oc-ip:state/oc-ip:valid-lifetime {
+        deviate add {
+            sonic-ext:field-transformer "ipv6_ra_prefix_valid_lifetime_xfmr";
+            sonic-ext:field-name "ipv6_ra_prefix_valid_lifetime";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:prefixes/oc-ip:prefix/oc-ip:config/oc-ip:preferred-lifetime {
+        deviate add {
+            sonic-ext:field-transformer "ipv6_ra_prefix_preferred_lifetime_xfmr";
+            sonic-ext:field-name "ipv6_ra_prefix_preferred_lifetime";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:prefixes/oc-ip:prefix/oc-ip:state/oc-ip:preferred-lifetime {
+        deviate add {
+            sonic-ext:field-transformer "ipv6_ra_prefix_preferred_lifetime_xfmr";
+            sonic-ext:field-name "ipv6_ra_prefix_preferred_lifetime";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:prefixes/oc-ip:prefix/oc-ip:config/oc-ip:disable-autoconfiguration {
+        deviate add {
+            sonic-ext:field-transformer "ipv6_ra_prefix_disable_autoconfig_xfmr";
+            sonic-ext:field-name "ipv6_ra_prefix_disable_autoconfig";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:prefixes/oc-ip:prefix/oc-ip:state/oc-ip:disable-autoconfiguration {
+        deviate add {
+            sonic-ext:field-transformer "ipv6_ra_prefix_disable_autoconfig_xfmr";
+            sonic-ext:field-name "ipv6_ra_prefix_disable_autoconfig";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:prefixes/oc-ip:prefix/oc-ip:config/oc-ip:enable-onlink {
+        deviate add {
+            sonic-ext:field-transformer "ipv6_ra_prefix_enable_onlink_xfmr";
+            sonic-ext:field-name "ipv6_ra_prefix_enable_onlink";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:prefixes/oc-ip:prefix/oc-ip:state/oc-ip:enable-onlink {
+        deviate add {
+            sonic-ext:field-transformer "ipv6_ra_prefix_enable_onlink_xfmr";
+            sonic-ext:field-name "ipv6_ra_prefix_enable_onlink";
+        }
+    }
+
     deviation /oc-intf:interfaces/oc-intf:interface/oc-vlan:routed-vlan {
         deviate add {
 	    sonic-ext:path-transformer "intf_ip_path_xfmr";
@@ -508,6 +701,213 @@ module openconfig-interfaces-annot {
         deviate add {
             sonic-ext:field-transformer "ipv6_enabled_xfmr";
             sonic-ext:field-name "ipv6_use_link_local_only";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-vlan:routed-vlan/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:config/oc-ip:interval {
+        deviate add {
+            sonic-ext:field-transformer "ipv6_ra_interval_xfmr";
+            sonic-ext:field-name "ipv6_ra_interval";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-vlan:routed-vlan/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:state/oc-ip:interval {
+        deviate add {
+            sonic-ext:field-transformer "ipv6_ra_interval_xfmr";
+            sonic-ext:field-name "ipv6_ra_interval";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-vlan:routed-vlan/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:config/oc-ip:lifetime {
+        deviate add {
+            sonic-ext:field-transformer "ipv6_ra_lifetime_xfmr";
+            sonic-ext:field-name "ipv6_ra_lifetime";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-vlan:routed-vlan/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:state/oc-ip:lifetime {
+        deviate add {
+            sonic-ext:field-transformer "ipv6_ra_lifetime_xfmr";
+            sonic-ext:field-name "ipv6_ra_lifetime";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-vlan:routed-vlan/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:config/oc-ip:reachable-time {
+        deviate add {
+            sonic-ext:field-transformer "ipv6_ra_reachable_time_xfmr";
+            sonic-ext:field-name "ipv6_ra_reachable_time";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-vlan:routed-vlan/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:state/oc-ip:reachable-time {
+        deviate add {
+            sonic-ext:field-transformer "ipv6_ra_reachable_time_xfmr";
+            sonic-ext:field-name "ipv6_ra_reachable_time";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-vlan:routed-vlan/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:config/oc-ip:suppress {
+        deviate add {
+            sonic-ext:field-transformer "ipv6_ra_suppress_xfmr";
+            sonic-ext:field-name "ipv6_ra_suppress";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-vlan:routed-vlan/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:state/oc-ip:suppress {
+        deviate add {
+            sonic-ext:field-transformer "ipv6_ra_suppress_xfmr";
+            sonic-ext:field-name "ipv6_ra_suppress";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-vlan:routed-vlan/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:config/oc-ip:enable {
+        deviate add {
+            sonic-ext:field-transformer "ipv6_ra_enable_xfmr";
+            sonic-ext:field-name "ipv6_ra_enable";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-vlan:routed-vlan/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:state/oc-ip:enable {
+        deviate add {
+            sonic-ext:field-transformer "ipv6_ra_enable_xfmr";
+            sonic-ext:field-name "ipv6_ra_enable";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-vlan:routed-vlan/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:config/oc-ip:managed {
+        deviate add {
+            sonic-ext:field-transformer "ipv6_ra_managed_xfmr";
+            sonic-ext:field-name "ipv6_ra_managed";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-vlan:routed-vlan/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:state/oc-ip:managed {
+        deviate add {
+            sonic-ext:field-transformer "ipv6_ra_managed_xfmr";
+            sonic-ext:field-name "ipv6_ra_managed";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-vlan:routed-vlan/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:config/oc-ip:other-config {
+        deviate add {
+            sonic-ext:field-transformer "ipv6_ra_other_config_xfmr";
+            sonic-ext:field-name "ipv6_ra_other_config";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-vlan:routed-vlan/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:state/oc-ip:other-config {
+        deviate add {
+            sonic-ext:field-transformer "ipv6_ra_other_config_xfmr";
+            sonic-ext:field-name "ipv6_ra_other_config";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-vlan:routed-vlan/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:prefixes {
+        deviate add {
+            sonic-ext:table-name "NONE";
+            sonic-ext:subtree-transformer "ipv6_ra_prefixes_xfmr";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-vlan:routed-vlan/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:prefixes/oc-ip:prefix {
+        deviate add {
+            sonic-ext:key-transformer "intf_tbl_key_xfmr";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-vlan:routed-vlan/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:prefixes/oc-ip:prefix/oc-ip:config {
+        deviate add {
+            sonic-ext:table-name "NONE";
+            sonic-ext:subtree-transformer "ipv6_ra_prefixes_xfmr";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-vlan:routed-vlan/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:prefixes/oc-ip:prefix/oc-ip:state {
+        deviate add {
+            sonic-ext:table-name "NONE";
+            sonic-ext:subtree-transformer "ipv6_ra_prefixes_xfmr";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-vlan:routed-vlan/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:prefixes/oc-ip:prefix/oc-ip:config/oc-ip:prefix {
+        deviate add {
+            sonic-ext:field-transformer "ipv6_ra_prefix_prefix_xfmr";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-vlan:routed-vlan/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:prefixes/oc-ip:prefix/oc-ip:state/oc-ip:prefix {
+        deviate add {
+            sonic-ext:field-transformer "ipv6_ra_prefix_prefix_xfmr";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-vlan:routed-vlan/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:prefixes/oc-ip:prefix/oc-ip:config/oc-ip:valid-lifetime {
+        deviate add {
+            sonic-ext:field-transformer "ipv6_ra_prefix_valid_lifetime_xfmr";
+            sonic-ext:field-name "ipv6_ra_prefix_valid_lifetime";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-vlan:routed-vlan/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:prefixes/oc-ip:prefix/oc-ip:state/oc-ip:valid-lifetime {
+        deviate add {
+            sonic-ext:field-transformer "ipv6_ra_prefix_valid_lifetime_xfmr";
+            sonic-ext:field-name "ipv6_ra_prefix_valid_lifetime";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-vlan:routed-vlan/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:prefixes/oc-ip:prefix/oc-ip:config/oc-ip:preferred-lifetime {
+        deviate add {
+            sonic-ext:field-transformer "ipv6_ra_prefix_preferred_lifetime_xfmr";
+            sonic-ext:field-name "ipv6_ra_prefix_preferred_lifetime";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-vlan:routed-vlan/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:prefixes/oc-ip:prefix/oc-ip:state/oc-ip:preferred-lifetime {
+        deviate add {
+            sonic-ext:field-transformer "ipv6_ra_prefix_preferred_lifetime_xfmr";
+            sonic-ext:field-name "ipv6_ra_prefix_preferred_lifetime";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-vlan:routed-vlan/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:prefixes/oc-ip:prefix/oc-ip:config/oc-ip:disable-advertisement {
+        deviate add {
+            sonic-ext:field-transformer "ipv6_ra_prefix_disable_advertisement_xfmr";
+            sonic-ext:field-name "ipv6_ra_prefix_disable_advertisement";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-vlan:routed-vlan/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:prefixes/oc-ip:prefix/oc-ip:state/oc-ip:disable-advertisement {
+        deviate add {
+            sonic-ext:field-transformer "ipv6_ra_prefix_disable_advertisement_xfmr";
+            sonic-ext:field-name "ipv6_ra_prefix_disable_advertisement";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-vlan:routed-vlan/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:prefixes/oc-ip:prefix/oc-ip:config/oc-ip:disable-autoconfiguration {
+        deviate add {
+            sonic-ext:field-transformer "ipv6_ra_prefix_disable_autoconfig_xfmr";
+            sonic-ext:field-name "ipv6_ra_prefix_disable_autoconfig";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-vlan:routed-vlan/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:prefixes/oc-ip:prefix/oc-ip:state/oc-ip:disable-autoconfiguration {
+        deviate add {
+            sonic-ext:field-transformer "ipv6_ra_prefix_disable_autoconfig_xfmr";
+            sonic-ext:field-name "ipv6_ra_prefix_disable_autoconfig";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-vlan:routed-vlan/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:prefixes/oc-ip:prefix/oc-ip:config/oc-ip:enable-onlink {
+        deviate add {
+            sonic-ext:field-transformer "ipv6_ra_prefix_enable_onlink_xfmr";
+            sonic-ext:field-name "ipv6_ra_prefix_enable_onlink";
+        }
+    }
+
+    deviation /oc-intf:interfaces/oc-intf:interface/oc-vlan:routed-vlan/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:prefixes/oc-ip:prefix/oc-ip:state/oc-ip:enable-onlink {
+        deviate add {
+            sonic-ext:field-transformer "ipv6_ra_prefix_enable_onlink_xfmr";
+            sonic-ext:field-name "ipv6_ra_prefix_enable_onlink";
         }
     }
 

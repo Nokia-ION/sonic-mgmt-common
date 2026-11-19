@@ -893,6 +893,14 @@ module openconfig-if-ip {
     description
       "Configuration parameters for IPv6 router advertisements.";
 
+    leaf enable {
+      type boolean;
+      default true;
+      description
+        "If set to false, all IPv6 router advertisement functions are
+        disabled.";
+    }
+
     leaf interval {
       type uint32;
       units seconds;
@@ -910,12 +918,107 @@ module openconfig-if-ip {
         discovery message on this interface.";
     }
 
+    leaf reachable-time {
+      type uint32 {
+        range "0..3600000";
+      }
+      units milliseconds;
+      description
+        "The Reachable Time value advertised in router advertisement
+        neighbor discovery messages on this interface. A value of zero
+        means unspecified (by this router).";
+      reference
+        "RFC 4861: Neighbor Discovery for IP version 6 (IPv6)
+                   - AdvReachableTime";
+    }
+
     leaf suppress {
+      status deprecated;
       type boolean;
       default false;
       description
         "When set to true, router advertisement neighbor discovery
         messages are not transmitted on this interface.";
+    }
+
+    leaf mode {
+      type enumeration {
+        enum ALL {
+          description
+            "Transmit unsolicited router advertisements and respond to
+            router solicitations.";
+        }
+        enum DISABLE_UNSOLICITED_RA {
+          description
+            "Do not transmit unsolicited router advertisements.";
+        }
+      }
+      default "ALL";
+      description
+        "Mode controls IPv6 router advertisement behavior.";
+    }
+
+    leaf managed {
+      type boolean;
+      default false;
+      description
+        "When set to true, the managed address configuration (M) flag is
+        set in the advertised router advertisement.";
+    }
+
+    leaf other-config {
+      type boolean;
+      default false;
+      description
+        "When set to true, the other configuration (O) flag is set in the
+        advertised router advertisement.";
+    }
+  }
+
+  grouping ipv6-ra-prefix-config {
+    description
+      "Configuration parameters for an individual prefix within an IPv6
+      router advertisement.";
+
+    leaf prefix {
+      type oc-inet:ipv6-prefix;
+      description
+        "IPv6 prefix to be advertised within the router advertisement
+        message.";
+    }
+
+    leaf valid-lifetime {
+      type uint32;
+      units seconds;
+      description
+        "The length of time that the prefix is valid.";
+    }
+
+    leaf preferred-lifetime {
+      type uint32;
+      units seconds;
+      description
+        "The length of time that the address within the prefix remains
+        in the preferred state.";
+    }
+
+    leaf disable-advertisement {
+      type boolean;
+      description
+        "When set to true, the prefix is not advertised.";
+    }
+
+    leaf disable-autoconfiguration {
+      type boolean;
+      description
+        "When set to true, the prefix is marked as not to be used for
+        stateless address configuration.";
+    }
+
+    leaf enable-onlink {
+      type boolean;
+      description
+        "When set to true, the prefix is marked as being on link.";
     }
   }
 
@@ -1151,6 +1254,40 @@ module openconfig-if-ip {
             "Operational state parameters relating to router
              advertisements for IPv6.";
           uses ipv6-ra-config;
+        }
+
+        container prefixes {
+          description
+            "Prefixes included in IPv6 router advertisement messages.";
+
+          list prefix {
+            key "prefix";
+
+            description
+              "List of prefixes advertised in IPv6 router-advertisement
+              messages.";
+
+            leaf prefix {
+              type leafref {
+                path "../config/prefix";
+              }
+              description
+                "Reference to the IPv6 prefix key.";
+            }
+
+            container config {
+              description
+                "Configuration parameters for an IPv6 RA prefix.";
+              uses ipv6-ra-prefix-config;
+            }
+
+            container state {
+              config false;
+              description
+                "Operational state for an IPv6 RA prefix.";
+              uses ipv6-ra-prefix-config;
+            }
+          }
         }
       }
 
