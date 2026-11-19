@@ -446,6 +446,10 @@ func performIfNameKeyXfmrOp(inParams *XfmrParams, requestUriPath *string, ifName
 						if log.V(3) {
 							log.Infof("allow replace operation for storm-control path")
 						}
+					} else if isIpv6RaPath(*requestUriPath) {
+						if log.V(3) {
+							log.Infof("allow replace operation for IPv6 router-advertisement path")
+						}
 					} else {
 						// OC interfaces yang does not have attributes to set Physical interface critical attributes like speed, alias, lanes, index.
 						// Replace/PUT request without the critical attributes would end up in deletion of the same in PORT table, which cannot be allowed.
@@ -652,6 +656,13 @@ var intf_table_xfmr TableXfmrFunc = func(inParams XfmrParams) ([]string, error) 
 		errStr := "DELETE operation not allowed on this container"
 		return tblList, tlerr.NotSupportedError{AppTag: "invalid-value", Path: "", Format: errStr}
 
+	} else if isIpv6RaPath(targetUriPath) || isIpv6RaPath(inParams.requestUri) {
+		index := pathInfo.Var("index")
+		if index == "" {
+			index = NewPathInfo(inParams.requestUri).Var("index")
+		}
+		return ipv6RaTableList(ifName, index, inParams.curDb)
+
 	} else if strings.HasPrefix(targetUriPath, "/openconfig-interfaces:interfaces/interface/config") {
 		if intfType == IntfTypeLoopback {
 			tblList = append(tblList, intTbl.cfgDb.intfTN)
@@ -688,7 +699,9 @@ var intf_table_xfmr TableXfmrFunc = func(inParams XfmrParams) ([]string, error) 
 		strings.HasPrefix(targetUriPath, "/openconfig-interfaces:interfaces/interface/subinterfaces/subinterface/openconfig-if-ip:ipv6/addresses/address/config") ||
 		strings.HasPrefix(targetUriPath, "/openconfig-interfaces:interfaces/interface/subinterfaces/subinterface/ipv6/addresses/address/config") ||
 		strings.HasPrefix(targetUriPath, "/openconfig-interfaces:interfaces/interface/subinterfaces/subinterface/ipv6/config") ||
-		strings.HasPrefix(targetUriPath, "/openconfig-interfaces:interfaces/interface/subinterfaces/subinterface/openconfig-if-ip:ipv6/config") {
+		strings.HasPrefix(targetUriPath, "/openconfig-interfaces:interfaces/interface/subinterfaces/subinterface/openconfig-if-ip:ipv6/config") ||
+		(strings.Contains(targetUriPath, "/router-advertisement/prefixes/prefix") &&
+			(strings.Contains(targetUriPath, "/config") || strings.Contains(targetUriPath, "/state"))) {
 		tblList = append(tblList, intTbl.cfgDb.intfTN)
 	} else if strings.HasPrefix(targetUriPath, "/openconfig-interfaces:interfaces/interface/subinterfaces/subinterface/ipv4/addresses/address/state") ||
 		strings.HasPrefix(targetUriPath, "/openconfig-interfaces:interfaces/interface/subinterfaces/subinterface/openconfig-if-ip:ipv4/addresses/address/state") ||
@@ -713,7 +726,9 @@ var intf_table_xfmr TableXfmrFunc = func(inParams XfmrParams) ([]string, error) 
 			if strings.HasPrefix(targetUriPath, "/openconfig-interfaces:interfaces/interface/openconfig-vlan:routed-vlan/openconfig-if-ip:ipv4/addresses/address/config") ||
 				strings.HasPrefix(targetUriPath, "/openconfig-interfaces:interfaces/interface/openconfig-vlan:routed-vlan/openconfig-if-ip:ipv6/addresses/address/config") ||
 				strings.HasPrefix(targetUriPath, "/openconfig-interfaces:interfaces/interface/routed-vlan/ipv4/addresses/address/config") ||
-				strings.HasPrefix(targetUriPath, "/openconfig-interfaces:interfaces/interface/routed-vlan/ipv6/addresses/address/config") {
+				strings.HasPrefix(targetUriPath, "/openconfig-interfaces:interfaces/interface/routed-vlan/ipv6/addresses/address/config") ||
+				(strings.Contains(targetUriPath, "/router-advertisement/prefixes/prefix") &&
+					(strings.Contains(targetUriPath, "/config") || strings.Contains(targetUriPath, "/state"))) {
 				tblList = append(tblList, intTbl.cfgDb.intfTN)
 			} else if strings.HasPrefix(targetUriPath, "/openconfig-interfaces:interfaces/interface/openconfig-vlan:routed-vlan/openconfig-if-ip:ipv4/addresses/address/state") ||
 				strings.HasPrefix(targetUriPath, "/openconfig-interfaces:interfaces/interface/openconfig-vlan:routed-vlan/openconfig-if-ip:ipv6/addresses/address/state") ||
@@ -770,8 +785,14 @@ var YangToDb_intf_tbl_key_xfmr KeyXfmrYangToDb = func(inParams XfmrParams) (stri
 
 	log.Infof("YangToDb_intf_tbl_key_xfmr: inParams.uri: %s, pathInfo: %s, inParams.requestUri: %s", inParams.uri, pathInfo, requestUriPath)
 
-	ifName := pathInfo.Var("name")
+	ifName := reqpathInfo.Var("name")
+	if ifName == "" {
+		ifName = pathInfo.Var("name")
+	}
 	idx := reqpathInfo.Var("index")
+	if idx == "" {
+		idx = pathInfo.Var("index")
+	}
 	var i32 uint32
 	i32 = 0
 
@@ -782,7 +803,29 @@ var YangToDb_intf_tbl_key_xfmr KeyXfmrYangToDb = func(inParams XfmrParams) (stri
 
 	log.Infof("YangToDb_intf_tbl_key_xfmr: i32: %s", i32)
 
+	raReqPath := ipv6RaPrefixReqPath(inParams.uri, inParams.requestUri)
+	if isIpv6RaPrefixPath(raReqPath) {
+		raPI := NewPathInfo(raReqPath)
+		ocPrefix := raPI.Var("prefix")
+		if ocPrefix == "" {
+			ocPrefix = reqpathInfo.Var("prefix")
+		}
+		if ocPrefix == "" {
+			ocPrefix = pathInfo.Var("prefix")
+		}
+		if ifName == "" {
+			ifName = raPI.Var("name")
+		}
+		if idx == "" {
+			idx = raPI.Var("index")
+		}
+		return ipv6RaPrefixDbKey(ifName, idx, ocPrefix, inParams.dbDataMap, inParams.curDb, inParams.d)
+	}
+
 	if i32 != 0 {
+		if isIpv6RaPath(requestUriPath) || isIpv6RaPath(inParams.uri) {
+			return ifName + "." + idx, nil
+		}
 		err_str := "Subinterfaces not supported"
 		return ifName, tlerr.NotSupported(err_str)
 	}
@@ -829,7 +872,51 @@ var DbToYang_intf_tbl_key_xfmr KeyXfmrDbToYang = func(inParams XfmrParams) (map[
 
 	log.Infof("DbToYang_intf_tbl_key_xfmr: i32: %s", i32)
 
+	if isIpv6RaPrefixPath(requestUriPath) || isIpv6RaPrefixPath(inParams.uri) {
+		if strings.Contains(inParams.key, "|") {
+			parts := strings.SplitN(inParams.key, "|", 2)
+			res_map["name"] = parts[0]
+			if i32 != 0 {
+				res_map["index"] = i32
+			}
+			if ipNet, err := ipv6PrefixNetwork(parts[1]); err == nil {
+				res_map["prefix"] = ipNet.String()
+			} else {
+				res_map["prefix"] = parts[1]
+			}
+			return res_map, nil
+		}
+		leafIn := ipv6RaPrefixWithConfigDb(inParams)
+		ifName := ipv6RaPrefixPathVar(inParams.uri, inParams.requestUri, "name")
+		if ifName == "" {
+			ifName = reqpathInfo.Var("name")
+		}
+		ocPrefix := ipv6RaPrefixPathVar(inParams.uri, inParams.requestUri, "prefix")
+		idxStr := ipv6RaPrefixPathVar(inParams.uri, inParams.requestUri, "index")
+		if ocPrefix != "" && ifName != "" {
+			key, kerr := ipv6RaPrefixDbKey(ifName, idxStr, ocPrefix, leafIn.dbDataMap, leafIn.curDb, leafIn.d)
+			if kerr == nil && strings.Contains(key, "|") {
+				parts := strings.SplitN(key, "|", 2)
+				res_map["name"] = parts[0]
+				if i32 != 0 {
+					res_map["index"] = i32
+				}
+				if ipNet, err := ipv6PrefixNetwork(parts[1]); err == nil {
+					res_map["prefix"] = ipNet.String()
+				} else {
+					res_map["prefix"] = parts[1]
+				}
+				return res_map, nil
+			}
+		}
+	}
+
 	if i32 != 0 {
+		if isIpv6RaPath(requestUriPath) || isIpv6RaPath(inParams.uri) {
+			res_map["name"] = strings.SplitN(inParams.key, ".", 2)[0]
+			res_map["index"] = i32
+			return res_map, nil
+		}
 		err_str := "Subinterfaces not supported"
 		return res_map, tlerr.NotSupported(err_str)
 	}
@@ -3532,6 +3619,9 @@ func getIntfIpByName(dbCl *db.DB, tblName string, ifName string, ipv4 bool, ipv6
 		}
 
 		ipInfo, _ := dbCl.GetEntry(&db.TableSpec{Name: tblName}, db.Key{Comp: []string{key.Get(0), key.Get(1)}})
+		if isIpv6RaPrefixOnlyEntry(ipInfo) {
+			continue
+		}
 		intfIpMap[key.Get(1)] = ipInfo
 	}
 	return intfIpMap, err

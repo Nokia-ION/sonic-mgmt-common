@@ -145,11 +145,35 @@ module openconfig-interfaces-deviation {
  
   // Keep subinterface VRRP nodes available so transformer/ocbinds
   // can map interface VRRP data through OpenConfig routed-interface paths.
- 
-  deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv6/oc-ip:router-advertisement {
+
+  // IPv6 router-advertisement on subinterfaces maps to CONFIG_DB INTERFACE*,
+  // PORTCHANNEL_INTERFACE*, VLAN_SUB_INTERFACE* (ipv6_ra_* / ipv6_ra_prefix_*).
+  // Routed-vlan RA maps to VLAN_INTERFACE* (radvd + translib).
+
+  deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:config/oc-ip:mode {
     deviate not-supported;
   }
- 
+
+  deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:state/oc-ip:mode {
+    deviate not-supported;
+  }
+
+  deviation /oc-intf:interfaces/oc-intf:interface/oc-vlan:routed-vlan/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:config/oc-ip:mode {
+    deviate not-supported;
+  }
+
+  deviation /oc-intf:interfaces/oc-intf:interface/oc-vlan:routed-vlan/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:state/oc-ip:mode {
+    deviate not-supported;
+  }
+
+  deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:prefixes/oc-ip:prefix/oc-ip:config/oc-ip:disable-advertisement {
+    deviate not-supported;
+  }
+
+  deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv6/oc-ip:router-advertisement/oc-ip:prefixes/oc-ip:prefix/oc-ip:state/oc-ip:disable-advertisement {
+    deviate not-supported;
+  }
+
   deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:subinterfaces/oc-intf:subinterface/oc-ip:ipv6/oc-ip:unnumbered {
     deviate not-supported;
   }
