@@ -1749,6 +1749,69 @@ func TestCPU_DbToYang_intf_oper_status_xfmr(t *testing.T) {
 	}
 }
 
+func TestVlan_DbToYang_intf_oper_status_xfmr(t *testing.T) {
+	applDb, err := db.NewDB(getDBOptions(db.ApplDB))
+	if err != nil {
+		t.Fatalf("Failed to create ApplDB: %v", err)
+	}
+	defer applDb.DeleteDB()
+
+	type row struct {
+		tbl    string
+		key    []string
+		fields map[string]string
+	}
+	vlan := row{"VLAN_TABLE", []string{"Vlan100"}, map[string]string{"admin_status": "up", "mtu": "9100"}}
+	memEth := row{"VLAN_MEMBER_TABLE", []string{"Vlan100", "Ethernet0"}, map[string]string{"tagging_mode": "tagged"}}
+	memLag := row{"VLAN_MEMBER_TABLE", []string{"Vlan100", "PortChannel100"}, map[string]string{"tagging_mode": "tagged"}}
+
+	tests := []struct {
+		name       string
+		rows       []row
+		wantStatus string
+	}{
+		{"No_Members_Down", []row{vlan}, "DOWN"},
+		{"Ethernet_Member_Up", []row{vlan, memEth,
+			{"PORT_TABLE", []string{"Ethernet0"}, map[string]string{"oper_status": "up"}}}, "UP"},
+		{"All_Members_Down", []row{vlan, memEth, memLag,
+			{"PORT_TABLE", []string{"Ethernet0"}, map[string]string{"oper_status": "down"}},
+			{"LAG_TABLE", []string{"PortChannel100"}, map[string]string{"oper_status": "down"}}}, "DOWN"},
+		{"PortChannel_Member_Up", []row{vlan, memEth, memLag,
+			{"PORT_TABLE", []string{"Ethernet0"}, map[string]string{"oper_status": "down"}},
+			{"LAG_TABLE", []string{"PortChannel100"}, map[string]string{"oper_status": "up"}}}, "UP"},
+		{"Vlan_Table_Field_Wins", []row{
+			{"VLAN_TABLE", []string{"Vlan100"}, map[string]string{"oper_status": "down"}}, memEth,
+			{"PORT_TABLE", []string{"Ethernet0"}, map[string]string{"oper_status": "up"}}}, "DOWN"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, r := range tt.rows {
+				applDb.SetEntry(&db.TableSpec{Name: r.tbl}, db.Key{Comp: r.key}, db.Value{Field: r.fields})
+			}
+			defer func() {
+				for _, r := range tt.rows {
+					applDb.DeleteEntry(&db.TableSpec{Name: r.tbl}, db.Key{Comp: r.key})
+				}
+			}()
+
+			inParams := XfmrParams{
+				key:   "Vlan100",
+				uri:   "/openconfig-interfaces:interfaces/interface[name=Vlan100]/state/oper-status",
+				curDb: db.ApplDB,
+				dbs:   [db.MaxDB]*db.DB{db.ApplDB: applDb},
+			}
+			got, err := DbToYang_intf_oper_status_xfmr(inParams)
+			if err != nil {
+				t.Fatalf("DbToYang_intf_oper_status_xfmr() error = %v", err)
+			}
+			if status := got["oper-status"]; status != tt.wantStatus {
+				t.Errorf("got status %v, want %v", status, tt.wantStatus)
+			}
+		})
+	}
+}
+
 func TestCPU_PopulatePortCounters(t *testing.T) {
 	countersDb, err := db.NewDB(getDBOptions(db.CountersDB))
 	if err != nil {

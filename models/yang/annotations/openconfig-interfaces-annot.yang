@@ -554,7 +554,7 @@ module openconfig-interfaces-annot {
     deviation /oc-intf:interfaces/oc-intf:interface/oc-intf:state/oc-intf:oper-status {
         deviate add {
             sonic-ext:field-transformer "intf_oper_status_xfmr";
-            sonic-ext:composite-field-names "PORT_TABLE:oper_status,MGMT_PORT_TABLE:oper_status";
+            sonic-ext:composite-field-names "PORT_TABLE:oper_status,LAG_TABLE:oper_status,VLAN_TABLE:oper_status,MGMT_PORT_TABLE:oper_status";
         }
     }
 

@@ -884,6 +884,10 @@ func (pathXltr *subscribePathXlator) addDbFldYangMapInfo() error {
 		if log.V(dbLgLvl) {
 			log.Info(pathXltr.subReq.reqLogId, "subscribePathXlator: addDbFldYangMapInfo: adding composite db field names in the dbFldYgPath map: ", pathXltr.pathXlateInfo.ygXpathInfo.compositeFields)
 		}
+		// A composite leaf may list tables for several interface kinds (e.g. PORT_TABLE
+		// and LAG_TABLE); only the tables resolved for this key are expected to match.
+		var unmappedTbls []string
+		mapped := false
 		for _, dbTblFldName := range pathXltr.pathXlateInfo.ygXpathInfo.compositeFields {
 			tblField := strings.Split(dbTblFldName, ":")
 			if len(tblField) <= 1 {
@@ -891,8 +895,8 @@ func (pathXltr *subscribePathXlator) addDbFldYangMapInfo() error {
 				return tlerr.InternalError{Format: "Table name is missing in the composite-db-fields annoation for the leaf node path", Path: pathXltr.uriPath}
 			}
 			tblName := strings.TrimSpace(tblField[0])
-			var dbKeyInfo *dbTableKeyInfo
-			for _, dbKeyInfo = range pathXltr.pathXlateInfo.DbKeyXlateInfo {
+			found := false
+			for _, dbKeyInfo := range pathXltr.pathXlateInfo.DbKeyXlateInfo {
 				if dbKeyInfo.Table.Name == tblName {
 					dbFldYgPath := DbFldYgPathInfo{DbFldYgPathMap: make(map[string]string)}
 					dbFldYgPath.DbFldYgPathMap[strings.TrimSpace(tblField[1])] = ""
@@ -900,14 +904,20 @@ func (pathXltr *subscribePathXlator) addDbFldYangMapInfo() error {
 					if log.V(dbLgLvl) {
 						log.Info(pathXltr.subReq.reqLogId, "subscribePathXlator: addDbFldYangMapInfo: target subscribe leaf/leaf-list path dbygpathmap list for composite field names: ", dbKeyInfo.DbFldYgMapList)
 					}
+					found = true
 					break
 				}
 			}
-			if dbKeyInfo == nil || len(dbKeyInfo.DbFldYgMapList) == 0 {
-				log.Warningf("%v subscribePathXlator: addDbFldYangMapInfo: Table name %v is not mapped to this path:", pathXltr.subReq.reqLogId, tblName, pathXltr.uriPath)
-				intfStrArr := []interface{}{tblName}
-				return tlerr.InternalError{Format: "Table name %v is not mapped for the leaf node path", Path: pathXltr.uriPath, Args: intfStrArr}
+			if found {
+				mapped = true
+			} else {
+				unmappedTbls = append(unmappedTbls, tblName)
 			}
+		}
+		if !mapped {
+			log.Warningf("%v subscribePathXlator: addDbFldYangMapInfo: Table name %v is not mapped to this path: %v", pathXltr.subReq.reqLogId, unmappedTbls, pathXltr.uriPath)
+			intfStrArr := []interface{}{strings.Join(unmappedTbls, ",")}
+			return tlerr.InternalError{Format: "Table name %v is not mapped for the leaf node path", Path: pathXltr.uriPath, Args: intfStrArr}
 		}
 	} else if len(fieldName) > 0 {
 		if log.V(dbLgLvl) {
