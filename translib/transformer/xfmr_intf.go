@@ -5184,6 +5184,36 @@ var DbToYang_intf_mgmt_xfmr FieldXfmrDbtoYang = func(inParams XfmrParams) (map[s
 	return res_map, nil
 }
 
+// getVlanOperStatusFromMembers reports a VLAN as "up" when any of its
+// APPL_DB VLAN_MEMBER_TABLE members is oper up, "down" otherwise.
+func getVlanOperStatusFromMembers(applDb *db.DB, vlanName string) string {
+	vlanTbl := IntfTypeTblMap[IntfTypeVlan].appDb
+	keys, err := applDb.GetKeysPattern(&db.TableSpec{Name: vlanTbl.memberTN}, db.Key{Comp: []string{vlanName, "*"}})
+	if err != nil {
+		log.Infof("getVlanOperStatusFromMembers: no members for %s: %v", vlanName, err)
+		return "down"
+	}
+	for _, key := range keys {
+		if key.Len() < 2 {
+			continue
+		}
+		member := key.Get(1)
+		memberType, _, ierr := getIntfTypeByName(member)
+		if ierr != nil {
+			continue
+		}
+		memberTbl, ok := IntfTypeTblMap[memberType]
+		if !ok || memberTbl.appDb.portTN == "" {
+			continue
+		}
+		entry, dbErr := applDb.GetEntry(&db.TableSpec{Name: memberTbl.appDb.portTN}, db.Key{Comp: []string{member}})
+		if dbErr == nil && entry.Get(PORT_OPER_STATUS) == "up" {
+			return "up"
+		}
+	}
+	return "down"
+}
+
 var DbToYang_intf_oper_status_xfmr FieldXfmrDbtoYang = func(inParams XfmrParams) (map[string]interface{}, error) {
 	ifName := keyFromInParamsOrUri(inParams, "name")
 	intfType, _, _ := getIntfTypeByName(ifName)
@@ -5213,6 +5243,11 @@ var DbToYang_intf_oper_status_xfmr FieldXfmrDbtoYang = func(inParams XfmrParams)
 	}
 
 	operStatus, ok := entry.Field[PORT_OPER_STATUS]
+	if !ok && intfType == IntfTypeVlan {
+		// APPL_DB VLAN_TABLE does not carry oper_status
+		operStatus = getVlanOperStatusFromMembers(inParams.dbs[dbName], ifName)
+		ok = true
+	}
 	if !ok {
 		log.Info("Oper status field not found in DB for interface " + ifName)
 		return nil, errors.New("Oper status field not found in DB for interface " + ifName)
