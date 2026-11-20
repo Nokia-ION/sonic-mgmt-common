@@ -509,15 +509,7 @@ func niStaticRoutePreferenceFromPayload(s *ygot.GoStruct, reqInfo *niStaticRoute
 // position: FRR keeps one tag per prefix, and it programs nothing at all when
 // the tag list is a different length to the next-hop list.
 func niStaticRouteSetTagFields(inParams XfmrParams, s *ygot.GoStruct, reqInfo *niStaticRouteReqInfo) (map[string]string, error) {
-	// A subtree transformer is handed the struct that contains the leaf rather
-	// than the leaf's value, so the tag is taken from whichever struct carries
-	// it: the one passed as the param, or the one built from the request.
-	var raw interface{}
-	if cfg, ok := inParams.param.(*ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_StaticRoutes_Static_Config); ok && cfg != nil && cfg.SetTag != nil {
-		raw = cfg.SetTag
-	} else if cfgObj := getNiStaticRouteCfgObj(s, reqInfo.niName, reqInfo.protoName, reqInfo.prefix, false); cfgObj != nil && cfgObj.SetTag != nil {
-		raw = cfgObj.SetTag
-	}
+	raw := niStaticRouteSetTagFromPayload(inParams, s, reqInfo)
 	if raw == nil {
 		if reqInfo.targetLeaf == niStaticRouteSetTagLeaf {
 			return nil, tlerr.InvalidArgsError{Format: "static route set-tag is missing in request payload"}
@@ -530,6 +522,56 @@ func niStaticRouteSetTagFields(inParams XfmrParams, s *ygot.GoStruct, reqInfo *n
 		return nil, err
 	}
 	return niStaticRouteEncodeNextHops(entries, existing, reqInfo.prefix), nil
+}
+
+// niStaticRouteSetTagFromPayload returns the set-tag a request carries, or nil.
+// A subtree transformer is handed the struct that contains the leaf rather
+// than the leaf's value, so the tag is taken from whichever struct carries it:
+// the one passed as the param, or the one built from the request.
+func niStaticRouteSetTagFromPayload(inParams XfmrParams, s *ygot.GoStruct, reqInfo *niStaticRouteReqInfo) interface{} {
+	if cfg, ok := inParams.param.(*ocbinds.OpenconfigNetworkInstance_NetworkInstances_NetworkInstance_Protocols_Protocol_StaticRoutes_Static_Config); ok && cfg != nil && cfg.SetTag != nil {
+		return cfg.SetTag
+	}
+	if cfgObj := getNiStaticRouteCfgObj(s, reqInfo.niName, reqInfo.protoName, reqInfo.prefix, false); cfgObj != nil && cfgObj.SetTag != nil {
+		return cfgObj.SetTag
+	}
+	return nil
+}
+
+// niStaticRouteReplaceTagFields renders a REPLACE of the route's config: the
+// tag becomes the one the payload carries, or none, and the next-hops, which
+// the config container does not hold, are kept. A REPLACE at a terminal node
+// whose row keeps a field it does not name is written as a partial update, so
+// a tag the payload drops is listed as one the REPLACE removes.
+func niStaticRouteReplaceTagFields(inParams XfmrParams, s *ygot.GoStruct, reqInfo *niStaticRouteReqInfo) (map[string]string, error) {
+	existing := niStaticRouteEntryOrEmpty(inParams.dbs[db.ConfigDB], reqInfo.niName, reqInfo.prefix)
+	entries := niStaticRouteDecodeNextHops(existing)
+	for _, e := range entries {
+		delete(e, niStaticRouteTagFld)
+	}
+	base := db.Value{Field: map[string]string{}}
+	for k, v := range existing.Field {
+		if k != niStaticRouteTagFld {
+			base.Field[k] = v
+		}
+	}
+	if raw := niStaticRouteSetTagFromPayload(inParams, s, reqInfo); raw != nil {
+		if err := niStaticRouteApplyTag(entries, reqInfo.prefix, raw); err != nil {
+			return nil, err
+		}
+	} else if strings.TrimSpace(existing.Field[niStaticRouteTagFld]) != "" && inParams.yangAuxValMap != nil {
+		key := reqInfo.niName + "|" + reqInfo.prefix
+		if inParams.yangAuxValMap[niStaticRouteTbl] == nil {
+			inParams.yangAuxValMap[niStaticRouteTbl] = make(map[string]db.Value)
+		}
+		entry := inParams.yangAuxValMap[niStaticRouteTbl][key]
+		if entry.Field == nil {
+			entry.Field = make(map[string]string)
+		}
+		entry.Field[niStaticRouteTagFld] = ""
+		inParams.yangAuxValMap[niStaticRouteTbl][key] = entry
+	}
+	return niStaticRouteEncodeNextHops(entries, base, reqInfo.prefix), nil
 }
 
 // niStaticRouteApplyTag puts a route's tag on each of its next-hops. FRR keeps
@@ -856,6 +898,25 @@ func niStaticRouteUpsertNextHop(entries []map[string]string, index string, nh ma
 			delete(merged, niStaticRouteBlackholeFld)
 		}
 		entries[i] = merged
+		return entries
+	}
+	return append(entries, nh)
+}
+
+// niStaticRouteReplaceNextHop puts nh in place of the stored next-hop with the
+// same list key, carrying over from it only the fields named in keep, which
+// the replaced node does not hold.
+func niStaticRouteReplaceNextHop(entries []map[string]string, index string, nh map[string]string, keep ...string) []map[string]string {
+	for i, e := range entries {
+		if niStaticRouteNhIndex(e) != index {
+			continue
+		}
+		for _, k := range keep {
+			if _, ok := nh[k]; !ok && strings.TrimSpace(e[k]) != "" {
+				nh[k] = e[k]
+			}
+		}
+		entries[i] = nh
 		return entries
 	}
 	return append(entries, nh)
@@ -1374,8 +1435,11 @@ func niStaticRouteCheckPayloadPrefix(inParams XfmrParams, reqInfo *niStaticRoute
 // buildNiStaticRouteHierResMap maps a whole static-routes payload, letting one
 // container-level request carry several static routes and next-hops. Next-hops
 // are merged into the ones already stored, because they share the comma
-// separated attributes of a single CONFIG_DB row.
-func buildNiStaticRouteHierResMap(cfgDb *db.DB, s *ygot.GoStruct, niName, protoName string) (map[string]map[string]db.Value, error) {
+// separated attributes of a single CONFIG_DB row. A REPLACE instead gives each
+// route it carries the payload's next-hops alone, and keeps the stored tag
+// only when keepTag says the replaced node does not hold it; routes the
+// payload leaves out are not touched.
+func buildNiStaticRouteHierResMap(cfgDb *db.DB, s *ygot.GoStruct, niName, protoName string, replace, keepTag bool) (map[string]map[string]db.Value, error) {
 	res := make(map[string]map[string]db.Value)
 	srObj := getNiStaticRoutesObj(s, niName, protoName, false)
 	if srObj == nil {
@@ -1399,6 +1463,15 @@ func buildNiStaticRouteHierResMap(cfgDb *db.DB, s *ygot.GoStruct, niName, protoN
 		existing := niStaticRouteEntryOrEmpty(cfgDb, niName, prefix)
 		entries := niStaticRouteDecodeNextHops(existing)
 		changed := false
+		if replace {
+			entries = nil
+			changed = true
+			base := db.Value{Field: map[string]string{}}
+			if keepTag {
+				base.Field[niStaticRouteTagFld] = existing.Field[niStaticRouteTagFld]
+			}
+			existing = base
+		}
 		if rtObj.NextHops != nil {
 			// The next-hops of a route share one row, so a payload carrying
 			// several of them must map to the same row whatever order the
@@ -1454,7 +1527,7 @@ func buildNiStaticRouteHierResMap(cfgDb *db.DB, s *ygot.GoStruct, niName, protoN
 		}
 
 		fields := map[string]string{}
-		if changed {
+		if changed && len(entries) > 0 {
 			fields = niStaticRouteEncodeNextHops(entries, existing, prefix)
 		}
 		if _, ok := res[niStaticRouteTbl]; !ok {
@@ -1901,7 +1974,9 @@ var YangToDb_ni_static_route_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPa
 				Path:   inParams.requestUri,
 			}
 		}
-		res, err = buildNiStaticRouteHierResMap(inParams.dbs[db.ConfigDB], wrappedRoot, reqInfo.niName, reqInfo.protoName)
+		replace := inParams.oper == REPLACE
+		keepTag := reqInfo.targetPathKind == niStaticRouteTargetNextHopsRoot
+		res, err = buildNiStaticRouteHierResMap(inParams.dbs[db.ConfigDB], wrappedRoot, reqInfo.niName, reqInfo.protoName, replace, keepTag)
 		if err != nil {
 			return make(map[string]map[string]db.Value), err
 		}
@@ -1937,7 +2012,13 @@ var YangToDb_ni_static_route_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPa
 		if err := niStaticRouteCheckPayloadPrefix(inParams, reqInfo); err != nil {
 			return res, err
 		}
-		fields, tagErr := niStaticRouteSetTagFields(inParams, wrappedRoot, reqInfo)
+		var fields map[string]string
+		var tagErr error
+		if inParams.oper == REPLACE && reqInfo.targetLeaf == "" {
+			fields, tagErr = niStaticRouteReplaceTagFields(inParams, wrappedRoot, reqInfo)
+		} else {
+			fields, tagErr = niStaticRouteSetTagFields(inParams, wrappedRoot, reqInfo)
+		}
 		if tagErr != nil {
 			return res, tagErr
 		}
@@ -1947,19 +2028,21 @@ var YangToDb_ni_static_route_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPa
 		}
 		return makeNiStaticRouteResMap(reqInfo.niName, reqInfo.prefix, fields), nil
 	case niStaticRouteTargetNextHopInst, niStaticRouteTargetNextHopCfg:
-		return niStaticRouteSetNextHop(inParams, reqInfo)
+		return niStaticRouteSetNextHop(inParams, reqInfo, inParams.oper == REPLACE && reqInfo.targetLeaf == "")
 	case niStaticRouteTargetNhSub:
 		if reqInfo.subSide == "state" {
 			return res, tlerr.NotSupportedError{Format: "static route next-hop state is read-only", Path: inParams.requestUri}
 		}
-		return niStaticRouteSetNextHop(inParams, reqInfo)
+		return niStaticRouteSetNextHop(inParams, reqInfo, false)
 	}
 	return res, tlerr.NotSupportedError{Format: "unsupported path under the network-instance STATIC protocol instance", Path: inParams.requestUri}
 }
 
 // niStaticRouteSetNextHop merges one next-hop into the comma separated
-// attributes of the route it belongs to.
-func niStaticRouteSetNextHop(inParams XfmrParams, reqInfo *niStaticRouteReqInfo) (map[string]map[string]db.Value, error) {
+// attributes of the route it belongs to, or, for a REPLACE, puts it in place of
+// the stored one: a whole next-hop keeps only the route's tag, and its config
+// container also keeps the enable-bfd setting it does not hold.
+func niStaticRouteSetNextHop(inParams XfmrParams, reqInfo *niStaticRouteReqInfo, replace bool) (map[string]map[string]db.Value, error) {
 	res := make(map[string]map[string]db.Value)
 	if err := validateNiStaticRoutePrefix(reqInfo.prefix); err != nil {
 		return res, err
@@ -2005,7 +2088,16 @@ func niStaticRouteSetNextHop(inParams XfmrParams, reqInfo *niStaticRouteReqInfo)
 		return res, err
 	}
 	existing := niStaticRouteEntryOrEmpty(inParams.dbs[db.ConfigDB], reqInfo.niName, reqInfo.prefix)
-	entries := niStaticRouteUpsertNextHop(niStaticRouteDecodeNextHops(existing), reqInfo.index, nh)
+	stored := niStaticRouteDecodeNextHops(existing)
+	var entries []map[string]string
+	switch {
+	case replace && reqInfo.targetPathKind == niStaticRouteTargetNextHopCfg:
+		entries = niStaticRouteReplaceNextHop(stored, reqInfo.index, nh, niStaticRouteTagFld, niStaticRouteBfdFld)
+	case replace:
+		entries = niStaticRouteReplaceNextHop(stored, reqInfo.index, nh, niStaticRouteTagFld)
+	default:
+		entries = niStaticRouteUpsertNextHop(stored, reqInfo.index, nh)
+	}
 	return makeNiStaticRouteResMap(reqInfo.niName, reqInfo.prefix, niStaticRouteEncodeNextHops(entries, existing, reqInfo.prefix)), nil
 }
 

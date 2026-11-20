@@ -20,6 +20,7 @@ package transformer_test
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -1526,4 +1527,110 @@ func Test_openconfig_network_instance_static_route_next_hop_interface_ref_and_bf
 
 	unloadDB(db.ConfigDB, cleanupTbl)
 	unloadDB(db.StateDB, appliedTbl)
+}
+
+func niStaticRouteNhListJSON(ips ...string) string {
+	nhs := make([]string, 0, len(ips))
+	for _, ip := range ips {
+		nhs = append(nhs, `{"index":"`+ip+`","config":{"index":"`+ip+`","next-hop":"`+ip+`"}}`)
+	}
+	return `{"next-hop":[` + strings.Join(nhs, ",") + `]}`
+}
+
+func niStaticRouteJSON(prefix string, ips ...string) string {
+	return `{"prefix":"` + prefix + `","config":{"prefix":"` + prefix + `"},"next-hops":` + niStaticRouteNhListJSON(ips...) + `}`
+}
+
+func niStaticRouteRow(key string, fields map[string]interface{}) map[string]interface{} {
+	return map[string]interface{}{"STATIC_ROUTE": map[string]interface{}{key: fields}}
+}
+
+func Test_openconfig_network_instance_static_route_replace_next_hops(t *testing.T) {
+	cleanupTbl := map[string]interface{}{"STATIC_ROUTE": map[string]interface{}{
+		"default|203.0.113.0/24": "", "default|2001:db8:1::/64": "", "default|198.51.100.0/24": ""}}
+	unloadDB(db.ConfigDB, cleanupTbl)
+	time.Sleep(1 * time.Second)
+
+	// A REPLACE names the next-hops of the route in full, so the ones the
+	// payload leaves out are removed, for either address family; an UPDATE
+	// of the same route later in the request leaves the replaced list as is.
+	for _, c := range []struct{ prefix, nhs4, nhs2 string }{
+		{"203.0.113.0/24", "192.0.2.10,192.0.2.14,192.0.2.2,192.0.2.6", "192.0.2.2,192.0.2.6"},
+		{"2001:db8:1::/64", "2001:db8::2,2001:db8::6,2001:db8::a,2001:db8::e", "2001:db8::2,2001:db8::6"},
+	} {
+		rtUrl := niStaticRouteProtoUrl + "/static-routes/static[prefix=" + c.prefix + "]"
+		key := "default|" + c.prefix
+		four, two := strings.Split(c.nhs4, ","), strings.Split(c.nhs2, ",")
+		t.Run("PATCH four next-hops "+c.prefix, processSetRequest(rtUrl, niStaticRouteJSON(c.prefix, four...), "PATCH", false, nil))
+		time.Sleep(1 * time.Second)
+		t.Run("Verify four next-hops "+c.prefix, verifyDbResult(rclient, "STATIC_ROUTE|"+key,
+			niStaticRouteRow(key, map[string]interface{}{"nexthop": c.nhs4}), false))
+		t.Run("REPLACE with two next-hops "+c.prefix, processSetRequest(rtUrl, niStaticRouteJSON(c.prefix, two...), "PUT", false, nil))
+		time.Sleep(1 * time.Second)
+		t.Run("Verify the left out next-hops are removed "+c.prefix, verifyDbResult(rclient, "STATIC_ROUTE|"+key,
+			niStaticRouteRow(key, map[string]interface{}{"nexthop": c.nhs2}), false))
+		t.Run("UPDATE the same route "+c.prefix, processSetRequest(niStaticRouteProtoUrl+"/static-routes",
+			`{"static":[`+niStaticRouteJSON(c.prefix, two...)+`]}`, "PATCH", false, nil))
+		time.Sleep(1 * time.Second)
+		t.Run("Verify the update keeps the replaced list "+c.prefix, verifyDbResult(rclient, "STATIC_ROUTE|"+key,
+			niStaticRouteRow(key, map[string]interface{}{"nexthop": c.nhs2}), false))
+	}
+
+	// A REPLACE of the static-routes container replaces the routes it carries
+	// and leaves the other routes of the instance as they are.
+	loadDB(db.ConfigDB, niStaticRouteRow("default|198.51.100.0/24", map[string]interface{}{"nexthop": "192.0.2.2"}))
+	time.Sleep(1 * time.Second)
+	t.Run("REPLACE static-routes with one route", processSetRequest(niStaticRouteProtoUrl+"/static-routes",
+		`{"static":[`+niStaticRouteJSON("203.0.113.0/24", "192.0.2.6")+`]}`, "PUT", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify the carried route is replaced", verifyDbResult(rclient, "STATIC_ROUTE|default|203.0.113.0/24",
+		niStaticRouteRow("default|203.0.113.0/24", map[string]interface{}{"nexthop": "192.0.2.6"}), false))
+	t.Run("Verify the other route is kept", verifyDbResult(rclient, "STATIC_ROUTE|default|198.51.100.0/24",
+		niStaticRouteRow("default|198.51.100.0/24", map[string]interface{}{"nexthop": "192.0.2.2"}), false))
+
+	// An UPDATE still adds to the next-hops already stored.
+	t.Run("UPDATE adds a next-hop", processSetRequest(niStaticRouteProtoUrl+"/static-routes/static[prefix=203.0.113.0/24]",
+		niStaticRouteJSON("203.0.113.0/24", "192.0.2.2"), "PATCH", false, nil))
+	time.Sleep(1 * time.Second)
+	t.Run("Verify the next-hop is added", verifyDbResult(rclient, "STATIC_ROUTE|default|203.0.113.0/24",
+		niStaticRouteRow("default|203.0.113.0/24", map[string]interface{}{"nexthop": "192.0.2.6,192.0.2.2"}), false))
+
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_network_instance_static_route_replace_route_parts(t *testing.T) {
+	key := "default|203.0.113.0/24"
+	cleanupTbl := map[string]interface{}{"STATIC_ROUTE": map[string]interface{}{key: ""}}
+	rtUrl := niStaticRouteProtoUrl + "/static-routes/static[prefix=203.0.113.0/24]"
+	nhCfg := `{"index":"192.0.2.2","next-hop":"192.0.2.2"}`
+
+	// Each REPLACE rewrites what the replaced node holds and keeps the rest of
+	// the row: the tag belongs to the route rather than to its next-hops, and
+	// enable-bfd sits beside a next-hop's config rather than in it.
+	for _, c := range []struct {
+		name, url, body string
+		stored, want    map[string]interface{}
+	}{
+		{"next-hops container", rtUrl + "/next-hops", niStaticRouteNhListJSON("192.0.2.2"),
+			map[string]interface{}{"nexthop": "192.0.2.2,192.0.2.6,192.0.2.10", "distance": "20,30,40", "tag": "7,7,7"},
+			map[string]interface{}{"nexthop": "192.0.2.2", "tag": "7"}},
+		{"route config", rtUrl + "/config", `{"prefix":"203.0.113.0/24"}`,
+			map[string]interface{}{"nexthop": "192.0.2.2,192.0.2.6", "distance": "20,30", "tag": "7,7"},
+			map[string]interface{}{"nexthop": "192.0.2.2,192.0.2.6", "distance": "20,30"}},
+		{"one next-hop", rtUrl + "/next-hops/next-hop[index=192.0.2.2]", `{"index":"192.0.2.2","config":` + nhCfg + `}`,
+			map[string]interface{}{"nexthop": "192.0.2.2,192.0.2.6", "distance": "20,30", "tag": "7,7", "bfd": "true,true"},
+			map[string]interface{}{"nexthop": "192.0.2.2,192.0.2.6", "distance": "0,30", "tag": "7,7", "bfd": "false,true"}},
+		{"one next-hop config", rtUrl + "/next-hops/next-hop[index=192.0.2.2]/config", nhCfg,
+			map[string]interface{}{"nexthop": "192.0.2.2,192.0.2.6", "distance": "20,30", "tag": "7,7", "bfd": "true,true"},
+			map[string]interface{}{"nexthop": "192.0.2.2,192.0.2.6", "distance": "0,30", "tag": "7,7", "bfd": "true,true"}},
+	} {
+		unloadDB(db.ConfigDB, cleanupTbl)
+		loadDB(db.ConfigDB, niStaticRouteRow(key, c.stored))
+		time.Sleep(1 * time.Second)
+		t.Run("REPLACE "+c.name, processSetRequest(c.url, c.body, "PUT", false, nil))
+		time.Sleep(1 * time.Second)
+		t.Run("Verify STATIC_ROUTE after REPLACE "+c.name, verifyDbResult(rclient, "STATIC_ROUTE|"+key, niStaticRouteRow(key, c.want), false))
+	}
+
+	unloadDB(db.ConfigDB, cleanupTbl)
 }
