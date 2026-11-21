@@ -82,6 +82,9 @@ const (
 	// list key, by the index of the next-hop.
 	niStaticRouteDropToken      = "DROP"
 	niStaticRouteLocalLinkToken = "LOCAL_LINK"
+	// niStaticRouteDefaultDistance is the distance FRR gives a static route
+	// next-hop configured without one.
+	niStaticRouteDefaultDistance = "1"
 	// niStaticRouteIndexSep separates the next-hop from the interface in an
 	// index such as "10.1.1.1+Ethernet0" or "LOCAL_LINK+Loopback0".
 	niStaticRouteIndexSep = "+"
@@ -914,6 +917,34 @@ func niStaticRouteCheckNextHopValue(nextHop, index string) error {
 	}
 }
 
+// niStaticRouteCheckDropPreference refuses a DROP next-hop at the preference
+// of a next-hop that forwards. FRR refuses a route whose blackhole and
+// forwarding next-hops share a distance and keeps only part of it, while a
+// DROP at a worse preference is a backup that discards the traffic once no
+// forwarding next-hop is usable. A next-hop with no preference has FRR's
+// default distance.
+func niStaticRouteCheckDropPreference(entries []map[string]string, prefix string) error {
+	distanceOf := func(e map[string]string) string {
+		if d := strings.TrimSpace(e[niStaticRouteDistanceFld]); d != "" && d != "0" {
+			return d
+		}
+		return niStaticRouteDefaultDistance
+	}
+	for _, drop := range entries {
+		if niStaticRouteNhIndex(drop) != niStaticRouteDropToken {
+			continue
+		}
+		for _, e := range entries {
+			if idx := niStaticRouteNhIndex(e); idx != niStaticRouteDropToken && distanceOf(e) == distanceOf(drop) {
+				return tlerr.InvalidArgsError{Format: fmt.Sprintf("static route %s has the DROP next-hop and next-hop %s at preference %s; "+
+					"FRR does not install a route that both discards and forwards at one preference: give DROP a different preference to make it a backup",
+					prefix, idx, distanceOf(drop))}
+			}
+		}
+	}
+	return nil
+}
+
 // niStaticRouteUpsertNextHop merges one next-hop into the next-hops already
 // stored for the route, matched by list key.
 func niStaticRouteUpsertNextHop(entries []map[string]string, index string, nh map[string]string) []map[string]string {
@@ -1560,6 +1591,9 @@ func buildNiStaticRouteHierResMap(cfgDb *db.DB, s *ygot.GoStruct, niName, protoN
 			changed = true
 		}
 
+		if err := niStaticRouteCheckDropPreference(entries, prefix); err != nil {
+			return res, err
+		}
 		fields := map[string]string{}
 		if changed && len(entries) > 0 {
 			fields = niStaticRouteEncodeNextHops(entries, existing, prefix)
@@ -2167,6 +2201,9 @@ func niStaticRouteSetNextHop(inParams XfmrParams, reqInfo *niStaticRouteReqInfo,
 	default:
 		entries = niStaticRouteUpsertNextHop(stored, reqInfo.index, nh)
 	}
+	if err := niStaticRouteCheckDropPreference(entries, reqInfo.prefix); err != nil {
+		return res, err
+	}
 	return makeNiStaticRouteResMap(reqInfo.niName, reqInfo.prefix, niStaticRouteEncodeNextHops(entries, existing, reqInfo.prefix)), nil
 }
 
@@ -2223,6 +2260,9 @@ func niStaticRouteClearNextHopPreference(inParams XfmrParams, reqInfo *niStaticR
 	}
 	if !found {
 		return tlerr.NotFoundError{Format: fmt.Sprintf("static route %s has no next-hop %s", reqInfo.prefix, reqInfo.index)}
+	}
+	if err := niStaticRouteCheckDropPreference(entries, reqInfo.prefix); err != nil {
+		return err
 	}
 	if inParams.subOpDataMap == nil {
 		return tlerr.InvalidArgsError{Format: "unable to rewrite static route next-hop preference for DELETE"}

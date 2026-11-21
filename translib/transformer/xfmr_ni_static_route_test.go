@@ -20,6 +20,7 @@ package transformer_test
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -639,9 +640,10 @@ func Test_openconfig_network_instance_static_route_next_hops_container(t *testin
 	time.Sleep(1 * time.Second)
 
 	// One container level request carrying an IP next-hop and a blackhole
-	// next-hop for the same route.
+	// next-hop for the same route, the blackhole as a backup at a preference
+	// of its own.
 	urlInputBodyJSON := `{"next-hop":[{"index":"10.1.1.1","config":{"index":"10.1.1.1","next-hop":"10.1.1.1"}},` +
-		`{"index":"DROP","config":{"index":"DROP","next-hop":"openconfig-local-routing:DROP"}}]}`
+		`{"index":"DROP","config":{"index":"DROP","next-hop":"openconfig-local-routing:DROP","preference":250}}]}`
 	t.Run("PATCH network-instance static route next-hops container",
 		processSetRequest(niStaticRouteProtoUrl+"/static-routes/static[prefix=10.20.0.0/16]/next-hops",
 			urlInputBodyJSON, "PATCH", false, nil))
@@ -655,6 +657,7 @@ func Test_openconfig_network_instance_static_route_next_hops_container(t *testin
 				"nexthop":   "10.1.1.1,0.0.0.0",
 				"ifname":    ",Null0",
 				"blackhole": "false,true",
+				"distance":  "0,250",
 			},
 		},
 	}
@@ -664,13 +667,13 @@ func Test_openconfig_network_instance_static_route_next_hops_container(t *testin
 
 	expectedGetJSON := `{"openconfig-network-instance:next-hops":{"next-hop":[` +
 		`{"config":{"index":"10.1.1.1","next-hop":"10.1.1.1"},"index":"10.1.1.1"},` +
-		`{"config":{"index":"DROP","next-hop":"openconfig-local-routing:DROP"},"index":"DROP"}]}}`
+		`{"config":{"index":"DROP","next-hop":"openconfig-local-routing:DROP","preference":250},"index":"DROP"}]}}`
 	t.Run("GET network-instance static route next-hops container",
 		processGetRequest(niStaticRouteProtoUrl+"/static-routes/static[prefix=10.20.0.0/16]/next-hops", nil, expectedGetJSON, false))
 	time.Sleep(1 * time.Second)
 
 	expectedGetJSON = `{"openconfig-network-instance:next-hop":[` +
-		`{"config":{"index":"DROP","next-hop":"openconfig-local-routing:DROP"},"index":"DROP"}]}`
+		`{"config":{"index":"DROP","next-hop":"openconfig-local-routing:DROP","preference":250},"index":"DROP"}]}`
 	t.Run("GET network-instance static route next-hop list instance",
 		processGetRequest(niStaticRouteProtoUrl+"/static-routes/static[prefix=10.20.0.0/16]/next-hops/next-hop[index=DROP]",
 			nil, expectedGetJSON, false))
@@ -1711,4 +1714,54 @@ func Test_openconfig_network_instance_static_route_next_hop_state_under_config_i
 	}
 	unloadDB(db.ConfigDB, cleanupTbl)
 	unloadDB(db.StateDB, appliedTbl)
+}
+
+func Test_openconfig_network_instance_static_route_drop_at_forwarding_preference_refused(t *testing.T) {
+	cleanupTbl := map[string]interface{}{"STATIC_ROUTE": map[string]interface{}{
+		"default|10.21.0.0/16": "", "default|2001:db8:21::/64": ""}}
+	unloadDB(db.ConfigDB, cleanupTbl)
+	time.Sleep(1 * time.Second)
+
+	// FRR does not install a route that discards and forwards at one distance,
+	// so a DROP next-hop beside one that forwards needs a preference of its
+	// own; at a worse one it is a backup.
+	nh := func(idx, nhv string, pref int) string {
+		p := ""
+		if pref > 0 {
+			p = fmt.Sprintf(`,"preference":%d`, pref)
+		}
+		return `{"index":"` + idx + `","config":{"index":"` + idx + `","next-hop":"` + nhv + `"` + p + `}}`
+	}
+	drop := "openconfig-local-routing:DROP"
+	refused := func(prefix, gw, pref string) error {
+		return tlerr.InvalidArgsError{Format: "static route " + prefix + " has the DROP next-hop and next-hop " + gw + " at preference " + pref +
+			"; FRR does not install a route that both discards and forwards at one preference: give DROP a different preference to make it a backup"}
+	}
+	for _, c := range []struct{ prefix, gw string }{{"10.21.0.0/16", "10.1.1.21"}, {"2001:db8:21::/64", "2001:db8::21"}} {
+		nhs := niStaticRouteProtoUrl + "/static-routes/static[prefix=" + c.prefix + "]/next-hops"
+		key := "default|" + c.prefix
+		t.Run("PATCH DROP beside a gateway at the default preference is refused "+c.prefix, processSetRequest(nhs,
+			`{"next-hop":[`+nh(c.gw, c.gw, 0)+`,`+nh("DROP", drop, 0)+`]}`, "PATCH", true, refused(c.prefix, c.gw, "1")))
+		t.Run("PATCH DROP beside a gateway at one preference is refused "+c.prefix, processSetRequest(nhs,
+			`{"next-hop":[`+nh(c.gw, c.gw, 10)+`,`+nh("DROP", drop, 10)+`]}`, "PATCH", true, refused(c.prefix, c.gw, "10")))
+		time.Sleep(1 * time.Second)
+		t.Run("Verify nothing written "+c.prefix, verifyDbResult(rclient, "STATIC_ROUTE|"+key, map[string]interface{}{}, false))
+
+		t.Run("PATCH DROP as a backup is accepted "+c.prefix, processSetRequest(nhs,
+			`{"next-hop":[`+nh(c.gw, c.gw, 0)+`,`+nh("DROP", drop, 250)+`]}`, "PATCH", false, nil))
+		time.Sleep(1 * time.Second)
+		zero := "0.0.0.0"
+		if strings.Contains(c.prefix, ":") {
+			zero = "::"
+		}
+		backup := niStaticRouteRow(key, map[string]interface{}{"nexthop": c.gw + "," + zero, "ifname": ",Null0", "blackhole": "false,true", "distance": "0,250"})
+		t.Run("Verify the backup route "+c.prefix, verifyDbResult(rclient, "STATIC_ROUTE|"+key, backup, false))
+		t.Run("PATCH the gateway to the DROP preference is refused "+c.prefix, processSetRequest(nhs+"/next-hop[index="+c.gw+"]/config/preference",
+			`{"openconfig-network-instance:preference":250}`, "PATCH", true, refused(c.prefix, c.gw, "250")))
+		t.Run("DELETE the DROP preference is refused "+c.prefix, processDeleteRequest(nhs+"/next-hop[index=DROP]/config/preference", true,
+			refused(c.prefix, c.gw, "1")))
+		time.Sleep(1 * time.Second)
+		t.Run("Verify the backup route is kept "+c.prefix, verifyDbResult(rclient, "STATIC_ROUTE|"+key, backup, false))
+	}
+	unloadDB(db.ConfigDB, cleanupTbl)
 }
