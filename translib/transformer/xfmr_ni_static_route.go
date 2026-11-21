@@ -1909,13 +1909,57 @@ func populateNiStaticRouteNextHopsToYang(ygRoot *ygot.GoStruct, niName, protoNam
 	return nil
 }
 
+// niStaticRouteAppliedNhKeys names the configured next-hop each next-hop FRR
+// applied realises, so that its state is reported in the list entry its
+// configuration is in. FRR reports the interface it resolved a gateway
+// through, which a next-hop configured by its gateway alone does not carry in
+// its index; such a next-hop is matched by its gateway. An applied next-hop
+// that realises no configured one keeps the key it derives itself.
+func niStaticRouteAppliedNhKeys(cfg db.Value, applied []map[string]string) []string {
+	cfgIdx := map[string]bool{}
+	gwOnly := map[string]string{}
+	for _, e := range niStaticRouteDecodeNextHops(cfg) {
+		idx := niStaticRouteNhIndex(e)
+		cfgIdx[idx] = true
+		if strings.TrimSpace(e[niStaticRouteIfnameFld]) == "" && niStaticRouteIsIpIndex(idx) {
+			gwOnly[strings.TrimSpace(e[niStaticRouteNexthopFld])] = idx
+		}
+	}
+	keys := make([]string, len(applied))
+	claimed := map[string]bool{}
+	for i, e := range applied {
+		keys[i] = niStaticRouteNhIndex(e)
+		if cfgIdx[keys[i]] {
+			claimed[keys[i]] = true
+		}
+	}
+	for i, e := range applied {
+		if cfgIdx[keys[i]] {
+			continue
+		}
+		if idx, ok := gwOnly[strings.TrimSpace(e[niStaticRouteNexthopFld])]; ok && !claimed[idx] {
+			keys[i] = idx
+			claimed[idx] = true
+		}
+	}
+	return keys
+}
+
+// niStaticRouteAnyIndex reports a request for every next-hop of a route.
+func niStaticRouteAnyIndex(index string) bool {
+	return index == "" || index == "*"
+}
+
 // populateNiStaticRouteNextHopsStateToYang fills next-hop state from what FRR
-// holds in STATIC_ROUTE_APPLIED. An empty index populates every next-hop that
-// appears in the applied row.
-func populateNiStaticRouteNextHopsStateToYang(ygRoot *ygot.GoStruct, niName, protoName, prefix string, entry db.Value, index string) error {
-	for _, e := range niStaticRouteDecodeNextHops(entry) {
-		nhIndex := niStaticRouteNhIndex(e)
-		if nhIndex == "" || (index != "" && nhIndex != index) {
+// holds in STATIC_ROUTE_APPLIED, in the list entries of the configured
+// next-hops, cfg, they realise. An empty or wildcard index populates every
+// next-hop that appears in the applied row.
+func populateNiStaticRouteNextHopsStateToYang(ygRoot *ygot.GoStruct, niName, protoName, prefix string, cfg, entry db.Value, index string) error {
+	appliedNhs := niStaticRouteDecodeNextHops(entry)
+	keys := niStaticRouteAppliedNhKeys(cfg, appliedNhs)
+	for i, e := range appliedNhs {
+		nhIndex := keys[i]
+		if nhIndex == "" || (!niStaticRouteAnyIndex(index) && nhIndex != index) {
 			continue
 		}
 		nhObj := getNiStaticRouteNextHopObj(ygRoot, niName, protoName, prefix, nhIndex, true)
@@ -2264,10 +2308,11 @@ var DbToYang_ni_static_route_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrPa
 		if wrapErr != nil {
 			return wrapErr
 		}
-		if err := populateNiStaticRouteNextHopsStateToYang(wrappedRoot, reqInfo.niName, reqInfo.protoName, reqInfo.prefix, applied, reqInfo.index); err != nil {
+		cfg := niStaticRouteEntryOrEmpty(cfgDb, reqInfo.niName, reqInfo.prefix)
+		if err := populateNiStaticRouteNextHopsStateToYang(wrappedRoot, reqInfo.niName, reqInfo.protoName, reqInfo.prefix, cfg, applied, reqInfo.index); err != nil {
 			return err
 		}
-		if reqInfo.index == "" {
+		if niStaticRouteAnyIndex(reqInfo.index) {
 			return nil
 		}
 		nhObj := getNiStaticRouteNextHopObj(wrappedRoot, reqInfo.niName, reqInfo.protoName, reqInfo.prefix, reqInfo.index, false)
@@ -2302,7 +2347,16 @@ var DbToYang_ni_static_route_cfg_xfmr SubTreeXfmrDbToYang = func(inParams XfmrPa
 		if err := populateNiStaticRouteNextHopsToYang(wrappedRoot, reqInfo.niName, reqInfo.protoName, reqInfo.prefix, entry, reqInfo.index); err != nil {
 			return err
 		}
-		if reqInfo.index == "" {
+		// The next-hops container, the list a wildcard index is served as, and
+		// one whole next-hop carry its state beside its config.
+		if reqInfo.targetPathKind != niStaticRouteTargetNextHopCfg {
+			if applied, held := niStaticRouteAppliedEntry(inParams, reqInfo.niName, reqInfo.prefix); held {
+				if err := populateNiStaticRouteNextHopsStateToYang(wrappedRoot, reqInfo.niName, reqInfo.protoName, reqInfo.prefix, entry, applied, reqInfo.index); err != nil {
+					return err
+				}
+			}
+		}
+		if niStaticRouteAnyIndex(reqInfo.index) {
 			return nil
 		}
 		nhObj := getNiStaticRouteNextHopObj(wrappedRoot, reqInfo.niName, reqInfo.protoName, reqInfo.prefix, reqInfo.index, false)

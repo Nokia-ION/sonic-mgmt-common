@@ -56,7 +56,8 @@ func populateNiStaticRouteAggregateStateReplay(inParams XfmrParams, ygRoot *ygot
 		}
 		if rpolNodeServesRequest(inParams.requestUri, routeInstUri) ||
 			rpolNodeServesRequest(inParams.requestUri, routeInstUri+"/next-hops") {
-			if err := populateNiStaticRouteNextHopsStateToYang(ygRoot, niName, protoName, p, applied, ""); err != nil {
+			cfg := niStaticRouteEntryOrEmpty(inParams.dbs[db.ConfigDB], niName, p)
+			if err := populateNiStaticRouteNextHopsStateToYang(ygRoot, niName, protoName, p, cfg, applied, ""); err != nil {
 				return err
 			}
 		}

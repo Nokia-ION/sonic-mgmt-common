@@ -1277,7 +1277,7 @@ func Test_openconfig_network_instance_static_route_state(t *testing.T) {
 		processGetRequest(rtUrl+"/state/set-tag", nil, expectedGetJSON, false))
 	time.Sleep(1 * time.Second)
 
-	nhUrl := rtUrl + "/next-hops/next-hop[index=10.1.1.40+Ethernet0]"
+	nhUrl := rtUrl + "/next-hops/next-hop[index=10.1.1.40]"
 	expectedGetJSON = `{"openconfig-network-instance:next-hop":"10.1.1.40"}`
 	t.Run("GET the next-hop state next-hop leaf reports what FRR holds",
 		processGetRequest(nhUrl+"/state/next-hop", nil, expectedGetJSON, false))
@@ -1394,8 +1394,8 @@ func Test_openconfig_network_instance_static_route_keyed_aggregate_state(t *test
 
 	expectedGetJSON := `{"openconfig-network-instance:static":[` +
 		`{"config":{"prefix":"10.2.0.0/24","set-tag":22},"next-hops":{"next-hop":[` +
-		`{"config":{"index":"10.2.2.2","next-hop":"10.2.2.2"},"index":"10.2.2.2"},` +
-		`{"index":"10.2.2.2+Ethernet0","interface-ref":{"state":{"interface":"Ethernet0"}},"state":{"index":"10.2.2.2+Ethernet0","next-hop":"10.2.2.2","preference":200}}]},` +
+		`{"config":{"index":"10.2.2.2","next-hop":"10.2.2.2"},"index":"10.2.2.2","interface-ref":{"state":{"interface":"Ethernet0"}},` +
+		`"state":{"index":"10.2.2.2","next-hop":"10.2.2.2","preference":200}}]},` +
 		`"prefix":"10.2.0.0/24","state":{"prefix":"10.2.0.0/24","set-tag":22}}]}`
 
 	t.Run("GET keyed static route merges route and next-hop state",
@@ -1667,4 +1667,48 @@ func Test_openconfig_network_instance_static_route_next_hop_refusals_say_what_to
 			niStaticRouteRow("default|"+c.prefix, map[string]interface{}{"nexthop": c.gw, "ifname": "Ethernet2"}), false))
 	}
 	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_network_instance_static_route_next_hop_state_under_config_index(t *testing.T) {
+	key := "default|10.3.0.0/24"
+	cleanupTbl := map[string]interface{}{"STATIC_ROUTE": map[string]interface{}{key: ""}}
+	appliedTbl := map[string]interface{}{"STATIC_ROUTE_APPLIED": map[string]interface{}{key: ""}}
+	unloadDB(db.ConfigDB, cleanupTbl)
+	unloadDB(db.StateDB, appliedTbl)
+	// FRR resolves the gateway configured alone through Ethernet4, applies the
+	// one configured with its interface as written, and holds a third next-hop
+	// no configured one stands for.
+	loadDB(db.ConfigDB, niStaticRouteRow(key, map[string]interface{}{"nexthop": "10.3.3.3,10.3.3.4", "ifname": ",Ethernet8"}))
+	loadDB(db.StateDB, map[string]interface{}{"STATIC_ROUTE_APPLIED": map[string]interface{}{key: map[string]interface{}{
+		"nexthop": "10.3.3.3,10.3.3.4,10.3.3.9", "ifname": "Ethernet4,Ethernet8,Ethernet12", "distance": "1,1,5"}}})
+	time.Sleep(1 * time.Second)
+
+	nhs := niStaticRouteProtoUrl + "/static-routes/static[prefix=10.3.0.0/24]/next-hops"
+	for _, c := range []struct{ name, url, want string }{
+		{"state preference of the gateway configured alone", nhs + "/next-hop[index=10.3.3.3]/state/preference",
+			`{"openconfig-network-instance:preference":1}`},
+		{"interface FRR resolved it through", nhs + "/next-hop[index=10.3.3.3]/interface-ref/state",
+			`{"openconfig-network-instance:state":{"interface":"Ethernet4"}}`},
+		{"state of the next-hop configured with its interface", nhs + "/next-hop[index=10.3.3.4+Ethernet8]/state/next-hop",
+			`{"openconfig-network-instance:next-hop":"10.3.3.4"}`},
+		{"state of the next-hop no configured one stands for", nhs + "/next-hop[index=10.3.3.9+Ethernet12]/state/preference",
+			`{"openconfig-network-instance:preference":5}`},
+		{"next-hop list, as a wildcard index is served, with state", nhs + "/next-hop", `{"openconfig-network-instance:next-hop":[` +
+			`{"config":{"index":"10.3.3.3","next-hop":"10.3.3.3"},"index":"10.3.3.3","interface-ref":{"state":{"interface":"Ethernet4"}},` +
+			`"state":{"index":"10.3.3.3","next-hop":"10.3.3.3","preference":1}},` +
+			`{"config":{"index":"10.3.3.4+Ethernet8","next-hop":"10.3.3.4"},"index":"10.3.3.4+Ethernet8",` +
+			`"interface-ref":{"config":{"interface":"Ethernet8"},"state":{"interface":"Ethernet8"}},"state":{"index":"10.3.3.4+Ethernet8","next-hop":"10.3.3.4","preference":1}},` +
+			`{"index":"10.3.3.9+Ethernet12","interface-ref":{"state":{"interface":"Ethernet12"}},"state":{"index":"10.3.3.9+Ethernet12","next-hop":"10.3.3.9","preference":5}}]}`},
+		{"next-hops with config and state in one entry each", nhs, `{"openconfig-network-instance:next-hops":{"next-hop":[` +
+			`{"config":{"index":"10.3.3.3","next-hop":"10.3.3.3"},"index":"10.3.3.3","interface-ref":{"state":{"interface":"Ethernet4"}},` +
+			`"state":{"index":"10.3.3.3","next-hop":"10.3.3.3","preference":1}},` +
+			`{"config":{"index":"10.3.3.4+Ethernet8","next-hop":"10.3.3.4"},"index":"10.3.3.4+Ethernet8",` +
+			`"interface-ref":{"config":{"interface":"Ethernet8"},"state":{"interface":"Ethernet8"}},"state":{"index":"10.3.3.4+Ethernet8","next-hop":"10.3.3.4","preference":1}},` +
+			`{"index":"10.3.3.9+Ethernet12","interface-ref":{"state":{"interface":"Ethernet12"}},"state":{"index":"10.3.3.9+Ethernet12","next-hop":"10.3.3.9","preference":5}}]}}`},
+	} {
+		t.Run("GET "+c.name, processGetRequest(c.url, nil, c.want, false))
+		time.Sleep(1 * time.Second)
+	}
+	unloadDB(db.ConfigDB, cleanupTbl)
+	unloadDB(db.StateDB, appliedTbl)
 }

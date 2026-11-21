@@ -162,17 +162,24 @@ func niStaticRouteNhSubDbToYang(inParams XfmrParams, reqInfo *niStaticRouteReqIn
 	// enable-bfd state is the configuration, which FRR does not report.
 	fromApplied := reqInfo.subSide == "state" && reqInfo.subNode == niStaticRouteInterfaceRefCnt
 	var entry db.Value
+	var keys []string
 	if fromApplied {
 		applied, held := niStaticRouteAppliedEntry(inParams, reqInfo.niName, reqInfo.prefix)
 		if !held {
 			return nil
 		}
 		entry = applied
+		keys = niStaticRouteAppliedNhKeys(niStaticRouteEntryOrEmpty(inParams.dbs[db.ConfigDB], reqInfo.niName, reqInfo.prefix),
+			niStaticRouteDecodeNextHops(entry))
 	} else if entry, err = niStaticRouteEntryFromDb(inParams.dbs[db.ConfigDB], reqInfo.niName, reqInfo.prefix); err != nil {
 		return err
 	}
-	for _, e := range niStaticRouteDecodeNextHops(entry) {
-		if niStaticRouteNhIndex(e) != reqInfo.index {
+	for i, e := range niStaticRouteDecodeNextHops(entry) {
+		key := niStaticRouteNhIndex(e)
+		if keys != nil {
+			key = keys[i]
+		}
+		if key != reqInfo.index {
 			continue
 		}
 		nhObj := getNiStaticRouteNextHopObj(wrappedRoot, reqInfo.niName, reqInfo.protoName, reqInfo.prefix, reqInfo.index, true)
