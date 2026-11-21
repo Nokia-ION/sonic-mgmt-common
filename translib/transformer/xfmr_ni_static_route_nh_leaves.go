@@ -75,7 +75,13 @@ func niStaticRouteNhSubFields(nhObj *ocbinds.OpenconfigNetworkInstance_NetworkIn
 			want = fmt.Sprintf("%s.%d", want, *ir.Config.Subinterface)
 		}
 		if have := strings.TrimSpace(nh[niStaticRouteIfnameFld]); want != have {
-			return tlerr.InvalidArgsError{Format: fmt.Sprintf("static route next-hop interface-ref names %q; its index %q names %q", want, index, have)}
+			gw := index
+			if sep := strings.Index(index, niStaticRouteIndexSep); sep >= 0 {
+				gw = index[:sep]
+			}
+			return tlerr.InvalidArgsError{Format: fmt.Sprintf("static route next-hop interface-ref names %q; its index %q names %q. "+
+				"The index carries the interface a next-hop is reached through: write the next-hop as index %q",
+				want, index, have, gw+niStaticRouteIndexSep+want)}
 		}
 	}
 	if eb := nhObj.EnableBfd; eb != nil && eb.Config != nil && eb.Config.Enabled != nil {

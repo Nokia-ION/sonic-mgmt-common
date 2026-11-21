@@ -271,7 +271,7 @@ func Test_openconfig_network_instance_static_route_unmapped_payload_rejected(t *
 		`{"index":"60.0.0.1","config":{"index":"60.0.0.1","next-hop":"60.0.0.1","metric":5}}]}}]}`
 	expectedErr := tlerr.NotSupportedError{
 		Format: "static routes container payload carries leaves that have no CONFIG_DB mapping: " +
-			"static-routes/static[172.16.3.0/24]/next-hops/next-hop[60.0.0.1]/config/metric",
+			"static-routes/static[172.16.3.0/24]/next-hops/next-hop[60.0.0.1]/config/metric; FRR static routes have no metric; use preference",
 	}
 	t.Run("PATCH static-routes container rejects unmapped leaf",
 		processSetRequest(niStaticRouteProtoUrl+"/static-routes", urlInputBodyJSON, "PATCH", true, expectedErr))
@@ -825,7 +825,7 @@ func Test_openconfig_network_instance_static_route_next_hop_rejected_payloads(t 
 	urlInputBodyJSON := `{"index":"10.1.1.1","next-hop":"10.1.1.1","metric":10}`
 	expectedErr := tlerr.NotSupportedError{
 		Format: "static route next-hop payload carries leaves that have no CONFIG_DB mapping: " +
-			"static-routes/static[172.16.1.0/24]/next-hops/next-hop[10.1.1.1]/config/metric",
+			"static-routes/static[172.16.1.0/24]/next-hops/next-hop[10.1.1.1]/config/metric; FRR static routes have no metric; use preference",
 	}
 	t.Run("PATCH static route next-hop rejects unmapped leaf",
 		processSetRequest(nhUrl+"/config", urlInputBodyJSON, "PATCH", true, expectedErr))
@@ -1506,7 +1506,7 @@ func Test_openconfig_network_instance_static_route_next_hop_interface_ref_and_bf
 	}
 
 	t.Run("PATCH interface-ref naming another interface is refused", processSetRequest(nhUrl+"/interface-ref/config", `{"interface":"Ethernet0"}`, "PATCH", true,
-		tlerr.InvalidArgsError{Format: `static route next-hop interface-ref names "Ethernet0"; its index "10.1.1.1+Ethernet120" names "Ethernet120"`}))
+		tlerr.InvalidArgsError{Format: `static route next-hop interface-ref names "Ethernet0"; its index "10.1.1.1+Ethernet120" names "Ethernet120". The index carries the interface a next-hop is reached through: write the next-hop as index "10.1.1.1+Ethernet0"`}))
 	time.Sleep(1 * time.Second)
 	t.Run("PATCH enable-bfd on a LOCAL_LINK next-hop is refused", processSetRequest(rtUrl+"/next-hop[index=LOCAL_LINK+Ethernet120]/enable-bfd/config",
 		`{"enabled":true}`, "PATCH", true))
@@ -1632,5 +1632,39 @@ func Test_openconfig_network_instance_static_route_replace_route_parts(t *testin
 		t.Run("Verify STATIC_ROUTE after REPLACE "+c.name, verifyDbResult(rclient, "STATIC_ROUTE|"+key, niStaticRouteRow(key, c.want), false))
 	}
 
+	unloadDB(db.ConfigDB, cleanupTbl)
+}
+
+func Test_openconfig_network_instance_static_route_next_hop_refusals_say_what_to_send(t *testing.T) {
+	cleanupTbl := map[string]interface{}{"STATIC_ROUTE": map[string]interface{}{
+		"default|203.0.113.0/24": "", "default|2001:db8:128::/64": ""}}
+	unloadDB(db.ConfigDB, cleanupTbl)
+	time.Sleep(1 * time.Second)
+
+	// FRR's static routes have no metric, and preference is what orders a
+	// route's next-hops; the next-hop index is derived from the next-hop, so a
+	// refusal names the index to write.
+	for _, c := range []struct{ prefix, gw string }{{"203.0.113.0/24", "192.0.2.6"}, {"2001:db8:128::/64", "2001:db8::6"}} {
+		nhs := niStaticRouteProtoUrl + "/static-routes/static[prefix=" + c.prefix + "]/next-hops"
+		t.Run("PATCH metric leaf is refused "+c.prefix, processSetRequest(nhs+"/next-hop[index="+c.gw+"]/config/metric",
+			`{"openconfig-network-instance:metric":100}`, "PATCH", true,
+			tlerr.NotSupportedError{Format: "FRR static routes have no metric; use preference"}))
+		t.Run("PATCH interface-ref beside a gateway index is refused "+c.prefix, processSetRequest(nhs,
+			`{"next-hop":[{"index":"`+c.gw+`","config":{"index":"`+c.gw+`","next-hop":"`+c.gw+`"},"interface-ref":{"config":{"interface":"Ethernet2"}}}]}`,
+			"PATCH", true, tlerr.InvalidArgsError{Format: `static route next-hop interface-ref names "Ethernet2"; its index "` + c.gw +
+				`" names "". The index carries the interface a next-hop is reached through: write the next-hop as index "` + c.gw + `+Ethernet2"`}))
+		for _, idx := range []string{"Ethernet2", "0"} {
+			t.Run("PATCH index "+idx+" is refused "+c.prefix, processSetRequest(nhs,
+				`{"next-hop":[{"index":"`+idx+`","config":{"index":"`+idx+`"},"interface-ref":{"config":{"interface":"Ethernet2"}}}]}`,
+				"PATCH", true, tlerr.InvalidArgsError{Format: `static route next-hop index "` + idx + `" names no next-hop; an index is the gateway address, ` +
+					`<address>+<interface> for a gateway reached through an interface, LOCAL_LINK+<interface> for an interface alone, or DROP`}))
+		}
+		t.Run("PATCH the index the refusal names is accepted "+c.prefix, processSetRequest(nhs,
+			`{"next-hop":[{"index":"`+c.gw+`+Ethernet2","config":{"index":"`+c.gw+`+Ethernet2","next-hop":"`+c.gw+`"},"interface-ref":{"config":{"interface":"Ethernet2"}}}]}`,
+			"PATCH", false, nil))
+		time.Sleep(1 * time.Second)
+		t.Run("Verify the next-hop and its interface "+c.prefix, verifyDbResult(rclient, "STATIC_ROUTE|default|"+c.prefix,
+			niStaticRouteRow("default|"+c.prefix, map[string]interface{}{"nexthop": c.gw, "ifname": "Ethernet2"}), false))
+	}
 	unloadDB(db.ConfigDB, cleanupTbl)
 }

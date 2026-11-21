@@ -358,6 +358,9 @@ func matchNiStaticRouteRequestUri(uri string) (*niStaticRouteReqInfo, error) {
 			targetPathKind: niStaticRouteTargetProtocolRoot,
 		}, nil
 	}
+	if niStaticRouteNhMetricReqUriRe.MatchString(uri) {
+		return nil, tlerr.NotSupportedError{Format: niStaticRouteNoMetricMsg, Path: uri}
+	}
 	// Named after what this handler serves, the protocol instance, rather than
 	// the static routes alone: every node of the instance is routed here, so a
 	// path that is not one of them arrives here too.
@@ -808,6 +811,11 @@ func niStaticRouteNhFromIndex(index, prefix string) (map[string]string, error) {
 			niStaticRouteIfnameFld:  ifname,
 		}, nil
 	}
+	if net.ParseIP(nhPart) == nil {
+		return nil, tlerr.InvalidArgsError{
+			Format: fmt.Sprintf("static route next-hop index %q names no next-hop; %s", index, niStaticRouteIndexForms),
+		}
+	}
 	if err := niStaticRouteValidateNhIp(nhPart, isIpv6); err != nil {
 		return nil, err
 	}
@@ -815,6 +823,32 @@ func niStaticRouteNhFromIndex(index, prefix string) (map[string]string, error) {
 		niStaticRouteNexthopFld: nhPart,
 		niStaticRouteIfnameFld:  ifname,
 	}, nil
+}
+
+// FRR's static routes carry an administrative distance per next-hop, which the
+// next-hop preference is mapped to, and no metric.
+const niStaticRouteNoMetricMsg = "FRR static routes have no metric; use preference"
+
+var niStaticRouteNhMetricReqUriRe = regexp.MustCompile(niStaticRouteUriPfx +
+	`/static-routes/static\[prefix=[^\]]+\]/next-hops/next-hop\[index=[^\]]+\]/(?:config|state)/metric$`)
+
+// niStaticRouteIndexForms says how a next-hop index is spelled: the index is
+// derived from the next-hop it names, since STATIC_ROUTE has nowhere to keep a
+// separate one.
+const niStaticRouteIndexForms = "an index is the gateway address, <address>+<interface> for a gateway reached through an interface, " +
+	"LOCAL_LINK+<interface> for an interface alone, or DROP"
+
+// niStaticRouteUnmappedLeavesErr refuses a payload carrying leaves that have no
+// CONFIG_DB mapping, saying what to use instead where there is something.
+func niStaticRouteUnmappedLeavesErr(what string, unmapped []string, uri string) error {
+	msg := what + " carries leaves that have no CONFIG_DB mapping: " + formatOcLeafPathList(unmapped)
+	for _, leaf := range unmapped {
+		if strings.HasSuffix(leaf, "/config/metric") {
+			msg += "; " + niStaticRouteNoMetricMsg
+			break
+		}
+	}
+	return tlerr.NotSupportedError{Format: msg, Path: uri}
 }
 
 func niStaticRouteValidateNhIp(value string, prefixIsIpv6 bool) error {
@@ -1969,10 +2003,7 @@ var YangToDb_ni_static_route_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPa
 			return res, wrapErr
 		}
 		if unmapped := findNiStaticRouteUnmappedPayloadLeaves(wrappedRoot, reqInfo.niName, reqInfo.protoName); len(unmapped) > 0 {
-			return res, tlerr.NotSupportedError{
-				Format: "static routes container payload carries leaves that have no CONFIG_DB mapping: " + formatOcLeafPathList(unmapped),
-				Path:   inParams.requestUri,
-			}
+			return res, niStaticRouteUnmappedLeavesErr("static routes container payload", unmapped, inParams.requestUri)
 		}
 		replace := inParams.oper == REPLACE
 		keepTag := reqInfo.targetPathKind == niStaticRouteTargetNextHopsRoot
@@ -2004,10 +2035,7 @@ var YangToDb_ni_static_route_cfg_xfmr SubTreeXfmrYangToDb = func(inParams XfmrPa
 			return res, wrapErr
 		}
 		if unmapped := findNiStaticRouteUnmappedPayloadLeaves(wrappedRoot, reqInfo.niName, reqInfo.protoName); len(unmapped) > 0 {
-			return res, tlerr.NotSupportedError{
-				Format: "static route payload carries leaves that have no CONFIG_DB mapping: " + formatOcLeafPathList(unmapped),
-				Path:   inParams.requestUri,
-			}
+			return res, niStaticRouteUnmappedLeavesErr("static route payload", unmapped, inParams.requestUri)
 		}
 		if err := niStaticRouteCheckPayloadPrefix(inParams, reqInfo); err != nil {
 			return res, err
@@ -2052,10 +2080,7 @@ func niStaticRouteSetNextHop(inParams XfmrParams, reqInfo *niStaticRouteReqInfo,
 		return res, wrapErr
 	}
 	if unmapped := findNiStaticRouteUnmappedPayloadLeaves(wrappedRoot, reqInfo.niName, reqInfo.protoName); len(unmapped) > 0 {
-		return res, tlerr.NotSupportedError{
-			Format: "static route next-hop payload carries leaves that have no CONFIG_DB mapping: " + formatOcLeafPathList(unmapped),
-			Path:   inParams.requestUri,
-		}
+		return res, niStaticRouteUnmappedLeavesErr("static route next-hop payload", unmapped, inParams.requestUri)
 	}
 	if reqInfo.targetLeaf != niStaticRouteIndexLeaf {
 		if nh := niStaticRouteNextHopFromPayload(inParams, wrappedRoot, reqInfo); nh != "" {
